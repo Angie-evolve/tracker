@@ -1059,10 +1059,7 @@ function renderTab(){
         <div style="margin-bottom:20px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
             <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Llamadas - Fathom</div>
-            <div style="display:flex;gap:6px">
-              <button class="btn btn-sm" onclick="openFathomKeyModal()">? API key</button>
-              <button class="btn btn-sm btn-primary" onclick="syncFathomCalls(${c.id})"> Sincronizar llamadas</button>
-            </div>
+            <button class="btn btn-sm btn-primary" onclick="openImportFathomModal(${c.id})">+ Importar llamadas</button>
           </div>
           ${fathomCallsHTML(c)}
           <div style="margin-top:10px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">
@@ -1847,97 +1844,55 @@ function updateFathomKeywords(clientId, val){
   toast('Guardado OK');
 }
 
-async function syncFathomCalls(clientId){
+function openImportFathomModal(clientId){
+  document.getElementById('modal-root').innerHTML=`
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-title">Importar llamadas de Fathom</div>
+        <div class="modal-sub">Pega el JSON generado por Claude con las llamadas del cliente.</div>
+        <div class="form-row">
+          <label class="form-label">JSON de llamadas</label>
+          <textarea id="fathom-json-input" rows="10" placeholder='[{"id":"fathom-123","title":"Catch up","date":"02/06/2026","duration":"30 min","sentiment":"satisfecho","summary":"...","actionItems":[],"riskFlags":[],"initials":"PG"}]' style="font-family:var(--mono);font-size:11px"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" onclick="closeModal()">Cancelar</button>
+          <button class="btn btn-primary" onclick="importFathomJSON(${clientId})">Importar</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function importFathomJSON(clientId){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
-  const anthropicKey=localStorage.getItem('evold-anthropic-key')||'';
-  if(!anthropicKey){openFathomKeyModal();return;}
-  const keywords=(c.fathomKeywords||[]);
-  if(!keywords.length){toast('Agrega palabras clave del cliente primero','red');return;}
-
-  toast('Buscando llamadas en Fathom...');
-
-  try {
-    // Use Claude with Fathom MCP to search meetings
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key': anthropicKey,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-5',
-        max_tokens: 4000,
-        mcp_servers: [{
-          type: 'url',
-          url: 'https://api.fathom.ai/mcp',
-          name: 'fathom'
-        }],
-        messages:[{
-          role:'user',
-          content: `Busca en Fathom reuniones que contengan alguna de estas palabras clave en el titulo: ${keywords.join(', ')}. 
-          Para cada reunion encontrada, obtene el resumen.
-          Responde SOLO con un JSON array sin markdown con este formato por cada reunion:
-          [{"id":"...","title":"...","date":"DD/MM/YYYY","duration":"X min","summary":"resumen breve","sentiment":"satisfecho|atencion","actionItems":["item1"],"riskFlags":["riesgo1"],"initials":"XX"}]
-          Si no encontras ninguna reunion, responde con: []`
-        }]
-      })
-    });
-
-    if(!res.ok) throw new Error('API '+res.status);
-    const data = await res.json();
-    const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
-    const clean = text.replace(/```json|```/g,'').trim();
-
-    let calls = [];
-    try {
-      const match = clean.match(/\[[\s\S]*\]/);
-      if(match) calls = JSON.parse(match[0]);
-    } catch(e){ console.warn('parse error',e); }
-
-    if(!Array.isArray(calls)||!calls.length){
-      toast('No se encontraron llamadas para este cliente. Revisa las palabras clave.');
-      return;
-    }
-
-    // Add initials if missing
-    calls = calls.map(cl=>({
-      ...cl,
-      initials: cl.initials || (cl.title||'?').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase()||'?'
-    }));
-
-    c.fathomCalls = calls;
-
-    // Auto-add as milestones
-    const existingIds = new Set((c.milestones||[]).map(m=>m.fathomId).filter(Boolean));
-    const newMilestones = calls
-      .filter(cl=>!existingIds.has(cl.id))
-      .map(cl=>({
-        type: cl.sentiment==='satisfecho'?'hito':'alerta',
-        title: cl.title,
-        date: cl.date,
-        body: cl.summary+(cl.actionItems?.length?`
-
-Action items: ${cl.actionItems.join(', ')}`:'')+(cl.riskFlags?.length?`
-
-Riesgos: ${cl.riskFlags.join(', ')}`:''),
-        tags: [cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion', cl.duration].filter(Boolean),
-        fathomId: cl.id
-      }));
-
-    if(!c.milestones) c.milestones=[];
-    c.milestones = [...c.milestones, ...newMilestones];
-    c.milestones.sort((a,b)=>b.date.split('/').reverse().join('').localeCompare(a.date.split('/').reverse().join('')));
-
-    save(); renderTab();
-    toast(`OK ${calls.length} llamadas sincronizadas`);
-
-  } catch(e){
-    toast('Error: '+e.message,'red');
-    console.error('Fathom sync error:',e);
+  const raw=document.getElementById('fathom-json-input').value.trim();
+  let calls=[];
+  try{
+    const clean=raw.replace(/` + '```' + `json|` + '```' + `/g,'').trim();
+    calls=JSON.parse(clean);
+    if(!Array.isArray(calls)) throw new Error();
+  }catch(e){
+    toast('JSON invalido, revisa el formato','red');
+    return;
   }
+  if(!calls.length){toast('No hay llamadas en el JSON','red');return;}
+  c.fathomCalls=calls;
+  const existingIds=new Set((c.milestones||[]).map(m=>m.fathomId).filter(Boolean));
+  const newMilestones=calls
+    .filter(cl=>!existingIds.has(cl.id))
+    .map(cl=>({
+      type:cl.sentiment==='satisfecho'?'hito':'alerta',
+      title:cl.title,
+      date:cl.date,
+      body:cl.summary+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):''),
+      tags:[cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion',cl.duration].filter(Boolean),
+      fathomId:cl.id
+    }));
+  if(!c.milestones) c.milestones=[];
+  c.milestones=[...c.milestones,...newMilestones];
+  c.milestones.sort((a,b)=>b.date.split('/').reverse().join('').localeCompare(a.date.split('/').reverse().join('')));
+  save();closeModal();renderTab();
+  toast(calls.length+' llamadas importadas');
 }
 
 // Init
