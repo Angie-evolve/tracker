@@ -1672,74 +1672,84 @@ async function syncFathomCalls(clientId){
   if(!emails.length&&!keywords.length){toast('Configurá emails o palabras clave del cliente primero','red');return;}
   toast('Buscando llamadas en Fathom...');
   try {
-    // Fetch meetings from Fathom
-    const res=await fetch('https://api.fathom.ai/external/v1/meetings?limit=50',{
-      headers:{'X-Api-Key':fathomKey}
+    // Use Claude as proxy to avoid CORS restrictions
+    const proxyRes=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key':anthropicKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-opus-4-5',
+        max_tokens:4000,
+        tools:[{type:'web_search_20250305',name:'web_search'}],
+        messages:[{role:'user',content:'Hacé un HTTP GET a esta URL y devolveme el JSON crudo de respuesta sin explicaciones:\nURL: https://api.fathom.ai/external/v1/meetings?limit=50\nHeader: X-Api-Key: '+fathomKey}]
+      })
     });
-    if(!res.ok) throw new Error(`Fathom API ${res.status}`);
-    const data=await res.json();
-    const meetings=(data.meetings||data.data||data||[]);
+    if(!proxyRes.ok) throw new Error('Anthropic API '+proxyRes.status);
+    const proxyData=await proxyRes.json();
+    const proxyText=(proxyData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
+    let meetings=[];
+    try{
+      const jsonMatch=proxyText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+      if(jsonMatch){const parsed=JSON.parse(jsonMatch[0]);meetings=parsed.meetings||parsed.data||parsed||[];}
+    }catch(pe){console.warn('parse',pe);}
+    if(!Array.isArray(meetings)||!meetings.length){toast('No se encontraron reuniones. Verificá tu API key de Fathom.');return;}
     // Filter meetings matching this client
     const matched=meetings.filter(m=>{
       const title=(m.title||m.meeting_title||'').toLowerCase();
       const participants=JSON.stringify(m.participants||m.attendees||[]).toLowerCase();
       return keywords.some(k=>title.includes(k)) || emails.some(e=>participants.includes(e));
     });
-    if(!matched.length){toast('No se encontraron llamadas para este cliente');return;}
+    if(!matched.length){toast('No se encontraron llamadas para este cliente. Revisá emails y palabras clave.');return;}
     toast(`${matched.length} llamadas encontradas. Analizando con IA...`);
-    // For each matched meeting, get summary and analyze
-    const analyzed=[];
-    for(const m of matched.slice(0,10)){
-      try {
-        const recId=m.id||m.recording_id;
-        // Get summary from Fathom
-        const sumRes=await fetch(`https://api.fathom.ai/external/v1/recordings/${recId}/summary`,{
-          headers:{'X-Api-Key':fathomKey}
-        });
-        const sumData=sumRes.ok?await sumRes.json():{};
-        const summaryText=sumData.summary||sumData.text||JSON.stringify(sumData).slice(0,500)||'Sin resumen disponible';
-        // Analyze with Claude
-        const aiRes=await fetch('https://api.anthropic.com/v1/messages',{
-          method:'POST',
-          headers:{
-            'Content-Type':'application/json',
-            'x-api-key':anthropicKey,
-            'anthropic-version':'2023-06-01',
-            'anthropic-dangerous-direct-browser-access':'true'
-          },
-          body:JSON.stringify({
-            model:'claude-haiku-4-5-20251001',
-            max_tokens:400,
-            messages:[{role:'user',content:`Analizá este resumen de llamada y respondé SOLO con JSON válido sin markdown:
-${summaryText}
 
-JSON: {"sentiment":"satisfecho|atencion","summary":"resumen en 1-2 oraciones","actionItems":["item1","item2"],"riskFlags":["riesgo1"]}`}]
-          })
-        });
-        const aiData=await aiRes.json();
-        const aiText=(aiData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
-        let analysis={sentiment:'satisfecho',summary:summaryText.slice(0,120),actionItems:[],riskFlags:[]};
-        try{ analysis=JSON.parse(aiText.replace(/```json|```/g,'').trim()); }catch(e){}
-        const dateRaw=m.created_at||m.recording_start_time||m.date||'';
-        const dateObj=dateRaw?new Date(dateRaw):new Date();
-        const dateFmt=`${String(dateObj.getDate()).padStart(2,'0')}/${String(dateObj.getMonth()+1).padStart(2,'0')}/${dateObj.getFullYear()}`;
-        const durationMin=m.duration_seconds?Math.round(m.duration_seconds/60):(m.duration||0);
-        const participants=m.participants||m.attendees||[];
-        const external=participants.find(p=>!p.is_host&&(p.email||''));
-        const initials=external?(external.name||external.display_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase():'?';
-        analyzed.push({
-          id:String(recId),
-          title:m.title||m.meeting_title||'Llamada',
-          date:dateFmt,
-          duration:durationMin?`${durationMin} min`:'',
-          sentiment:analysis.sentiment==='satisfecho'?'satisfecho':'atencion',
-          summary:analysis.summary||'',
-          actionItems:analysis.actionItems||[],
-          riskFlags:analysis.riskFlags||[],
-          initials
-        });
-      } catch(e){ console.warn('Error processing meeting',m.id,e); }
-    }
+    // Build metadata for all matched meetings
+    const meetingsMeta=matched.slice(0,10).map((m,i)=>{
+      const dateRaw=m.created_at||m.recording_start_time||m.date||'';
+      const dateObj=dateRaw?new Date(dateRaw):new Date();
+      const dateFmt=`${String(dateObj.getDate()).padStart(2,'0')}/${String(dateObj.getMonth()+1).padStart(2,'0')}/${dateObj.getFullYear()}`;
+      const durationMin=m.duration_seconds?Math.round(m.duration_seconds/60):0;
+      const participants=m.participants||m.attendees||[];
+      const external=participants.find(p=>!p.is_host&&(p.email||''));
+      const initials=external?(external.name||external.display_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase():'?';
+      const summary=m.summary||m.ai_summary||m.notes||'';
+      return {idx:i,id:String(m.id||m.recording_id),title:m.title||m.meeting_title||'Llamada',date:dateFmt,duration:durationMin?`${durationMin} min`:'',initials,summary};
+    });
+
+    // Analyze all in one Claude call
+    const analyzeRes=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key':anthropicKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-haiku-4-5-20251001',
+        max_tokens:2000,
+        messages:[{role:'user',content:'Analizá estas llamadas con un cliente. Respondé SOLO con un array JSON sin markdown:
+'+JSON.stringify(meetingsMeta)+'
+
+Para cada una: {"idx":N,"sentiment":"satisfecho|atencion","summary":"1-2 oraciones en español","actionItems":["item"],"riskFlags":["riesgo"]}'}]
+      })
+    });
+    const analyzeData=await analyzeRes.json();
+    const analyzeText=(analyzeData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
+    let analyses=[];
+    try{analyses=JSON.parse(analyzeText.replace(/```json|```/g,'').trim());}catch(e){console.warn('analyze parse',e);}
+    if(!Array.isArray(analyses)) analyses=[];
+
+    const analyzed=meetingsMeta.map(ms=>{
+      const a=analyses.find(x=>x.idx===ms.idx)||{};
+      return {id:ms.id,title:ms.title,date:ms.date,duration:ms.duration,initials:ms.initials,
+        sentiment:a.sentiment==='satisfecho'?'satisfecho':'atencion',
+        summary:a.summary||ms.summary.slice(0,120)||'',
+        actionItems:a.actionItems||[],riskFlags:a.riskFlags||[]};
+    });
     // Sort by date desc
     analyzed.sort((a,b)=>b.date.split('/').reverse().join('').localeCompare(a.date.split('/').reverse().join('')));
     c.fathomCalls=analyzed;
