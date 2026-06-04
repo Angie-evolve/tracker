@@ -419,14 +419,28 @@ async function fetchSheetData(sheetName, apiKey){
   return blocks.flatMap(b=>b.rows);
 }
 
+function normKey(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();}
+function fuzzyGet(row,terms){
+  const nt=terms.map(normKey);
+  const key=Object.keys(row).find(k=>nt.every(t=>normKey(k).includes(t)));
+  return key!=null?row[key]:undefined;
+}
 function sumCol(rows, cols){
   let total=null;
-  rows.forEach(row=>{cols.forEach(col=>{const v=parseNum(row[col]);if(v!==null){total=(total||0)+v;}});});
+  rows.forEach(row=>{cols.forEach(col=>{
+    let v=parseNum(row[col]);
+    if(v===null) v=parseNum(fuzzyGet(row,col.split(/\s+/)));
+    if(v!==null){total=(total||0)+v;}
+  });});
   return total!==null?Math.round(total*100)/100:null;
 }
 function avgCol(rows, cols){
   const vals=[];
-  rows.forEach(row=>{cols.forEach(col=>{const v=parseNum(row[col]);if(v!==null) vals.push(v);});});
+  rows.forEach(row=>{cols.forEach(col=>{
+    let v=parseNum(row[col]);
+    if(v===null) v=parseNum(fuzzyGet(row,col.split(/\s+/)));
+    if(v!==null) vals.push(v);
+  });});
   if(!vals.length) return null;
   return Math.round(vals.reduce((a,b)=>a+b,0)/vals.length*100)/100;
 }
@@ -515,6 +529,15 @@ async function syncClient(client, apiKey){
         created++;
       }
     }
+
+    // Para bloques historicos sin dateEnd, usar el dateStart del siguiente bloque
+    const syncedLines = client.conversionLines.filter(l=>l.blockKey);
+    syncedLines.forEach((l,i)=>{
+      if(!l.dateEnd && i < syncedLines.length-1){
+        const nextStart = syncedLines[i+1].dateStart;
+        if(nextStart) l.dateEnd = nextStart;
+      }
+    });
 
     const latestLine = client.conversionLines[client.conversionLines.length-1];
     if(latestLine?.metrics){
