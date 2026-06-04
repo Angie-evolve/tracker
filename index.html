@@ -1043,9 +1043,9 @@ function renderTab(){
             <span style="color:${guarColor};font-weight:500">${ocsLeft>0?'Faltan '+ocsLeft+' OCs'+(daysLeft>0?' en '+daysLeft+' días':''):'¡Garantía cumplida!'}</span>
             <span>${totalOCs} OCs</span>
           </div>
-        </div>` : contractLoaded ? `
+        </div>` : (contractLoaded && contract._analyzing) ? `
         <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px">
-          <div id="st-analyzing-${c.id}" style="font-size:13px;color:var(--text2)">⏳ Analizando contrato con IA...</div>
+          <div style="font-size:13px;color:var(--text2)">⏳ Analizando contrato con IA...</div>
         </div>` : ''}
 
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -1573,6 +1573,15 @@ function saveAnthropicKey(){
   localStorage.setItem('evold-anthropic-key', key);
   closeModal();
   toast('API key guardada ✓');
+  // Retry any pending contract analysis
+  if(S.clientId){
+    const c=DB.clients.find(x=>x.id===S.clientId);
+    if(c?.contract?._pendingFile){
+      const pf=c.contract._pendingFile;
+      delete c.contract._pendingFile;
+      extractContractWithAI(S.clientId, pf, null);
+    }
+  }
 }
 
 // Success tracker helpers
@@ -1611,6 +1620,14 @@ function uploadContract(clientId, inputEl){
   const reader=new FileReader();
   reader.onload=ev=>{
     const base64=ev.target.result.split(',')[1];
+    const key=localStorage.getItem('evold-anthropic-key')||'';
+    if(!key){
+      openAnthropicKeyModal();
+      // Store file data temporarily so user can retry after entering key
+      if(c.contract) c.contract._pendingFile={base64,name:f.name,type:f.type};
+      save();renderTab();
+      return;
+    }
     extractContractWithAI(clientId, {base64, name:f.name, type:f.type}, null);
   };
   reader.readAsDataURL(f);
@@ -1619,6 +1636,18 @@ function uploadContract(clientId, inputEl){
 async function extractContractWithAI(clientId, file, driveUrl){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
+  // Check API key FIRST before anything
+  const anthropicKey = localStorage.getItem('evold-anthropic-key')||'';
+  if(!anthropicKey){
+    openAnthropicKeyModal();
+    // After modal closes, user must re-upload — clear the analyzing state
+    if(c.contract) { c.contract._analyzing=false; }
+    save(); renderTab();
+    return;
+  }
+  // Mark as analyzing in UI
+  if(c.contract) c.contract._analyzing=true;
+  save(); renderTab();
   toast('Analizando contrato con IA...');
   try {
     let messages;
@@ -1632,14 +1661,6 @@ async function extractContractWithAI(clientId, file, driveUrl){
       const c2=DB.clients.find(x=>x.id===clientId);
       if(c2){const el=document.getElementById('st-analyzing-'+clientId);if(el)el.closest('div').remove();}
       toast('Contrato vinculado. Completá las condiciones manualmente.');
-      return;
-    }
-    const anthropicKey = localStorage.getItem('evold-anthropic-key')||'';
-    if(!anthropicKey){
-      toast('Configurá tu API key de Anthropic primero','red');
-      const c2=DB.clients.find(x=>x.id===clientId);
-      if(c2){const el=document.getElementById('st-analyzing-'+clientId);if(el)el.parentElement.remove();}
-      openAnthropicKeyModal();
       return;
     }
     const res=await fetch('https://api.anthropic.com/v1/messages',{
@@ -1657,9 +1678,12 @@ async function extractContractWithAI(clientId, file, driveUrl){
     const clean=text.replace(/```json|```/g,'').trim();
     const extracted=JSON.parse(clean);
     Object.entries(extracted).forEach(([k,v])=>{if(v!==null&&v!==undefined) c.contract[k]=v;});
+    c.contract._analyzing=false;
     save();renderTab();
     toast('Contrato analizado ✓');
   } catch(e){
+    if(c.contract) c.contract._analyzing=false;
+    save();renderTab();
     toast('No se pudo analizar el contrato — completá los campos manualmente','red');
     console.error(e);
   }
