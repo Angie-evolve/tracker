@@ -921,14 +921,23 @@ function renderTab(){
 
   else if(S.tab==='success'){
     const contract = c.contract||{};
+    const contractLoaded = !!(contract.driveUrl||contract.fileName);
     const ocs = c.conversionLines.reduce((s,l)=>s+(l.metrics?.registros||0),0);
     const ocsMonth = (c.conversionLines.find(l=>l.status==='activa')||{}).metrics?.registros||0;
     const adSpent = (c.conversionLines.find(l=>l.status==='activa')||{}).metrics?.adSpent||0;
     const daysActive2 = days(contract.startDate, null)||0;
-    const minDaily = contract.minDailyBudget||30;
-    const minOCsMonth = contract.minOCsMonth||15;
-    const totalOCs = contract.totalOCs||45;
+    const minDaily = contract.minDailyBudget||null;
+    const minOCsMonth = contract.minOCsMonth||null;
+    const totalOCs = contract.totalOCs||null;
     const contractDays = contract.durationDays||90;
+
+    // CPL esperado = inversión mínima mensual / OCs garantizadas por mes
+    const cplEsperado = (minDaily && minOCsMonth && minOCsMonth>0)
+      ? Math.round(minDaily*30/minOCsMonth*100)/100 : null;
+    // CPL real = ad spent activo / OCs del mes activo
+    const cplReal = (adSpent && ocsMonth && ocsMonth>0)
+      ? Math.round(adSpent/ocsMonth*100)/100 : null;
+    const cplStatus = (!cplReal||!cplEsperado)?'na':(cplReal<=cplEsperado?'ok':cplReal<=cplEsperado*1.3?'warn':'danger');
 
     // Pauta diaria real (ad spent activo / días activos del bloque)
     const activeLine = c.conversionLines.find(l=>l.status==='activa');
@@ -957,24 +966,33 @@ function renderTab(){
 
     el.innerHTML=`
       <div>
-        ${contract.fileName?`
+        ${contract.driveUrl||contract.fileName?`
         <div class="st-contract">
           <span style="font-size:18px;color:#4ecfa0">📄</span>
           <div style="flex:1">
-            <div style="font-size:13px;font-weight:500;color:#fff">${contract.fileName}</div>
+            <div style="font-size:13px;font-weight:500;color:#fff">${contract.fileName||'Contrato vinculado'}</div>
             <div style="font-size:11px;color:var(--text3);margin-top:2px">Firmado ${contract.signDate||'—'} · Vigencia ${contractDays} días · vence ${contract.endDate||'—'}</div>
           </div>
-          <button class="btn btn-sm" onclick="removeContract(${c.id})">✕</button>
+          <div style="display:flex;gap:6px">
+            ${contract.driveUrl?`<button class="btn btn-sm" onclick="window.open('${contract.driveUrl}','_blank')">🔗 Abrir</button>`:''}
+            <button class="btn btn-sm" onclick="removeContract(${c.id})">✕</button>
+          </div>
         </div>`:`
-        <div class="st-upload" onclick="document.getElementById('contract-upload-${c.id}').click()">
-          <div style="font-size:24px;opacity:0.4;margin-bottom:6px">📄</div>
-          <div style="font-size:13px;color:var(--text2);margin-bottom:3px">Subir contrato</div>
-          <div style="font-size:11px;color:var(--text3)">PDF, DOC · máx. 10 MB</div>
-          <input id="contract-upload-${c.id}" type="file" accept=".pdf,.doc,.docx" style="display:none" onchange="uploadContract(${c.id},this)">
+        <div style="margin-bottom:16px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Vincular contrato desde Google Drive</div>
+          <div style="display:flex;gap:8px">
+            <input id="drive-url-${c.id}" type="text" placeholder="Pegá el link de Google Drive..." 
+              style="flex:1;padding:8px 11px;font-size:13px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:#fff;font-family:var(--font);outline:none">
+            <button class="btn btn-primary btn-sm" onclick="saveDriveUrl(${c.id})">Guardar</button>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">También podés subir: <span style="color:var(--green);cursor:pointer" onclick="document.getElementById('contract-upload-${c.id}').click()">seleccionar archivo</span>
+            <input id="contract-upload-${c.id}" type="file" accept=".pdf,.doc,.docx" style="display:none" onchange="uploadContract(${c.id},this)">
+          </div>
         </div>`}
 
+        ${contractLoaded && minDaily!==null ? `
         <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px">Condiciones de garantía</div>
-        <div class="st-grid">
+        <div class="st-grid" style="grid-template-columns:repeat(2,1fr)">
           <div class="st-card ${dailyStatus}">
             <div class="st-top">
               <div class="st-name">Inversión diaria en pauta</div>
@@ -1002,8 +1020,18 @@ function renderTab(){
             <div class="st-target">Garantía total: <strong>${totalOCs} OCs en ${contractDays} días</strong></div>
             <div class="st-bar"><div class="st-fill ${ocsTotalStatus}" style="width:${stPct(ocs,totalOCs)}%"></div></div>
           </div>
+          <div class="st-card ${cplStatus}">
+            <div class="st-top">
+              <div class="st-name">Costo por OC</div>
+              <span class="st-badge ${cplStatus}">${{ok:'Por objetivo',warn:'Levemente alto',danger:'Por encima',na:'Sin datos'}[cplStatus]}</span>
+            </div>
+            <div class="st-val">${cplReal!==null?'$'+cplReal:'—'}<span> real</span></div>
+            <div class="st-target">Esperado por contrato: <strong>${cplEsperado!==null?'$'+cplEsperado:'—'}</strong>
+              ${cplReal&&cplEsperado?'<span style="margin-left:6px;font-size:11px;color:'+(cplReal<=cplEsperado?'#4ecfa0':'#f07050')+'">'+(cplReal<=cplEsperado?'↓ '+(Math.round((1-cplReal/cplEsperado)*100))+'% mejor':'↑ '+(Math.round((cplReal/cplEsperado-1)*100))+'% más caro')+'</span>':''}
+            </div>
+            <div class="st-bar"><div class="st-fill ${cplStatus}" style="width:${cplReal&&cplEsperado?Math.min(Math.round(cplEsperado/cplReal*100),100):0}%"></div></div>
+          </div>
         </div>
-
         <div class="st-guarantee">
           <div class="st-g-top">
             <div style="font-size:13px;font-weight:500;color:#fff">Progreso hacia garantía de ${contractDays} días</div>
@@ -1015,7 +1043,10 @@ function renderTab(){
             <span style="color:${guarColor};font-weight:500">${ocsLeft>0?'Faltan '+ocsLeft+' OCs'+(daysLeft>0?' en '+daysLeft+' días':''):'¡Garantía cumplida!'}</span>
             <span>${totalOCs} OCs</span>
           </div>
-        </div>
+        </div>` : contractLoaded ? `
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px">
+          <div id="st-analyzing-${c.id}" style="font-size:13px;color:var(--text2)">⏳ Analizando contrato con IA...</div>
+        </div>` : ''}
 
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
           <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Línea de tiempo del cliente</div>
@@ -1042,25 +1073,26 @@ function renderTab(){
             </div>`).join('')}
         </div>`}
 
+        ${contractLoaded?`
         <div style="margin-top:16px;padding:12px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg)">
-          <div style="font-size:11px;font-weight:500;color:var(--text);margin-bottom:8px">Configurar condiciones del contrato</div>
+          <div style="font-size:11px;font-weight:500;color:var(--text);margin-bottom:8px">Condiciones extraídas del contrato <span style="color:var(--text3);font-weight:400">(editables)</span></div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">Inversión mín. diaria ($)</div>
-              <input type="number" value="${minDaily}" onchange="updateContractField(${c.id},'minDailyBudget',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
+              <input type="number" value="${minDaily||''}" placeholder="—" onchange="updateContractField(${c.id},'minDailyBudget',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">OCs garantizadas/mes</div>
-              <input type="number" value="${minOCsMonth}" onchange="updateContractField(${c.id},'minOCsMonth',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
+              <input type="number" value="${minOCsMonth||''}" placeholder="—" onchange="updateContractField(${c.id},'minOCsMonth',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">OCs totales garantizadas</div>
-              <input type="number" value="${totalOCs}" onchange="updateContractField(${c.id},'totalOCs',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
+              <input type="number" value="${totalOCs||''}" placeholder="—" onchange="updateContractField(${c.id},'totalOCs',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">Fecha firma</div>
               <input type="date" value="${contract.startDate||''}" onchange="updateContractField(${c.id},'startDate',this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font);color-scheme:dark"></div>
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">Duración (días)</div>
-              <input type="number" value="${contractDays}" onchange="updateContractField(${c.id},'durationDays',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
+              <input type="number" value="${contractDays||''}" placeholder="—" onchange="updateContractField(${c.id},'durationDays',+this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font)"></div>
             <div><div style="font-size:10px;color:var(--text3);margin-bottom:4px">Fecha vencimiento</div>
               <input type="date" value="${contract.endDate||''}" onchange="updateContractField(${c.id},'endDate',this.value)" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:#fff;font-family:var(--font);color-scheme:dark"></div>
           </div>
-        </div>
+        </div>`:''}
       </div>`;
   }
 
@@ -1522,22 +1554,73 @@ function updateContractField(clientId, field, val){
   toast('Guardado ✓');
 }
 
-function uploadContract(clientId, input){
+function saveDriveUrl(clientId){
   const c=DB.clients.find(x=>x.id===clientId);
-  if(!c||!input.files[0]) return;
-  const f=input.files[0];
+  if(!c) return;
+  const input=document.getElementById('drive-url-'+clientId);
+  const url=(input?.value||'').trim();
+  if(!url){toast('Pegá un link primero','red');return;}
+  if(!c.contract) c.contract={};
+  c.contract.driveUrl=url;
+  c.contract.fileName='Contrato (Drive)';
+  save();renderTab();
+  extractContractWithAI(clientId, null, url);
+}
+
+function uploadContract(clientId, inputEl){
+  const c=DB.clients.find(x=>x.id===clientId);
+  if(!c||!inputEl.files[0]) return;
+  const f=inputEl.files[0];
   if(!c.contract) c.contract={};
   c.contract.fileName=f.name;
   c.contract.fileSize=Math.round(f.size/1024)+'KB';
-  save();
-  renderTab();
-  toast('Contrato cargado ✓');
+  c.contract.driveUrl=null;
+  save();renderTab();
+  // Read file as base64 for PDF or text
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const base64=ev.target.result.split(',')[1];
+    extractContractWithAI(clientId, {base64, name:f.name, type:f.type}, null);
+  };
+  reader.readAsDataURL(f);
+}
+
+async function extractContractWithAI(clientId, file, driveUrl){
+  const c=DB.clients.find(x=>x.id===clientId);
+  if(!c) return;
+  toast('Analizando contrato con IA...');
+  try {
+    let messages;
+    if(file){
+      messages=[{role:'user',content:[
+        {type:'document',source:{type:'base64',media_type:file.type||'application/pdf',data:file.base64}},
+        {type:'text',text:'Extraé del contrato los siguientes campos y respondé SOLO con un JSON válido sin markdown ni texto extra: { "minDailyBudget": número en USD por día, "minOCsMonth": número de OCs/registros calificados garantizados por mes, "totalOCs": número total de OCs garantizadas en el contrato, "durationDays": duración del contrato en días, "startDate": fecha de firma en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null }'}
+      ]}];
+    } else {
+      messages=[{role:'user',content:`Tengo un contrato en este link de Google Drive: ${driveUrl}. Sin poder acceder al archivo, extraé del link o respondé con un JSON vacío: { "minDailyBudget": null, "minOCsMonth": null, "totalOCs": null, "durationDays": 90, "startDate": null, "endDate": null, "signDate": null }. Respondé SOLO con JSON válido sin markdown.`}];
+    }
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,messages})
+    });
+    const data=await res.json();
+    const text=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
+    const clean=text.replace(/```json|```/g,'').trim();
+    const extracted=JSON.parse(clean);
+    Object.entries(extracted).forEach(([k,v])=>{if(v!==null&&v!==undefined) c.contract[k]=v;});
+    save();renderTab();
+    toast('Contrato analizado ✓');
+  } catch(e){
+    toast('No se pudo analizar el contrato — completá los campos manualmente','red');
+    console.error(e);
+  }
 }
 
 function removeContract(clientId){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
-  c.contract={...c.contract,fileName:null,fileSize:null};
+  c.contract={...c.contract,fileName:null,fileSize:null,driveUrl:null};
   save();renderTab();toast('Contrato eliminado');
 }
 
