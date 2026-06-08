@@ -2119,6 +2119,7 @@ function showCallReport(clientId){
     +'<button class="btn" onclick="closeModal()">Cerrar</button>'
     +'<button class="btn" onclick="downloadCallReport('+clientId+')">Descargar .txt</button>'
     +'<button class="btn" onclick="downloadCallReportPptx('+clientId+')">Presentacion (.pptx)</button>'
+    +'<button class="btn" onclick="uploadReportToDriveAsSlides('+clientId+')">Abrir en Drive/Slides</button>'
     +'<button class="btn btn-primary" onclick="copyCallReport('+clientId+')">Copiar</button>'
     +'</div></div></div>';
 }
@@ -2172,6 +2173,48 @@ async function ensurePptx(){
   return typeof PptxGenJS!=='undefined';
 }
 
+// Construye el objeto pptx con el deck del reporte (asume PptxGenJS ya cargado)
+function buildReportPptx(c){
+  const r=c.lastReport;
+  const BG='0B0E14', GREEN='1D9E75', WHITE='FFFFFF', GREY='9AA3AF', TXT='D6DAE0';
+  const pptx=new PptxGenJS();
+  pptx.layout='LAYOUT_WIDE'; // 13.33 x 7.5 in (16:9)
+  pptx.defineSlideMaster({ title:'EV', background:{color:BG} });
+
+  // Portada
+  var s0=pptx.addSlide({masterName:'EV'});
+  s0.background={color:BG};
+  s0.addText('EVOLVE', {x:0.6,y:0.5,w:6,h:0.4,fontFace:'Arial',fontSize:14,color:GREEN,bold:true,charSpacing:3});
+  s0.addText(r.titulo||('Reporte - '+c.name), {x:0.6,y:2.4,w:12,h:1.6,fontFace:'Arial',fontSize:36,color:WHITE,bold:true,valign:'top'});
+  s0.addText([
+    {text:(c.name||'')+(c.subtitle?'  -  '+c.subtitle:''), options:{fontSize:16,color:TXT,breakLine:true}},
+    {text:(r.periodo||'')+(r.generatedAt?'   -   '+r.generatedAt:''), options:{fontSize:13,color:GREY}}
+  ], {x:0.6,y:4.1,w:12,h:1.2,fontFace:'Arial',valign:'top'});
+  s0.addShape(pptx.ShapeType.line, {x:0.62,y:2.25,w:2.0,h:0,line:{color:GREEN,width:2.5}});
+
+  // Una slide por seccion
+  (r.secciones||[]).forEach(function(sec){
+    var sl=pptx.addSlide({masterName:'EV'});
+    sl.background={color:BG};
+    sl.addText('EVOLVE', {x:0.6,y:0.35,w:6,h:0.3,fontFace:'Arial',fontSize:10,color:GREEN,bold:true,charSpacing:3});
+    sl.addText(sec.titulo||'', {x:0.6,y:0.75,w:12.1,h:0.9,fontFace:'Arial',fontSize:26,color:WHITE,bold:true,valign:'top'});
+    sl.addShape(pptx.ShapeType.line, {x:0.62,y:1.7,w:1.4,h:0,line:{color:GREEN,width:2.5}});
+    var bullets=(sec.items||[]).map(function(it){
+      return {text:String(it), options:{bullet:{characterCode:'2022',indent:18},color:TXT,fontSize:15,paraSpaceAfter:10,breakLine:true}};
+    });
+    if(!bullets.length) bullets=[{text:'-',options:{color:GREY,fontSize:15}}];
+    sl.addText(bullets, {x:0.7,y:2.0,w:11.9,h:5.0,fontFace:'Arial',valign:'top',fit:'shrink'});
+  });
+
+  // Cierre
+  var sf=pptx.addSlide({masterName:'EV'});
+  sf.background={color:BG};
+  sf.addText('Gracias', {x:0.6,y:3.0,w:12,h:1,fontFace:'Arial',fontSize:34,color:WHITE,bold:true});
+  sf.addText('Evolve - Performance Marketing', {x:0.6,y:4.0,w:12,h:0.5,fontFace:'Arial',fontSize:14,color:GREEN});
+
+  return pptx;
+}
+
 async function downloadCallReportPptx(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.lastReport) return;
@@ -2181,50 +2224,89 @@ async function downloadCallReportPptx(clientId){
     toast('No se pudo cargar la libreria de presentaciones. Revisa tu conexion o un posible bloqueador.','red');
     return;
   }
-  const r=c.lastReport;
-  const BG='0B0E14', CARD='10141C', GREEN='1D9E75', WHITE='FFFFFF', GREY='9AA3AF', TXT='D6DAE0';
-  const pptx=new PptxGenJS();
-  pptx.layout='LAYOUT_WIDE'; // 13.33 x 7.5 in (16:9)
-  pptx.defineSlideMaster({ title:'EV', background:{color:BG} });
-
-  // --- Portada ---
-  var s0=pptx.addSlide({masterName:'EV'});
-  s0.background={color:BG};
-  s0.addText('EVOLVE', {x:0.6,y:0.5,w:6,h:0.4,fontFace:'Arial',fontSize:14,color:GREEN,bold:true,charSpacing:3});
-  s0.addText(r.titulo||('Reporte - '+c.name), {x:0.6,y:2.4,w:12,h:1.6,fontFace:'Arial',fontSize:36,color:WHITE,bold:true,valign:'top'});
-  s0.addText([
-    {text:(c.name||'')+(c.subtitle?'  ·  '+c.subtitle:''), options:{fontSize:16,color:TXT,breakLine:true}},
-    {text:(r.periodo||'')+(r.generatedAt?'   ·   '+r.generatedAt:''), options:{fontSize:13,color:GREY}}
-  ], {x:0.6,y:4.1,w:12,h:1.2,fontFace:'Arial',valign:'top'});
-  s0.addShape(pptx.ShapeType.line, {x:0.62,y:2.25,w:2.0,h:0,line:{color:GREEN,width:2.5}});
-
-  // --- Una slide por seccion ---
-  (r.secciones||[]).forEach(function(sec){
-    var sl=pptx.addSlide({masterName:'EV'});
-    sl.background={color:BG};
-    sl.addText('EVOLVE', {x:0.6,y:0.35,w:6,h:0.3,fontFace:'Arial',fontSize:10,color:GREEN,bold:true,charSpacing:3});
-    sl.addText(sec.titulo||'', {x:0.6,y:0.75,w:12.1,h:0.9,fontFace:'Arial',fontSize:26,color:WHITE,bold:true,valign:'top'});
-    sl.addShape(pptx.ShapeType.line, {x:0.62,y:1.7,w:1.4,h:0,line:{color:GREEN,width:2.5}});
-    var bullets=(sec.items||[]).map(function(it,i){
-      return {text:String(it), options:{bullet:{characterCode:'2022',indent:18},color:TXT,fontSize:15,paraSpaceAfter:10,breakLine:true}};
-    });
-    if(!bullets.length) bullets=[{text:'-',options:{color:GREY,fontSize:15}}];
-    sl.addText(bullets, {x:0.7,y:2.0,w:11.9,h:5.0,fontFace:'Arial',valign:'top',fit:'shrink'});
-  });
-
-  // --- Cierre ---
-  var sf=pptx.addSlide({masterName:'EV'});
-  sf.background={color:BG};
-  sf.addText('Gracias', {x:0.6,y:3.0,w:12,h:1,fontFace:'Arial',fontSize:34,color:WHITE,bold:true});
-  sf.addText('Evolve · Performance Marketing', {x:0.6,y:4.0,w:12,h:0.5,fontFace:'Arial',fontSize:14,color:GREEN});
-
+  const pptx=buildReportPptx(c);
   var fname='presentacion-'+(c.name||'cliente').toLowerCase().replace(/\s+/g,'-')+'.pptx';
   pptx.writeFile({fileName:fname}).then(function(){
-    toast('Presentacion lista. Subila a Google Drive y abri con Google Slides.');
+    toast('Presentacion descargada.');
   }).catch(function(e){
     toast('Error al generar la presentacion','red');
     console.error('pptx error',e);
   });
+}
+
+// ---------- Subir a Google Drive como Google Slides ----------
+var GOOGLE_CLIENT_ID='721573182422-1gbo6kio3g2tc5pesqedubahjh30h5k0.apps.googleusercontent.com';
+var _gisTokenClient=null, _gAccessToken=null, _pendingTokenResolve=null, _pendingTokenReject=null;
+
+function loadGis(){
+  if(window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
+  return loadScriptOnce('https://accounts.google.com/gsi/client');
+}
+
+async function getGoogleToken(){
+  await loadGis();
+  return new Promise(function(resolve,reject){
+    _pendingTokenResolve=resolve; _pendingTokenReject=reject;
+    if(!_gisTokenClient){
+      _gisTokenClient=google.accounts.oauth2.initTokenClient({
+        client_id:GOOGLE_CLIENT_ID,
+        scope:'https://www.googleapis.com/auth/drive.file',
+        callback:function(resp){
+          if(resp && resp.access_token){ _gAccessToken=resp.access_token; if(_pendingTokenResolve)_pendingTokenResolve(resp.access_token); }
+          else { if(_pendingTokenReject)_pendingTokenReject(new Error('No se obtuvo permiso de Google')); }
+        },
+        error_callback:function(){ if(_pendingTokenReject)_pendingTokenReject(new Error('Login de Google cancelado')); }
+      });
+    }
+    try{ _gisTokenClient.requestAccessToken({prompt: _gAccessToken?'':'consent'}); }
+    catch(e){ reject(e); }
+  });
+}
+
+async function uploadReportToDriveAsSlides(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.lastReport) return;
+  toast('Preparando presentacion...');
+  const ready=await ensurePptx();
+  if(!ready || typeof PptxGenJS==='undefined'){
+    toast('No se pudo cargar la libreria de presentaciones.','red'); return;
+  }
+  let token;
+  try{ toast('Conectando con Google...'); token = _gAccessToken || await getGoogleToken(); }
+  catch(e){ toast(e.message||'No se pudo conectar con Google','red'); return; }
+
+  try{
+    toast('Subiendo a Drive y convirtiendo a Slides...');
+    const pptx=buildReportPptx(c);
+    const ab=await pptx.write({outputType:'arraybuffer'});
+    const pptxBlob=new Blob([ab],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
+    const metadata={ name:(r0name(c)), mimeType:'application/vnd.google-apps.presentation' };
+    const form=new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)],{type:'application/json'}));
+    form.append('file', pptxBlob);
+    let res=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',{
+      method:'POST', headers:{'Authorization':'Bearer '+token}, body:form
+    });
+    if(res.status===401){
+      // token vencido: re-pedir y reintentar una vez
+      _gAccessToken=null; token=await getGoogleToken();
+      res=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',{
+        method:'POST', headers:{'Authorization':'Bearer '+token}, body:form
+      });
+    }
+    if(!res.ok){ const e=await res.json().catch(function(){return {};}); throw new Error('Drive '+res.status+': '+((e.error&&e.error.message)||res.statusText)); }
+    const data=await res.json();
+    const url = data.id ? ('https://docs.google.com/presentation/d/'+data.id+'/edit') : data.webViewLink;
+    if(url){ window.open(url,'_blank'); toast('Presentacion creada en tu Drive y abierta en Slides.'); }
+    else { toast('Subida OK, pero no se pudo abrir el link.','red'); }
+  }catch(e){
+    toast('Error: '+(e.message||'no se pudo subir'),'red');
+    console.error('drive upload error',e);
+  }
+}
+
+function r0name(c){
+  return 'Reporte '+(c.name||'cliente')+' - '+((c.lastReport&&c.lastReport.generatedAt)||new Date().toLocaleDateString('es-AR'));
 }
 
 // Init
