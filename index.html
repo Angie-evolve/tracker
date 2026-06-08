@@ -978,6 +978,14 @@ function renderTab(){
 
     el.innerHTML=`
       <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px">
+          <div>
+            <div style="font-size:14px;font-weight:500;color:#fff">Reporte para llamada</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Genera un reporte con IA a partir de objetivos, hitos, cambios y llamadas</div>
+          </div>
+          <button class="btn btn-primary" onclick="generateCallReport(${c.id})">${c.lastReport?'Regenerar reporte':'Generar reporte'}</button>
+        </div>
+        ${c.lastReport?`<div style="margin-bottom:16px"><button class="btn btn-sm" onclick="showCallReport(${c.id})">Ver ultimo reporte (${c.lastReport.generatedAt||''})</button></div>`:''}
         ${contract.driveUrl||contract.fileName?`
         <div class="st-contract">
           <span style="font-size:18px;color:#4ecfa0"></span>
@@ -1898,6 +1906,188 @@ function importFathomJSON(clientId){
   c.milestones.sort((a,b)=>b.date.split('/').reverse().join('').localeCompare(a.date.split('/').reverse().join('')));
   save();closeModal();renderTab();
   toast(calls.length+' llamadas importadas');
+}
+
+// ---------- Reporte de llamada con IA ----------
+function buildReportContext(c){
+  const contract = c.contract||{};
+  const lines = (c.conversionLines||[]).map(function(l){
+    var m = l.metrics||{};
+    return {
+      bloque: l.version||l.blockKey||'-',
+      estado: l.status||'-',
+      rango: (l.dateStart||'?')+' a '+(l.dateEnd||'actual'),
+      campana: l.campaign||'-',
+      filtro: l.filtro||'-',
+      destino: l.destino||'-',
+      adSpent: m.adSpent, cpl: m.cpl, cpm: m.cpm, cpc: m.cpc,
+      optIn: m.optIn, registros: m.registros, sql: m.sql, pageViews: m.pageViews,
+      nota: l.notes||''
+    };
+  });
+  const hitos = (c.milestones||[]).map(function(h){
+    return { tipo:h.type, titulo:h.title, fecha:h.date, detalle:h.body||'' };
+  });
+  const llamadas = (c.fathomCalls||[]).map(function(cl){
+    return {
+      titulo: cl.title, fecha: cl.date, sentiment: cl.sentiment,
+      resumen: cl.summary||'',
+      actionItems: cl.actionItems||[],
+      riesgos: cl.riskFlags||[]
+    };
+  });
+  return {
+    cliente: c.name,
+    tipo: c.subtitle||'',
+    objetivos: {
+      inversionDiariaMin: contract.minDailyBudget||null,
+      ocsMensualesGarantizadas: contract.minOCsMonth||null,
+      ocsTotalesGarantizadas: contract.totalOCs||null,
+      duracionDias: contract.durationDays||null,
+      cplObjetivo: c.targetCPL||null,
+      fechaFirma: contract.signDate||null,
+      vencimiento: contract.endDate||null
+    },
+    lineasDeConversion: lines,
+    hitosYCambios: hitos,
+    llamadas: llamadas
+  };
+}
+
+async function generateCallReport(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  const anthropicKey = localStorage.getItem('evold-anthropic-key')||'';
+  if(!anthropicKey){ openAnthropicKeyModal(); return; }
+
+  const ctx = buildReportContext(c);
+  toast('Generando reporte con IA...');
+  const btnLabel = 'Generando...';
+  // Lightweight loading modal
+  document.getElementById('modal-root').innerHTML =
+    '<div class="modal-overlay"><div class="modal" style="max-width:520px">'
+    +'<div class="modal-title">Generando reporte</div>'
+    +'<div class="modal-sub">Claude esta analizando objetivos, hitos, cambios y llamadas de '+c.name+'...</div>'
+    +'</div></div>';
+
+  const prompt = 'Sos un analista de una agencia de performance marketing. A partir del siguiente contexto de un cliente '
+    +'(objetivos contractuales, lineas de conversion con sus metricas y notas de que cambio en cada bloque, hitos y cambios, '
+    +'y resumenes de llamadas con su sentiment, action items y riesgos), genera un reporte claro y accionable para presentar '
+    +'en la proxima llamada con el cliente. Tono profesional, directo, orientado a resultados, en espanol rioplatense neutro. '
+    +'Apoyate en los numeros concretos del contexto (CPL, OCs, inversion) y comparalos contra los objetivos. '
+    +'Responde SOLO con un JSON valido, sin markdown ni texto extra, con esta forma exacta:\n'
+    +'{ "titulo": "string", "periodo": "string corto del rango analizado", "secciones": [ '
+    +'{ "titulo": "Resumen ejecutivo", "items": ["string"] }, '
+    +'{ "titulo": "Performance vs objetivos", "items": ["string"] }, '
+    +'{ "titulo": "Que cambio desde la ultima llamada", "items": ["string"] }, '
+    +'{ "titulo": "Riesgos y puntos de atencion", "items": ["string"] }, '
+    +'{ "titulo": "Proximos pasos", "items": ["string"] }, '
+    +'{ "titulo": "Puntos para hablar en la llamada", "items": ["string"] } ] }\n'
+    +'Cada item es una frase concreta. Si falta informacion para una seccion, incluila igual con un item que lo aclare. '
+    +'No inventes numeros que no esten en el contexto.\n\nCONTEXTO:\n'
+    + JSON.stringify(ctx, null, 1);
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-opus-4-5',
+        max_tokens:2500,
+        messages:[{role:'user',content:prompt}]
+      })
+    });
+    if(!res.ok){
+      const err=await res.json().catch(function(){return {};});
+      throw new Error('API '+res.status+': '+((err&&err.error&&err.error.message)||res.statusText));
+    }
+    const data=await res.json();
+    const text=(data.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    const clean=text.replace(/```json|```/g,'').trim();
+    let report;
+    try{ report=JSON.parse(clean); }
+    catch(pe){ throw new Error('Respuesta invalida del modelo'); }
+    report.generatedAt = new Date().toLocaleDateString('es-AR');
+    c.lastReport = report;
+    save();
+    showCallReport(clientId);
+    toast('Reporte generado OK');
+  } catch(e){
+    closeModal();
+    toast('Error: '+e.message,'red');
+    console.error('Report AI error:',e);
+  }
+}
+
+function reportToPlainText(r){
+  let out = (r.titulo||'Reporte')+'\n';
+  if(r.periodo) out += 'Periodo: '+r.periodo+'\n';
+  out += '\n';
+  (r.secciones||[]).forEach(function(s){
+    out += (s.titulo||'').toUpperCase()+'\n';
+    (s.items||[]).forEach(function(it){ out += '  - '+it+'\n'; });
+    out += '\n';
+  });
+  return out.trim();
+}
+
+function showCallReport(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.lastReport) return;
+  const r=c.lastReport;
+  const esc=function(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  let secHtml='';
+  (r.secciones||[]).forEach(function(s){
+    secHtml += '<div style="margin-bottom:16px">'
+      +'<div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">'+esc(s.titulo)+'</div>'
+      +'<ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px">'
+      +(s.items||[]).map(function(it){return '<li style="font-size:13px;color:var(--text2);line-height:1.55">'+esc(it)+'</li>';}).join('')
+      +'</ul></div>';
+  });
+  document.getElementById('modal-root').innerHTML =
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:680px;max-height:85vh;display:flex;flex-direction:column">'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">'
+    +'<div><div class="modal-title">'+esc(r.titulo||('Reporte - '+c.name))+'</div>'
+    +'<div class="modal-sub">'+esc(r.periodo||'')+(r.generatedAt?' - generado '+esc(r.generatedAt):'')+'</div></div>'
+    +'</div>'
+    +'<div style="overflow-y:auto;margin:14px 0;padding-right:6px;flex:1">'+secHtml+'</div>'
+    +'<div class="modal-footer">'
+    +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+    +'<button class="btn" onclick="downloadCallReport('+clientId+')">Descargar .txt</button>'
+    +'<button class="btn btn-primary" onclick="copyCallReport('+clientId+')">Copiar</button>'
+    +'</div></div></div>';
+}
+
+function copyCallReport(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.lastReport) return;
+  const txt=reportToPlainText(c.lastReport);
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(function(){toast('Reporte copiado OK');},function(){toast('No se pudo copiar','red');});
+  } else {
+    const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');toast('Reporte copiado OK');}catch(e){toast('No se pudo copiar','red');}
+    document.body.removeChild(ta);
+  }
+}
+
+function downloadCallReport(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.lastReport) return;
+  const txt=reportToPlainText(c.lastReport);
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='reporte-'+(c.name||'cliente').toLowerCase().replace(/\s+/g,'-')+'.txt';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Reporte descargado');
 }
 
 // Init
