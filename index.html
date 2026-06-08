@@ -302,7 +302,7 @@ const DEFAULT = {clients:[{
   ]
 }]};
 
-let S = {view:'overview', clientId:null, tab:'lineas'};
+let S = {view:'overview', clientId:null, tab:'lineas', metricsView:'historico'};
 let DB = {clients:[]};
 
 // Storage
@@ -780,12 +780,59 @@ function showOverview(){
 
 // Client view
 function selectClient(id){S.clientId=id;S.view='client';S.tab='lineas';renderSidebar();renderClient();}
+function setMetricsView(v){S.metricsView=v;renderClient();}
 
 function renderClient(){
   const c=DB.clients.find(x=>x.id===S.clientId);if(!c)return;
   const al=c.conversionLines.find(l=>l.status==='activa')||c.conversionLines[c.conversionLines.length-1];
   const m=al?.metrics||{};
   const daysActive=days(al?.dateStart,al?.dateEnd);
+
+  // ---- Acumulados historicos (toda la cuenta, todas las lineas) ----
+  const _allLines=c.conversionLines||[];
+  const _num=function(v){const n=Number(v);return isNaN(n)?0:n;};
+  const accSpent=_allLines.reduce(function(s,l){return s+_num(l.metrics&&l.metrics.adSpent);},0);
+  const accReg=_allLines.reduce(function(s,l){return s+_num(l.metrics&&l.metrics.registros);},0);
+  const accSql=_allLines.reduce(function(s,l){return s+_num(l.metrics&&l.metrics.sql);},0);
+  const costPorReg=accReg>0?accSpent/accReg:null;
+  const costPorSql=accSql>0?accSpent/accSql:null;
+  let _wCpm=0,_wCpc=0,_wDen=0;
+  _allLines.forEach(function(l){var sp=_num(l.metrics&&l.metrics.adSpent),cpm=Number(l.metrics&&l.metrics.cpm),cpc=Number(l.metrics&&l.metrics.cpc);if(sp>0){if(!isNaN(cpm))_wCpm+=cpm*sp;if(!isNaN(cpc))_wCpc+=cpc*sp;_wDen+=sp;}});
+  const accCpm=_wDen>0?_wCpm/_wDen:null;
+  const accCpc=_wDen>0?_wCpc/_wDen:null;
+  let _earliest=null;_allLines.forEach(function(l){if(l.dateStart){var d=new Date(l.dateStart);if(!_earliest||d<_earliest)_earliest=d;}});
+  const diasHist=_earliest?days(_earliest.toISOString().slice(0,10),null):null;
+  // Costo por SQL idoneo (del contrato) para colorear
+  const _ct=c.contract||{};
+  const costoSqlIdoneo=(_ct.minDailyBudget&&_ct.durationDays&&_ct.totalOCs)?(_ct.minDailyBudget*_ct.durationDays)/_ct.totalOCs:null;
+  const _money=function(n){return n===null||n===undefined?'-':'$'+(Math.round(n*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
+  let _sqlColor='#fff';
+  if(costPorSql!==null&&costoSqlIdoneo!==null) _sqlColor=(costPorSql<=costoSqlIdoneo?'#4ecfa0':costPorSql<=costoSqlIdoneo*1.3?'#f0a830':'#f07050');
+
+  // ---- Valores del bloque activo ----
+  const blkSpent=_num(m.adSpent), blkReg=_num(m.registros), blkSql=_num(m.sql);
+  const blkCostReg=blkReg>0?blkSpent/blkReg:null;
+  const blkCostSql=blkSql>0?blkSpent/blkSql:null;
+  const blkCpm=(m.cpm===undefined||m.cpm===null||m.cpm==='')?null:Number(m.cpm);
+  const blkCpc=(m.cpc===undefined||m.cpc===null||m.cpc==='')?null:Number(m.cpc);
+  let _blkSqlColor='#fff';
+  if(blkCostSql!==null&&costoSqlIdoneo!==null) _blkSqlColor=(blkCostSql<=costoSqlIdoneo?'#4ecfa0':blkCostSql<=costoSqlIdoneo*1.3?'#f0a830':'#f07050');
+
+  // ---- Eleccion segun el toggle ----
+  const _isHist=(S.metricsView!=='bloque');
+  const disp={
+    costReg:_isHist?costPorReg:blkCostReg,
+    costSql:_isHist?costPorSql:blkCostSql,
+    sqlColor:_isHist?_sqlColor:_blkSqlColor,
+    reg:_isHist?accReg:blkReg,
+    sql:_isHist?accSql:blkSql,
+    spent:_isHist?accSpent:blkSpent,
+    cpm:_isHist?accCpm:blkCpm,
+    cpc:_isHist?accCpc:blkCpc,
+    dias:_isHist?diasHist:daysActive,
+    tag:_isHist?'historico':('bloque '+(al?.version||'activo'))
+  };
+
   document.getElementById('main-content').innerHTML=`
     <div class="topbar">
       <div style="display:flex;align-items:center;gap:12px">
@@ -814,13 +861,20 @@ function renderClient(){
           <div class="health-ticks"><span class="health-tick">Critico</span><span class="health-tick">Atencion</span><span class="health-tick">Saludable</span><span class="health-tick">?ptimo</span></div>
         </div>
       </div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:10px">
+        <span style="font-size:11px;color:var(--text3);margin-right:4px;text-transform:uppercase;letter-spacing:0.05em">Metricas:</span>
+        <button class="btn btn-sm" onclick="setMetricsView('historico')" style="${_isHist?'border-color:rgba(29,158,117,0.5);color:#4ecfa0':'color:var(--text3)'}">Historico</button>
+        <button class="btn btn-sm" onclick="setMetricsView('bloque')" style="${!_isHist?'border-color:rgba(29,158,117,0.5);color:#4ecfa0':'color:var(--text3)'}">Bloque activo</button>
+      </div>
       <div class="metrics-row">
-        <div class="metric-card"><div class="metric-label">CPL actual</div><div class="metric-value" style="color:${m.cpl<=30?'#4ecfa0':m.cpl<=60?'#f0a830':'#f07050'}">$${m.cpl||0}</div>${c.conversionLines.length>1?`<div class="metric-delta delta-up">? mejorando</div>`:''}</div>
-        <div class="metric-card"><div class="metric-label">Registros / mes</div><div class="metric-value">${m.registros||0}</div></div>
-        <div class="metric-card"><div class="metric-label">Ad Spent</div><div class="metric-value">$${m.adSpent||0}</div></div>
-        <div class="metric-card"><div class="metric-label">CPM</div><div class="metric-value">$${m.cpm||0}</div></div>
-        <div class="metric-card"><div class="metric-label">CPC</div><div class="metric-value">$${m.cpc||0}</div></div>
-        <div class="metric-card"><div class="metric-label">Dias activa</div><div class="metric-value">${daysActive!==null?daysActive:'-'}</div></div>
+        <div class="metric-card"><div class="metric-label">Costo / registro</div><div class="metric-value" style="color:${disp.costReg!==null?'#4ecfa0':'#fff'}">${_money(disp.costReg)}</div><div class="metric-delta" style="color:var(--text3)">${disp.tag}</div></div>
+        <div class="metric-card"><div class="metric-label">Costo / SQL</div><div class="metric-value" style="color:${disp.sqlColor}">${_money(disp.costSql)}</div><div class="metric-delta" style="color:var(--text3)">${costoSqlIdoneo!==null?'idoneo '+_money(costoSqlIdoneo):disp.tag}</div></div>
+        <div class="metric-card"><div class="metric-label">Registros</div><div class="metric-value">${disp.reg||0}</div></div>
+        <div class="metric-card"><div class="metric-label">SQLs</div><div class="metric-value">${disp.sql||0}</div></div>
+        <div class="metric-card"><div class="metric-label">Ad Spent</div><div class="metric-value">${_money(disp.spent)}</div></div>
+        <div class="metric-card"><div class="metric-label">CPM${_isHist?' prom.':''}</div><div class="metric-value">${_money(disp.cpm)}</div></div>
+        <div class="metric-card"><div class="metric-label">CPC${_isHist?' prom.':''}</div><div class="metric-value">${_money(disp.cpc)}</div></div>
+        <div class="metric-card"><div class="metric-label">Dias${_isHist?'':' activa'}</div><div class="metric-value">${disp.dias!==null?disp.dias:'-'}</div></div>
       </div>
       <div class="tabs">
         <button class="tab ${S.tab==='lineas'?'active':''}" onclick="switchTab('lineas')">Lineas de conversion</button>
