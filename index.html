@@ -6,6 +6,7 @@
 <title>EVOLD — Agency Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js" defer></script>
 <style>
 :root {
   --green: #1D9E75;
@@ -1936,17 +1937,57 @@ function buildReportContext(c){
       riesgos: cl.riskFlags||[]
     };
   });
+  // ---- Matematica del contrato (pre-calculada para que la IA no haga cuentas) ----
+  const r2=function(n){return (n===null||n===undefined||isNaN(n))?null:Math.round(n*100)/100;};
+  const minDaily=contract.minDailyBudget||null;
+  const durationDays=contract.durationDays||null;
+  const totalOCs=contract.totalOCs||null;
+  const minOCsMonth=contract.minOCsMonth||null;
+  const inversionTotalContrato=(minDaily&&durationDays)?minDaily*durationDays:null;
+  const costoSqlIdoneo=(inversionTotalContrato&&totalOCs)?inversionTotalContrato/totalOCs:null;
+  const ocsAcumuladas=(c.conversionLines||[]).reduce(function(s,l){var v=l.metrics&&l.metrics.sql;return s+((v!==null&&v!==undefined)?Number(v):0);},0);
+  const inversionAcumulada=(c.conversionLines||[]).reduce(function(s,l){return s+((l.metrics&&l.metrics.adSpent)||0);},0);
+  const diasTranscurridos=days(contract.startDate, null)|| (c.conversionLines[0]?days(c.conversionLines[0].dateStart,null):null);
+  const dailySpendReal=(inversionAcumulada&&diasTranscurridos)?inversionAcumulada/diasTranscurridos:null;
+  const costoSqlReal=(inversionAcumulada&&ocsAcumuladas>0)?inversionAcumulada/ocsAcumuladas:null;
+  const ocsEsperadasAHoy=(totalOCs&&durationDays&&diasTranscurridos)?Math.round(totalOCs/durationDays*diasTranscurridos):null;
+  // Remediacion si el costo real supera el idoneo
+  let inversionExtra=null, diasExtension=null;
+  if(costoSqlReal!==null&&costoSqlIdoneo!==null&&costoSqlReal>costoSqlIdoneo&&totalOCs&&minDaily){
+    inversionExtra=totalOCs*costoSqlReal-inversionTotalContrato;
+    diasExtension=Math.round(inversionExtra/minDaily);
+  }
+  let estadoCosto='sin_datos';
+  if(costoSqlReal!==null&&costoSqlIdoneo!==null) estadoCosto=(costoSqlReal<=costoSqlIdoneo)?'en_o_bajo_idoneo':'sobre_idoneo';
+  const estadoRitmo=(ocsEsperadasAHoy!==null)?(ocsAcumuladas>=ocsEsperadasAHoy?'en_ritmo':'atrasado'):'sin_datos';
+  const presupuestoSubejecutado=(dailySpendReal!==null&&minDaily!==null)?(dailySpendReal < minDaily*0.8):null;
+
   return {
     cliente: c.name,
     tipo: c.subtitle||'',
     objetivos: {
-      inversionDiariaMin: contract.minDailyBudget||null,
-      ocsMensualesGarantizadas: contract.minOCsMonth||null,
-      ocsTotalesGarantizadas: contract.totalOCs||null,
-      duracionDias: contract.durationDays||null,
+      inversionDiariaMin: minDaily,
+      ocsMensualesGarantizadas: minOCsMonth,
+      ocsTotalesGarantizadas: totalOCs,
+      duracionDias: durationDays,
       cplObjetivo: c.targetCPL||null,
       fechaFirma: contract.signDate||null,
       vencimiento: contract.endDate||null
+    },
+    metricasCalculadas: {
+      inversionTotalContrato: r2(inversionTotalContrato),
+      costoSqlIdoneo: r2(costoSqlIdoneo),
+      ocsAcumuladas: ocsAcumuladas,
+      inversionAcumulada: r2(inversionAcumulada),
+      diasTranscurridos: diasTranscurridos,
+      dailySpendReal: r2(dailySpendReal),
+      costoSqlReal: r2(costoSqlReal),
+      ocsEsperadasAHoy: ocsEsperadasAHoy,
+      estadoCosto: estadoCosto,
+      estadoRitmo: estadoRitmo,
+      presupuestoSubejecutado: presupuestoSubejecutado,
+      inversionExtraParaCumplir: r2(inversionExtra),
+      diasExtensionParaCumplir: diasExtension
     },
     lineasDeConversion: lines,
     hitosYCambios: hitos,
@@ -1970,21 +2011,39 @@ async function generateCallReport(clientId){
     +'<div class="modal-sub">Claude esta analizando objetivos, hitos, cambios y llamadas de '+c.name+'...</div>'
     +'</div></div>';
 
-  const prompt = 'Sos un analista de una agencia de performance marketing. A partir del siguiente contexto de un cliente '
-    +'(objetivos contractuales, lineas de conversion con sus metricas y notas de que cambio en cada bloque, hitos y cambios, '
-    +'y resumenes de llamadas con su sentiment, action items y riesgos), genera un reporte claro y accionable para presentar '
-    +'en la proxima llamada con el cliente. Tono profesional, directo, orientado a resultados, en espanol rioplatense neutro. '
-    +'Apoyate en los numeros concretos del contexto (CPL, OCs, inversion) y comparalos contra los objetivos. '
-    +'Responde SOLO con un JSON valido, sin markdown ni texto extra, con esta forma exacta:\n'
-    +'{ "titulo": "string", "periodo": "string corto del rango analizado", "secciones": [ '
-    +'{ "titulo": "Resumen ejecutivo", "items": ["string"] }, '
-    +'{ "titulo": "Performance vs objetivos", "items": ["string"] }, '
-    +'{ "titulo": "Que cambio desde la ultima llamada", "items": ["string"] }, '
-    +'{ "titulo": "Riesgos y puntos de atencion", "items": ["string"] }, '
-    +'{ "titulo": "Proximos pasos", "items": ["string"] }, '
-    +'{ "titulo": "Puntos para hablar en la llamada", "items": ["string"] } ] }\n'
-    +'Cada item es una frase concreta. Si falta informacion para una seccion, incluila igual con un item que lo aclare. '
-    +'No inventes numeros que no esten en el contexto.\n\nCONTEXTO:\n'
+  const prompt = 'Sos analista senior de Evolve, una agencia de performance marketing para empresas de software / software factories B2B. '
+    +'Vas a redactar un reporte para presentar en la proxima llamada con el cliente. El reporte tiene DOS objetivos a la vez: '
+    +'(1) dar hipervisibilidad de lo que la agencia esta haciendo, mostrando metodo, criterio y progreso; y (2) seguir vendiendo el servicio, '
+    +'es decir mantener al cliente convencido del plan y proyectando hacia adelante. Tono profesional, directo, transparente, con ownership pero sin dramatizar, '
+    +'en espanol rioplatense neutro. Orientado a resultados.\n\n'
+
+    +'METRICA QUE MANDA: el norte es el SQL / oportunidad calificada (OC), medido SIEMPRE contra la garantia del contrato (OCs por mes, OCs totales en N dias). '
+    +'Los registros/leads son una etapa intermedia, no el resultado. Traduci cada numero a su efecto sobre la meta contractual de SQLs.\n\n'
+
+    +'BENCHMARK: el costo por SQL "idoneo" NO es un numero arbitrario, se DERIVA del contrato de cada cliente: '
+    +'costoSqlIdoneo = (inversion diaria pactada * dias del contrato) / OCs totales garantizadas. '
+    +'Ese valor ya viene calculado en metricasCalculadas.costoSqlIdoneo. Usalo como referencia principal. Cada cliente se mide contra su propio contrato; '
+    +'no uses umbrales externos ni numeros magicos. NO recalcules ni inventes cifras: usa EXACTAMENTE los valores de metricasCalculadas y de las lineas.\n\n'
+
+    +'LOGICA SEGUN metricasCalculadas.estadoCosto:\n'
+    +'- "en_o_bajo_idoneo": el costo real por SQL esta en o por debajo del idoneo. Narrativa: vamos en presupuesto / mejor de lo pactado; foco en SOSTENER el costo probado y ESCALAR volumen para llegar antes a la garantia.\n'
+    +'- "sobre_idoneo": cada SQL sale mas caro de lo presupuestado. Calculo de brecha YA provisto: con la misma plata del contrato salen menos OCs. Para entregar las OCs garantizadas hay dos caminos y se los presentas al cliente devolviendole la decision (compartir responsabilidad, desbloquearlo para que empiece a vender): '
+    +'OPCION A = mantener este costo por SQL ya probado y escalar (sumar inversionExtraParaCumplir de presupuesto) para entregar las OCs al costo actual; '
+    +'OPCION B = seguir trabajando para bajar el costo de adquisicion (via filtro, destino, creatividades, segmentacion). Mencionas tambien que, de no sumar inversion, el trabajo se extiende ~diasExtensionParaCumplir dias al ritmo pactado. Usa los numeros provistos.\n'
+    +'- "sin_datos": todavia no hay SQLs registrados. NO digas "sin datos". Razona con el gasto como senal: si en una linea ya se invirtio un monto que supera el costoSqlIdoneo sin generar SQL, explicalo asi: el SQL probablemente iba a llegar pero a un costo de adquisicion alto para la meta; POR ESO se probaron variantes (A/B, cambios de filtro o destino) buscando un costo por SQL mucho menor. Cierra hacia adelante: con estos cambios vamos a buscar primero registros y el camino mas rapido al SQL, apoyandonos en la informacion del mercado. Tono de descubrimiento con criterio, nunca de falla.\n\n'
+
+    +'ESTRUCTURA (cada item es una frase concreta, apoyada en numeros del contexto):\n'
+    +'1. "Estado del objetivo" (resumen ejecutivo): 2-3 frases que anclan todo contra el contrato (meta de OCs, costo idoneo, cuanto llevamos, dia X de N, si vamos en ritmo/adelante/atras y por que).\n'
+    +'2. "Que probamos y que aprendimos": recorre las lineas/bloques como una secuencia DELIBERADA de tests (hipotesis -> prueba -> aprendizaje): que se cambio (filtro, destino, campana, creatividades), por que, y que resulto. Aca se demuestra el trabajo y el criterio.\n'
+    +'3. "Mejoras alcanzadas": logros cuantificados SIEMPRE conectados a la meta (ej: el costo por lead calificado bajo de $A a $B, lo que nos acerca mas rapido/barato al objetivo).\n'
+    +'4. "Donde estamos hoy": la linea activa, su ritmo actual y una proyeccion simple (a este ritmo, X OCs para tal fecha).\n'
+    +'5. "Hitos": la linea de tiempo relevante (firmas, lanzamientos, cambios de estrategia, alertas).\n'
+    +'6. "Que vamos a implementar": roadmap; cada proxima accion atada a una hipotesis y a la meta.\n'
+    +'7. "Brecha y plan de cierre": INCLUIR ESTA SECCION SOLO si hay desvio real: estadoCosto="sobre_idoneo", o estadoRitmo="atrasado", o presupuestoSubejecutado=true, o hay una demora identificable en las notas/hitos tipo alerta/riesgos de llamadas (presupuesto no gastado, listas no calificadas, cambio de mercado, etc.). Si NO hay desvio, OMITI esta seccion por completo. Cuando va, en tres golpes: (a) causa de la demora; (b) que fue externo/fuera de nuestro control vs que ya estamos ajustando nosotros; (c) plan concreto con numeros: cuanta inversion extra (inversionExtraParaCumplir) o cuantos dias de extension (diasExtensionParaCumplir) para cumplir la garantia.\n\n'
+
+    +'Responde SOLO con un JSON valido, sin markdown ni texto extra, con esta forma EXACTA:\n'
+    +'{ "titulo": "string", "periodo": "string corto del rango analizado", "secciones": [ { "titulo": "string", "items": ["string"] } ] }\n'
+    +'Inclui las secciones en el orden de arriba, omitiendo la 7 si no aplica. No inventes numeros que no esten en el contexto.\n\nCONTEXTO:\n'
     + JSON.stringify(ctx, null, 1);
 
   try {
@@ -1998,7 +2057,7 @@ async function generateCallReport(clientId){
       },
       body:JSON.stringify({
         model:'claude-opus-4-5',
-        max_tokens:2500,
+        max_tokens:3500,
         messages:[{role:'user',content:prompt}]
       })
     });
@@ -2060,6 +2119,7 @@ function showCallReport(clientId){
     +'<div class="modal-footer">'
     +'<button class="btn" onclick="closeModal()">Cerrar</button>'
     +'<button class="btn" onclick="downloadCallReport('+clientId+')">Descargar .txt</button>'
+    +'<button class="btn" onclick="downloadCallReportPptx('+clientId+')">Presentacion (.pptx)</button>'
     +'<button class="btn btn-primary" onclick="copyCallReport('+clientId+')">Copiar</button>'
     +'</div></div></div>';
 }
@@ -2088,6 +2148,59 @@ function downloadCallReport(clientId){
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast('Reporte descargado');
+}
+
+function downloadCallReportPptx(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.lastReport) return;
+  if(typeof PptxGenJS==='undefined'){
+    toast('La libreria de presentaciones no cargo. Recarga la pagina y reintenta.','red');
+    return;
+  }
+  const r=c.lastReport;
+  const BG='0B0E14', CARD='10141C', GREEN='1D9E75', WHITE='FFFFFF', GREY='9AA3AF', TXT='D6DAE0';
+  const pptx=new PptxGenJS();
+  pptx.layout='LAYOUT_WIDE'; // 13.33 x 7.5 in (16:9)
+  pptx.defineSlideMaster({ title:'EV', background:{color:BG} });
+
+  // --- Portada ---
+  var s0=pptx.addSlide({masterName:'EV'});
+  s0.background={color:BG};
+  s0.addText('EVOLVE', {x:0.6,y:0.5,w:6,h:0.4,fontFace:'Arial',fontSize:14,color:GREEN,bold:true,charSpacing:3});
+  s0.addText(r.titulo||('Reporte - '+c.name), {x:0.6,y:2.4,w:12,h:1.6,fontFace:'Arial',fontSize:36,color:WHITE,bold:true,valign:'top'});
+  s0.addText([
+    {text:(c.name||'')+(c.subtitle?'  ·  '+c.subtitle:''), options:{fontSize:16,color:TXT,breakLine:true}},
+    {text:(r.periodo||'')+(r.generatedAt?'   ·   '+r.generatedAt:''), options:{fontSize:13,color:GREY}}
+  ], {x:0.6,y:4.1,w:12,h:1.2,fontFace:'Arial',valign:'top'});
+  s0.addShape(pptx.ShapeType.line, {x:0.62,y:2.25,w:2.0,h:0,line:{color:GREEN,width:2.5}});
+
+  // --- Una slide por seccion ---
+  (r.secciones||[]).forEach(function(sec){
+    var sl=pptx.addSlide({masterName:'EV'});
+    sl.background={color:BG};
+    sl.addText('EVOLVE', {x:0.6,y:0.35,w:6,h:0.3,fontFace:'Arial',fontSize:10,color:GREEN,bold:true,charSpacing:3});
+    sl.addText(sec.titulo||'', {x:0.6,y:0.75,w:12.1,h:0.9,fontFace:'Arial',fontSize:26,color:WHITE,bold:true,valign:'top'});
+    sl.addShape(pptx.ShapeType.line, {x:0.62,y:1.7,w:1.4,h:0,line:{color:GREEN,width:2.5}});
+    var bullets=(sec.items||[]).map(function(it,i){
+      return {text:String(it), options:{bullet:{characterCode:'2022',indent:18},color:TXT,fontSize:15,paraSpaceAfter:10,breakLine:true}};
+    });
+    if(!bullets.length) bullets=[{text:'-',options:{color:GREY,fontSize:15}}];
+    sl.addText(bullets, {x:0.7,y:2.0,w:11.9,h:5.0,fontFace:'Arial',valign:'top',fit:'shrink'});
+  });
+
+  // --- Cierre ---
+  var sf=pptx.addSlide({masterName:'EV'});
+  sf.background={color:BG};
+  sf.addText('Gracias', {x:0.6,y:3.0,w:12,h:1,fontFace:'Arial',fontSize:34,color:WHITE,bold:true});
+  sf.addText('Evolve · Performance Marketing', {x:0.6,y:4.0,w:12,h:0.5,fontFace:'Arial',fontSize:14,color:GREEN});
+
+  var fname='presentacion-'+(c.name||'cliente').toLowerCase().replace(/\s+/g,'-')+'.pptx';
+  pptx.writeFile({fileName:fname}).then(function(){
+    toast('Presentacion lista. Subila a Google Drive y abri con Google Slides.');
+  }).catch(function(e){
+    toast('Error al generar la presentacion','red');
+    console.error('pptx error',e);
+  });
 }
 
 // Init
