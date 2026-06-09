@@ -2409,23 +2409,34 @@ async function syncGhl(clientId, silent){
   if(!c.ghl.token||!c.ghl.locationId){ if(!silent) toast('Falta el token o el location del cliente','red'); return; }
   if(c.ghl._syncing) return;
   c.ghl._syncing=true; if(!silent) toast('Sincronizando con GHL...'); renderTab();
+  const limit=c.ghl.limit||30;
+  const controller=new AbortController();
+  const timer=setTimeout(function(){ controller.abort(); }, 120000);
   try{
     const u=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
       +'secret='+encodeURIComponent(proxy.secret)
       +'&token='+encodeURIComponent(c.ghl.token)
       +'&location='+encodeURIComponent(c.ghl.locationId)
-      +'&action=opportunities&limit=100';
-    const res=await fetch(u, {method:'GET'});
-    const data=await res.json();
+      +'&action=opportunities&limit='+limit;
+    const res=await fetch(u, {method:'GET', signal:controller.signal});
+    clearTimeout(timer);
+    const text=await res.text();
+    let data;
+    try{ data=JSON.parse(text); }
+    catch(pe){ throw new Error('El proxy no devolvio JSON (revisa que el deploy sea "Anyone"). Empieza con: '+text.slice(0,80)); }
     if(!data || data.ok===false) throw new Error((data&&data.error)||'Respuesta invalida del proxy');
     c.ghl.opportunities=data.opportunities||[];
     c.ghl.lastSync=new Date().toISOString();
     c.ghl._syncing=false; save();
-    if(!silent) toast((c.ghl.opportunities.length)+' oportunidades sincronizadas');
+    toast((c.ghl.opportunities.length)+' oportunidades sincronizadas');
     renderTab();
   }catch(e){
+    clearTimeout(timer);
     c.ghl._syncing=false; save();
-    if(!silent) toast('Error GHL: '+(e.message||'fallo la sincronizacion'),'red');
+    const msg=(e.name==='AbortError')
+      ? 'Tardo demasiado (timeout). El cliente puede tener muchas oportunidades; reintenta con "Sincronizar".'
+      : ('Error GHL: '+(e.message||'fallo la sincronizacion'));
+    toast(msg,'red');
     console.error('GHL sync error',e);
     renderTab();
   }
@@ -2496,12 +2507,50 @@ function renderVentasTab(c, el){
   const money=function(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
 
   // Breakdown por anuncio y por geo
+  // Lee un valor de las respuestas del formulario por nombre (exacto, luego contiene)
+  const faGet=function(fa,names){
+    if(!fa) return ''; var keys=Object.keys(fa); var i,j;
+    for(i=0;i<names.length;i++){ for(j=0;j<keys.length;j++){ if(keys[j].toLowerCase().trim()===names[i]) return fa[keys[j]]; } }
+    for(j=0;j<keys.length;j++){ var kl=keys[j].toLowerCase(); for(i=0;i<names.length;i++){ if(kl.indexOf(names[i])>=0) return fa[keys[j]]; } }
+    return '';
+  };
+  const _tzCountry=function(tz){
+    tz=String(tz||'');
+    if(/Argentina/i.test(tz)) return 'Argentina';
+    if(/Mexico|Hermosillo|Monterrey|Cancun|Tijuana|Merida|Chihuahua|Mazatlan|Matamoros|Ojinaga|Bahia_Banderas/i.test(tz)) return 'Mexico';
+    if(/Bogota/i.test(tz)) return 'Colombia';
+    if(/Lima/i.test(tz)) return 'Peru';
+    if(/Santiago/i.test(tz)) return 'Chile';
+    if(/Montevideo/i.test(tz)) return 'Uruguay';
+    if(/Sao_Paulo|Bahia|Fortaleza|Recife|Manaus/i.test(tz)) return 'Brasil';
+    if(/Guayaquil/i.test(tz)) return 'Ecuador';
+    if(/Caracas/i.test(tz)) return 'Venezuela';
+    if(/La_Paz/i.test(tz)) return 'Bolivia';
+    if(/Asuncion/i.test(tz)) return 'Paraguay';
+    if(/Madrid/i.test(tz)) return 'Espana';
+    if(/Guatemala/i.test(tz)) return 'Guatemala';
+    if(/Costa_Rica/i.test(tz)) return 'Costa Rica';
+    return '';
+  };
+  const adOf=function(o){
+    var s=o.source||{};
+    return faGet(o.formAnswers,['utm_ad','utm ad']) || s.utmAd || s.utmContent || s.utmCampaign || s.utmSource || '';
+  };
+  const geoOf=function(o){
+    var g=o.geo||{};
+    var base=[g.city,g.state,g.country].filter(Boolean).join(', ');
+    if(base) return base;
+    var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']);
+    if(tz){ var parts=String(tz).split('/'); var city=parts[parts.length-1].replace(/_/g,' '); return [city,_tzCountry(tz)].filter(Boolean).join(', '); }
+    return '';
+  };
+
   const byKey=function(getter){
     const map={}; ops.forEach(function(o){var k=(getter(o)||'(sin dato)'); map[k]=(map[k]||0)+1;});
     return Object.keys(map).sort(function(a,b){return map[b]-map[a];}).map(function(k){return {k:k,n:map[k]};});
   };
-  const byAd=byKey(function(o){return (o.source&&(o.source.utmCampaign||o.source.utmContent||o.source.utmSource))||null;});
-  const byGeo=byKey(function(o){var g=o.geo||{}; return [g.city,g.state,g.country].filter(Boolean).join(', ')||null;});
+  const byAd=byKey(function(o){return adOf(o)||null;});
+  const byGeo=byKey(function(o){return geoOf(o)||null;});
   const byStage=byKey(function(o){return o.pipelineStage||o.status||null;});
 
   const chips=function(arr,max){return arr.slice(0,max||6).map(function(x){return '<span style="display:inline-flex;gap:6px;align-items:center;background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:4px 10px;font-size:11px;color:var(--text2);margin:0 6px 6px 0"><b style="color:#fff">'+x.n+'</b> '+esc(x.k)+'</span>';}).join('');};
@@ -2517,18 +2566,20 @@ function renderVentasTab(c, el){
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por ubicacion</div><div style="margin-bottom:12px">'+chips(byGeo)+'</div>';
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por stage</div><div style="margin-bottom:18px">'+chips(byStage)+'</div>';
 
+  // Campos a NO mostrar como "respuestas" (los surfaceamos aparte)
+  const faHide=['utm_ad','utm ad','timezone','time zone','zona horaria','ip','order id','payment status','email verified','phone verified','submission date','url'];
+
   // Tabla
   html+='<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     +'<thead><tr style="text-align:left;color:var(--text3)">'
     +['Contacto','Anuncio','Ubicacion','Stage','Estado','Valor'].map(function(h){return '<th style="padding:10px 12px;font-weight:500;border-bottom:1px solid var(--border)">'+h+'</th>';}).join('')
     +'</tr></thead><tbody>';
   ops.forEach(function(o){
-    const s=o.source||{}, g=o.geo||{};
-    const ad=[s.utmCampaign,s.utmContent].filter(Boolean).join(' / ')||s.utmSource||'-';
-    const geo=[g.city,g.state,g.country].filter(Boolean).join(', ')||'-';
+    const ad=adOf(o)||'-';
+    const geo=geoOf(o)||'-';
     const fa=o.formAnswers||{};
-    const faKeys=Object.keys(fa).slice(0,3);
-    const faTxt=faKeys.length?('<div style="font-size:10px;color:var(--text3);margin-top:3px">'+faKeys.map(function(k){return esc(k)+': '+esc(fa[k]);}).join(' · ')+'</div>'):'';
+    const faKeys=Object.keys(fa).filter(function(k){var kl=k.toLowerCase().trim();return faHide.indexOf(kl)<0 && String(fa[k]||'').trim()!=='';}).slice(0,3);
+    const faTxt=faKeys.length?('<div style="font-size:10px;color:var(--text3);margin-top:3px">'+faKeys.map(function(k){return esc(k.length>28?k.slice(0,28)+'…':k)+': '+esc(fa[k]);}).join(' · ')+'</div>'):'';
     const stColor=(o.status||'').toLowerCase()==='won'?'#4ecfa0':(o.status||'').toLowerCase()==='lost'?'#f07050':'#f0a830';
     html+='<tr style="border-bottom:1px solid var(--border)">'
       +'<td style="padding:10px 12px;color:#fff">'+esc(o.contactName||o.name||'-')+faTxt+'</td>'
