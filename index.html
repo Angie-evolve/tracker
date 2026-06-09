@@ -2409,32 +2409,49 @@ async function syncGhl(clientId, silent){
   if(!c.ghl.token||!c.ghl.locationId){ if(!silent) toast('Falta el token o el location del cliente','red'); return; }
   if(c.ghl._syncing) return;
   c.ghl._syncing=true; if(!silent) toast('Sincronizando con GHL...'); renderTab();
-  const limit=c.ghl.limit||30;
+  const pageLimit=100; // fetch 100 per page
   const controller=new AbortController();
-  const timer=setTimeout(function(){ controller.abort(); }, 120000);
+  const timer=setTimeout(function(){ controller.abort(); }, 180000);
   try{
-    const u=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
-      +'secret='+encodeURIComponent(proxy.secret)
-      +'&token='+encodeURIComponent(c.ghl.token)
-      +'&location='+encodeURIComponent(c.ghl.locationId)
-      +'&action=opportunities&limit='+limit;
-    const res=await fetch(u, {method:'GET', signal:controller.signal});
+    // Paginate through all opportunities
+    var allOpps=[];
+    var startAfter=null;
+    var page=1;
+    while(true){
+      var u=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
+        +'secret='+encodeURIComponent(proxy.secret)
+        +'&token='+encodeURIComponent(c.ghl.token)
+        +'&location='+encodeURIComponent(c.ghl.locationId)
+        +'&action=opportunities&limit='+pageLimit;
+      if(startAfter) u+='&startAfter='+encodeURIComponent(startAfter);
+      toast('Sincronizando pagina '+page+'... ('+allOpps.length+' hasta ahora)');
+      const res=await fetch(u, {method:'GET', signal:controller.signal});
+      const text=await res.text();
+      let data;
+      try{ data=JSON.parse(text); }
+      catch(pe){ throw new Error('El proxy no devolvio JSON. Empieza con: '+text.slice(0,80)); }
+      if(!data || data.ok===false) throw new Error((data&&data.error)||'Respuesta invalida del proxy');
+      const batch=data.opportunities||[];
+      allOpps=allOpps.concat(batch);
+      // Check if there are more pages
+      if(batch.length < pageLimit || !data.meta || !data.meta.startAfter){
+        break; // no more pages
+      }
+      startAfter=data.meta.startAfter;
+      page++;
+      if(page>20) break; // safety limit: max 2000 opportunities
+    }
     clearTimeout(timer);
-    const text=await res.text();
-    let data;
-    try{ data=JSON.parse(text); }
-    catch(pe){ throw new Error('El proxy no devolvio JSON (revisa que el deploy sea "Anyone"). Empieza con: '+text.slice(0,80)); }
-    if(!data || data.ok===false) throw new Error((data&&data.error)||'Respuesta invalida del proxy');
-    c.ghl.opportunities=data.opportunities||[];
+    c.ghl.opportunities=allOpps;
     c.ghl.lastSync=new Date().toISOString();
     c.ghl._syncing=false; save();
-    toast((c.ghl.opportunities.length)+' oportunidades sincronizadas');
+    toast(allOpps.length+' oportunidades sincronizadas');
     renderTab();
   }catch(e){
     clearTimeout(timer);
     c.ghl._syncing=false; save();
     const msg=(e.name==='AbortError')
-      ? 'Tardo demasiado (timeout). El cliente puede tener muchas oportunidades; reintenta con "Sincronizar".'
+      ? 'Tardo demasiado (timeout). Reintenta.'
       : ('Error GHL: '+(e.message||'fallo la sincronizacion'));
     toast(msg,'red');
     console.error('GHL sync error',e);
