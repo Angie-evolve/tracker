@@ -2715,16 +2715,29 @@ async function openOppDetail(oppId){
   if(!proxy.url||!proxy.secret||!c.ghl||!c.ghl.token){
     renderModal(null,false,'Configura la conexion con GHL primero'); return;
   }
+  const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
+    +'secret='+encodeURIComponent(proxy.secret)
+    +'&token='+encodeURIComponent(c.ghl.token)
+    +'&location='+encodeURIComponent(c.ghl.locationId);
   try{
-    const u=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
-      +'secret='+encodeURIComponent(proxy.secret)
-      +'&token='+encodeURIComponent(c.ghl.token)
-      +'&location='+encodeURIComponent(c.ghl.locationId)
-      +'&action=notes&opportunityId='+encodeURIComponent(oppId);
-    const res=await fetch(u);
-    const data=await res.json();
-    if(!data.ok) throw new Error(data.error||'Error al traer notas');
-    renderModal(data.notes,false,null);
+    // Fetch notes and contact in parallel
+    const notesUrl=base+'&action=notes&opportunityId='+encodeURIComponent(oppId);
+    const contactUrl=opp.contactId ? base+'&action=contact&contactId='+encodeURIComponent(opp.contactId) : null;
+    const reqs=[fetch(notesUrl)];
+    if(contactUrl) reqs.push(fetch(contactUrl));
+    const responses=await Promise.all(reqs);
+    const notesData=await responses[0].json();
+    if(!notesData.ok) throw new Error(notesData.error||'Error al traer notas');
+    if(responses[1]){
+      const cData=await responses[1].json();
+      if(cData.ok){
+        if(cData.utmAd && !opp.source.utmAd) opp.source.utmAd=cData.utmAd;
+        if(cData.location && !opp.geo.location) opp.geo.location=cData.location;
+        if(cData.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=cData.utmCampaign;
+        save();
+      }
+    }
+    renderModal(notesData.notes,false,null);
   }catch(e){
     renderModal(null,false,e.message);
   }
