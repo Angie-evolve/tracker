@@ -2452,6 +2452,7 @@ async function syncGhl(clientId, silent){
     c.ghl._syncing=false; save();
     toast(allOpps.length+' oportunidades sincronizadas');
     renderTab();
+    enrichContactsBackground(c, proxy);
   }catch(e){
     clearTimeout(timer);
     c.ghl._syncing=false;
@@ -2464,6 +2465,36 @@ async function syncGhl(clientId, silent){
     const el=document.getElementById('tab-content');
     if(el) el.innerHTML='<div style="padding:20px;color:#f07050;font-size:13px">Error: '+c.ghl._syncError+'<br><button class="btn btn-sm" style="margin-top:10px" onclick="syncGhl('+clientId+',false)">Reintentar</button></div>';
   }
+}
+
+async function enrichContactsBackground(c, proxy){
+  // Find opps that are missing utmAd or geo.location and have a contactId
+  const toEnrich=(c.ghl.opportunities||[]).filter(function(o){
+    return o.contactId && (!o.source.utmAd || !o.geo.location);
+  });
+  if(!toEnrich.length) return;
+  const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
+    +'secret='+encodeURIComponent(proxy.secret)
+    +'&token='+encodeURIComponent(c.ghl.token)
+    +'&location='+encodeURIComponent(c.ghl.locationId);
+  var enriched=0;
+  for(var i=0;i<toEnrich.length;i++){
+    var opp=toEnrich[i];
+    try{
+      var url=base+'&action=contact&contactId='+encodeURIComponent(opp.contactId);
+      var res=await fetch(url);
+      var data=await res.json();
+      if(data.ok){
+        if(data.utmAd) opp.source.utmAd=data.utmAd;
+        if(data.location) opp.geo.location=data.location;
+        if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
+        enriched++;
+        if(enriched%10===0){ save(); }
+      }
+    }catch(e){}
+    await new Promise(function(r){setTimeout(r,100);}); // 100ms between requests
+  }
+  if(enriched>0){ save(); renderTab(); toast(enriched+' contactos enriquecidos'); }
 }
 
 function _ghlAgo(iso){
