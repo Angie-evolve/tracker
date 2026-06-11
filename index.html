@@ -1279,7 +1279,7 @@ function renderTab(){
                     </div>
                     ${as.ads&&as.ads.length?'<div style="font-size:10px;font-weight:500;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Anuncios</div>'
                       +as.ads.map(ad=>`
-                      <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;background:var(--bg2);border:0.5px solid var(--border);border-radius:var(--radius);margin-bottom:4px;cursor:pointer" onclick="openAdPreview('${ad.id}','${ad.storyId||''}')">
+                      <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;background:var(--bg2);border:0.5px solid var(--border);border-radius:var(--radius);margin-bottom:4px;cursor:pointer" onclick="openAdPreview('${ad.previewUrl||''}','${ad.id}')">
                         ${ad.thumbnail?'<img src="'+ad.thumbnail+'" style="width:36px;height:36px;object-fit:cover;border-radius:4px;flex-shrink:0">':'<div style="width:36px;height:36px;background:var(--bg3);border-radius:4px;flex-shrink:0"></div>'}
                       <div style="flex:1;min-width:0">
                           <div style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ad.name}</div>
@@ -2928,16 +2928,8 @@ function changeMetaDays(clientId, days){
   syncMetaAds(clientId);
 }
 
-function openAdPreview(adId, storyId){
-  var url;
-  if(storyId){
-    var parts=storyId.split('_');
-    url=parts.length===2
-      ?'https://www.facebook.com/'+parts[0]+'/posts/'+parts[1]
-      :'https://www.facebook.com/'+storyId;
-  } else {
-    url='https://adsmanager.facebook.com/adsmanager/manage/ads?selected_ad_ids='+adId;
-  }
+function openAdPreview(previewUrl, adId){
+  var url=previewUrl||('https://adsmanager.facebook.com/adsmanager/manage/ads?selected_ad_ids='+adId);
   window.open(url,'_blank');
 }
 
@@ -3016,21 +3008,34 @@ async function syncMetaAds(clientId){
               +'&limit=20';
             var adsResp=await fetch(adsUrl);
             var adsData=await adsResp.json();
-            adsets[ai].ads=(adsData.data||[]).map(function(ad){
+            var adsList=(adsData.data||[]).map(function(ad){
               var ins=ad.insights&&ad.insights.data&&ad.insights.data[0];
               var m=extractIns(ins);
-              var storyId=ad.effective_object_story_id||(ad.creative&&ad.creative.object_story_id)||'';
               return {
                 id:ad.id,
                 name:ad.name,
                 status:ad.status,
-                storyId:storyId,
+                previewUrl:'',
                 thumbnail:ad.creative&&ad.creative.thumbnail_url||'',
                 spend:m.spend,impressions:m.impressions,clicks:m.clicks,
                 ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
                 leads:m.leads,cpl:m.cpl,landingViews:m.landingViews
               };
             });
+            // Fetch preview URL for each ad
+            for(var di=0;di<adsList.length;di++){
+              try{
+                var prevUrl='https://graph.facebook.com/v19.0/'+adsList[di].id+'/previews'
+                  +'?ad_format=DESKTOP_FEED_STANDARD'
+                  +'&access_token='+token;
+                var prevResp=await fetch(prevUrl);
+                var prevData=await prevResp.json();
+                var iframe=(prevData.data&&prevData.data[0]&&prevData.data[0].body)||'';
+                var match=iframe.match(/src="([^"]+fb\.me\/adspreview[^"]+)"/);
+                if(match) adsList[di].previewUrl=match[1].replace(/&amp;/g,'&');
+              }catch(e){}
+            }
+            adsets[ai].ads=adsList;
           }catch(e){ adsets[ai].ads=[]; }
         }
 
