@@ -2823,6 +2823,10 @@ async function delegateTask(clientId, taskId){
     +'- Incluir sistema de confirmacion de 3 preguntas y regla de silencio\n'
     +'- Siempre firmar como Angie';
 
+  // Calculate next ticket number from localStorage
+  var lastTicket=parseInt(localStorage.getItem('evold-last-ticket')||'0',10);
+  var nextTicket=lastTicket+1;
+
   var prompt='Sos un asistente especializado en redactar mails de delegacion de tareas.\n\n'
     +delegationTemplate+'\n\n'
     +'TAREA A DELEGAR:\n'
@@ -2831,7 +2835,7 @@ async function delegateTask(clientId, taskId){
     +(t.due?'- Deadline: '+t.due+'\n':'')
     +'\nCONTEXTO DEL PROYECTO:\n'+projectContext+'\n\n'
     +'INSTRUCCIONES:\n'
-    +'1. Usa el numero de ticket #1 por ahora (indicar que sera reemplazado automaticamente)\n'
+    +'1. El numero de ticket a usar es #'+nextTicket+'. Usalo en el asunto y en el cuerpo del mail\n'
     +'2. Infiere el tipo de tarea y agrega el checklist correspondiente si aplica\n'
     +'3. Determina el nivel de autonomia segun la tarea\n'
     +'4. Usa la informacion de la llamada para dar contexto especifico\n'
@@ -2875,7 +2879,7 @@ async function delegateTask(clientId, taskId){
       +'</div></div></div>';
 
     // Store draft data for confirmation step
-    window._pendingDelegate={clientId:clientId,taskId:taskId,subject:subject,body:body,task:t};
+    window._pendingDelegate={clientId:clientId,taskId:taskId,subject:subject,body:body,task:t,ticket:nextTicket};
 
   }catch(e){
     modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:400px">'
@@ -2896,10 +2900,12 @@ function confirmDelegate(clientId, taskId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var modal=document.getElementById('modal-root');
 
-  // Mark task as delegated
+  // Save ticket number and mark task as delegated
+  var usedTicket=window._pendingDelegate&&window._pendingDelegate.ticket||null;
+  if(usedTicket) localStorage.setItem('evold-last-ticket',usedTicket);
   if(c){
     var task=(c.tasks||[]).find(function(x){return x.id===taskId;});
-    if(task){task.delegated=true;task.delegatedAt=new Date().toISOString();save();}
+    if(task){task.delegated=true;task.delegatedAt=new Date().toISOString();task.ticket='#'+usedTicket;save();}
   }
 
   // Gmail compose URL
@@ -2918,6 +2924,24 @@ function confirmDelegate(clientId, taskId){
       +'&add=ashy%40evolvemindhub.com';
   }
 
+  // Write to Sheet via Apps Script proxy
+  var proxy=getGhlProxy();
+  if(proxy.url&&t&&c){
+    var logUrl=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
+      +'secret='+encodeURIComponent(proxy.secret)
+      +'&action=log_task'
+      +'&ticket='+encodeURIComponent(usedTicket||'')
+      +'&task='+encodeURIComponent(t.text||'')
+      +'&client='+encodeURIComponent(c.name||'')
+      +'&deadline='+encodeURIComponent(t.due||'')
+      +'&responsible='+encodeURIComponent(t.responsible||'Ashy')
+      +'&priority='+encodeURIComponent(t.priority||'');
+    fetch(logUrl)
+      .then(function(r){return r.json();})
+      .then(function(d){if(d.ok) toast('Tarea registrada en el Sheet');})
+      .catch(function(){});
+  }
+
   if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:440px">'
     +'<div class="modal-title" style="color:#1D9E75;margin-bottom:12px">Listo para enviar</div>'
     +'<div style="font-size:12px;color:var(--text2);margin-bottom:16px">Mail redactado. Abri los links para completar:</div>'
@@ -2926,6 +2950,8 @@ function confirmDelegate(clientId, taskId){
     +'Abrir en Gmail - ashy@evolvemindhub.com</a>'
     +(calUrl?'<a href="'+calUrl+'" target="_blank" class="btn btn-sm" style="text-align:center;text-decoration:none;padding:8px">'
       +'Crear evento en Calendar (deadline '+esc(t.due)+')</a>':'')
+    +'<a href="https://docs.google.com/spreadsheets/d/1ybgLqmGLOaRQQq9pIiiP2IHoAgEHz-d-ngoFEMmpz4I/edit" target="_blank" class="btn btn-sm" style="text-align:center;text-decoration:none;padding:8px;background:rgba(29,158,117,0.12);border-color:rgba(29,158,117,0.3);color:#1D9E75">'
+    +'Ver historial en Sheet</a>'
     +'</div>'
     +'<div style="margin-top:16px;display:flex;justify-content:flex-end">'
     +'<button class="btn btn-sm" onclick="closeModal();renderTab()">Cerrar</button>'
