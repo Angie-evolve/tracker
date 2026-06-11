@@ -1230,10 +1230,12 @@ function renderTab(){
           (activeLine.metaCampaigns||[]).forEach(function(camp){total.spend+=camp.spend||0;total.leads+=camp.leads||0;total.impressions+=camp.impressions||0;total.clicks+=camp.clicks||0;});
           var cpl=total.leads>0?(total.spend/total.leads).toFixed(2):'';
           var ctr=total.impressions>0?(total.clicks/total.impressions*100).toFixed(2):'';
+          var totalLV=(activeLine.metaCampaigns||[]).reduce(function(s,c){return s+(c.landingViews||0);},0);
           return [
-            {l:'Gasto total',v:'$'+total.spend.toFixed(2)},
+            {l:'Gasto total',v:'$'+total.spend.toFixed(0)},
             {l:'Leads',v:total.leads||'-'},
             {l:'CPL',v:cpl?'$'+cpl:'-'},
+            {l:'Vistas landing',v:totalLV||'-'},
             {l:'CTR',v:ctr?ctr+'%':'-'},
             {l:'Impresiones',v:total.impressions.toLocaleString()}
           ].map(m=>'<div style="background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 12px"><div style="font-size:10px;color:var(--text3);margin-bottom:4px">'+m.l+'</div><div style="font-size:16px;font-weight:500;color:#4ecfa0">'+m.v+'</div></div>').join('');
@@ -2963,62 +2965,44 @@ async function syncMetaAds(clientId){
       }catch(e){}
     }
 
-    // Match campaigns to adsets by name
-    var updated=0;
-    campaigns.forEach(function(camp){
-      var ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
-      if(!ins) return;
-      var spend=parseFloat(ins.spend||0);
-      var impr=parseInt(ins.impressions||0);
-      var clicks=parseInt(ins.clicks||0);
-      var ctr=parseFloat(ins.ctr||0).toFixed(2);
-      var cpc=parseFloat(ins.cpc||0).toFixed(2);
-      var cpm=parseFloat(ins.cpm||0).toFixed(2);
-      // Find leads from actions
-      var leads=0;
-      (ins.actions||[]).forEach(function(a){
-        if(a.action_type==='lead'||a.action_type==='onsite_conversion.lead_grouped') leads+=parseInt(a.value||0);
-      });
-      var cpl=leads>0?(spend/leads).toFixed(2):'';
-
-      // Try to match to an adset by campaign name
-      (activeLine.adsets||[]).forEach(function(adset){
-        (adset.ads||[]).forEach(function(ad){
-          var adName=(ad.name||'').toLowerCase();
-          var campName=(camp.name||'').toLowerCase();
-          if(campName.includes(adName)||adName.includes(campName.split(' ')[0])){
-            ad.cpl=cpl;
-            ad.registros=leads||ad.registros;
-            ad.ctr=ctr;
-            ad.cpc=cpc;
-            ad.cpm=cpm;
-            ad.impresiones=impr;
-            ad.metaSpend=spend;
-            ad.metaSync=new Date().toISOString();
-            updated++;
-          }
-        });
-      });
-    });
-
-    // Store raw campaigns for display
-    activeLine.metaCampaigns=campaigns.map(function(camp){
-      var ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
+    // Helper to extract metrics from insights
+    function extractIns(ins){
       var leads=0;
       (ins&&ins.actions||[]).forEach(function(a){
-        if(a.action_type==='lead'||a.action_type==='onsite_conversion.lead_grouped') leads+=parseInt(a.value||0);
+        if(a.action_type==='lead'||a.action_type==='onsite_conversion.lead_grouped'||a.action_type==='onsite_conversion.messaging_first_reply') leads+=parseInt(a.value||0);
       });
+      var spend=parseFloat(ins&&ins.spend||0);
       return {
-        name:camp.name,
-        status:camp.status,
-        spend:parseFloat(ins&&ins.spend||0),
+        spend:spend,
         impressions:parseInt(ins&&ins.impressions||0),
         clicks:parseInt(ins&&ins.clicks||0),
         ctr:parseFloat(ins&&ins.ctr||0).toFixed(2),
         cpc:parseFloat(ins&&ins.cpc||0).toFixed(2),
         cpm:parseFloat(ins&&ins.cpm||0).toFixed(2),
         leads:leads,
-        cpl:leads>0?(parseFloat(ins&&ins.spend||0)/leads).toFixed(2):''
+        cpl:leads>0?(spend/leads).toFixed(2):'',
+        landingViews:((ins&&ins.actions)||[]).reduce(function(s,a){return a.action_type==='landing_page_view'?s+parseInt(a.value||0):s;},0)
+      };
+    }
+
+    // Store campaigns with adsets included
+    activeLine.metaCampaigns=campaigns.map(function(camp){
+      var ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
+      var m=extractIns(ins);
+      return {
+        id:camp.id,
+        name:camp.name,
+        status:camp.status,
+        spend:m.spend,
+        impressions:m.impressions,
+        clicks:m.clicks,
+        ctr:m.ctr,
+        cpc:m.cpc,
+        cpm:m.cpm,
+        leads:m.leads,
+        cpl:m.cpl,
+        landingViews:m.landingViews,
+        adsets:(camp.adsets||[])
       };
     });
     activeLine.metaSyncAt=new Date().toISOString();
