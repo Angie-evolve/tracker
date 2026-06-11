@@ -2749,13 +2749,78 @@ function renderTaskRow(t, clientId){
     +esc(t.text)+'</div>'
     +(t.responsible?'<div style="font-size:11px;color:var(--text3);margin-top:3px">Responsable: <strong style="color:var(--text2)">'+esc(t.responsible)+'</strong></div>':'')
     +(t.due?'<div style="font-size:11px;color:'+(isOverdue?'#f07050':'var(--text3)')+';margin-top:2px">Vence: '+esc(t.due)+'</div>':'')
+    +(t.delegated&&t.delegatedStatus?'<div style="display:inline-block;margin-top:4px;font-size:10px;padding:1px 7px;border-radius:20px;background:'+delegateStatusColor(t.delegatedStatus)+';color:#fff">'+esc(t.delegatedStatus)+'</div>':'')
     +(t.source?'<div style="font-size:10px;color:var(--text3);margin-top:2px;font-style:italic">'+esc(t.source)+'</div>':'')
     +'</div>'
     +'<div style="display:flex;flex-direction:column;gap:4px;align-items:center;flex-shrink:0">'
-    +(t.done?'':'<button onclick="delegateTask('+clientId+','+t.id+')" style="background:rgba(55,138,221,0.12);border:1px solid rgba(55,138,221,0.3);color:#378ADD;cursor:pointer;font-size:10px;padding:3px 8px;border-radius:4px;white-space:nowrap;font-weight:500">Delegar</button>')
+    +(t.done?''
+      :t.delegated
+        ?'<select onchange="updateTaskStatus('+clientId+','+t.id+',this.value)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);font-size:10px;padding:3px 6px;border-radius:4px;cursor:pointer;max-width:130px">'
+          +'<option value="" disabled '+(t.delegatedStatus?'':'selected')+'>Estado...</option>'
+          +'<option value="Enviado, esperando Recepcion" '+(t.delegatedStatus==='Enviado, esperando Recepcion'?'selected':'')+'>Enviado, esp. recepcion</option>'
+          +'<option value="Programado" '+(t.delegatedStatus==='Programado'?'selected':'')+'>Programado</option>'
+          +'<option value="En Proceso" '+(t.delegatedStatus==='En Proceso'?'selected':'')+'>En Proceso</option>'
+          +'<option value="En Revision" '+(t.delegatedStatus==='En Revision'?'selected':'')+'>En Revision</option>'
+          +'<option value="Bloqueado" '+(t.delegatedStatus==='Bloqueado'?'selected':'')+'>Bloqueado</option>'
+          +'<option value="Finalizada" '+(t.delegatedStatus==='Finalizada'?'selected':'')+'>Finalizada</option>'
+          +'</select>'
+        :'<div style="display:flex;flex-direction:column;gap:4px">'
+          +'<button onclick="delegateTask('+clientId+','+t.id+')" style="background:rgba(55,138,221,0.12);border:1px solid rgba(55,138,221,0.3);color:#378ADD;cursor:pointer;font-size:10px;padding:3px 8px;border-radius:4px;white-space:nowrap;font-weight:500">Delegar</button>'
+          +'<button onclick="scheduleTask('+clientId+','+t.id+')" style="background:rgba(29,158,117,0.12);border:1px solid rgba(29,158,117,0.3);color:#1D9E75;cursor:pointer;font-size:10px;padding:3px 8px;border-radius:4px;white-space:nowrap;font-weight:500">Agendar</button>'
+          +'</div>')
     +'<button onclick="deleteTask('+clientId+','+t.id+')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:0">&times;</button>'
     +'</div>'
     +'</div>';
+}
+
+function scheduleTask(clientId, taskId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+
+  // Build Google Calendar URL for "Estrategia" calendar
+  var title='['+c.name+'] '+t.text;
+  var details='Tarea: '+t.text+(t.responsible?'\nResponsable: '+t.responsible:'')+(t.source?'\nDe: '+t.source:'');
+
+  var calUrl='https://calendar.google.com/calendar/render?action=TEMPLATE'
+    +'&text='+encodeURIComponent(title)
+    +'&details='+encodeURIComponent(details)
+    +(t.due?'&dates='+t.due.replace(/-/g,'')+'T120000/'+t.due.replace(/-/g,'')+'T130000':'')
+    +'&ctz=America/Argentina/Buenos_Aires';
+
+  // Mark as scheduled
+  t.scheduled=true;
+  t.scheduledAt=new Date().toISOString();
+  save();
+  renderTab();
+
+  window.open(calUrl,'_blank');
+  toast('Abriendo Calendar...');
+}
+
+function delegateStatusColor(s){
+  var map={
+    'Finalizada':'#1D9E75',
+    'En Proceso':'#378ADD',
+    'En Revision':'#BA7517',
+    'Bloqueado':'#D85A30',
+    'Enviado, esperando Recepcion':'#7F77DD',
+    'Programado':'#555'
+  };
+  return map[s]||'#555';
+}
+
+function updateTaskStatus(clientId, taskId, status){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  t.delegatedStatus=status;
+  if(status==='Finalizada') t.done=true;
+  save();
+  renderTab();
+  toast('Estado actualizado: '+status);
 }
 
 function toggleTask(clientId, taskId, checked){
