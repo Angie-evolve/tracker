@@ -885,13 +885,14 @@ function renderClient(){
         <button class="tab ${S.tab==='diagnostico'?'active':''}" onclick="switchTab('diagnostico')">Diagnostico</button>
         <button class="tab ${S.tab==='timeline'?'active':''}" onclick="switchTab('timeline')">Historial</button>
         <button class="tab ${S.tab==='ventas'?'active':''}" onclick="switchTab('ventas')">Conversion de ventas</button>
+        <button class="tab ${S.tab==='tareas'?'active':''}" onclick="switchTab('tareas')">Tareas</button>
       </div>
       <div id="tab-content"></div>
     </div>`;
   renderTab();
 }
 
-function switchTab(t){S.tab=t;document.querySelectorAll('.tab').forEach(el=>{el.classList.toggle('active',el.textContent.trim().toLowerCase().startsWith({lineas:'li',success:'su',ads:'ad',diagnostico:'di',timeline:'hi',ventas:'co'}[t]))});renderTab();}
+function switchTab(t){S.tab=t;document.querySelectorAll('.tab').forEach(el=>{el.classList.toggle('active',el.textContent.trim().toLowerCase().startsWith({lineas:'li',success:'su',ads:'ad',diagnostico:'di',timeline:'hi',ventas:'co',tareas:'ta'}[t]))});renderTab();}
 
 function renderTab(){
   const c=DB.clients.find(x=>x.id===S.clientId);
@@ -1281,6 +1282,37 @@ function renderTab(){
           </div>
         </div>`).join('')+'</div>';
   }
+  else if(S.tab==='tareas'){
+    var tasks=c.tasks||[];
+    var overdue=tasks.filter(function(t){return !t.done&&t.due&&new Date(t.due)<new Date();});
+    var pending=tasks.filter(function(t){return !t.done&&!(t.due&&new Date(t.due)<new Date());});
+    var done=tasks.filter(function(t){return t.done;});
+    var lastCall=(c.fathomCalls||[])[0];
+    el.innerHTML=
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
+      +'<div style="font-size:13px;font-weight:500;color:var(--text)">Tareas'
+      +(overdue.length?' <span style="background:rgba(216,90,48,0.15);color:#f07050;padding:2px 8px;border-radius:20px;font-size:11px">'+overdue.length+' vencidas</span>':'')
+      +'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button class="btn btn-sm" onclick="addTaskManual('+c.id+')">+ Nueva</button>'
+      +'<button class="btn btn-sm btn-primary" id="extract-tasks-btn" onclick="extractTasksFromCalls('+c.id+')">'
+      +(lastCall?'Extraer de: '+esc(lastCall.date):'Sin llamadas')+'</button>'
+      +'</div></div>'
+      +(lastCall?'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Ultima llamada: '+esc(lastCall.title)+' ('+esc(lastCall.date)+')</div>':'')
+      +(overdue.length
+        ?'<div style="font-size:11px;font-weight:500;color:#f07050;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Vencidas</div>'
+          +overdue.map(function(t){return renderTaskRow(t,c.id);}).join('')
+        :'')
+      +(pending.length
+        ?'<div style="font-size:11px;font-weight:500;color:var(--text3);margin:'+(overdue.length?'16':'0')+'px 0 6px;text-transform:uppercase;letter-spacing:.5px">Pendientes</div>'
+          +pending.map(function(t){return renderTaskRow(t,c.id);}).join('')
+        :'<div style="padding:40px;text-align:center;color:var(--text3);font-size:12px">Sin tareas pendientes. Hace clic en Extraer para leer la ultima llamada.</div>')
+      +(done.length
+        ?'<div style="font-size:11px;font-weight:500;color:var(--text3);margin:16px 0 6px;text-transform:uppercase;letter-spacing:.5px">Completadas</div>'
+          +done.slice(0,5).map(function(t){return renderTaskRow(t,c.id);}).join('')
+        :'');
+  }
+
   else if(S.tab==='ventas'){
     renderVentasTab(c, el);
   }
@@ -2703,6 +2735,97 @@ function openColSelector(){
     +'<button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-primary" onclick="saveColSelector()">Aplicar</button>'
     +'</div></div></div>';
+}
+
+function renderTaskRow(t, clientId){
+  var isOverdue=!t.done&&t.due&&new Date(t.due)<new Date();
+  var borderColor=isOverdue?'rgba(216,90,48,0.35)':'var(--border)';
+  return '<div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;background:var(--bg2);border:1px solid '+borderColor+';border-radius:var(--radius);margin-bottom:6px">'
+    +'<input type="checkbox"'+(t.done?' checked':'')
+    +' onchange="toggleTask('+clientId+','+t.id+',this.checked)"'
+    +' style="margin-top:2px;width:15px;height:15px;cursor:pointer;accent-color:#1D9E75;flex-shrink:0">'
+    +'<div style="flex:1;min-width:0">'
+    +'<div style="font-size:12px;color:'+(t.done?'var(--text3)':'var(--text)')+';'+(t.done?'text-decoration:line-through;':'')+'">'
+    +esc(t.text)+'</div>'
+    +(t.responsible?'<div style="font-size:11px;color:var(--text3);margin-top:3px">Responsable: <strong style="color:var(--text2)">'+esc(t.responsible)+'</strong></div>':'')
+    +(t.due?'<div style="font-size:11px;color:'+(isOverdue?'#f07050':'var(--text3)')+';margin-top:2px">Vence: '+esc(t.due)+'</div>':'')
+    +(t.source?'<div style="font-size:10px;color:var(--text3);margin-top:2px;font-style:italic">'+esc(t.source)+'</div>':'')
+    +'</div>'
+    +'<button onclick="deleteTask('+clientId+','+t.id+')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:0 2px;flex-shrink:0">&times;</button>'
+    +'</div>';
+}
+
+function toggleTask(clientId, taskId, checked){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.tasks) return;
+  var t=c.tasks.find(function(x){return x.id===taskId;});
+  if(t){t.done=checked;save();renderTab();}
+}
+
+function deleteTask(clientId, taskId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.tasks=(c.tasks||[]).filter(function(x){return x.id!==taskId;});
+  save();renderTab();
+}
+
+function addTaskManual(clientId){
+  var text=prompt('Descripcion de la tarea:');
+  if(!text||!text.trim()) return;
+  var resp=prompt('Responsable (ej: Angie, Cliente):');
+  var due=prompt('Fecha limite YYYY-MM-DD (opcional):');
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.tasks=c.tasks||[];
+  c.tasks.unshift({id:Date.now(),text:text.trim(),responsible:resp||'',due:due||'',done:false,source:'Manual'});
+  save();renderTab();
+}
+
+async function extractTasksFromCalls(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){toast('Configura tu API key de Anthropic','red');return;}
+  var calls=c.fathomCalls||[];
+  if(!calls.length){toast('No hay llamadas de Fathom cargadas','red');return;}
+  // Only use the latest call
+  var lastCall=calls[0];
+  var btn=document.getElementById('extract-tasks-btn');
+  if(btn){btn.disabled=true;btn.textContent='Extrayendo...';}
+  var callText='Llamada: '+lastCall.date+' - '+lastCall.title+'\n'+(lastCall.summary||'');
+  var prompt='De esta llamada con el cliente '+c.name+', extrae TODAS las tareas y proximos pasos mencionados.\n\n'
+    +callText+'\n\n'
+    +'Responde SOLO con un array JSON valido, sin texto adicional, sin markdown:\n'
+    +'[{"text":"descripcion concreta de la tarea","responsible":"nombre del responsable","due":"YYYY-MM-DD o vacio"}]\n'
+    +'El responsable puede ser "Angie", el nombre del cliente, u otra persona mencionada.\n'
+    +'Solo tareas concretas y accionables.';
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:800,messages:[{role:'user',content:prompt}]})
+    });
+    var data=await r.json();
+    if(data.error) throw new Error(data.error.message);
+    var text=data.content[0].text.trim();
+    // Strip any markdown fences
+    text=text.replace(/^[^\[]*\[/,'[').replace(/\][^\]]*$/,']');
+    var extracted=JSON.parse(text);
+    c.tasks=c.tasks||[];
+    var added=0;
+    extracted.forEach(function(t){
+      var dup=(c.tasks||[]).some(function(e){return e.text.toLowerCase()===t.text.toLowerCase();});
+      if(!dup){
+        c.tasks.unshift({id:Date.now()+added,text:t.text,responsible:t.responsible||'',due:t.due||'',done:false,source:lastCall.date+' - '+lastCall.title});
+        added++;
+      }
+    });
+    save();renderTab();
+    toast(added+' tareas extraidas de la ultima llamada');
+  }catch(e){
+    toast('Error: '+e.message,'red');
+  }
+  if(btn){btn.disabled=false;btn.textContent='Extraer de: '+esc(lastCall.date);}
 }
 
 async function runSQLAnalysis(clientId){
