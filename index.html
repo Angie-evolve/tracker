@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EVOLD — Agency Dashboard</title>
+<title>EVOLD - Agency Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -1240,18 +1240,24 @@ function renderTab(){
   }
 
   else if(S.tab==='diagnostico'){
-    const diagColors={green:'rgba(29,158,117,0.12)',amber:'rgba(186,117,23,0.12)',red:'rgba(216,90,48,0.12)',blue:'rgba(55,138,221,0.12)'};
-    el.innerHTML=(c.diagnosis||[]).map(d=>`
-      <div class="diag-card">
-        <div class="diag-title-row">
-          <div class="diag-icon-wrap" style="background:${diagColors[d.color]||'var(--bg3)'}">${d.icon}</div>
-          <div class="diag-title-text">${d.title}</div>
-        </div>
-        <div class="diag-body">${d.body}</div>
-      </div>`).join('')+
-      `<div style="margin-top:16px;padding:14px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:12px;color:var(--text2)">
-        <strong style="color:var(--text)">?Queres un analisis mas profundo?</strong> Copia los datos de este cliente y pegalos en una nueva conversacion de Claude para obtener recomendaciones detalladas y un plan de accion para la proxima linea.
-      </div>`;
+    const sqlLeads=(c.ghl&&c.ghl.opportunities||[]).filter(function(o){return o._sql;});
+    const calls=c.fathomCalls||[];
+    const noSql=sqlLeads.length===0;
+    el.innerHTML=
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
+      +'<div>'
+      +'<div style="font-size:14px;font-weight:500;color:var(--text)">Analisis de SQLs</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+      +(noSql?'Sin SQLs marcados - ve a Conversion de ventas y marca los leads calificados'
+        :(sqlLeads.length+' SQLs + '+calls.length+' llamadas de Fathom'))
+      +'</div></div>'
+      +(noSql?'':'<button class="btn btn-sm btn-primary" id="sql-diag-btn" onclick="runSQLAnalysis('+c.id+')">Generar analisis</button>')
+      +'</div>'
+      +'<div id="sql-diag-result" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;font-size:12px;color:var(--text2);line-height:1.8;min-height:120px">'
+      +(noSql
+        ?'<span style="color:var(--text3)">Marca SQLs en la tab Conversion de ventas para activar el analisis.</span>'
+        :(c._sqlAnalysis||'<span style="color:var(--text3)">Hace clic en "Generar analisis" - Claude va a cruzar los SQLs con las lineas de conversion y las llamadas de Fathom.</span>'))
+      +'</div>';
   }
 
   else if(S.tab==='timeline'){
@@ -2697,6 +2703,82 @@ function openColSelector(){
     +'<button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-primary" onclick="saveColSelector()">Aplicar</button>'
     +'</div></div></div>';
+}
+
+async function runSQLAnalysis(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){toast('Configura tu API key de Anthropic primero','red');return;}
+  var btn=document.getElementById('sql-diag-btn');
+  var res=document.getElementById('sql-diag-result');
+  if(btn){btn.disabled=true;btn.textContent='Analizando...';}
+  if(res) res.innerHTML='<span style="color:var(--text3)">Generando analisis...</span>';
+
+  var sqlLeads=(c.ghl&&c.ghl.opportunities||[]).filter(function(o){return o._sql;});
+  var lines=c.conversionLines||[];
+
+  function findLine(opp){
+    var d=opp.createdAt?new Date(opp.createdAt):null;
+    if(!d) return lines[lines.length-1]||null;
+    for(var i=0;i<lines.length;i++){
+      var s=lines[i].dateStart?new Date(lines[i].dateStart):null;
+      var e=lines[i].dateEnd?new Date(lines[i].dateEnd):new Date();
+      if(s&&d>=s&&d<=e) return lines[i];
+    }
+    return lines[lines.length-1]||null;
+  }
+
+  var leadText=sqlLeads.map(function(o,i){
+    var l=findLine(o);
+    return (i+1)+'. '+(o.contactName||o.name||'Lead')
+      +' | Fecha: '+(o.createdAt?new Date(o.createdAt).toLocaleDateString('es-AR'):'-')
+      +' | Anuncio: '+(o.source&&(o.source.utmAd||o.source.utmCampaign)||'sin dato')
+      +' | Ubicacion: '+(o.geo&&(o.geo.location||o.geo.city)||'sin dato')
+      +' | Stage: '+(o.pipelineStage||'sin dato')
+      +' | Linea: '+(l?(l.version||l.campaign||'linea'):'sin dato');
+  }).join('\n');
+
+  var linesText=lines.map(function(l){
+    return '- '+(l.version||'Linea')+': '+l.campaign
+      +(l.dateStart?' desde '+l.dateStart:'')
+      +(l.dateEnd?' hasta '+l.dateEnd:' (activa)')
+      +(l.metrics&&l.metrics.cpl?' CPL $'+l.metrics.cpl:'');
+  }).join('\n');
+
+  var calls=c.fathomCalls||[];
+  var callsText=calls.length?calls.slice(0,6).map(function(cl){
+    return '- '+cl.date+' '+cl.title+(cl.summary?': '+cl.summary.substring(0,250):'');
+  }).join('\n'):'Sin llamadas registradas';
+
+  var prompt='Sos analista de performance para una agencia de software B2B.\n\n'
+    +'CLIENTE: '+c.name+(c.industry?' ('+c.industry+')':'')+'\n\n'
+    +'LEADS SQL ('+sqlLeads.length+'):\n'+leadText+'\n\n'
+    +'LINEAS DE CONVERSION:\n'+linesText+'\n\n'
+    +'LLAMADAS CON EL CLIENTE (Fathom):\n'+callsText+'\n\n'
+    +'Analiza estos SQLs y genera un informe con estas secciones:\n'
+    +'1. PATRON DE ANUNCIOS: que anuncios generaron mas SQLs\n'
+    +'2. PERFIL GEOGRAFICO: de donde vienen\n'
+    +'3. LINEA DE CONVERSION: en que bloque calificaron\n'
+    +'4. VOZ DEL CLIENTE: que dijo el cliente sobre estos leads en las llamadas\n'
+    +'5. RECOMENDACIONES: 3 acciones concretas para la proxima linea\n\n'
+    +'Responde en espanol, conciso y accionable. Usa <strong> para titulos y <br><br> entre secciones.';
+
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,messages:[{role:'user',content:prompt}]})
+    });
+    var data=await r.json();
+    var text=(data.content&&data.content[0]&&data.content[0].text)||'Sin respuesta';
+    c._sqlAnalysis=text;
+    save();
+    if(res) res.innerHTML=text;
+  }catch(e){
+    if(res) res.innerHTML='<span style="color:#f07050">Error: '+esc(e.message)+'</span>';
+  }
+  if(btn){btn.disabled=false;btn.textContent='Regenerar';}
 }
 
 function toggleSQL(clientId, oppId, checked){
