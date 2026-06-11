@@ -2886,85 +2886,52 @@ async function delegateTask(clientId, taskId){
   }
 }
 
-async function confirmDelegate(clientId, taskId){
-  var subject=document.getElementById('delegate-subject');
-  var body=document.getElementById('delegate-body');
-  if(!subject||!body) return;
-  var subjectVal=subject.value.trim();
-  var bodyVal=body.value.trim();
+function confirmDelegate(clientId, taskId){
+  var subjectEl=document.getElementById('delegate-subject');
+  var bodyEl=document.getElementById('delegate-body');
+  if(!subjectEl||!bodyEl) return;
+  var subjectVal=subjectEl.value.trim();
+  var bodyVal=bodyEl.value.trim();
   var t=window._pendingDelegate&&window._pendingDelegate.task;
-
-  var modal=document.getElementById('modal-root');
-  if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:400px;text-align:center;padding:40px">'
-    +'<div style="font-size:13px;color:var(--text2)">Creando borrador en Gmail y evento en Calendar...</div>'
-    +'</div></div>';
-
-  var apiKey=localStorage.getItem('evold-anthropic-key');
   var c=DB.clients.find(function(x){return x.id===clientId;});
+  var modal=document.getElementById('modal-root');
 
-  // Call Claude to orchestrate Gmail draft + Calendar event using MCP
-  var orchestratePrompt='Ejecuta este flujo de delegacion de tarea:\n\n'
-    +'1. Busca en Gmail los threads enviados a ashy@evolvemindhub.com para encontrar el ultimo numero de ticket\n'
-    +'2. Calcula el proximo numero de ticket (ultimo + 1, o #1 si no hay)\n'
-    +'3. Actualiza el asunto reemplazando "#1" o "TICKET-1" con el numero correcto\n'
-    +'4. Crea el borrador en Gmail con:\n'
-    +'   - Para: ashy@evolvemindhub.com\n'
-    +'   - Asunto: '+subjectVal+'\n'
-    +'   - Cuerpo: (el mail completo)\n'
-    +'5. Crea un evento de 10 minutos en el calendario "Tasks"'+(t&&t.due?' con deadline '+t.due:'')+'\n'
-    +'6. Responde SOLO con un JSON: {"ticket":"#N","draftCreated":true,"eventCreated":true,"subject":"asunto final"}\n\n'
-    +'CUERPO DEL MAIL:\n'+bodyVal;
-
-  try{
-    // Use MCP via Anthropic API to create Gmail draft and Calendar event
-    var r=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-5',
-        max_tokens:500,
-        mcp_servers:[
-          {type:'url',url:'https://gmailmcp.googleapis.com/mcp/v1',name:'gmail-mcp'},
-          {type:'url',url:'https://calendarmcp.googleapis.com/mcp/v1',name:'calendar-mcp'},
-          {type:'url',url:'https://drivemcp.googleapis.com/mcp/v1',name:'drive-mcp'}
-        ],
-        messages:[{role:'user',content:orchestratePrompt}]
-      })
-    });
-    var data=await r.json();
-    if(data.error) throw new Error(data.error.message);
-
-    // Parse result
-    var resultText=data.content.filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
-    var result={ticket:'#?',draftCreated:false,eventCreated:false};
-    try{
-      var jsonMatch=resultText.match(/\{[\s\S]*\}/);
-      if(jsonMatch) result=JSON.parse(jsonMatch[0]);
-    }catch(e){}
-
-    // Mark task as delegated
-    if(c){
-      var task=(c.tasks||[]).find(function(x){return x.id===taskId;});
-      if(task){task.delegated=true;task.delegatedAt=new Date().toISOString();task.ticket=result.ticket||'';save();}
-    }
-
-    if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:400px">'
-      +'<div class="modal-title" style="color:#1D9E75;margin-bottom:16px">Delegacion creada</div>'
-      +'<div style="font-size:12px;color:var(--text2);line-height:1.8">'
-      +(result.draftCreated?'<div>Borrador en Gmail</div>':'')
-      +(result.eventCreated?'<div>Evento en Calendar Tasks'+(t&&t.due?' ('+t.due+')':'')+'</div>':'')
-      +(result.ticket?'<div style="margin-top:8px;font-weight:500">Ticket: '+esc(result.ticket)+'</div>':'')
-      +'</div>'
-      +'<button class="btn btn-sm btn-primary" style="margin-top:16px" onclick="closeModal();renderTab()">Listo</button>'
-      +'</div></div>';
-  }catch(e){
-    if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:400px">'
-      +'<div class="modal-title" style="color:#f07050">Error al crear</div>'
-      +'<div style="font-size:12px;color:var(--text2);margin:12px 0">'+esc(e.message)+'</div>'
-      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
-      +'</div></div>';
+  // Mark task as delegated
+  if(c){
+    var task=(c.tasks||[]).find(function(x){return x.id===taskId;});
+    if(task){task.delegated=true;task.delegatedAt=new Date().toISOString();save();}
   }
+
+  // Gmail compose URL
+  var gmailUrl='https://mail.google.com/mail/?view=cm&to=ashy%40evolvemindhub.com'
+    +'&su='+encodeURIComponent(subjectVal)
+    +'&body='+encodeURIComponent(bodyVal);
+
+  // Google Calendar URL
+  var calUrl='';
+  if(t&&t.due){
+    var d=t.due.replace(/-/g,'');
+    calUrl='https://calendar.google.com/calendar/render?action=TEMPLATE'
+      +'&text='+encodeURIComponent('Deadline: '+t.text)
+      +'&dates='+d+'T120000/'+d+'T121000'
+      +'&details='+encodeURIComponent('Tarea delegada a Ashy: '+t.text)
+      +'&add=ashy%40evolvemindhub.com';
+  }
+
+  if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:440px">'
+    +'<div class="modal-title" style="color:#1D9E75;margin-bottom:12px">Listo para enviar</div>'
+    +'<div style="font-size:12px;color:var(--text2);margin-bottom:16px">Mail redactado. Abri los links para completar:</div>'
+    +'<div style="display:flex;flex-direction:column;gap:10px">'
+    +'<a href="'+gmailUrl+'" target="_blank" class="btn btn-primary" style="text-align:center;text-decoration:none;padding:10px 16px">'
+    +'Abrir en Gmail - ashy@evolvemindhub.com</a>'
+    +(calUrl?'<a href="'+calUrl+'" target="_blank" class="btn btn-sm" style="text-align:center;text-decoration:none;padding:8px">'
+      +'Crear evento en Calendar (deadline '+esc(t.due)+')</a>':'')
+    +'</div>'
+    +'<div style="margin-top:16px;display:flex;justify-content:flex-end">'
+    +'<button class="btn btn-sm" onclick="closeModal();renderTab()">Cerrar</button>'
+    +'</div></div></div>';
 }
+
 
 async function extractTasksFromCalls(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
