@@ -2751,7 +2751,10 @@ function renderTaskRow(t, clientId){
     +(t.due?'<div style="font-size:11px;color:'+(isOverdue?'#f07050':'var(--text3)')+';margin-top:2px">Vence: '+esc(t.due)+'</div>':'')
     +(t.source?'<div style="font-size:10px;color:var(--text3);margin-top:2px;font-style:italic">'+esc(t.source)+'</div>':'')
     +'</div>'
-    +'<button onclick="deleteTask('+clientId+','+t.id+')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:0 2px;flex-shrink:0">&times;</button>'
+    +'<div style="display:flex;flex-direction:column;gap:4px;align-items:center;flex-shrink:0">'
+    +(t.done?'':'<button onclick="delegateTask('+clientId+','+t.id+')" style="background:rgba(55,138,221,0.12);border:1px solid rgba(55,138,221,0.3);color:#378ADD;cursor:pointer;font-size:10px;padding:3px 8px;border-radius:4px;white-space:nowrap;font-weight:500">Delegar</button>')
+    +'<button onclick="deleteTask('+clientId+','+t.id+')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:0">&times;</button>'
+    +'</div>'
     +'</div>';
 }
 
@@ -2779,6 +2782,189 @@ function addTaskManual(clientId){
   c.tasks=c.tasks||[];
   c.tasks.unshift({id:Date.now(),text:text.trim(),responsible:resp||'',due:due||'',done:false,source:'Manual'});
   save();renderTab();
+}
+
+async function delegateTask(clientId, taskId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){toast('Configura tu API key de Anthropic','red');return;}
+
+  // Show loading modal
+  var modal=document.getElementById('modal-root');
+  if(!modal) return;
+  modal.style.display='flex';
+  modal.innerHTML='<div class="modal-box" style="max-width:560px;text-align:center;padding:40px">'
+    +'<div style="font-size:13px;color:var(--text2);margin-bottom:8px">Preparando delegacion...</div>'
+    +'<div style="font-size:11px;color:var(--text3)">Claude esta buscando el contexto del proyecto</div>'
+    +'</div>';
+
+  var lastCall=(c.fathomCalls||[])[0];
+  var lines=(c.conversionLines||[]);
+  var lastLine=lines[lines.length-1];
+  var sqlCount=(c.ghl&&c.ghl.opportunities||[]).filter(function(o){return o._sql;}).length;
+
+  var callContext=lastCall
+    ?'ULTIMA LLAMADA CON EL CLIENTE ('+lastCall.date+' - '+lastCall.title+'):\n'+(lastCall.summary||'Sin resumen disponible')
+    :'Sin llamadas registradas';
+
+  var projectContext='CLIENTE: '+c.name+(c.industry?' ('+c.industry+')':'')+'\n'
+    +(lastLine?'LINEA ACTIVA: '+(lastLine.version||lastLine.campaign||'Linea activa')+'\n':'')
+    +(sqlCount?'SQLs calificados: '+sqlCount+'\n':'')
+    +'\n'+callContext;
+
+  var delegationTemplate='SISTEMA DE DELEGACION DE TAREAS:\n'
+    +'- Colaboradora: Ashy (ashy@evolvemindhub.com)\n'
+    +'- Firmante: Angie\n'
+    +'- Template: estilo "4 Horas Semanales" - directo, sin ambiguedad, con autonomia clara\n'
+    +'- El asunto debe tener formato: [#TICKET-N] Accion requerida: [TAREA] - Deadline [FECHA]\n'
+    +'- Incluir checklist si corresponde al tipo (Implementacion Embudos, Campanas, Cambios Urgentes)\n'
+    +'- Incluir sistema de confirmacion de 3 preguntas y regla de silencio\n'
+    +'- Siempre firmar como Angie';
+
+  var prompt='Sos un asistente especializado en redactar mails de delegacion de tareas.\n\n'
+    +delegationTemplate+'\n\n'
+    +'TAREA A DELEGAR:\n'
+    +'- Descripcion: '+t.text+'\n'
+    +(t.responsible?'- Responsable: '+t.responsible+'\n':'')
+    +(t.due?'- Deadline: '+t.due+'\n':'')
+    +'\nCONTEXTO DEL PROYECTO:\n'+projectContext+'\n\n'
+    +'INSTRUCCIONES:\n'
+    +'1. Usa el numero de ticket #1 por ahora (indicar que sera reemplazado automaticamente)\n'
+    +'2. Infiere el tipo de tarea y agrega el checklist correspondiente si aplica\n'
+    +'3. Determina el nivel de autonomia segun la tarea\n'
+    +'4. Usa la informacion de la llamada para dar contexto especifico\n'
+    +'5. Redacta SOLO el mail completo con asunto y cuerpo, nada mas\n'
+    +'6. Si no hay deadline especifico, usa "a confirmar" pero igual redacta el mail completo\n\n'
+    +'Formato de respuesta:\n'
+    +'ASUNTO: [el asunto completo]\n'
+    +'---\n'
+    +'[el cuerpo completo del mail]';
+
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1500,messages:[{role:'user',content:prompt}]})
+    });
+    var data=await r.json();
+    if(data.error) throw new Error(data.error.message);
+    var raw=data.content[0].text.trim();
+
+    // Parse subject and body
+    var subjectMatch=raw.match(/ASUNTO:\s*(.+)/);
+    var subject=subjectMatch?subjectMatch[1].trim():'[Delegacion] '+t.text;
+    var body=raw.replace(/ASUNTO:\s*.+/,'').replace(/^---\s*/m,'').trim();
+
+    // Show preview modal with OK / Edit buttons
+    modal.innerHTML='<div class="modal-box" style="max-width:620px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+      +'<div class="modal-title">Borrador de delegacion</div>'
+      +'<div style="font-size:11px;color:var(--text3)">Revisa antes de enviar</div>'
+      +'</div>'
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:10px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:4px">ASUNTO</div>'
+      +'<input id="delegate-subject" value="'+esc(subject)+'" style="width:100%;background:none;border:none;color:var(--text);font-size:12px;font-weight:500;outline:none">'
+      +'</div>'
+      +'<textarea id="delegate-body" style="width:100%;min-height:260px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;padding:12px;line-height:1.6;resize:vertical">'+esc(body)+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:8px">Al confirmar: se crea el borrador en Gmail + evento en Calendar Tasks con el deadline.</div>'
+      +'<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="confirmDelegate('+clientId+','+taskId+')">OK - Crear borrador y evento</button>'
+      +'</div></div>';
+
+    // Store draft data for confirmation step
+    window._pendingDelegate={clientId:clientId,taskId:taskId,subject:subject,body:body,task:t};
+
+  }catch(e){
+    modal.innerHTML='<div class="modal-box" style="max-width:400px">'
+      +'<div class="modal-title" style="color:#f07050">Error</div>'
+      +'<div style="font-size:12px;color:var(--text2);margin:12px 0">'+esc(e.message)+'</div>'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>';
+  }
+}
+
+async function confirmDelegate(clientId, taskId){
+  var subject=document.getElementById('delegate-subject');
+  var body=document.getElementById('delegate-body');
+  if(!subject||!body) return;
+  var subjectVal=subject.value.trim();
+  var bodyVal=body.value.trim();
+  var t=window._pendingDelegate&&window._pendingDelegate.task;
+
+  var modal=document.getElementById('modal-root');
+  if(modal) modal.innerHTML='<div class="modal-box" style="max-width:400px;text-align:center;padding:40px">'
+    +'<div style="font-size:13px;color:var(--text2)">Creando borrador en Gmail y evento en Calendar...</div>'
+    +'</div>';
+
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+
+  // Call Claude to orchestrate Gmail draft + Calendar event using MCP
+  var orchestratePrompt='Ejecuta este flujo de delegacion de tarea:\n\n'
+    +'1. Busca en Gmail los threads enviados a ashy@evolvemindhub.com para encontrar el ultimo numero de ticket\n'
+    +'2. Calcula el proximo numero de ticket (ultimo + 1, o #1 si no hay)\n'
+    +'3. Actualiza el asunto reemplazando "#1" o "TICKET-1" con el numero correcto\n'
+    +'4. Crea el borrador en Gmail con:\n'
+    +'   - Para: ashy@evolvemindhub.com\n'
+    +'   - Asunto: '+subjectVal+'\n'
+    +'   - Cuerpo: (el mail completo)\n'
+    +'5. Crea un evento de 10 minutos en el calendario "Tasks"'+(t&&t.due?' con deadline '+t.due:'')+'\n'
+    +'6. Responde SOLO con un JSON: {"ticket":"#N","draftCreated":true,"eventCreated":true,"subject":"asunto final"}\n\n'
+    +'CUERPO DEL MAIL:\n'+bodyVal;
+
+  try{
+    // Use MCP via Anthropic API to create Gmail draft and Calendar event
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-5',
+        max_tokens:500,
+        mcp_servers:[
+          {type:'url',url:'https://gmailmcp.googleapis.com/mcp/v1',name:'gmail-mcp'},
+          {type:'url',url:'https://calendarmcp.googleapis.com/mcp/v1',name:'calendar-mcp'},
+          {type:'url',url:'https://drivemcp.googleapis.com/mcp/v1',name:'drive-mcp'}
+        ],
+        messages:[{role:'user',content:orchestratePrompt}]
+      })
+    });
+    var data=await r.json();
+    if(data.error) throw new Error(data.error.message);
+
+    // Parse result
+    var resultText=data.content.filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var result={ticket:'#?',draftCreated:false,eventCreated:false};
+    try{
+      var jsonMatch=resultText.match(/\{[\s\S]*\}/);
+      if(jsonMatch) result=JSON.parse(jsonMatch[0]);
+    }catch(e){}
+
+    // Mark task as delegated
+    if(c){
+      var task=(c.tasks||[]).find(function(x){return x.id===taskId;});
+      if(task){task.delegated=true;task.delegatedAt=new Date().toISOString();task.ticket=result.ticket||'';save();}
+    }
+
+    if(modal) modal.innerHTML='<div class="modal-box" style="max-width:400px">'
+      +'<div class="modal-title" style="color:#1D9E75;margin-bottom:16px">Delegacion creada</div>'
+      +'<div style="font-size:12px;color:var(--text2);line-height:1.8">'
+      +(result.draftCreated?'<div>Borrador en Gmail</div>':'')
+      +(result.eventCreated?'<div>Evento en Calendar Tasks'+(t&&t.due?' ('+t.due+')':'')+'</div>':'')
+      +(result.ticket?'<div style="margin-top:8px;font-weight:500">Ticket: '+esc(result.ticket)+'</div>':'')
+      +'</div>'
+      +'<button class="btn btn-sm btn-primary" style="margin-top:16px" onclick="closeModal();renderTab()">Listo</button>'
+      +'</div>';
+  }catch(e){
+    if(modal) modal.innerHTML='<div class="modal-box" style="max-width:400px">'
+      +'<div class="modal-title" style="color:#f07050">Error al crear</div>'
+      +'<div style="font-size:12px;color:var(--text2);margin:12px 0">'+esc(e.message)+'</div>'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>';
+  }
 }
 
 async function extractTasksFromCalls(clientId){
