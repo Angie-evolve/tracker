@@ -1212,7 +1212,13 @@ function renderTab(){
             <option value="30" ${metaDays==30?'selected':''}>Ultimos 30 dias</option>
             <option value="60" ${metaDays==60?'selected':''}>Ultimos 60 dias</option>
             <option value="90" ${metaDays==90?'selected':''}>Ultimos 90 dias</option>
+            <option value="custom" ${metaDays==='custom'?'selected':''}>Rango personalizado</option>
           </select>
+          ${metaDays==='custom'?`
+          <input type="date" id="meta-since-input" value="${activeLine.metaSince||''}" onchange="changeMetaCustomRange(${c.id})" style="font-size:11px;padding:4px 6px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2)">
+          <span style="font-size:11px;color:var(--text3)">a</span>
+          <input type="date" id="meta-until-input" value="${activeLine.metaUntil||''}" onchange="changeMetaCustomRange(${c.id})" style="font-size:11px;padding:4px 6px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2)">
+          `:''}
           <button class="btn btn-sm btn-primary" onclick="syncMetaAds(${c.id})" id="meta-sync-btn">Sincronizar Meta</button>`
           :`<button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:#f0a830;border-color:rgba(240,168,48,0.4)">Conectar Meta</button>`}
         <button class="btn btn-sm" onclick="openEditLineModal(${c.id},'${activeLine.id}')">Editar ads</button>
@@ -1221,7 +1227,7 @@ function renderTab(){
 `${activeLine.metaCampaigns&&activeLine.metaCampaigns.length?`
     <div style="margin-bottom:16px">
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-        Meta Ads - ultimos ${activeLine.metaDays||30} dias
+        Meta Ads - ${activeLine.metaDays==='custom'?(activeLine.metaSince+' a '+activeLine.metaUntil):'ultimos '+(activeLine.metaDays||30)+' dias'}
         <span style="font-weight:400;text-transform:none;margin-left:8px">${activeLine.metaSyncAt?'Actualizado: '+new Date(activeLine.metaSyncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):''}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">
@@ -2903,7 +2909,34 @@ function changeMetaDays(clientId, days){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var activeLine=c.conversionLines&&(c.conversionLines.find(function(l){return l.status==='activa';})||c.conversionLines[c.conversionLines.length-1]);
-  if(activeLine){activeLine.metaDays=parseInt(days);save();}
+  if(!activeLine) return;
+  if(days==='custom'){
+    activeLine.metaDays='custom';
+    if(!activeLine.metaSince){
+      var now=new Date();
+      activeLine.metaUntil=now.toISOString().slice(0,10);
+      activeLine.metaSince=new Date(now-30*24*60*60*1000).toISOString().slice(0,10);
+    }
+    save();
+    renderTab();
+    return;
+  }
+  activeLine.metaDays=parseInt(days);
+  save();
+  syncMetaAds(clientId);
+}
+
+function changeMetaCustomRange(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var activeLine=c.conversionLines&&(c.conversionLines.find(function(l){return l.status==='activa';})||c.conversionLines[c.conversionLines.length-1]);
+  if(!activeLine) return;
+  var since=document.getElementById('meta-since-input').value;
+  var until=document.getElementById('meta-until-input').value;
+  if(!since||!until) return;
+  activeLine.metaSince=since;
+  activeLine.metaUntil=until;
+  save();
   syncMetaAds(clientId);
 }
 
@@ -2996,8 +3029,14 @@ async function syncMetaAds(clientId){
   // Date range from activeLine.metaDays
   var days=activeLine.metaDays||30;
   var now=new Date();
-  var since=new Date(now-days*24*60*60*1000).toISOString().slice(0,10);
-  var until=now.toISOString().slice(0,10);
+  var since, until;
+  if(days==='custom'&&activeLine.metaSince&&activeLine.metaUntil){
+    since=activeLine.metaSince;
+    until=activeLine.metaUntil;
+  } else {
+    since=new Date(now-days*24*60*60*1000).toISOString().slice(0,10);
+    until=now.toISOString().slice(0,10);
+  }
   var timeRange='{"since":"'+since+'","until":"'+until+'"}';
 
   try{
