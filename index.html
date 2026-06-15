@@ -755,10 +755,17 @@ function showOverview(){
         });
         var recurrentes=DB.clients.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
         return '<div class="metrics-row" style="grid-template-columns:repeat(6,1fr)">'
+          var mrr=recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
+          var ltv=activos.filter(function(cl){return cl.serviceType==='garantia'||!cl.serviceType;}).reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
+          return '<div class="metrics-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px">'
           +'<div class="metric-card"><div class="metric-label">Clientes activos</div><div class="metric-value">'+activos.length+'</div></div>'
           +'<div class="metric-card"><div class="metric-label">Contrato vigente</div><div class="metric-value">'+conGarantia.length+'</div></div>'
           +'<div class="metric-card"><div class="metric-label">Recurrentes</div><div class="metric-value">'+recurrentes.length+'</div></div>'
           +'<div class="metric-card"><div class="metric-label">Leads / mes</div><div class="metric-value">'+total+'</div></div>'
+          +'</div>'
+          +'<div class="metrics-row" style="grid-template-columns:repeat(4,1fr)">'
+          +'<div class="metric-card"><div class="metric-label">Ingresos recurrentes</div><div class="metric-value" style="color:#4ecfa0">$'+mrr.toLocaleString()+'</div></div>'
+          +'<div class="metric-card"><div class="metric-label">LTV clientes activos</div><div class="metric-value" style="color:#4ecfa0">$'+ltv.toLocaleString()+'</div></div>'
           +'<div class="metric-card"><div class="metric-label">CPL promedio</div><div class="metric-value">$'+avgCPL.toFixed(2)+'</div></div>'
           +'<div class="metric-card"><div class="metric-label">Budget activo</div><div class="metric-value">$'+totalB.toLocaleString()+'</div></div>'
           +'</div>';
@@ -1092,22 +1099,36 @@ function renderTab(){
             <button onclick="setClientServiceType(${c.id},'recurrente')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='recurrente'?'background:rgba(55,138,221,0.15);border-color:#378ADD;color:#378ADD;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Recurrente</button>
             <button onclick="setClientServiceType(${c.id},'one-time')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='one-time'?'background:rgba(186,117,23,0.15);border-color:#BA7517;color:#BA7517;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">One-time</button>
           </div>
-          ${c.serviceType==='recurrente'?`
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+            <div>
+              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Valor del contrato</div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <span style="font-size:12px;color:var(--text2)">$</span>
+                <input type="number" value="${c.contractValue||''}" placeholder="0"
+                  oninput="setClientFee(${c.id},'contractValue',this.value)"
+                  onchange="setClientFee(${c.id},'contractValue',this.value)"
+                  style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
+              </div>
+            </div>
+            ${c.serviceType==='recurrente'?`
             <div>
               <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Monto mensual</div>
               <div style="display:flex;gap:6px;align-items:center">
                 <span style="font-size:12px;color:var(--text2)">$</span>
-                <input type="number" value="${c.monthlyFee||''}" placeholder="0" onchange="setClientFee(${c.id},'monthlyFee',this.value)"
+                <input type="number" value="${c.monthlyFee||''}" placeholder="0"
+                  oninput="setClientFee(${c.id},'monthlyFee',this.value)"
+                  onchange="setClientFee(${c.id},'monthlyFee',this.value)"
                   style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
               </div>
             </div>
             <div>
               <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Proximo pago</div>
-              <input type="date" value="${c.nextPaymentDate||''}" onchange="setClientFee(${c.id},'nextPaymentDate',this.value)"
+              <input type="date" id="next-payment-${c.id}" value="${c.nextPaymentDate||''}"
+                oninput="setClientFee(${c.id},'nextPaymentDate',this.value)"
+                onchange="setClientFee(${c.id},'nextPaymentDate',this.value)"
                 style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
-            </div>
-          </div>`:''}
+            </div>`:''}
+          </div>
         </div>
 
         ${contract.driveUrl||contract.fileName?`
@@ -1944,7 +1965,7 @@ async function extractContractWithAI(clientId, file, driveUrl){
     if(file){
       messages=[{role:'user',content:[
         {type:'document',source:{type:'base64',media_type:file.type||'application/pdf',data:file.base64}},
-        {type:'text',text:'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de firma en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null }'}
+        {type:'text',text:'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia de inversion minima en pauta, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de inicio en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null, "contractValue": monto total que paga el cliente por el servicio principal en USD como numero (sin simbolo), "monthlyFee": monto del fee mensual opcional o de renovacion en USD como numero o null si no existe, "serviceType": "garantia" si es un contrato de servicios con garantia de resultados, "recurrente" si paga mensualmente sin contrato de garantia, o "one-time" si es un pago unico sin renovacion }'}
       ]}];
     } else {
       // Drive URL - can't access directly, skip AI and let user fill manually
@@ -1973,10 +1994,17 @@ async function extractContractWithAI(clientId, file, driveUrl){
     let extracted;
     try{ extracted=JSON.parse(clean); }
     catch(pe){ throw new Error('Respuesta invalida del modelo: '+text.slice(0,100)); }
-    Object.entries(extracted).forEach(([k,v])=>{if(v!==null&&v!==undefined) c.contract[k]=v;});
+    var clientFields=['contractValue','monthlyFee','serviceType'];
+    Object.entries(extracted).forEach(([k,v])=>{
+      if(v!==null&&v!==undefined){
+        if(clientFields.indexOf(k)>=0) c[k]=v;
+        else c.contract[k]=v;
+      }
+    });
+    if(extracted.serviceType==='recurrente') c.recurrente=true;
     c.contract._analyzing=false;
     save();renderTab();
-    toast('Contrato analizado OK');
+    toast('Contrato analizado - campos completados automaticamente');
   } catch(e){
     if(c.contract) c.contract._analyzing=false;
     save();renderTab();
