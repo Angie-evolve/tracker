@@ -683,6 +683,13 @@ function fmtDateRange(s,e){
   };
   return fmt(s)+' -> '+(e?fmt(e):'hoy');
 }
+function fmtDateOnly(d){
+  if(!d)return '-';
+  const iso=toInputDate(d);
+  if(!iso)return d;
+  const [y,m,day]=iso.split('-');
+  return `${day}/${m}/${y}`;
+}
 
 // FIX: Normalize any date format to YYYY-MM-DD for input[type=date]
 function toInputDate(d, fromSheet){
@@ -1493,24 +1500,42 @@ function renderTab(){
     const accViews=allLines.reduce(function(s,l){return s+_n(l.metrics&&l.metrics.pageViews);},0);
     const accSql=allLines.reduce(function(s,l){return s+_n(l.metrics&&l.metrics.sql);},0);
     const costoCalificado=accSql>0?accSpent/accSql:null;
-    const diasCampana=firstLine?days(firstLine.dateStart,null):null;
+    // Dias activa: suma la duracion real de cada linea (dateStart -> dateEnd, o hoy si sigue abierta)
+    const diasActiva=allLines.reduce(function(s,l){return s+(l.dateStart?(days(l.dateStart,l.dateEnd)||0):0);},0);
+    // Dias pausada: el total transcurrido desde el lanzamiento menos lo que estuvo efectivamente activo
+    const totalSpan=firstLine&&firstLine.dateStart?days(firstLine.dateStart,null):null;
+    const diasPausada=totalSpan!==null?Math.max(totalSpan-diasActiva,0):null;
     const fmtMoney=function(n){return n===null||n===undefined?'-':'USD '+(Math.round(n*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
     const optInRows=allLines.filter(function(l){return l.metrics&&l.metrics.optIn!==null&&l.metrics.optIn!==undefined&&l.metrics.optIn!=='';})
       .map(function(l){return '<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Opt-in '+esc(l.version)+'</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(l.metrics.optIn*100).toFixed(2)+'%</span></div>';}).join('');
+
+    // Llamadas / agendas: "Agendas totales" todavia no tiene fuente de datos (N/A por ahora).
+    // "Llamadas en vivo" = llamadas de Fathom registradas. "Calificada" = el lead vinculado esta marcado SQL.
+    const fathomCallsAll=c.fathomCalls||[];
+    const oppsAll=(c.ghl&&c.ghl.opportunities)||[];
+    const llamadasEnVivo=fathomCallsAll.length;
+    const llamadasCalificadas=fathomCallsAll.filter(function(cl){
+      const opp=oppsAll.find(function(o){return o.id===cl.linkedOppId;});
+      return opp&&opp._sql;
+    }).length;
+    const costoPorLlamada=llamadasEnVivo>0?accSpent/llamadasEnVivo:null;
+    const costoPorLlamadaCalificada=llamadasCalificadas>0?accSpent/llamadasCalificadas:null;
 
     const reportHtml=allLines.length===0?'':(
       '<div style="margin-bottom:20px">'
       +'<div style="font-size:15px;font-weight:500;color:var(--text)">Informe de campana - '+esc(c.name)+'</div>'
       +'<div style="font-size:12px;color:var(--text3);margin-top:2px">'
-      +(firstLine&&firstLine.dateStart?'Lanzamiento: '+fmtDateRange(firstLine.dateStart,null).split(' - ')[0]:'Sin fecha')
-      +(diasCampana!==null?' &middot; '+diasCampana+' dias activos':'')
+      +(firstLine&&firstLine.dateStart?'Lanzamiento: '+fmtDateOnly(firstLine.dateStart):'Sin fecha')
+      +(diasActiva!==null?' &middot; '+diasActiva+' dias activos':'')
+      +(diasPausada?' &middot; '+diasPausada+' dias pausada':'')
       +'</div></div>'
 
       +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Meta</div>'
       +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Inversion en pauta</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(accSpent)+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Fecha de lanzamiento</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(firstLine&&firstLine.dateStart?fmtDateRange(firstLine.dateStart,null).split(' - ')[0]:'-')+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana activa</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasCampana!==null?diasCampana+' dias':'-')+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Fecha de lanzamiento</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(firstLine&&firstLine.dateStart?fmtDateOnly(firstLine.dateStart):'-')+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana activa</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasActiva!==null?diasActiva+' dias':'-')+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana pausada</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasPausada!==null?diasPausada+' dias':'-')+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Calificadas (SQL)</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+accSql+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px"><span style="font-size:13px;color:var(--text2)">Costo calificado</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoCalificado)+'</span></div>'
       +'</div>'
@@ -1519,6 +1544,16 @@ function renderTab(){
       +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;'+(optInRows?'border-bottom:1px solid var(--border)':'')+'"><span style="font-size:13px;color:var(--text2)">Visitas totales</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(accViews||'-')+'</span></div>'
         +(optInRows||'<div style="padding:12px 16px;font-size:12px;color:var(--text3)">Sin datos de opt-in todavia.</div>')
+      +'</div>'
+
+      +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Llamadas</div>'
+      +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Agendas totales</span><span style="font-size:13px;font-weight:500;color:var(--text3)">N/A</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Costo por agenda</span><span style="font-size:13px;font-weight:500;color:var(--text3)">N/A</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Llamadas en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+llamadasEnVivo+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Costo por llamada en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoPorLlamada)+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Llamadas calificadas en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+llamadasCalificadas+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px"><span style="font-size:13px;color:var(--text2)">Costo por llamada calificada en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoPorLlamadaCalificada)+'</span></div>'
       +'</div>'
     );
 
@@ -2195,6 +2230,7 @@ function fathomCallsHTML(c){
       +'<div style="font-size:11px;color:var(--text3)">Configura las palabras clave y sincroniza</div>'
       +'</div>';
   }
+  const opps = (c.ghl&&c.ghl.opportunities)||[];
   const lastCall = calls[0];
   const pendingItems = calls.reduce(function(s,cl){return s+(cl.actionItems?cl.actionItems.length:0);},0);
   const satisfied = calls.filter(function(cl){return cl.sentiment==='satisfecho';}).length;
@@ -2206,19 +2242,41 @@ function fathomCallsHTML(c){
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+pendingItems+'</div><div style="font-size:10px;color:var(--text3)">Action items</div></div>'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:14px;font-weight:500;color:var(--text)">'+(lastCall?lastCall.date:'--')+'</div><div style="font-size:10px;color:var(--text3)">Ultima llamada</div></div>'
     +'</div>';
-  calls.slice(0,3).forEach(function(cl){
+  const previewCalls = calls.slice(0,3);
+  previewCalls.forEach(function(cl){
     var bg = cl.sentiment==='satisfecho'?'rgba(29,158,117,0.15)':'rgba(186,117,23,0.15)';
     var col = cl.sentiment==='satisfecho'?'#4ecfa0':'#f0a830';
     var label = cl.sentiment==='satisfecho'?'Satisfecho':'Atencion';
-    html += '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+    const linkedOpp = opps.find(function(o){return o.id===cl.linkedOppId;});
+    const isSqlLinked = linkedOpp && linkedOpp._sql;
+    html += '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:6px">'
+      +'<div style="display:flex;align-items:center;gap:10px">'
       +'<div style="width:30px;height:30px;border-radius:50%;background:#E1F5EE;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#0F6E56">'+(cl.initials||'?')+'</div>'
       +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text)">'+cl.title+'</div>'
       +'<div style="font-size:10px;color:var(--text3)">'+cl.date+' - '+cl.duration+'</div></div>'
       +'<span style="font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;background:'+bg+';color:'+col+'">'+label+'</span>'
+      +(isSqlLinked?'<span class="pill pill-green" style="font-size:9px">SQL ✓</span>':'')
+      +'</div>'
+      +'<div style="margin-top:8px;display:flex;align-items:center;gap:6px">'
+      +'<span style="font-size:10px;color:var(--text3)">Vincular a lead SQL:</span>'
+      +'<select onchange="linkFathomCall('+c.id+',\''+cl.id+'\',this.value)" style="flex:1;max-width:220px;padding:3px 6px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text);font-family:var(--font);outline:none">'
+      +'<option value="">Sin vincular</option>'
+      +opps.map(function(o){return '<option value="'+o.id+'" '+(cl.linkedOppId===o.id?'selected':'')+'>'+esc(o.contactName||o.name||'Lead')+(o._sql?' (SQL)':'')+'</option>';}).join('')
+      +'</select></div>'
       +'</div>';
   });
-  if(calls.length>3) html += '<div style="font-size:11px;color:var(--text3);margin-top:4px">'+(calls.length-3)+' llamadas mas</div>';
+  if(calls.length>3) html += '<div style="font-size:11px;color:var(--text3);margin-top:4px">'+(calls.length-3)+' llamadas mas (vinculalas desde el JSON o pedime que muestre todas)</div>';
   return html;
+}
+
+function linkFathomCall(clientId, callId, oppId){
+  const c=DB.clients.find(x=>x.id===clientId);
+  if(!c) return;
+  const call=(c.fathomCalls||[]).find(cl=>cl.id===callId);
+  if(!call) return;
+  call.linkedOppId = oppId||null;
+  save();
+  renderTab();
 }
 
 
