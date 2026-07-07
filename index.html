@@ -1422,17 +1422,19 @@ function renderTab(){
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
         Meta Ads - ${activeLine.metaDays==='custom'?(activeLine.metaSince+' a '+activeLine.metaUntil):'ultimos '+(activeLine.metaDays||30)+' dias'}
         <span style="font-weight:400;text-transform:none;margin-left:8px">${activeLine.metaSyncAt?'Actualizado: '+new Date(activeLine.metaSyncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):''}</span>
+        <span style="font-weight:400;text-transform:none;margin-left:8px;color:var(--text3)">(${(activeLine.metaCampaigns||[]).length-(activeLine.excludedCampaigns||[]).length}/${(activeLine.metaCampaigns||[]).length} campanas incluidas)</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">
         ${(()=>{
+          var included=(activeLine.metaCampaigns||[]).filter(function(camp){return (activeLine.excludedCampaigns||[]).indexOf(camp.id)===-1;});
           var total={spend:0,leads:0,impressions:0,clicks:0};
-          (activeLine.metaCampaigns||[]).forEach(function(camp){total.spend+=camp.spend||0;total.leads+=camp.leads||0;total.impressions+=camp.impressions||0;total.clicks+=camp.clicks||0;});
+          included.forEach(function(camp){total.spend+=camp.spend||0;total.leads+=camp.leads||0;total.impressions+=camp.impressions||0;total.clicks+=camp.clicks||0;});
           var cpl=total.leads>0?(total.spend/total.leads).toFixed(2):'';
           var ctr=total.impressions>0?(total.clicks/total.impressions*100).toFixed(2):'';
-          var totalLV=(activeLine.metaCampaigns||[]).reduce(function(s,c){return s+(c.landingViews||0);},0);
-          var totalReach=(activeLine.metaCampaigns||[]).reduce(function(s,c){return s+(c.reach||0);},0);
-          var totalThru=(activeLine.metaCampaigns||[]).reduce(function(s,c){return s+(c.thruPlays||0);},0);
-          var totalResults=(activeLine.metaCampaigns||[]).reduce(function(s,c){return s+(c.results||0);},0);
+          var totalLV=included.reduce(function(s,c){return s+(c.landingViews||0);},0);
+          var totalReach=included.reduce(function(s,c){return s+(c.reach||0);},0);
+          var totalThru=included.reduce(function(s,c){return s+(c.thruPlays||0);},0);
+          var totalResults=included.reduce(function(s,c){return s+(c.results||0);},0);
           var costPerRes=totalResults>0?(total.spend/totalResults).toFixed(2):'';
           return [
             {l:'Gasto total',v:'$'+total.spend.toFixed(2)},
@@ -1457,7 +1459,15 @@ function renderTab(){
           var metricRows=[META_METRIC_COLS.map(function(col){return '<div style="flex-shrink:0;width:'+col.w+'px;height:36px;display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:500;color:var(--text3);background:var(--bg3);border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border)">'+col.l+'</div>';}).join('')];
           (activeLine.metaCampaigns||[]).forEach(function(camp,ci){
             var open=_metaOpen.camp===ci;
-            leftRows.push(metaRowLeft(camp.name, true, open, 'toggleMetaCamp('+ci+')', camp.status==='ACTIVE'));
+            var excluded=(activeLine.excludedCampaigns||[]).indexOf(camp.id)!==-1;
+            var checkboxHtml='<input type="checkbox" '+(excluded?'':'checked')+' onclick="event.stopPropagation();toggleCampaignInclude('+c.id+',\''+activeLine.id+'\',\''+camp.id+'\')" title="Incluir en el resumen" style="margin-right:8px;cursor:pointer;flex-shrink:0">';
+            var campRow='<div style="flex-shrink:0;width:190px;display:flex;align-items:center;padding:0 12px;height:52px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);'+(excluded?'opacity:0.4':'')+'">'
+              +checkboxHtml
+              +'<div style="min-width:0;flex:1;cursor:pointer" onclick="toggleMetaCamp('+ci+')">'
+              +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="font-size:10px;color:var(--text3);transition:transform .15s;display:inline-block;'+(open?'transform:rotate(90deg)':'')+';margin-right:6px">&#9654;</span>'+esc(camp.name)+'</div>'
+              +'<div style="font-size:10px;color:'+(camp.status==='ACTIVE'?'#4ecfa0':'var(--text3)')+'">'+(camp.status==='ACTIVE'?'activa':'pausada')+'</div>'
+              +'</div></div>';
+            leftRows.push(campRow);
             metricRows.push(metaRowMetrics(camp));
             if(open&&camp.adsets&&camp.adsets.length){
               camp.adsets.forEach(function(as,asi){
@@ -3244,6 +3254,19 @@ var _metaOpen={camp:null,adset:null};
 function toggleMetaCamp(idx){
   _metaOpen.camp=_metaOpen.camp===idx?null:idx;
   _metaOpen.adset=null;
+  renderTab();
+}
+
+function toggleCampaignInclude(clientId, lineId, campId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var line=(c.conversionLines||[]).find(function(l){return l.id===lineId;});
+  if(!line) return;
+  line.excludedCampaigns=line.excludedCampaigns||[];
+  var idx=line.excludedCampaigns.indexOf(campId);
+  if(idx>=0) line.excludedCampaigns.splice(idx,1);
+  else line.excludedCampaigns.push(campId);
+  save();
   renderTab();
 }
 
