@@ -2757,17 +2757,86 @@ function r0name(c){
 }
 
 // ================= Conversion de ventas (GHL) =================
+function getGhlRules(c){
+  const r=(c&&c.ghlRules)||{};
+  return {
+    ganado:r.ganado||[],
+    abandonado:r.abandonado||[],
+    abandonadoDias:r.abandonadoDias!=null?r.abandonadoDias:7,
+    sql:r.sql||[],
+    llamadaEnVivo:r.llamadaEnVivo||[]
+  };
+}
 function deriveEstado(o){
+  const c=DB.clients.find(function(x){return x.id===S.clientId;});
+  const rules=getGhlRules(c);
   const stageN=_n(o.pipelineStage);
-  if(stageN.indexOf('compr')>=0) return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
-  if(stageN.indexOf('no respondi')>=0 && o.createdAt){
-    const dias=Math.floor((Date.now()-new Date(o.createdAt).getTime())/86400000);
-    if(dias>=7) return {label:'Abandonado',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
+  const hasCustomGanado=rules.ganado.length>0;
+  const hasCustomAbandonado=rules.abandonado.length>0;
+  if(hasCustomGanado){
+    if(rules.ganado.indexOf(stageN)>=0) return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
+  } else if(stageN.indexOf('compr')>=0){
+    return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
+  }
+  if(hasCustomAbandonado){
+    if(rules.abandonado.indexOf(stageN)>=0 && o.createdAt){
+      var dias1=Math.floor((Date.now()-new Date(o.createdAt).getTime())/86400000);
+      if(dias1>=rules.abandonadoDias) return {label:'Abandonado',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
+    }
+  } else if(stageN.indexOf('no respondi')>=0 && o.createdAt){
+    var dias2=Math.floor((Date.now()-new Date(o.createdAt).getTime())/86400000);
+    if(dias2>=7) return {label:'Abandonado',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
   }
   const raw=(o.status||'').toLowerCase();
   if(raw==='won') return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
   if(raw==='lost') return {label:'Perdido',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
   return {label:o.status||'En proceso',color:'#f0a830',bg:'rgba(240,168,48,0.15)'};
+}
+
+function openGhlRulesModal(){
+  const c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  const ops=(c.ghl&&c.ghl.opportunities)||[];
+  const stagesMap={};
+  ops.forEach(function(o){ var s=(o.pipelineStage||'').trim(); if(s) stagesMap[_n(s)]=s; });
+  const stages=Object.keys(stagesMap).map(function(k){return {norm:k,label:stagesMap[k]};}).sort(function(a,b){return a.label.localeCompare(b.label);});
+  const cur=getGhlRules(c);
+  const groupHtml=function(key,title,hint){
+    if(!stages.length) return '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:500;color:#fff">'+title+'</div><div style="font-size:11px;color:var(--text3)">Todavia no hay stages sincronizados.</div></div>';
+    return '<div style="margin-bottom:16px">'
+      +'<div style="font-size:12px;font-weight:500;color:#fff;margin-bottom:2px">'+title+'</div>'
+      +(hint?'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">'+hint+'</div>':'')
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+      +stages.map(function(s){
+        var on=cur[key].indexOf(s.norm)>=0;
+        return '<label style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border2);border-radius:999px;cursor:pointer;font-size:11px;background:'+(on?'rgba(29,158,117,0.12)':'transparent')+'">'
+          +'<input type="checkbox" data-group="'+key+'" value="'+esc(s.norm)+'" '+(on?'checked':'')+' style="width:12px;height:12px">'+esc(s.label)+'</label>';
+      }).join('')
+      +'</div></div>';
+  };
+  document.getElementById('modal-root').innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;max-height:80vh;overflow-y:auto">'
+    +'<div class="modal-title">Reglas de automatizacion</div>'
+    +'<div class="modal-sub">Elegi que stages de tu pipeline disparan cada regla. Si no elegis ninguno para Ganado o Abandonado, se usa la deteccion por palabra clave (Compro / No respondio).</div>'
+    +groupHtml('sql','SQL automatico','Las oportunidades en estos stages se marcan como SQL solas.')
+    +groupHtml('ganado','Marcar como Ganado','')
+    +groupHtml('abandonado','Marcar como Abandonado','')
+    +'<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text3)">Dias sin respuesta para marcar Abandonado</label>'
+    +'<input id="ghl-rules-dias" type="number" min="1" value="'+cur.abandonadoDias+'" style="width:100px;display:block;margin-top:4px;padding:7px 9px;font-size:12px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:#fff;font-family:var(--font)"></div>'
+    +groupHtml('llamadaEnVivo','Llamada en vivo (GHL)','Opcional: cuenta como llamada en vivo, aparte de las de Fathom.')
+    +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveGhlRules('+c.id+')">Guardar</button></div>'
+    +'</div></div>';
+}
+
+function saveGhlRules(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  const groups=['sql','ganado','abandonado','llamadaEnVivo'];
+  const rules={};
+  groups.forEach(function(g){
+    rules[g]=Array.prototype.slice.call(document.querySelectorAll('input[data-group="'+g+'"]:checked')).map(function(i){return i.value;});
+  });
+  rules.abandonadoDias=Math.max(1, parseInt(document.getElementById('ghl-rules-dias').value)||7);
+  c.ghlRules=rules;
+  save(); closeModal(); toast('Reglas guardadas'); renderTab();
 }
 function getGhlProxy(){
   return { url: localStorage.getItem('evold-ghl-proxy-url')||'', secret: localStorage.getItem('evold-ghl-proxy-secret')||'' };
@@ -2943,11 +3012,9 @@ function renderVentasTab(c, el){
 
   const ops=c.ghl.opportunities||[];
 
-  // --- Reglas de negocio derivadas del Stage ---
-  // 1) Stage "Compro" => Estado Ganado
-  // 2) Stage "No respondio" y ya paso 1 semana desde que se creo el lead => Abandonado
-  // 3) Stage en Tomando decision / NDA / Segunda llamada => se marca como SQL automaticamente
-  const SQL_STAGES=['tomando decision','nda','segunda llamada'];
+  // --- Reglas de negocio derivadas del Stage (configurables desde "Reglas") ---
+  const _rules=getGhlRules(c);
+  const SQL_STAGES=_rules.sql.length?_rules.sql:['tomando decision','nda','segunda llamada'];
   let _autoSqlChanged=false;
   ops.forEach(function(o){
     const stageN=_n(o.pipelineStage);
@@ -2960,6 +3027,7 @@ function renderVentasTab(c, el){
     +'<button class="btn btn-sm" onclick="saveClientGhl('+c.id+')" style="display:none"></button>'
     +'<button class="btn btn-sm" onclick="(function(){var x=DB.clients.find(z=>z.id==='+c.id+');x.ghl.token=\'\';save();renderTab();})()">Cambiar token</button>'
     +'<button class="btn btn-sm" onclick="openColSelector()">Columnas</button>'
+    +'<button class="btn btn-sm" onclick="openGhlRulesModal()">Reglas</button>'
     +'<button class="btn btn-sm" onclick="openGhlProxyModal()">Conexion</button>';
 
   if(!ops.length){
@@ -2973,6 +3041,8 @@ function renderVentasTab(c, el){
   const open=ops.filter(function(o){var l=deriveEstado(o).label;return l!=='Ganado'&&l!=='Perdido'&&l!=='Abandonado';}).length;
   const valor=ops.reduce(function(s,o){return s+(Number(o.monetaryValue)||0);},0);
   const sqlCount=ops.filter(function(o){return o._sql;}).length;
+  const llamadaGhlStages=_rules.llamadaEnVivo;
+  const llamadaGhlCount=llamadaGhlStages.length?ops.filter(function(o){return llamadaGhlStages.indexOf(_n(o.pipelineStage))>=0;}).length:null;
   const money=function(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
 
   // Breakdown por anuncio y por geo
@@ -3032,6 +3102,7 @@ function renderVentasTab(c, el){
     +'<div class="metric-card"><div class="metric-label">Ganadas</div><div class="metric-value" style="color:#4ecfa0">'+won+'</div></div>'
     +'<div class="metric-card"><div class="metric-label">SQLs</div><div class="metric-value"><span id="ghl-sql-count">'+sqlCount+'</span></div></div>'
     +'<div class="metric-card"><div class="metric-label">Valor total</div><div class="metric-value">'+money(valor)+'</div></div>'
+    +(llamadaGhlCount!==null?'<div class="metric-card"><div class="metric-label">Llamadas en vivo (GHL)</div><div class="metric-value">'+llamadaGhlCount+'</div></div>':'')
     +'</div>';
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por anuncio</div><div style="margin-bottom:12px">'+chips(byAd)+'</div>';
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por ubicacion</div><div style="margin-bottom:12px">'+chips(byGeo)+'</div>';
