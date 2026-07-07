@@ -2855,9 +2855,9 @@ async function syncGhl(clientId, silent){
 }
 
 async function enrichContactsBackground(c, proxy){
-  // Find opps that are missing utmAd or geo.location and have a contactId
+  // Find opps that are missing utmAd, geo.location or tags and have a contactId
   const toEnrich=(c.ghl.opportunities||[]).filter(function(o){
-    return o.contactId && (!o.source.utmAd || !o.geo.location);
+    return o.contactId && (!o.source.utmAd || !o.geo.location || !o.tags);
   });
   if(!toEnrich.length) return;
   const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
@@ -2875,6 +2875,9 @@ async function enrichContactsBackground(c, proxy){
         if(data.utmAd) opp.source.utmAd=data.utmAd;
         if(data.location) opp.geo.location=data.location;
         if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
+        if(data.utmSource && !opp.source.utmSource) opp.source.utmSource=data.utmSource;
+        var dTags=data.tags||data.contactTags||null;
+        if(dTags && Array.isArray(dTags) && dTags.length) opp.tags=dTags;
         enriched++;
         if(enriched%10===0){ save(); }
       }
@@ -3037,6 +3040,9 @@ function renderVentasTab(c, el){
     const faKeys=Object.keys(fa).filter(function(k){var kl=k.toLowerCase().trim();return faHide.indexOf(kl)<0 && String(fa[k]||'').trim()!=='';}).slice(0,3);
     const faTxt=faKeys.length?('<div style="font-size:10px;color:var(--text3);margin-top:3px">'+faKeys.map(function(k){return esc(k.length>28?k.slice(0,28)+'...':k)+': '+esc(fa[k]);}).join(' - ')+'</div>'):'';
     const stColor=(o.status||'').toLowerCase()==='won'?'#4ecfa0':(o.status||'').toLowerCase()==='lost'?'#f07050':'#f0a830';
+    const stBg=(o.status||'').toLowerCase()==='won'?'rgba(29,158,117,0.15)':(o.status||'').toLowerCase()==='lost'?'rgba(216,90,48,0.15)':'rgba(240,168,48,0.15)';
+    const tagsArr=o.tags||[];
+    const tagsHtml=tagsArr.length?tagsArr.slice(0,3).map(function(t){return '<span class="pill" style="font-size:9px;padding:2px 7px;margin:0 3px 3px 0;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(t)+'</span>';}).join(''):'<span style="color:var(--text3)">-</span>';
     const cols=_ghlCols||['Contacto','Stage','Estado','Valor','Fecha'];
     const oId=o.id||'';
     const cells={
@@ -3044,13 +3050,16 @@ function renderVentasTab(c, el){
       'Anuncio':'<td style="padding:10px 12px;color:var(--text2)">'+esc(ad)+'</td>',
       'Fuente':'<td style="padding:10px 12px;color:var(--text2)">'+esc(fuente)+'</td>',
       'Ubicacion':'<td style="padding:10px 12px;color:var(--text2)">'+esc(geo)+'</td>',
-      'Stage':'<td style="padding:10px 12px;color:var(--text2)">'+esc(o.pipelineStage||'-')+'</td>',
-      'Estado':'<td style="padding:10px 12px;color:'+stColor+'">'+esc(o.status||'-')+'</td>',
+      'Stage':'<td style="padding:10px 12px"><span class="pill" style="font-size:10px;padding:3px 9px;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(o.pipelineStage||'-')+'</span></td>',
+      'Estado':'<td style="padding:10px 12px"><span class="pill" style="font-size:10px;padding:3px 9px;background:'+stBg+';border:0.5px solid '+stColor+';color:'+stColor+'">'+esc(o.status||'-')+'</span></td>',
       'Valor':'<td style="padding:10px 12px;color:var(--text2)">'+money(o.monetaryValue)+'</td>',
       'Email':'<td style="padding:10px 12px;color:var(--text2)">'+esc(o.contactEmail||'-')+'</td>',
       'Telefono':'<td style="padding:10px 12px;color:var(--text2)">'+esc(o.contactPhone||'-')+'</td>',
       'Fecha':'<td style="padding:10px 12px;color:var(--text2)">'+(o.createdAt?new Date(o.createdAt).toLocaleDateString('es-AR'):'-')+'</td>',
       'UTM campaign':'<td style="padding:10px 12px;color:var(--text2)">'+esc((o.source&&o.source.utmCampaign)||'-')+'</td>',
+      'UTM Ad':'<td style="padding:10px 12px;color:var(--text2)">'+esc((o.source&&o.source.utmAd)||'-')+'</td>',
+      'UTM Source':'<td style="padding:10px 12px;color:var(--text2)">'+esc((o.source&&o.source.utmSource)||'-')+'</td>',
+      'Tags':'<td style="padding:10px 12px">'+tagsHtml+'</td>',
       'SQL':'<td style="padding:10px 12px;text-align:center"><input type="checkbox" '+(o._sql?'checked':'')
         +' onchange="toggleSQL('+c.id+',&#39;'+oId+'&#39;,this.checked)" style="width:16px;height:16px;cursor:pointer;accent-color:#1D9E75"></td>',
       'Notas':'<td style="padding:10px 12px"><button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="openOppDetail(&#39;'+oId+'&#39;)">Ver notas</button></td>'
@@ -3065,8 +3074,8 @@ var _ghlCols = ['Contacto','Stage','Estado','Valor','Fecha'];
 
 function openColSelector(){
   // Cols marked with * require contact enrichment (loaded when clicking Ver notas)
-  const enrichCols=['Anuncio','Fuente','Ubicacion','UTM campaign'];
-  const allCols=['Contacto','SQL','Stage','Estado','Valor','Fecha','Anuncio','Fuente','Ubicacion','Email','Telefono','UTM campaign','Notas'];
+  const enrichCols=['Anuncio','Fuente','Ubicacion','UTM campaign','UTM Ad','UTM Source','Tags'];
+  const allCols=['Contacto','SQL','Stage','Estado','Valor','Fecha','Anuncio','Fuente','Ubicacion','Email','Telefono','UTM campaign','UTM Ad','UTM Source','Tags','Notas'];
   const current=_ghlCols;
   document.getElementById('modal-root').innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:460px">'
@@ -3938,6 +3947,17 @@ async function openOppDetail(oppId){
         }
       }).join('');
     }
+    const faHide2=['utm_ad','utm ad','timezone','time zone','zona horaria','ip','order id','payment status','email verified','phone verified','submission date','url'];
+    const faAll=Object.keys(opp.formAnswers||{}).filter(function(k){var kl=k.toLowerCase().trim();return faHide2.indexOf(kl)<0 && String((opp.formAnswers||{})[k]||'').trim()!=='';});
+    const faHtml=faAll.length?('<div style="margin-bottom:16px"><div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Respuestas del formulario</div>'
+      +faAll.map(function(k){return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><span style="color:var(--text3)">'+esc(k)+'</span><span style="color:var(--text2);text-align:right">'+esc((opp.formAnswers||{})[k])+'</span></div>';}).join('')
+      +'</div>'):'';
+    const tagsAll=opp.tags||[];
+    const tagsHtml2=tagsAll.length?('<div style="margin-bottom:16px"><div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Tags</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'+tagsAll.map(function(t){return '<span class="pill" style="font-size:10px;padding:3px 9px;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(t)+'</span>';}).join('')+'</div></div>'):'';
+    const utmHtml=(opp.source&&(opp.source.utmSource||opp.source.utmAd||opp.source.utmCampaign))?('<div style="margin-bottom:16px"><div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Origen (UTM)</div>'
+      +[['UTM Source',opp.source.utmSource],['UTM Ad',opp.source.utmAd],['UTM Campaign',opp.source.utmCampaign]].filter(function(p){return p[1];}).map(function(p){return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><span style="color:var(--text3)">'+p[0]+'</span><span style="color:var(--text2)">'+esc(p[1])+'</span></div>';}).join('')
+      +'</div>'):'';
     document.getElementById('modal-root').innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
       +'<div class="modal" style="max-width:520px">'
       +'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">'
@@ -3948,6 +3968,9 @@ async function openOppDetail(oppId){
       +(opp.monetaryValue?'<span style="font-size:11px;color:var(--text2)">'+money(opp.monetaryValue)+'</span>':'')
       +'</div></div>'
       +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div>'
+      +tagsHtml2
+      +utmHtml
+      +faHtml
       +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px">Notas</div>'
       +'<div id="notes-content">'+notesHtml+'</div>'
       +'</div></div>';
@@ -3977,6 +4000,9 @@ async function openOppDetail(oppId){
         if(cData.utmAd && !opp.source.utmAd) opp.source.utmAd=cData.utmAd;
         if(cData.location && !opp.geo.location) opp.geo.location=cData.location;
         if(cData.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=cData.utmCampaign;
+        if(cData.utmSource && !opp.source.utmSource) opp.source.utmSource=cData.utmSource;
+        const cTags=cData.tags||cData.contactTags||null;
+        if(cTags && Array.isArray(cTags) && cTags.length) opp.tags=cTags;
         save();
       }
     }
