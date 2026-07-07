@@ -2757,6 +2757,18 @@ function r0name(c){
 }
 
 // ================= Conversion de ventas (GHL) =================
+function deriveEstado(o){
+  const stageN=_n(o.pipelineStage);
+  if(stageN.indexOf('compr')>=0) return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
+  if(stageN.indexOf('no respondi')>=0 && o.createdAt){
+    const dias=Math.floor((Date.now()-new Date(o.createdAt).getTime())/86400000);
+    if(dias>=7) return {label:'Abandonado',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
+  }
+  const raw=(o.status||'').toLowerCase();
+  if(raw==='won') return {label:'Ganado',color:'#4ecfa0',bg:'rgba(29,158,117,0.15)'};
+  if(raw==='lost') return {label:'Perdido',color:'#f07050',bg:'rgba(216,90,48,0.15)'};
+  return {label:o.status||'En proceso',color:'#f0a830',bg:'rgba(240,168,48,0.15)'};
+}
 function getGhlProxy(){
   return { url: localStorage.getItem('evold-ghl-proxy-url')||'', secret: localStorage.getItem('evold-ghl-proxy-secret')||'' };
 }
@@ -2930,6 +2942,19 @@ function renderVentasTab(c, el){
   // (El sync tarda hasta 60 seg con muchas oportunidades)
 
   const ops=c.ghl.opportunities||[];
+
+  // --- Reglas de negocio derivadas del Stage ---
+  // 1) Stage "Compro" => Estado Ganado
+  // 2) Stage "No respondio" y ya paso 1 semana desde que se creo el lead => Abandonado
+  // 3) Stage en Tomando decision / NDA / Segunda llamada => se marca como SQL automaticamente
+  const SQL_STAGES=['tomando decision','nda','segunda llamada'];
+  let _autoSqlChanged=false;
+  ops.forEach(function(o){
+    const stageN=_n(o.pipelineStage);
+    if(SQL_STAGES.indexOf(stageN)>=0 && !o._sql){ o._sql=true; _autoSqlChanged=true; }
+  });
+  if(_autoSqlChanged) save();
+
   const right=(c.ghl._syncing?'<span style="font-size:11px;color:var(--text3)">sincronizando...</span>':'<span style="font-size:11px;color:var(--text3)">'+_ghlAgo(c.ghl.lastSync)+'</span>')
     +'<button class="btn btn-sm" onclick="syncGhl('+c.id+',false)">Sincronizar</button>'
     +'<button class="btn btn-sm" onclick="saveClientGhl('+c.id+')" style="display:none"></button>'
@@ -2944,8 +2969,8 @@ function renderVentasTab(c, el){
 
   // Metricas
   const total=ops.length;
-  const won=ops.filter(function(o){return (o.status||'').toLowerCase()==='won';}).length;
-  const open=ops.filter(function(o){return (o.status||'').toLowerCase()==='open';}).length;
+  const won=ops.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
+  const open=ops.filter(function(o){var l=deriveEstado(o).label;return l!=='Ganado'&&l!=='Perdido'&&l!=='Abandonado';}).length;
   const valor=ops.reduce(function(s,o){return s+(Number(o.monetaryValue)||0);},0);
   const sqlCount=ops.filter(function(o){return o._sql;}).length;
   const money=function(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
@@ -3039,8 +3064,8 @@ function renderVentasTab(c, el){
     const fa=o.formAnswers||{};
     const faKeys=Object.keys(fa).filter(function(k){var kl=k.toLowerCase().trim();return faHide.indexOf(kl)<0 && String(fa[k]||'').trim()!=='';}).slice(0,3);
     const faTxt=faKeys.length?('<div style="font-size:10px;color:var(--text3);margin-top:3px">'+faKeys.map(function(k){return esc(k.length>28?k.slice(0,28)+'...':k)+': '+esc(fa[k]);}).join(' - ')+'</div>'):'';
-    const stColor=(o.status||'').toLowerCase()==='won'?'#4ecfa0':(o.status||'').toLowerCase()==='lost'?'#f07050':'#f0a830';
-    const stBg=(o.status||'').toLowerCase()==='won'?'rgba(29,158,117,0.15)':(o.status||'').toLowerCase()==='lost'?'rgba(216,90,48,0.15)':'rgba(240,168,48,0.15)';
+    const est=deriveEstado(o);
+    const stColor=est.color, stBg=est.bg;
     const tagsArr=o.tags||[];
     const tagsHtml=tagsArr.length?tagsArr.slice(0,3).map(function(t){return '<span class="pill" style="font-size:9px;padding:2px 7px;margin:0 3px 3px 0;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(t)+'</span>';}).join(''):'<span style="color:var(--text3)">-</span>';
     const cols=_ghlCols||['Contacto','Stage','Estado','Valor','Fecha'];
@@ -3051,7 +3076,7 @@ function renderVentasTab(c, el){
       'Fuente':'<td style="padding:10px 12px;color:var(--text2)">'+esc(fuente)+'</td>',
       'Ubicacion':'<td style="padding:10px 12px;color:var(--text2)">'+esc(geo)+'</td>',
       'Stage':'<td style="padding:10px 12px"><span class="pill" style="font-size:10px;padding:3px 9px;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(o.pipelineStage||'-')+'</span></td>',
-      'Estado':'<td style="padding:10px 12px"><span class="pill" style="font-size:10px;padding:3px 9px;background:'+stBg+';border:0.5px solid '+stColor+';color:'+stColor+'">'+esc(o.status||'-')+'</span></td>',
+      'Estado':'<td style="padding:10px 12px"><span class="pill" style="font-size:10px;padding:3px 9px;background:'+stBg+';border:0.5px solid '+stColor+';color:'+stColor+'">'+esc(est.label)+'</span></td>',
       'Valor':'<td style="padding:10px 12px;color:var(--text2)">'+money(o.monetaryValue)+'</td>',
       'Email':'<td style="padding:10px 12px;color:var(--text2)">'+esc(o.contactEmail||'-')+'</td>',
       'Telefono':'<td style="padding:10px 12px;color:var(--text2)">'+esc(o.contactPhone||'-')+'</td>',
@@ -3916,7 +3941,8 @@ async function openOppDetail(oppId){
   if(!c) return;
   const opp=(c.ghl&&c.ghl.opportunities||[]).find(function(o){return o.id===oppId;});
   if(!opp) return;
-  const stColor=(opp.status||'').toLowerCase()==='won'?'#4ecfa0':(opp.status||'').toLowerCase()==='lost'?'#f07050':'#f0a830';
+  const _est=deriveEstado(opp);
+  const stColor=_est.color;
 
   function renderModal(notes, loading, err){
     let notesHtml='';
@@ -3963,7 +3989,7 @@ async function openOppDetail(oppId){
       +'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">'
       +'<div><div class="modal-title">'+esc(opp.contactName||opp.name)+'</div>'
       +'<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">'
-      +'<span style="font-size:11px;color:'+stColor+'">'+esc(opp.status||'')+'</span>'
+      +'<span style="font-size:11px;color:'+stColor+'">'+esc(_est.label)+'</span>'
       +(opp.pipelineStage?'<span style="font-size:11px;color:var(--text3)">'+esc(opp.pipelineStage)+'</span>':'')
       +(opp.monetaryValue?'<span style="font-size:11px;color:var(--text2)">'+money(opp.monetaryValue)+'</span>':'')
       +'</div></div>'
