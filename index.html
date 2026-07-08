@@ -408,6 +408,7 @@ function _n(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u
 // Dado un objeto fila y una lista de terminos, devuelve el valor de la primera
 // columna cuyo nombre (normalizado) contiene TODOS los terminos.
 // Ejemplo: col(row, 'inversion','semanal') matchea "Inversion Semanal", "INVERSION SEMANAL", etc.
+function lastToken(s){ const w=_n(s).split(/[^a-z0-9]+/).filter(Boolean); return w.length?w[w.length-1]:''; }
 function col(row, ...terms){
   const nt = terms.map(_n);
   const key = Object.keys(row).find(k => nt.every(t => _n(k).includes(t)));
@@ -557,6 +558,31 @@ async function syncClient(client, apiKey){
       });
       const adsets = Object.values(adsetMap);
 
+      // Landings A/B: busca columnas "OPTIN Landing A/B" y "Link Landing A/B" (o similares) y arma el desglose
+      const landingVariants = {};
+      rows.forEach(function(row){
+        Object.keys(row).forEach(function(k){
+          if(k.charAt(0)==='_') return;
+          const nk=_n(k);
+          const val=(row[k]||'').toString().trim();
+          if(!val) return;
+          if(nk.indexOf('optin')>=0 && nk.indexOf('landing')>=0){
+            const letter=lastToken(k);
+            if(letter){
+              landingVariants[letter]=landingVariants[letter]||{};
+              if(landingVariants[letter].optIn===undefined) landingVariants[letter].optIn=parseNum(val);
+            }
+          }
+          if(nk.indexOf('link')>=0 && nk.indexOf('landing')>=0){
+            const letter2=lastToken(k);
+            if(letter2){
+              landingVariants[letter2]=landingVariants[letter2]||{};
+              if(!landingVariants[letter2].link) landingVariants[letter2].link=val;
+            }
+          }
+        });
+      });
+
       const firstRow = rows[0]||{};
       const campaign = firstRow._campaign||'';
       const adset    = firstRow._adset||'';
@@ -576,6 +602,7 @@ async function syncClient(client, apiKey){
         const destVal = col(summaryRow,'destino'); if(destVal) existing.destino = destVal;
         if(accionPropuesta) existing.notes = accionPropuesta;
         existing.adsets = adsets;
+        if(Object.keys(landingVariants).length) existing.landings = landingVariants;
         updated++;
       } else {
         if(isLatest) client.conversionLines.forEach(l=>{if(!l.blockKey) l.status='historico';});
@@ -591,6 +618,7 @@ async function syncClient(client, apiKey){
             registros: metrics.registros, sql: metrics.sql
           },
           adsets,
+          landings: Object.keys(landingVariants).length?landingVariants:undefined,
           notes: accionPropuesta || `Importado desde sheet - ${blockKey}`,
           status: isLatest?'activa':'historico'
         });
@@ -1086,6 +1114,15 @@ function renderTab(){
       {label:'Anuncio',get:l=>l.ad||'-'},
       {label:'Filtro',get:l=>l.filtro?`<span class="pill ${l.filtro==='ALTO'?'pill-red':l.filtro==='MEDIO'?'pill-amber':'pill-green'}" style="font-size:10px">${l.filtro}</span>`:'-'},
       {label:'Destino',get:l=>l.destino?`<span class="pill pill-blue" style="font-size:10px">${l.destino}</span>`:'-'},
+      {label:'Landings',get:l=>{
+        if(!l.landings||!Object.keys(l.landings).length) return '<span style="color:var(--text3)">-</span>';
+        return Object.keys(l.landings).sort().map(function(letter){
+          var v=l.landings[letter];
+          var pct=(v.optIn!==undefined&&v.optIn!==null)?(v.optIn*100).toFixed(2)+'%':'-';
+          var linkHtml=v.link?'<a href="'+esc(v.link)+'" target="_blank" rel="noopener" style="color:var(--green);text-decoration:none" onclick="event.stopPropagation()">Ver landing ↗</a>':'<span style="color:var(--text3)">sin link</span>';
+          return '<div style="display:inline-flex;align-items:center;gap:8px;margin:0 14px 4px 0"><span style="font-size:11px;font-weight:500;color:var(--text2)">Landing '+letter.toUpperCase()+'</span><span style="font-size:11px;color:var(--text)">'+pct+'</span><span style="font-size:11px">'+linkHtml+'</span></div>';
+        }).join('');
+      }},
       {label:'Ad Spent',get:l=>fmtVal((l.metrics||{}).adSpent,'$')},
       {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
       {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
