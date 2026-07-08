@@ -408,6 +408,42 @@ function _n(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u
 // Dado un objeto fila y una lista de terminos, devuelve el valor de la primera
 // columna cuyo nombre (normalizado) contiene TODOS los terminos.
 // Ejemplo: col(row, 'inversion','semanal') matchea "Inversion Semanal", "INVERSION SEMANAL", etc.
+function hasCurrentlyActiveLine(lines){
+  if(!lines || !lines.length) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  return lines.some(function(l){
+    if(!l.dateStart) return false;
+    var start=new Date(l.dateStart); start.setHours(0,0,0,0);
+    if(start>today) return false;
+    if(l.dateEnd){ var end=new Date(l.dateEnd); end.setHours(0,0,0,0); if(end<today) return false; }
+    return true;
+  });
+}
+function getActiveLine(lines){
+  if(!lines || !lines.length) return null;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const withStart=lines.filter(function(l){return !!l.dateStart;});
+  const current=withStart.filter(function(l){
+    var start=new Date(l.dateStart); start.setHours(0,0,0,0);
+    if(start>today) return false;
+    if(l.dateEnd){ var end=new Date(l.dateEnd); end.setHours(0,0,0,0); if(end<today) return false; }
+    return true;
+  });
+  if(current.length){
+    current.sort(function(a,b){return new Date(b.dateStart)-new Date(a.dateStart);});
+    return current[0];
+  }
+  if(withStart.length){
+    withStart.sort(function(a,b){return new Date(b.dateStart)-new Date(a.dateStart);});
+    return withStart[0];
+  }
+  return lines[lines.length-1];
+}
+function isLineActive(line, lines){
+  if(!line) return false;
+  return getActiveLine(lines)===line;
+}
+
 function lastToken(s){ const w=_n(s).split(/[^a-z0-9]+/).filter(Boolean); return w.length?w[w.length-1]:''; }
 function col(row, ...terms){
   const nt = terms.map(_n);
@@ -596,6 +632,10 @@ async function syncClient(client, apiKey){
       const blockKey = name.trim();
 
       const existingIdx = client.conversionLines.findIndex(l=>l.blockKey===blockKey);
+      if(isLatest){
+        // Apaga cualquier otra linea (del sheet o manual) para que solo quede una activa
+        client.conversionLines.forEach(function(l){ if(l.blockKey!==blockKey) l.status='historico'; });
+      }
       if(existingIdx>=0){
         const existing = client.conversionLines[existingIdx];
         Object.entries(metrics).forEach(([k,v])=>{if(v!==null) existing.metrics[k]=Math.round(v*100)/100;});
@@ -603,9 +643,9 @@ async function syncClient(client, apiKey){
         if(accionPropuesta) existing.notes = accionPropuesta;
         existing.adsets = adsets;
         if(Object.keys(landingVariants).length) existing.landings = landingVariants;
+        if(isLatest) existing.status='activa';
         updated++;
       } else {
-        if(isLatest) client.conversionLines.forEach(l=>{if(!l.blockKey) l.status='historico';});
         client.conversionLines.push({
           id: 'l'+Date.now()+Math.random().toString(36).slice(2),
           blockKey, version: blockKey,
@@ -907,7 +947,7 @@ function showOverview(){
       </div>
       ${(()=>{
         var activos=DB.clients.filter(function(cl){
-          return (cl.conversionLines||[]).some(function(l){return l.status==='activa';});
+          return hasCurrentlyActiveLine(cl.conversionLines||[]);
         });
         var now=new Date();
         var conGarantia=DB.clients.filter(function(cl){
@@ -938,7 +978,7 @@ function showOverview(){
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Clientes</div>
       <div style="display:flex;flex-direction:column;gap:6px">
         ${DB.clients.map(c=>{
-          var isActivo=(c.conversionLines||[]).some(function(l){return l.status==='activa';});
+          var isActivo=hasCurrentlyActiveLine(c.conversionLines||[]);
           var tipoTag='';
           if(c.serviceType==='recurrente'||c.recurrente) tipoTag='<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(100,80,200,0.12);color:#9F8FE8;border:0.5px solid rgba(100,80,200,0.3)">Recurrente</span>';
           else if(c.serviceType==='one-time') tipoTag='<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(186,117,23,0.12);color:#BA7517;border:0.5px solid rgba(186,117,23,0.3)">One-time</span>';
@@ -955,7 +995,7 @@ function showOverview(){
           if(c.serviceType==='recurrente'||c.recurrente){
             sub2=(c.nextPaymentDate?'Prox. pago '+c.nextPaymentDate+' ':'')+( c.monthlyFee?'<span style="color:#4ecfa0;font-weight:500">$'+parseFloat(c.monthlyFee).toLocaleString()+'/mes</span>':'');
           } else {
-            var line=(c.conversionLines||[]).find(function(l){return l.status==='activa';});
+            var line=getActiveLine(c.conversionLines||[]);
             sub2=(c.avgCPL?'CPL $'+c.avgCPL+' &nbsp;':'')+(line&&line.dateEnd?'Vence '+line.dateEnd+' &nbsp;':'')+(c.contractValue?'<span style="color:#4ecfa0">$'+parseFloat(c.contractValue).toLocaleString()+'</span>':'');
           }
           return '<div style="background:var(--bg2);'+borderStyle+';border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="selectClient('+c.id+')">'
@@ -1012,7 +1052,7 @@ function setMetricsView(v){S.metricsView=v;renderClient();}
 
 function renderClient(){
   const c=DB.clients.find(x=>x.id===S.clientId);if(!c)return;
-  const al=c.conversionLines.find(l=>l.status==='activa')||c.conversionLines[c.conversionLines.length-1];
+  const al=getActiveLine(c.conversionLines);
   const m=al?.metrics||{};
   const daysActive=days(al?.dateStart,al?.dateEnd);
 
@@ -1187,9 +1227,9 @@ function renderTab(){
     el.innerHTML=`
       <div class="cl-accordion">
         ${sortedLines.map(l=>{
+          const isActive=isLineActive(l,c.conversionLines);
           const _explicitCollapse=(S.collapsedCols||{})[l.id];
-          const collapsed=_explicitCollapse!==undefined?_explicitCollapse:(l.status!=='activa');
-          const isActive=l.status==='activa';
+          const collapsed=_explicitCollapse!==undefined?_explicitCollapse:!isActive;
           return `<div class="cl-acc-item" style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:10px;overflow:hidden;${isActive?'border-color:rgba(29,158,117,0.4)':''}">
             <div onclick="toggleColCollapse('${l.id}')" style="display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;background:var(--bg2)">
               <span style="font-size:11px;color:var(--text3);transition:transform .15s;transform:rotate(${collapsed?'-90':'0'}deg);display:inline-block">▾</span>
@@ -1213,7 +1253,7 @@ function renderTab(){
       ${c.conversionLines.some(l=>l.adsets?.length)?`
       <div style="margin-top:16px">
         <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px">Adsets & Ads - Linea activa</div>
-        ${(c.conversionLines.find(l=>l.status==='activa')||c.conversionLines[c.conversionLines.length-1])?.adsets?.map(adset=>`
+        ${(getActiveLine(c.conversionLines))?.adsets?.map(adset=>`
           <div class="adset-block">
             <div class="adset-header">
               <div>
@@ -1259,10 +1299,10 @@ function renderTab(){
       const v = l.metrics?.sql;
       return s + (v!==null&&v!==undefined ? Number(v) : 0);
     }, 0);
-    const activeLine4oc = c.conversionLines.find(l=>l.status==='activa');
+    const activeLine4oc = getActiveLine(c.conversionLines);
     const sqlActive = activeLine4oc?.metrics?.sql;
     const ocsMonth = (sqlActive!==null&&sqlActive!==undefined) ? Number(sqlActive) : 0;
-    const adSpent = (c.conversionLines.find(l=>l.status==='activa')||{}).metrics?.adSpent||0;
+    const adSpent = (activeLine4oc||{}).metrics?.adSpent||0;
     const daysActive2 = days(contract.startDate, null)||0;
     const minDaily = contract.minDailyBudget||null;
     const minOCsMonth = contract.minOCsMonth||null;
@@ -1504,7 +1544,7 @@ function renderTab(){
   }
 
   else if(S.tab==='ads'){
-    const activeLine = c.conversionLines.find(l=>l.status==='activa')||c.conversionLines[c.conversionLines.length-1];
+    const activeLine = getActiveLine(c.conversionLines);
     const metaTokenCheck=c.metaToken||'';
     const metaAccountIdCheck=c.metaAccountId||'';
     if(!activeLine||!(activeLine.metaCampaigns&&activeLine.metaCampaigns.length)){
@@ -1722,13 +1762,13 @@ function renderTab(){
       [...c.conversionLines].reverse().map((l,i,arr)=>`
         <div class="tl-item">
           <div class="tl-left">
-            <div class="tl-dot" style="background:${l.status==='activa'?'#1D9E75':'#378ADD'}"></div>
+            <div class="tl-dot" style="background:${isLineActive(l,c.conversionLines)?'#1D9E75':'#378ADD'}"></div>
             ${i<arr.length-1?'<div class="tl-line"></div>':''}
           </div>
           <div class="tl-content">
             <div style="display:flex;align-items:center;gap:8px">
               <div class="tl-ver">${l.version}</div>
-              ${l.status==='activa'?'<span class="pill pill-green" style="font-size:10px">activa</span>':''}
+              ${isLineActive(l,c.conversionLines)?'<span class="pill pill-green" style="font-size:10px">activa</span>':''}
             </div>
             <div class="tl-dates">${fmtDateRange(l.dateStart,l.dateEnd)} - ${days(l.dateStart,l.dateEnd)!==null?days(l.dateStart,l.dateEnd)+' dias':'-'}</div>
             <div class="tl-note">${l.notes}</div>
@@ -1872,12 +1912,8 @@ function deleteConversionLine(clientId, lineId){
   const line=(c.conversionLines||[]).find(function(l){return l.id===lineId;});
   if(!line) return;
   if(!confirm('Eliminar la linea "'+(line.version||'')+'"? Esta accion no se puede deshacer.')) return;
-  const wasActive=line.status==='activa';
   c.conversionLines=c.conversionLines.filter(function(l){return l.id!==lineId;});
-  // Si borramos la linea activa, la mas reciente que quede pasa a ser la activa
-  if(wasActive && c.conversionLines.length){
-    c.conversionLines[c.conversionLines.length-1].status='activa';
-  }
+  // No hace falta reasignar "activa": se calcula sola en base a las fechas de las lineas que queden
   save();
   toast('Linea eliminada');
   renderTab();
@@ -3438,7 +3474,7 @@ function saveMetaConfig(clientId){
 function changeMetaDays(clientId, days){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var activeLine=c.conversionLines&&(c.conversionLines.find(function(l){return l.status==='activa';})||c.conversionLines[c.conversionLines.length-1]);
+  var activeLine=c.conversionLines&&getActiveLine(c.conversionLines);
   if(!activeLine) return;
   if(days==='custom'){
     activeLine.metaDays='custom';
@@ -3459,7 +3495,7 @@ function changeMetaDays(clientId, days){
 function changeMetaCustomRange(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var activeLine=c.conversionLines&&(c.conversionLines.find(function(l){return l.status==='activa';})||c.conversionLines[c.conversionLines.length-1]);
+  var activeLine=c.conversionLines&&getActiveLine(c.conversionLines);
   if(!activeLine) return;
   var since=document.getElementById('meta-since-input').value;
   var until=document.getElementById('meta-until-input').value;
@@ -3566,7 +3602,7 @@ async function syncMetaAds(clientId){
 
   var token=c.metaToken;
   var actId='act_'+c.metaAccountId;
-  var activeLine=c.conversionLines&&(c.conversionLines.find(function(l){return l.status==='activa';})||c.conversionLines[c.conversionLines.length-1]);
+  var activeLine=c.conversionLines&&getActiveLine(c.conversionLines);
   // If no line exists, create a temporary meta-only line
   if(!activeLine){
     if(!c.conversionLines) c.conversionLines=[];
