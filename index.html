@@ -1665,31 +1665,22 @@ function renderTab(){
     const noSql=sqlLeads.length===0;
     const allLines=c.conversionLines||[];
     const _n=function(v){const x=Number(v);return isNaN(x)?0:x;};
-    const firstLine=allLines[0];
-    const accSpent=allLines.reduce(function(s,l){return s+_n(l.metrics&&l.metrics.adSpent);},0);
-    const accViews=allLines.reduce(function(s,l){return s+_n(l.metrics&&l.metrics.pageViews);},0);
-    const accSql=allLines.reduce(function(s,l){return s+_n(l.metrics&&l.metrics.sql);},0);
-    const costoCalificado=accSql>0?accSpent/accSql:null;
-    // Dias activa: suma la duracion real de cada linea (dateStart -> dateEnd, o hoy si sigue abierta)
-    const diasActiva=allLines.reduce(function(s,l){return s+(l.dateStart?(days(l.dateStart,l.dateEnd)||0):0);},0);
-    // Dias pausada: el total transcurrido desde el lanzamiento menos lo que estuvo efectivamente activo
-    const totalSpan=firstLine&&firstLine.dateStart?days(firstLine.dateStart,null):null;
-    const diasPausada=totalSpan!==null?Math.max(totalSpan-diasActiva,0):null;
     const fmtMoney=function(n){return n===null||n===undefined?'-':'USD '+(Math.round(n*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
-    const optInRows=allLines.filter(function(l){return l.metrics&&l.metrics.optIn!==null&&l.metrics.optIn!==undefined&&l.metrics.optIn!=='';})
-      .map(function(l){return '<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Opt-in '+esc(l.version)+'</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(l.metrics.optIn*100).toFixed(2)+'%</span></div>';}).join('');
-
-    // Llamadas / agendas: "Agendas totales" todavia no tiene fuente de datos (N/A por ahora).
-    // "Llamadas en vivo" = llamadas de Fathom registradas. "Calificada" = el lead vinculado esta marcado SQL.
-    const fathomCallsAll=c.fathomCalls||[];
     const oppsAll=(c.ghl&&c.ghl.opportunities)||[];
-    const llamadasEnVivo=fathomCallsAll.length;
-    const llamadasCalificadas=fathomCallsAll.filter(function(cl){
-      const opp=oppsAll.find(function(o){return o.id===cl.linkedOppId;});
-      return opp&&opp._sql;
-    }).length;
-    const costoPorLlamada=llamadasEnVivo>0?accSpent/llamadasEnVivo:null;
-    const costoPorLlamadaCalificada=llamadasCalificadas>0?accSpent/llamadasCalificadas:null;
+
+    const parseDDMMYYYY=function(s){
+      if(!s) return null;
+      const m=String(s).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if(m) return new Date(+m[3], +m[2]-1, +m[1]);
+      const d=new Date(s);
+      return isNaN(d.getTime())?null:d;
+    };
+    const inRange=function(date, start, end){
+      if(!date) return false;
+      if(start && date<start) return false;
+      if(end && date>end) return false;
+      return true;
+    };
 
     const healthHtml=(()=>{
       const _al=getActiveLine(c.conversionLines);
@@ -1708,45 +1699,80 @@ function renderTab(){
       +'</div></div>';
     })();
 
-    const reportHtml=allLines.length===0?'':(
-      '<div style="margin-bottom:20px">'
-      +'<div style="font-size:15px;font-weight:500;color:var(--text)">Informe de campana - '+esc(c.name)+'</div>'
-      +'<div style="font-size:12px;color:var(--text3);margin-top:2px">'
-      +(firstLine&&firstLine.dateStart?'Lanzamiento: '+fmtDateOnly(firstLine.dateStart):'Sin fecha')
-      +(diasActiva!==null?' &middot; '+diasActiva+' dias activos':'')
-      +(diasPausada?' &middot; '+diasPausada+' dias pausada':'')
-      +'</div></div>'
+    // Un informe independiente por cada linea/bloque (no acumulado): arranca de cero cuando se crea la linea nueva.
+    function buildLineReport(line, prevLine){
+      const m=line.metrics||{};
+      const spent=_n(m.adSpent), views=_n(m.pageViews), sql=_n(m.sql);
+      const costoCalificado=sql>0?spent/sql:null;
+      const start=line.dateStart?new Date(line.dateStart):null;
+      const end=line.dateEnd?new Date(line.dateEnd):null;
+      const diasActivos=days(line.dateStart,line.dateEnd);
+      const diasPausadaAntes=(prevLine&&prevLine.dateEnd&&line.dateStart)?days(prevLine.dateEnd,line.dateStart):null;
 
-      +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Meta</div>'
-      +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Inversion en pauta</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(accSpent)+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Fecha de lanzamiento</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(firstLine&&firstLine.dateStart?fmtDateOnly(firstLine.dateStart):'-')+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana activa</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasActiva!==null?diasActiva+' dias':'-')+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana pausada</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasPausada!==null?diasPausada+' dias':'-')+'</span></div>'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Calificadas (SQL)</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+accSql+'</span></div>'
+      const callsInBlock=calls.filter(function(cl){return inRange(parseDDMMYYYY(cl.date), start, end||new Date());});
+      const llamadasEnVivo=callsInBlock.length;
+      const llamadasCalificadas=callsInBlock.filter(function(cl){
+        const opp=oppsAll.find(function(o){return o.id===cl.linkedOppId;});
+        return opp&&opp._sql;
+      }).length;
+      const costoPorLlamada=llamadasEnVivo>0?spent/llamadasEnVivo:null;
+      const costoPorLlamadaCalificada=llamadasCalificadas>0?spent/llamadasCalificadas:null;
+
+      const optInRow=(m.optIn!==null&&m.optIn!==undefined&&m.optIn!=='')
+        ?'<div style="display:flex;justify-content:space-between;padding:12px 16px"><span style="font-size:13px;color:var(--text2)">Opt-in</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(m.optIn*100).toFixed(2)+'%</span></div>'
+        :'<div style="padding:12px 16px;font-size:12px;color:var(--text3)">Sin datos de opt-in todavia.</div>';
+
+      return '<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Meta</div>'
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Inversion en pauta</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(spent)+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Fecha de lanzamiento</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(line.dateStart?fmtDateOnly(line.dateStart):'-')+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias de campana activa</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(diasActivos!==null?diasActivos+' dias':'-')+'</span></div>'
+        +(diasPausadaAntes?'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Dias pausada antes de este bloque</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+diasPausadaAntes+' dias</span></div>':'')
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Calificadas (SQL)</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+sql+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px"><span style="font-size:13px;color:var(--text2)">Costo calificado</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoCalificado)+'</span></div>'
       +'</div>'
 
       +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Landings - GHL</div>'
-      +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
-        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;'+(optInRows?'border-bottom:1px solid var(--border)':'')+'"><span style="font-size:13px;color:var(--text2)">Visitas totales</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(accViews||'-')+'</span></div>'
-        +(optInRows||'<div style="padding:12px 16px;font-size:12px;color:var(--text3)">Sin datos de opt-in todavia.</div>')
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
+        +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Visitas totales</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+(views||'-')+'</span></div>'
+        +optInRow
       +'</div>'
 
       +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Llamadas</div>'
-      +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">'
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Agendas totales</span><span style="font-size:13px;font-weight:500;color:var(--text3)">N/A</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Costo por agenda</span><span style="font-size:13px;font-weight:500;color:var(--text3)">N/A</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Llamadas en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+llamadasEnVivo+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Costo por llamada en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoPorLlamada)+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">Llamadas calificadas en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+llamadasCalificadas+'</span></div>'
         +'<div style="display:flex;justify-content:space-between;padding:12px 16px"><span style="font-size:13px;color:var(--text2)">Costo por llamada calificada en vivo</span><span style="font-size:13px;font-weight:500;color:var(--text)">'+fmtMoney(costoPorLlamadaCalificada)+'</span></div>'
-      +'</div>'
+      +'</div>';
+    }
+
+    const sortedForReports=[...allLines].reverse();
+    const reportsHtml=allLines.length===0?'<div style="font-size:13px;color:var(--text3);margin-bottom:20px">Todavia no hay lineas de conversion para generar un informe.</div>':(
+      '<div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:14px">Informes por bloque - '+esc(c.name)+'</div>'
+      +sortedForReports.map(function(line,idxRev){
+        const idx=allLines.length-1-idxRev;
+        const prevLine=idx>0?allLines[idx-1]:null;
+        const isActive=isLineActive(line,allLines);
+        const key='diag-'+line.id;
+        const explicit=(S.collapsedCols||{})[key];
+        const collapsed=explicit!==undefined?explicit:!isActive;
+        return '<div class="cl-acc-item" style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:10px;overflow:hidden;'+(isActive?'border-color:rgba(29,158,117,0.4)':'')+'">'
+          +'<div onclick="toggleColCollapse(\''+key+'\')" style="display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;background:var(--bg2)">'
+            +'<span style="font-size:11px;color:var(--text3);transition:transform .15s;transform:rotate('+(collapsed?'-90':'0')+'deg);display:inline-block">&#9662;</span>'
+            +'<span style="font-size:13px;font-weight:500;color:'+(isActive?'#4ecfa0':'var(--text)')+'">'+esc(line.version)+'</span>'
+            +(isActive?'<span class="pill pill-green" style="font-size:9px;padding:1px 6px">activa</span>':'')
+            +'<span style="font-size:11px;color:var(--text3)">'+fmtDateRange(line.dateStart,line.dateEnd)+'</span>'
+          +'</div>'
+          +(collapsed?'':'<div style="padding:16px">'+buildLineReport(line,prevLine)+'</div>')
+        +'</div>';
+      }).join('')
     );
 
-    el.innerHTML=healthHtml+reportHtml
-      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
-      +'<div>'
+    el.innerHTML=healthHtml+reportsHtml
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;margin-top:8px">'      +'<div>'
       +'<div style="font-size:14px;font-weight:500;color:var(--text)">Analisis de SQLs</div>'
       +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
       +(noSql?'Sin SQLs marcados - ve a Conversion de ventas y marca los leads calificados'
