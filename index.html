@@ -3247,7 +3247,11 @@ function getGhlRules(c){
     abandonado:r.abandonado||[],
     abandonadoDias:r.abandonadoDias!=null?r.abandonadoDias:7,
     sql:r.sql||[],
-    llamadaEnVivo:r.llamadaEnVivo||[]
+    llamadaEnVivo:r.llamadaEnVivo||[],
+    agendas:r.agendas||[],
+    asistencias:r.asistencias||[],
+    noShows:r.noShows||[],
+    presentaciones:r.presentaciones||[]
   };
 }
 function deriveEstado(o){
@@ -3306,13 +3310,17 @@ function openGhlRulesModal(){
     +'<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text3)">Dias sin respuesta para marcar Abandonado</label>'
     +'<input id="ghl-rules-dias" type="number" min="1" value="'+cur.abandonadoDias+'" style="width:100px;display:block;margin-top:4px;padding:7px 9px;font-size:12px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:#fff;font-family:var(--font)"></div>'
     +groupHtml('llamadaEnVivo','Llamada en vivo (GHL)','Opcional: cuenta como llamada en vivo, aparte de las de Fathom.')
+    +groupHtml('agendas','Agendas','Que stages cuentan como una llamada agendada.')
+    +groupHtml('asistencias','Asistencias','Que stages cuentan como que el lead asistio a la llamada.')
+    +groupHtml('noShows','No shows','Que stages cuentan como que el lead no se presento.')
+    +groupHtml('presentaciones','Presentaciones','Que stages cuentan como que se hizo la presentacion/pitch en la llamada.')
     +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveGhlRules('+c.id+')">Guardar</button></div>'
     +'</div></div>';
 }
 
 function saveGhlRules(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
-  const groups=['sql','ganado','abandonado','llamadaEnVivo'];
+  const groups=['sql','ganado','abandonado','llamadaEnVivo','agendas','asistencias','noShows','presentaciones'];
   const rules={};
   groups.forEach(function(g){
     rules[g]=Array.prototype.slice.call(document.querySelectorAll('input[data-group="'+g+'"]:checked')).map(function(i){return i.value;});
@@ -3535,6 +3543,26 @@ function renderVentasTab(c, el){
   const llamadaGhlCount=llamadaGhlStages.length?ops.filter(function(o){return llamadaGhlStages.indexOf(_n(o.pipelineStage))>=0;}).length:null;
   const money=function(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
 
+  // Ad spend acumulado de todas las lineas de conversion, misma base que usa el resto de la app
+  const accSpentAll=(c.conversionLines||[]).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
+  const countByStages=function(stagesArr){ return stagesArr.length? ops.filter(function(o){return stagesArr.indexOf(_n(o.pipelineStage))>=0;}).length : null; };
+  const agendasCount=countByStages(_rules.agendas);
+  const asistenciasCount=countByStages(_rules.asistencias);
+  const noShowCount=countByStages(_rules.noShows);
+  const presentCount=countByStages(_rules.presentaciones);
+  const tasaAsistencia=(agendasCount&&asistenciasCount!==null)?Math.round(asistenciasCount/agendasCount*1000)/10:null;
+  const tasaNoShow=(agendasCount&&noShowCount!==null)?Math.round(noShowCount/agendasCount*1000)/10:null;
+  const costoAgenda=(agendasCount)?accSpentAll/agendasCount:null;
+  const costoLlamadaViva=(llamadaGhlCount)?accSpentAll/llamadaGhlCount:null;
+  const costoPresentacion=(presentCount)?accSpentAll/presentCount:null;
+  const cac=won?accSpentAll/won:null;
+  const llamadasCalifEnVivo=llamadaGhlStages.length?ops.filter(function(o){return llamadaGhlStages.indexOf(_n(o.pipelineStage))>=0 && o._sql;}).length:null;
+  const costoLlamadaCalif=llamadasCalifEnVivo?accSpentAll/llamadasCalifEnVivo:null;
+  // Time to cierre: requiere fecha de actualizacion (updatedAt), que hoy el Apps Script todavia no manda
+  const wonWithDates=ops.filter(function(o){return deriveEstado(o).label==='Ganado' && o.createdAt && o.updatedAt;});
+  const avgTimeToClose=wonWithDates.length?Math.round(wonWithDates.reduce(function(s,o){return s+((new Date(o.updatedAt)-new Date(o.createdAt))/86400000);},0)/wonWithDates.length*10)/10:null;
+  const timeToCierreNeedsSetup=won>0 && wonWithDates.length===0;
+
   // Breakdown por anuncio y por geo
   // Lee un valor de las respuestas del formulario por nombre (exacto, luego contiene)
   const faGet=function(fa,names){
@@ -3594,6 +3622,23 @@ function renderVentasTab(c, el){
     +'<div class="metric-card"><div class="metric-label">Valor total</div><div class="metric-value">'+money(valor)+'</div></div>'
     +(llamadaGhlCount!==null?'<div class="metric-card"><div class="metric-label">Llamadas en vivo (GHL)</div><div class="metric-value">'+llamadaGhlCount+'</div></div>':'')
     +'</div>';
+  html+='<div class="metrics-row" style="margin-bottom:16px">'
+    +(agendasCount!==null?'<div class="metric-card"><div class="metric-label">Agendas</div><div class="metric-value">'+agendasCount+'</div></div>':'')
+    +(asistenciasCount!==null?'<div class="metric-card"><div class="metric-label">Asistencias</div><div class="metric-value">'+asistenciasCount+'</div></div>':'')
+    +(tasaAsistencia!==null?'<div class="metric-card"><div class="metric-label">Tasa de asistencia</div><div class="metric-value">'+tasaAsistencia+'%</div></div>':'')
+    +(noShowCount!==null?'<div class="metric-card"><div class="metric-label">No shows</div><div class="metric-value">'+noShowCount+'</div></div>':'')
+    +(tasaNoShow!==null?'<div class="metric-card"><div class="metric-label">Tasa de no shows</div><div class="metric-value">'+tasaNoShow+'%</div></div>':'')
+    +(costoAgenda!==null?'<div class="metric-card"><div class="metric-label">Costo por agenda</div><div class="metric-value">'+money(costoAgenda)+'</div></div>':'')
+    +(costoLlamadaViva!==null?'<div class="metric-card"><div class="metric-label">Costo por llamada en vivo</div><div class="metric-value">'+money(costoLlamadaViva)+'</div></div>':'')
+    +(presentCount!==null?'<div class="metric-card"><div class="metric-label">Presentaciones</div><div class="metric-value">'+presentCount+'</div></div>':'')
+    +(costoPresentacion!==null?'<div class="metric-card"><div class="metric-label">Costo por presentacion</div><div class="metric-value">'+money(costoPresentacion)+'</div></div>':'')
+    +'<div class="metric-card"><div class="metric-label">CAC</div><div class="metric-value">'+(cac!==null?money(cac):'<span style="color:var(--text3)">-</span>')+'</div></div>'
+    +(llamadasCalifEnVivo!==null?'<div class="metric-card"><div class="metric-label">Llamadas calificadas en vivo</div><div class="metric-value">'+llamadasCalifEnVivo+'</div></div>':'')
+    +(costoLlamadaCalif!==null?'<div class="metric-card"><div class="metric-label">Costo por llamada calificada</div><div class="metric-value">'+money(costoLlamadaCalif)+'</div></div>':'')
+    +'<div class="metric-card"><div class="metric-label">Time to cierre</div><div class="metric-value">'+(avgTimeToClose!==null?avgTimeToClose+' dias':'<span style="color:var(--text3)">N/A</span>')+'</div></div>'
+    +'</div>'
+    +(timeToCierreNeedsSetup?'<div style="font-size:11px;color:var(--text3);margin:-10px 0 16px">Time to cierre necesita que el Apps Script tambien mande la fecha de actualizacion (updatedAt) de cada oportunidad - avisame si queres que te arme ese cambio.</div>':'')
+    +(!agendasCount&&!asistenciasCount&&!noShowCount&&!presentCount?'<div style="font-size:11px;color:var(--text3);margin:-10px 0 16px">Configura que stages cuentan como agenda/asistencia/no show/presentacion en el boton "Reglas".</div>':'');
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por anuncio</div><div style="margin-bottom:12px">'+chips(byAd)+'</div>';
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por ubicacion</div><div style="margin-bottom:12px">'+chips(byGeo)+'</div>';
   html+='<div style="margin-bottom:6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Por stage</div><div style="margin-bottom:18px">'+chips(byStage,byStage.length)+'</div>';
