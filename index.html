@@ -484,6 +484,44 @@ function getWeekRange(d){
 function isoDate(d){ return d.toISOString().slice(0,10); }
 
 var _liveRefreshInFlight={};
+// ---- Inversion de Meta por periodo (para Conversion de ventas / fuente Tiempo real) ----
+const _metaSpendInFlight={};
+async function fetchMetaSpendPeriod(clientId,period){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.metaToken||!c.metaAccountId) return null;
+  c._metaSpend=c._metaSpend||{};
+  const cached=c._metaSpend[period];
+  if(cached && (Date.now()-cached.at)<10*60*1000) return cached;
+  const fk=clientId+':'+period;
+  if(_metaSpendInFlight[fk]) return cached||null;
+  _metaSpendInFlight[fk]=true;
+  try{
+    const actId='act_'+c.metaAccountId;
+    let qs;
+    if(period==='mes'){
+      const first=new Date(); first.setDate(1);
+      qs='time_range='+encodeURIComponent('{"since":"'+isoDate(first)+'","until":"'+isoDate(new Date())+'"}');
+    }else if(period==='30d'){
+      qs='date_preset=last_30d';
+    }else{
+      qs='date_preset=maximum';
+    }
+    const url='https://graph.facebook.com/v19.0/'+actId+'/insights?fields=spend&'+qs+'&access_token='+c.metaToken;
+    const res=await fetch(url);
+    const data=await res.json();
+    if(data.error) throw new Error(data.error.message||'Meta error');
+    const spend=(data.data&&data.data[0]&&parseFloat(data.data[0].spend))||0;
+    c._metaSpend[period]={spend:spend,at:Date.now()};
+    save();
+    return c._metaSpend[period];
+  }catch(e){
+    c._metaSpend[period]={spend:null,at:Date.now(),error:e.message};
+    return c._metaSpend[period];
+  }finally{
+    _metaSpendInFlight[fk]=false;
+  }
+}
+
 async function refreshLiveLine(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return null;
@@ -3728,25 +3766,25 @@ function renderVentasTab(c, el){
     var e=l.dateEnd?new Date(l.dateEnd):null;
     return !(e&&e<_pFrom);
   };
-  // Inversion: solo lineas/semanas que tocan el periodo
+  // Fuente Lineas: suma de lineas que tocan el periodo
   const accSpentLineas=(c.conversionLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
-  const accSpentLive=(c.liveLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
+  // Fuente Tiempo real: inversion pedida a Meta para el MISMO rango del periodo
+  const metaConfigured=!!(c.metaToken&&c.metaAccountId);
+  const _msCache=(c._metaSpend||{})[period];
+  const accSpentLive=(_msCache&&_msCache.spend!=null)?_msCache.spend:null;
   const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
-  // Cobertura del tracking en tiempo real (desde la primera semana registrada)
-  const _liveStarts=(c.liveLines||[]).map(function(l){return l.dateStart;}).filter(Boolean).sort();
-  const liveFrom=_liveStarts.length?new Date(_liveStarts[0]):null;
-  // Denominadores: misma ventana que la inversion elegida.
-  // Con "Tiempo real", solo contactos creados desde que existe tracking live.
-  let opsCost=opsP;
-  if(spendSource==='live'&&liveFrom){
-    opsCost=opsP.filter(function(o){return o.createdAt&&new Date(o.createdAt)>=liveFrom;});
+  if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000)){
+    fetchMetaSpendPeriod(c.id,period).then(function(){
+      if(S.tab==='ventas'&&S.clientId===c.id) renderTab();
+    });
   }
-  const cAg=cntStages(opsCost,_rules.agendas);
-  const cViva=cntStages(opsCost,_rules.llamadaEnVivo);
-  const cPres=cntStages(opsCost,_rules.presentaciones);
-  const cCalif=_rules.llamadaEnVivo.length?opsCost.filter(function(o){return _rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0&&o._sql;}).length:null;
-  const cWon=opsCost.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
-  const costo=function(n){return n?money(accSpentAll/n):null;};
+  // Denominadores: contactos del mismo periodo (coherente con ambas fuentes)
+  const cAg=cntStages(opsP,_rules.agendas);
+  const cViva=cntStages(opsP,_rules.llamadaEnVivo);
+  const cPres=cntStages(opsP,_rules.presentaciones);
+  const cCalif=_rules.llamadaEnVivo.length?opsP.filter(function(o){return _rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0&&o._sql;}).length:null;
+  const cWon=opsP.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
+  const costo=function(n){return (n&&accSpentAll!=null)?money(accSpentAll/n):null;};
 
   // --- HTML ---
   const vhRow=function(l,v){
@@ -3800,7 +3838,10 @@ function renderVentasTab(c, el){
   html+='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
     +'<div class="vh-label" style="border:0;padding:0">Costos'
       +(spendSource==='live'
-        ?(liveFrom?' &middot; tiempo real desde '+liveFrom.toLocaleDateString('es-AR',{day:'numeric',month:'numeric',year:'numeric'})+' (gasto y contactos de ese rango)':' &middot; sin semanas de tiempo real todavia')
+        ?(!metaConfigured
+          ?' &middot; conecta Meta en Ads & Guiones para usar tiempo real'
+          :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':'historico completo')+')'
+            +(_msCache&&_msCache.spend!=null?' &middot; actualizado '+new Date(_msCache.at).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}):(_msCache&&_msCache.error?' &middot; <span style="color:var(--redx)">Meta: '+esc(_msCache.error)+'</span>':' &middot; actualizando...')))
         :' &middot; segun lineas del periodo')
       +(seg?' &middot; la inversion no se segmenta':'')
       +'</div>'
@@ -3808,7 +3849,7 @@ function renderVentasTab(c, el){
     +'<button class="vh-chip '+(spendSource==='lineas'?'on':'')+'" onclick="setVentasSpendSource(\'lineas\')">Lineas</button>'
     +'<button class="vh-chip '+(spendSource==='live'?'on':'')+'" onclick="setVentasSpendSource(\'live\')">Tiempo real</button></div></div>';
   html+='<div class="vh-costs">'
-    +vhCost('Inversion',money(accSpentAll))
+    +vhCost('Inversion',accSpentAll!=null?money(accSpentAll):null)
     +vhCost('Costo por agenda',costo(cAg))
     +vhCost('Costo por llamada en vivo',costo(cViva))
     +vhCost('Costo por calificada',costo(cCalif))
