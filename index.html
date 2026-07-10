@@ -3719,14 +3719,33 @@ function renderVentasTab(c, el){
 
   // --- Costos: la inversion no es segmentable, se calcula sobre todo el periodo ---
   const spendSource=S.ventasSpendSource||'lineas';
-  const accSpentLineas=(c.conversionLines||[]).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
-  const accSpentLive=(c.liveLines||[]).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
+  // Ventana del periodo seleccionado (null = sin limite)
+  let _pFrom=null;
+  if(period==='mes') _pFrom=new Date(_now.getFullYear(),_now.getMonth(),1);
+  else if(period==='30d') _pFrom=new Date(_now-30*86400000);
+  const _lineOverlaps=function(l){
+    if(!_pFrom) return true;
+    var e=l.dateEnd?new Date(l.dateEnd):null;
+    return !(e&&e<_pFrom);
+  };
+  // Inversion: solo lineas/semanas que tocan el periodo
+  const accSpentLineas=(c.conversionLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
+  const accSpentLive=(c.liveLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
   const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
-  const cAg=cntStages(opsP,_rules.agendas);
-  const cViva=cntStages(opsP,_rules.llamadaEnVivo);
-  const cPres=cntStages(opsP,_rules.presentaciones);
-  const cCalif=_rules.llamadaEnVivo.length?opsP.filter(function(o){return _rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0&&o._sql;}).length:null;
-  const cWon=opsP.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
+  // Cobertura del tracking en tiempo real (desde la primera semana registrada)
+  const _liveStarts=(c.liveLines||[]).map(function(l){return l.dateStart;}).filter(Boolean).sort();
+  const liveFrom=_liveStarts.length?new Date(_liveStarts[0]):null;
+  // Denominadores: misma ventana que la inversion elegida.
+  // Con "Tiempo real", solo contactos creados desde que existe tracking live.
+  let opsCost=opsP;
+  if(spendSource==='live'&&liveFrom){
+    opsCost=opsP.filter(function(o){return o.createdAt&&new Date(o.createdAt)>=liveFrom;});
+  }
+  const cAg=cntStages(opsCost,_rules.agendas);
+  const cViva=cntStages(opsCost,_rules.llamadaEnVivo);
+  const cPres=cntStages(opsCost,_rules.presentaciones);
+  const cCalif=_rules.llamadaEnVivo.length?opsCost.filter(function(o){return _rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0&&o._sql;}).length:null;
+  const cWon=opsCost.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
   const costo=function(n){return n?money(accSpentAll/n):null;};
 
   // --- HTML ---
@@ -3779,7 +3798,12 @@ function renderVentasTab(c, el){
     +'</div>';
   const vhCost=function(l,v){return '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px">'+l+'</div><span class="vh-val'+((v==null)?' zero':'')+'">'+(v==null?'&mdash;':v)+'</span></div>';};
   html+='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
-    +'<div class="vh-label" style="border:0;padding:0">Costos'+(seg?' &middot; sobre todo el periodo (la inversion no se segmenta)':'')+'</div>'
+    +'<div class="vh-label" style="border:0;padding:0">Costos'
+      +(spendSource==='live'
+        ?(liveFrom?' &middot; tiempo real desde '+liveFrom.toLocaleDateString('es-AR',{day:'numeric',month:'numeric',year:'numeric'})+' (gasto y contactos de ese rango)':' &middot; sin semanas de tiempo real todavia')
+        :' &middot; segun lineas del periodo')
+      +(seg?' &middot; la inversion no se segmenta':'')
+      +'</div>'
     +'<div style="display:flex;gap:6px;align-items:center"><span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Inversion segun</span>'
     +'<button class="vh-chip '+(spendSource==='lineas'?'on':'')+'" onclick="setVentasSpendSource(\'lineas\')">Lineas</button>'
     +'<button class="vh-chip '+(spendSource==='live'?'on':'')+'" onclick="setVentasSpendSource(\'live\')">Tiempo real</button></div></div>';
