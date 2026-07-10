@@ -485,38 +485,55 @@ function isoDate(d){ return d.toISOString().slice(0,10); }
 
 var _liveRefreshInFlight={};
 // ---- Inversion de Meta por periodo (para Conversion de ventas / fuente Tiempo real) ----
+// Suma SOLO las campanas incluidas (checkboxes de Ads & Guiones de la linea activa).
 const _metaSpendInFlight={};
+function _metaSpendKey(c,period){
+  const al=getActiveLine(c.conversionLines||[]);
+  const excluded=((al&&al.excludedCampaigns)||[]).slice().sort();
+  return {key:period+'|'+excluded.join(','), excluded:excluded};
+}
 async function fetchMetaSpendPeriod(clientId,period){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.metaToken||!c.metaAccountId) return null;
   c._metaSpend=c._metaSpend||{};
-  const cached=c._metaSpend[period];
+  const sk=_metaSpendKey(c,period);
+  const cached=c._metaSpend[sk.key];
   if(cached && (Date.now()-cached.at)<10*60*1000) return cached;
-  const fk=clientId+':'+period;
+  const fk=clientId+':'+sk.key;
   if(_metaSpendInFlight[fk]) return cached||null;
   _metaSpendInFlight[fk]=true;
   try{
     const actId='act_'+c.metaAccountId;
-    let qs;
+    let insSpec;
     if(period==='mes'){
       const first=new Date(); first.setDate(1);
-      qs='time_range='+encodeURIComponent('{"since":"'+isoDate(first)+'","until":"'+isoDate(new Date())+'"}');
+      insSpec='insights.time_range({"since":"'+isoDate(first)+'","until":"'+isoDate(new Date())+'"})';
     }else if(period==='30d'){
-      qs='date_preset=last_30d';
+      insSpec='insights.date_preset(last_30d)';
     }else{
-      qs='date_preset=maximum';
+      insSpec='insights.date_preset(maximum)';
     }
-    const url='https://graph.facebook.com/v19.0/'+actId+'/insights?fields=spend&'+qs+'&access_token='+c.metaToken;
-    const res=await fetch(url);
-    const data=await res.json();
-    if(data.error) throw new Error(data.error.message||'Meta error');
-    const spend=(data.data&&data.data[0]&&parseFloat(data.data[0].spend))||0;
-    c._metaSpend[period]={spend:spend,at:Date.now()};
+    const fields='id,'+insSpec+'{spend}';
+    let url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&limit=200&access_token='+c.metaToken;
+    let spend=0, pages=0;
+    while(url && pages<5){
+      const res=await fetch(url);
+      const data=await res.json();
+      if(data.error) throw new Error(data.error.message||'Meta error');
+      (data.data||[]).forEach(function(camp){
+        if(sk.excluded.indexOf(camp.id)!==-1) return;
+        const ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
+        if(ins) spend+=parseFloat(ins.spend||0);
+      });
+      url=data.paging&&data.paging.next;
+      pages++;
+    }
+    c._metaSpend[sk.key]={spend:spend,at:Date.now()};
     save();
-    return c._metaSpend[period];
+    return c._metaSpend[sk.key];
   }catch(e){
-    c._metaSpend[period]={spend:null,at:Date.now(),error:e.message};
-    return c._metaSpend[period];
+    c._metaSpend[sk.key]={spend:null,at:Date.now(),error:e.message};
+    return c._metaSpend[sk.key];
   }finally{
     _metaSpendInFlight[fk]=false;
   }
@@ -3768,9 +3785,11 @@ function renderVentasTab(c, el){
   };
   // Fuente Lineas: suma de lineas que tocan el periodo
   const accSpentLineas=(c.conversionLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
-  // Fuente Tiempo real: inversion pedida a Meta para el MISMO rango del periodo
+  // Fuente Tiempo real: inversion pedida a Meta para el MISMO rango del periodo,
+  // sumando SOLO las campanas incluidas (checkboxes de Ads & Guiones)
   const metaConfigured=!!(c.metaToken&&c.metaAccountId);
-  const _msCache=(c._metaSpend||{})[period];
+  const _msk=_metaSpendKey(c,period);
+  const _msCache=(c._metaSpend||{})[_msk.key];
   const accSpentLive=(_msCache&&_msCache.spend!=null)?_msCache.spend:null;
   const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
   if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000)){
@@ -3841,6 +3860,7 @@ function renderVentasTab(c, el){
         ?(!metaConfigured
           ?' &middot; conecta Meta en Ads & Guiones para usar tiempo real'
           :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':'historico completo')+')'
+            +(function(){var al=getActiveLine(c.conversionLines||[]);var tot=(al&&al.metaCampaigns||[]).length;return tot?' &middot; '+(tot-_msk.excluded.length)+'/'+tot+' campanas incluidas':(_msk.excluded.length?' &middot; '+_msk.excluded.length+' campanas excluidas':' &middot; todas las campanas');})()
             +(_msCache&&_msCache.spend!=null?' &middot; actualizado '+new Date(_msCache.at).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}):(_msCache&&_msCache.error?' &middot; <span style="color:var(--redx)">Meta: '+esc(_msCache.error)+'</span>':' &middot; actualizando...')))
         :' &middot; segun lineas del periodo')
       +(seg?' &middot; la inversion no se segmenta':'')
