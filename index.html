@@ -539,6 +539,54 @@ async function fetchMetaSpendPeriod(clientId,period){
   }
 }
 
+// Calcula las metricas (Meta + GHL) de una linea live para un rango dado
+async function _computeLiveMetrics(c,line,startDate,endDate){
+  const now=new Date();
+  const untilDate=now<endDate?now:endDate;
+  if(c.metaToken && c.metaAccountId){
+    try{
+      const actId='act_'+c.metaAccountId;
+      const timeRange='{"since":"'+isoDate(startDate)+'","until":"'+isoDate(untilDate)+'"}';
+      const fields='insights.time_range('+timeRange+'){spend,impressions,clicks,actions}';
+      const url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&access_token='+c.metaToken+'&limit=50';
+      const res=await fetch(url);
+      const data=await res.json();
+      if(!data.error){
+        const camps=data.data||[];
+        let spend=0, impressions=0, clicks=0, landingViews=0, leads=0;
+        camps.forEach(function(camp){
+          const ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
+          if(!ins) return;
+          spend+=parseFloat(ins.spend||0);
+          impressions+=parseInt(ins.impressions||0);
+          clicks+=parseInt(ins.clicks||0);
+          const actions=ins.actions||[];
+          const getA=function(t){const a=actions.find(function(x){return x.action_type===t;});return a?parseInt(a.value||0):0;};
+          landingViews+=getA('landing_page_view');
+          leads+=getA('lead')+getA('onsite_conversion.lead_grouped')+getA('onsite_web_lead');
+        });
+        line.metrics.adSpent=Math.round(spend*100)/100;
+        line.metrics.pageViews=landingViews||null;
+        line.metrics.cpm=impressions>0?Math.round(spend/impressions*1000*100)/100:null;
+        line.metrics.cpc=clicks>0?Math.round(spend/clicks*100)/100:null;
+        line.metrics.cpl=leads>0?Math.round(spend/leads*100)/100:null;
+        line._metaOk=true;
+      } else { line._metaOk=false; line._metaError=data.error.message; }
+    }catch(e){ line._metaOk=false; line._metaError=String(e); }
+  } else { line._metaOk=false; line._metaError='Meta no conectado para este cliente.'; }
+
+  const opps=(c.ghl&&c.ghl.opportunities)||[];
+  const endIncl=new Date(endDate); endIncl.setHours(23,59,59,999);
+  const inRange=opps.filter(function(o){
+    if(!o.createdAt) return false;
+    const d=new Date(o.createdAt);
+    return d>=startDate && d<=endIncl;
+  });
+  line.metrics.registros=inRange.length;
+  line.metrics.sql=inRange.filter(function(o){return o._sql;}).length;
+  line._lastRefresh=new Date().toISOString();
+}
+
 async function refreshLiveLine(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return null;
@@ -546,57 +594,50 @@ async function refreshLiveLine(clientId){
   _liveRefreshInFlight[clientId]=true;
   try{
     c.liveLines = c.liveLines || [];
-    const {start,end} = getWeekRange();
-    const weekKey = isoDate(start);
-    let line = c.liveLines.find(function(l){return l.weekKey===weekKey;});
+    const today=new Date();
+    const {start:curMonday} = getWeekRange();
+    const curWeekKey=isoDate(curMonday);
+
+    // --- Linea EN VIVO: ventana movil de hoy a 7 dias atras ---
+    let line=c.liveLines.find(function(l){return l.rolling;});
     if(!line){
-      line = {id:'live-'+Date.now(), weekKey:weekKey, version:'Semana del '+fmtDateOnly(weekKey), dateStart:weekKey, dateEnd:isoDate(end), metrics:{adSpent:null,pageViews:null,cpm:null,cpc:null,cpl:null,registros:null,sql:null}, live:true};
+      // migracion: la linea de la semana en curso (logica vieja) pasa a ser la rolling
+      line=c.liveLines.find(function(l){return l.weekKey===curWeekKey && !l.archived;});
+      if(line){ line.rolling=true; delete line.weekKey; }
+    }
+    if(!line){
+      line={id:'live-'+Date.now(), rolling:true, version:'Ultimos 7 dias', metrics:{adSpent:null,pageViews:null,cpm:null,cpc:null,cpl:null,registros:null,sql:null}, live:true};
       c.liveLines.push(line);
     }
-    // Meta: gasto/impresiones/clicks de esta semana, hasta hoy si esta en curso
-    if(c.metaToken && c.metaAccountId){
-      try{
-        const actId='act_'+c.metaAccountId;
-        const untilDate=new Date()<end?new Date():end;
-        const timeRange='{"since":"'+weekKey+'","until":"'+isoDate(untilDate)+'"}';
-        const fields='insights.time_range('+timeRange+'){spend,impressions,clicks,actions}';
-        const url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&access_token='+c.metaToken+'&limit=50';
-        const res=await fetch(url);
-        const data=await res.json();
-        if(!data.error){
-          const camps=data.data||[];
-          let spend=0, impressions=0, clicks=0, landingViews=0, leads=0;
-          camps.forEach(function(camp){
-            const ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
-            if(!ins) return;
-            spend+=parseFloat(ins.spend||0);
-            impressions+=parseInt(ins.impressions||0);
-            clicks+=parseInt(ins.clicks||0);
-            const actions=ins.actions||[];
-            const getA=function(t){const a=actions.find(function(x){return x.action_type===t;});return a?parseInt(a.value||0):0;};
-            landingViews+=getA('landing_page_view');
-            leads+=getA('lead')+getA('onsite_conversion.lead_grouped')+getA('onsite_web_lead');
-          });
-          line.metrics.adSpent=Math.round(spend*100)/100;
-          line.metrics.pageViews=landingViews||null;
-          line.metrics.cpm=impressions>0?Math.round(spend/impressions*1000*100)/100:null;
-          line.metrics.cpc=clicks>0?Math.round(spend/clicks*100)/100:null;
-          line.metrics.cpl=leads>0?Math.round(spend/leads*100)/100:null;
-          line._metaOk=true;
-        } else { line._metaOk=false; line._metaError=data.error.message; }
-      }catch(e){ line._metaOk=false; line._metaError=String(e); }
-    } else { line._metaOk=false; line._metaError='Meta no conectado para este cliente.'; }
+    const start7=new Date(today); start7.setHours(0,0,0,0); start7.setDate(start7.getDate()-6);
+    line.version='Ultimos 7 dias';
+    line.dateStart=isoDate(start7);
+    line.dateEnd=isoDate(today);
+    await _computeLiveMetrics(c,line,start7,today);
 
-    // GHL: oportunidades creadas dentro de esta semana
-    const opps=(c.ghl&&c.ghl.opportunities)||[];
-    const inWeek=opps.filter(function(o){
-      if(!o.createdAt) return false;
-      const d=new Date(o.createdAt);
-      return d>=start && d<=end;
-    });
-    line.metrics.registros=inWeek.length;
-    line.metrics.sql=inWeek.filter(function(o){return o._sql;}).length;
-    line._lastRefresh=new Date().toISOString();
+    // --- Archivo semanal: cada lunes queda congelado el informe de la semana que termino ---
+    // (backfill de hasta 4 semanas por si la app no se abrio justo un lunes)
+    for(let k=1;k<=4;k++){
+      const monday=new Date(curMonday); monday.setDate(monday.getDate()-7*k);
+      const wk=isoDate(monday);
+      let arch=c.liveLines.find(function(l){return l.weekKey===wk;});
+      if(arch&&arch.archived) continue;
+      const sunday=new Date(monday); sunday.setDate(sunday.getDate()+6);
+      const isNew=!arch;
+      if(!arch){
+        arch={id:'live-'+wk, weekKey:wk, version:'Semana del '+fmtDateOnly(wk), dateStart:wk, dateEnd:isoDate(sunday), metrics:{adSpent:null,pageViews:null,cpm:null,cpc:null,cpl:null,registros:null,sql:null}, live:true};
+        c.liveLines.push(arch);
+      }
+      await _computeLiveMetrics(c,arch,monday,sunday);
+      const m=arch.metrics;
+      const empty=(!m.adSpent)&&(!m.pageViews)&&(!m.registros)&&(!m.sql);
+      if(empty&&isNew){
+        // semana sin ningun dato: no ensuciamos el historial
+        c.liveLines=c.liveLines.filter(function(l){return l!==arch;});
+      }else{
+        arch.archived=true;
+      }
+    }
 
     save();
     return line;
@@ -1607,14 +1648,16 @@ function liveSectionHtml(c){
       {label:'Costo por llamada calificada en vivo',get:l=>{const s=computeLineStats(c,l);return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
       {label:'Ultima actualizacion',get:l=>l._lastRefresh?new Date(l._lastRefresh).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'-'}
     ];
-    const sortedLive=[...c.liveLines].reverse();
+    const sortedLive=[...c.liveLines].sort(function(a,b){
+      return ((b.rolling?1:0)-(a.rolling?1:0)) || String(b.dateStart||'').localeCompare(String(a.dateStart||''));
+    });
     const metaConfigured=!!(c.metaToken&&c.metaAccountId);
     let liveHtml='<div style="font-size:12px;color:var(--text3);margin-bottom:16px;display:flex;align-items:center;gap:8px">'
       +'<span id="live-refresh-status">'+(metaConfigured?'Actualizando datos en vivo de Meta y GHL...':'Meta no esta conectado para este cliente - solo se van a ver los datos de GHL. Conectalo con el boton de arriba.')+'</span>'
       +'</div>'
       +'<div class="cl-accordion">'
       +(sortedLive.length?sortedLive.map(function(l){
-          const isCurrentWeek=l===sortedLive[0];
+          const isCurrentWeek=!!l.rolling;
           const key='live-'+l.id;
           const explicit=(S.collapsedCols||{})[key];
           const collapsed=explicit!==undefined?explicit:!isCurrentWeek;
@@ -1622,7 +1665,7 @@ function liveSectionHtml(c){
             <div onclick="toggleColCollapse('${key}')" style="display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;background:var(--bg2)">
               <span style="font-size:11px;color:var(--text3);transition:transform .15s;transform:rotate(${collapsed?'-90':'0'}deg);display:inline-block">&#9662;</span>
               <span style="font-size:13px;font-weight:500;color:${isCurrentWeek?'var(--accent)':'var(--text)'}">${esc(l.version)}</span>
-              ${isCurrentWeek?'<span class="pill pill-green" style="font-size:9px;padding:1px 6px">esta semana</span>':'<span class="pill" style="font-size:9px;padding:1px 6px;background:var(--bg3);color:var(--text3)">historico</span>'}
+              ${isCurrentWeek?'<span class="pill pill-green" style="font-size:9px;padding:1px 6px">en vivo &middot; 7 dias</span>':'<span class="pill" style="font-size:9px;padding:1px 6px;background:var(--bg3);color:var(--text3)">historico</span>'}
               <span style="font-size:11px;color:var(--text3)">${fmtDateRange(l.dateStart,l.dateEnd)}</span>
               ${l._metaOk===false?'<span style="font-size:10px;color:var(--redx);margin-left:auto">Meta: '+esc(l._metaError||'error')+'</span>':''}
             </div>
