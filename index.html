@@ -3823,18 +3823,47 @@ function renderVentasTab(c, el){
     return '';
   };
 
-  // Campana de Meta del lead: utm_campaign, traducido a nombre si tenemos la campana sincronizada
-  const _campNames={};
+  // Campana de Meta del lead: utm_campaign directo, o deducida matcheando el anuncio del lead
+  // (adId / utm_ad / utm_adset) contra el arbol campanas->adsets->ads sincronizado en Ads & Guiones.
+  const _campNames={};     // campaignId -> nombre
+  const _adToCamp={};      // adId / adsetId / nombre normalizado -> nombre de campana
+  const _adNamePairs=[];   // para match aproximado por nombre
   (function(){
     var al=getActiveLine(c.conversionLines||[]);
-    ((al&&al.metaCampaigns)||[]).forEach(function(cp){ _campNames[String(cp.id)]=cp.name||String(cp.id); });
+    ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+      var cname=cp.name||String(cp.id);
+      _campNames[String(cp.id)]=cname;
+      _adToCamp['n:'+_n(cname)]=cname;
+      ((cp.adsets)||[]).forEach(function(as){
+        if(as.id) _adToCamp[String(as.id)]=cname;
+        if(as.name){ _adToCamp['n:'+_n(as.name)]=cname; _adNamePairs.push({n:_n(as.name),camp:cname}); }
+        ((as.ads)||[]).forEach(function(ad){
+          if(ad.id) _adToCamp[String(ad.id)]=cname;
+          if(ad.name){ _adToCamp['n:'+_n(ad.name)]=cname; _adNamePairs.push({n:_n(ad.name),camp:cname}); }
+        });
+      });
+    });
   })();
   const campaignOf=function(o){
     var s=o.source||{};
-    var raw=faGet(o.formAnswers,['utm_campaign','campaign'])||s.utmCampaign||'';
-    raw=String(raw||'').trim();
-    if(!raw) return '';
-    return _campNames[raw]||raw;
+    var raw=String(faGet(o.formAnswers,['utm_campaign','campaign'])||s.utmCampaign||'').trim();
+    if(raw) return _campNames[raw]||raw;
+    var cands=[s.adId, s.utmAd, s.utmContent, s.utmAdset,
+      faGet(o.formAnswers,['utm_ad','utm ad']), faGet(o.formAnswers,['utm_adset'])];
+    for(var i=0;i<cands.length;i++){
+      var v=String(cands[i]||'').trim();
+      if(!v) continue;
+      if(_adToCamp[v]) return _adToCamp[v];               // match por ID exacto
+      var vn=_n(v);
+      if(_adToCamp['n:'+vn]) return _adToCamp['n:'+vn];   // match por nombre exacto
+      if(vn.length>=4){                                    // match aproximado (contiene)
+        for(var j=0;j<_adNamePairs.length;j++){
+          var p=_adNamePairs[j];
+          if(p.n.indexOf(vn)>=0||vn.indexOf(p.n)>=0) return p.camp;
+        }
+      }
+    }
+    return '';
   };
 
   // --- Periodo ---
