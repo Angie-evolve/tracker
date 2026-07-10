@@ -3649,9 +3649,12 @@ async function syncGhl(clientId, silent){
 }
 
 async function enrichContactsBackground(c, proxy){
-  // Find opps that are missing utmAd, geo.location or tags and have a contactId
+  // Opps a las que les falta utmAd, utmCampaign, ubicacion o tags (y no se intentaron en las ultimas 24h)
+  const _now=Date.now();
   const toEnrich=(c.ghl.opportunities||[]).filter(function(o){
-    return o.contactId && (!o.source.utmAd || !o.geo.location || !o.tags);
+    if(!o.contactId) return false;
+    if(o._enrichTry && (_now-o._enrichTry)<24*3600000) return false;
+    return (!o.source.utmAd || !o.source.utmCampaign || !o.geo.location || !o.tags);
   });
   if(!toEnrich.length) return;
   const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
@@ -3676,6 +3679,7 @@ async function enrichContactsBackground(c, proxy){
         if(enriched%10===0){ save(); }
       }
     }catch(e){}
+    opp._enrichTry=Date.now();
     await new Promise(function(r){setTimeout(r,100);}); // 100ms between requests
   }
   if(enriched>0){ save(); renderTab(); toast(enriched+' contactos enriquecidos'); }
@@ -3932,6 +3936,21 @@ function renderVentasTab(c, el){
       return '<button class="vh-chip '+(seg===k?'on':'')+'" onclick="setVentasSeg(\''+enc+'\')">'+esc(k)+' <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+segMap[k]+'</span></button>';
     }).join('')
     +'</div>';
+  // Si en Por campana domina (sin dato), disparar enriquecimiento y avisar
+  if(view==='embudo'){
+    const _sinDato=segMap['(sin dato)']||0;
+    if(opsP.length && _sinDato/opsP.length>0.5){
+      const _proxyE=getGhlProxy();
+      if(_proxyE.url && c.ghl && c.ghl.token){
+        window._enrichKickAt=window._enrichKickAt||{};
+        if(Date.now()-(window._enrichKickAt[c.id]||0)>5*60000){
+          window._enrichKickAt[c.id]=Date.now();
+          enrichContactsBackground(c,_proxyE);
+        }
+      }
+      html+='<div style="font-size:11px;color:var(--text3);margin:-14px 0 20px">La mayoria de los contactos no tiene utm_campaign guardado. Lo estoy trayendo de GHL en segundo plano (~100ms por contacto) - se actualiza solo al terminar. Si despues de un par de minutos sigue todo en (sin dato), el embudo no esta enviando utm_campaign en las URLs, o el Apps Script no devuelve ese campo.</div>';
+    }
+  }
   html+='<div class="vh-cols">'
     +vhCol('Top of funnel',[
       vhRow('Agendas totales',m_agendas),
