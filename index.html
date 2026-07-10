@@ -622,9 +622,11 @@ async function refreshLiveLine(clientId){
 
     // --- Archivo semanal: cada lunes queda congelado el informe de la semana que termino ---
     // (backfill de hasta 4 semanas por si la app no se abrio justo un lunes)
+    c._liveEmptyWeeks=c._liveEmptyWeeks||{};
     for(let k=1;k<=4;k++){
       const monday=new Date(curMonday); monday.setDate(monday.getDate()-7*k);
       const wk=isoDate(monday);
+      if(c._liveEmptyWeeks[wk]) continue;
       let arch=c.liveLines.find(function(l){return l.weekKey===wk;});
       if(arch&&arch.archived) continue;
       const sunday=new Date(monday); sunday.setDate(sunday.getDate()+6);
@@ -637,8 +639,9 @@ async function refreshLiveLine(clientId){
       const m=arch.metrics;
       const empty=(!m.adSpent)&&(!m.pageViews)&&(!m.registros)&&(!m.sql);
       if(empty&&isNew){
-        // semana sin ningun dato: no ensuciamos el historial
+        // semana sin ningun dato: no ensuciamos el historial ni la volvemos a consultar
         c.liveLines=c.liveLines.filter(function(l){return l!==arch;});
+        c._liveEmptyWeeks[wk]=true;
       }else{
         arch.archived=true;
       }
@@ -1685,8 +1688,13 @@ function liveSectionHtml(c){
     +'</div>';
 }
 function kickLiveRefresh(c){
-  refreshLiveLine(c.id).then(function(){
-    if(S.tab==='ads' && S.clientId===c.id) renderTab();
+  window._liveLastKick=window._liveLastKick||{};
+  const last=window._liveLastKick[c.id]||0;
+  if(Date.now()-last<60000) return; // maximo 1 refresh por minuto por cliente
+  window._liveLastKick[c.id]=Date.now();
+  refreshLiveLine(c.id).then(function(line){
+    // line===null cuando ya habia un refresh en curso: NO re-renderizar (evita loop)
+    if(line && S.tab==='ads' && S.clientId===c.id) renderTab();
   });
 }
 
