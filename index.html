@@ -1354,7 +1354,6 @@ const CLIENT_TABS=[
   {k:'ads', l:'Ads & Guiones', icon:'M3 11l18-5v12L3 14v-3z'},
   {k:'integraciones', l:'Integraciones', icon:'M9 7V2m6 5V2M7 7h10v4a5 5 0 01-10 0V7zm5 9v6'},
   {k:'alarmas', l:'Alarmas', icon:'M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0'},
-  {k:'diagnostico', l:'Diagnostico', icon:'M12 2a10 10 0 100 20 10 10 0 000-20zM12 8v4l3 3'},
   {k:'ventas', l:'Conversion de ventas', icon:'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'},
   {k:'tareas', l:'Tareas', icon:'M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11'}
 ];
@@ -1981,6 +1980,7 @@ function renderTab(){
   const el=document.getElementById('tab-content');
   if(!el||!c)return;
   if(S.tab==='live') S.tab='ads';
+  if(S.tab==='diagnostico') S.tab='lineas';
 
   if(S.tab==='lineas'){
     const ROWS=[
@@ -2517,7 +2517,10 @@ function renderTab(){
         +'<span style="font-size:13.5px;font-weight:500;color:var(--strong)">'+o.name+'</span>'+pill(o.st)+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;flex:1">'+o.desc+'</div>'
         +(o.detail?'<div class="mono" style="font-size:11px;color:var(--text2)">'+o.detail+'</div>':'')
-        +(o.action?'<div><button class="btn btn-sm" onclick="'+o.action+'" style="margin-top:2px">'+o.actionLabel+'</button></div>':'')
+        +((o.action||o.action2)?'<div style="display:flex;gap:6px;margin-top:2px">'
+          +(o.action?'<button class="btn btn-sm" onclick="'+o.action+'">'+o.actionLabel+'</button>':'')
+          +(o.action2?'<button class="btn btn-sm" onclick="'+o.action2+'" style="color:var(--text3)">'+o.action2Label+'</button>':'')
+          +'</div>':'')
         +'</div>';
     };
     const _fmtAgo=function(iso){ if(!iso) return ''; try{ return new Date(iso).toLocaleDateString('es-AR')+' '+new Date(iso).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } };
@@ -2526,7 +2529,9 @@ function renderTab(){
       card({name:'GoHighLevel (CRM)',st:ghlOk?'ok':(ghlPartial?'partial':'no'),
         desc:'Oportunidades, stages, contactos y UTMs via el proxy de Apps Script. Alimenta Conversion de ventas, el funnel semanal y las metricas por linea.',
         detail:ghlOk?(opsN+' oportunidades &middot; ultimo sync '+_fmtAgo(c.ghl.lastSync)):(ghlPartial?'Falta '+(proxy.url?'token/location del cliente':'la URL del proxy'):''),
-        action:'openGhlProxyModal()',actionLabel:ghlOk?'Configurar':'Conectar'}),
+        action:'openGhlProxyModal()',actionLabel:ghlOk?'Conexion (proxy)':'Conectar',
+        action2:ghlOk?"(function(){var x=DB.clients.find(function(z){return z.id==="+c.id+";});x.ghl.token='';save();switchTab('ventas');})()":null,
+        action2Label:'Cambiar token'}),
       card({name:'Meta Ads',st:metaOk?'ok':'no',
         desc:'Campanas, adsets, anuncios e inversion en tiempo real (por periodo, campana y pais). Requiere token de sistema y Account ID.',
         detail:metaOk?('act_'+esc(c.metaAccountId)+(campN?' &middot; '+campN+' campanas sincronizadas':'')):'',
@@ -2626,51 +2631,6 @@ function renderTab(){
         +'</div>';
     }
     el.innerHTML=html;
-  }
-
-  else if(S.tab==='diagnostico'){
-    const sqlLeads=(c.ghl&&c.ghl.opportunities||[]).filter(function(o){return o._sql;});
-    const calls=c.fathomCalls||[];
-    const noSql=sqlLeads.length===0;
-
-    const healthHtml=(()=>{
-      const _al=getActiveLine(c.conversionLines);
-      const _daysActive=days(_al?.dateStart,_al?.dateEnd);
-      return '<div class="health-wrap">'
-      +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Salud del embudo</div>'
-        +'<div class="health-score-big" style="color:'+hc(c.health.color)+'">'+(c.health.score!==null?c.health.score+'<span>/100</span>':'<span style="font-size:18px;font-style:italic">Sin score</span>')+'</div>'
-      +'</div>'
-      +'<div class="health-right">'
-        +'<div class="health-label-row">'
-          +'<span class="pill '+pillClass(c.health.color)+'">'+esc(c.health.label)+'</span>'
-          +'<span style="font-size:11px;color:var(--text3)">Linea activa: '+esc(_al?.version||'-')+' - '+(_daysActive!==null?_daysActive+' dias':'-')+'</span>'
-          +'<button class="btn btn-sm" onclick="openEditHealthModal('+c.id+')" style="margin-left:auto">Editar salud</button>'
-        +'</div>'
-        +'<div class="health-track"><div class="health-fill" style="background:'+hc(c.health.color)+';width:'+(c.health.score!==null?c.health.score:0)+'%"></div></div>'
-        +'<div class="health-ticks"><span class="health-tick">Critico</span><span class="health-tick">Atencion</span><span class="health-tick">Saludable</span><span class="health-tick">Optimo</span></div>'
-      +'</div></div>';
-    })();
-
-    const journeyOpp=pickJourneyLead(c);
-    const pointerHtml='<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
-      +'<div style="font-size:12px;color:var(--text2)">El detalle de cada bloque (inversion, SQLs, llamadas, landings) esta en <strong style="color:var(--text)">Lineas de conversion</strong>.</div>'
-      +'<button class="btn btn-sm" onclick="switchTab(\'lineas\')">Ver lineas de conversion</button>'
-      +'</div>';
-    const journeyHtml='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
-      +'<div>'
-      +'<div style="font-size:14px;font-weight:500;color:var(--text)">Recorrido del lead</div>'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
-      +(journeyOpp?('Ultimo lead relevante: '+esc(journeyOpp.contactName||'Lead')):'Sin oportunidades de GHL todavia')
-      +'</div></div>'
-      +'</div>'
-      +'<div id="journey3d-wrap" style="position:relative;height:320px;perspective:800px;cursor:grab;user-select:none;overflow:hidden;background:radial-gradient(ellipse at center, rgba(255,255,255,0.02), transparent 70%);border:1px solid var(--border);border-radius:var(--radius-lg)">'
-      +'<div id="journey3d-world" style="position:absolute;top:50%;left:50%;transform-style:preserve-3d;transition:transform .05s linear"></div>'
-      +'</div>'
-      +'<div style="text-align:center;font-size:10.5px;color:var(--text3);margin-top:6px">Arrastra para rotar - clickea una estrella</div>'
-      +'<div id="journey3d-detail" style="margin-top:10px"></div>';
-
-    el.innerHTML=healthHtml+pointerHtml+journeyHtml;
-    if(journeyOpp) initLeadJourney3D(c, journeyOpp);
   }
 
   else if(S.tab==='tareas'){
@@ -4157,10 +4117,8 @@ function renderVentasTab(c, el){
   const right=(c.ghl._syncing?'<span style="font-size:11px;color:var(--text3)">sincronizando...</span>':'<span style="font-size:11px;color:var(--text3)">'+_ghlAgo(c.ghl.lastSync)+'</span>')
     +'<button class="btn btn-sm" onclick="syncGhl('+c.id+',false)">Sincronizar</button>'
     +'<button class="btn btn-sm" onclick="saveClientGhl('+c.id+')" style="display:none"></button>'
-    +'<button class="btn btn-sm" onclick="(function(){var x=DB.clients.find(z=>z.id==='+c.id+');x.ghl.token=\'\';save();renderTab();})()">Cambiar token</button>'
     +'<button class="btn btn-sm" onclick="openColSelector()">Columnas</button>'
-    +'<button class="btn btn-sm" onclick="openGhlRulesModal()">Reglas</button>'
-    +'<button class="btn btn-sm" onclick="openGhlProxyModal()">Conexion</button>';
+    +'<button class="btn btn-sm" onclick="openGhlRulesModal()">Reglas</button>';
 
   if(!ops.length){
     el.innerHTML=header(right)+'<div class="empty"><div class="empty-icon"></div><div>'+(c.ghl._syncing?'Sincronizando...':'Sin oportunidades sincronizadas todavia.')+'</div></div>';
