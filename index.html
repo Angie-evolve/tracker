@@ -1710,14 +1710,177 @@ function liveSectionHtml(c){
     +liveHtml
     +'</div>';
 }
+// ================= ALARMAS (benchmarks -> email via Apps Script) =================
+const ALARM_METRICS=[
+  {id:'adSpent',label:'Inversion (ultimos 7 dias)',fmt:'money'},
+  {id:'cpm',label:'CPM',fmt:'money'},
+  {id:'cpc',label:'CPC',fmt:'money'},
+  {id:'cpl',label:'CPL (Meta)',fmt:'money'},
+  {id:'costoRegistro',label:'Costo por registro (GHL)',fmt:'money'},
+  {id:'costoAgenda',label:'Costo por agenda',fmt:'money'},
+  {id:'costoSql',label:'Costo por SQL',fmt:'money'},
+  {id:'registros',label:'Registros (ultimos 7 dias)',fmt:'num'},
+  {id:'sqls',label:'SQLs (ultimos 7 dias)',fmt:'num'}
+];
+function fmtAlarmVal(fmt,v){
+  if(v==null||!isFinite(v)) return '-';
+  return fmt==='money'?'$'+(Math.round(v*100)/100).toLocaleString('en-US'):String(Math.round(v*10)/10);
+}
+// Valores actuales sobre la ventana movil de 7 dias (Meta + funnel GHL por fecha de creacion)
+function computeAlarmMetrics(c){
+  const l=(c.liveLines||[]).find(function(x){return x.rolling;});
+  if(!l) return null;
+  const m=l.metrics||{};
+  const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd)||{};
+  const spent=Number(m.adSpent)||0;
+  const div=function(n,d){return (d&&spent)?n/d:null;};
+  const reg=(f.registros!=null)?f.registros:(m.registros!=null?Number(m.registros):null);
+  const sq=(f.sql!=null)?f.sql:(m.sql!=null?Number(m.sql):null);
+  return {
+    adSpent:spent||null,
+    cpm:(m.cpm!=null)?Number(m.cpm):null,
+    cpc:(m.cpc!=null)?Number(m.cpc):null,
+    cpl:(m.cpl!=null)?Number(m.cpl):null,
+    costoRegistro:div(spent,reg),
+    costoAgenda:(f.agendas!=null)?div(spent,f.agendas):null,
+    costoSql:div(spent,sq),
+    registros:reg,
+    sqls:sq
+  };
+}
+function alarmStatus(c){
+  const a=c.alarms||{};
+  const rules=(a.rules||[]).filter(function(r){return r.enabled;});
+  if(!rules.length) return {active:0,breached:0};
+  const M=computeAlarmMetrics(c);
+  let breached=0;
+  if(M) rules.forEach(function(r){
+    const v=M[r.metric];
+    if(v==null) return;
+    if(r.op==='gt'? v>Number(r.value) : v<Number(r.value)) breached++;
+  });
+  return {active:rules.length,breached:breached};
+}
+// Evalua y manda UN mail por cliente con todas las reglas disparadas (cooldown 24h por regla)
+function checkAlarms(c){
+  const a=c.alarms;
+  if(!a||!a.email||!(a.rules||[]).length) return;
+  const M=computeAlarmMetrics(c);
+  if(!M) return;
+  const proxy=getGhlProxy();
+  if(!proxy.url) return;
+  a.lastSent=a.lastSent||{};
+  const triggered=[];
+  (a.rules||[]).forEach(function(r){
+    if(!r.enabled) return;
+    const v=M[r.metric];
+    if(v==null) return;
+    const hit=r.op==='gt'? v>Number(r.value) : v<Number(r.value);
+    if(hit && (Date.now()-(a.lastSent[r.id]||0))>24*3600000) triggered.push({r:r,v:v});
+  });
+  if(!triggered.length) return;
+  const lines=triggered.map(function(t){
+    const met=ALARM_METRICS.find(function(x){return x.id===t.r.metric;})||{label:t.r.metric,fmt:'num'};
+    return '- '+met.label+': '+fmtAlarmVal(met.fmt,t.v)+' ('+(t.r.op==='gt'?'supera el maximo de ':'debajo del minimo de ')+fmtAlarmVal(met.fmt,Number(t.r.value))+')';
+  });
+  const subject='[EVOLVE] '+c.name+': '+triggered.length+' metrica'+(triggered.length>1?'s':'')+' fuera de benchmark';
+  const body='Cliente: '+c.name+'\nVentana: ultimos 7 dias\nGenerado: '+new Date().toLocaleString('es-AR')+'\n\n'+lines.join('\n')+'\n\nAbri el tracker (Ads & Guiones / Conversion de ventas) para el detalle.';
+  const url=proxy.url+'?action=alert&secret='+encodeURIComponent(proxy.secret)
+    +'&to='+encodeURIComponent(a.email)
+    +'&subject='+encodeURIComponent(subject)
+    +'&body='+encodeURIComponent(body);
+  fetch(url).then(function(r){return r.json();}).then(function(res){
+    if(res&&res.ok){
+      triggered.forEach(function(t){ a.lastSent[t.r.id]=Date.now(); });
+      save();
+      if(typeof toast==='function') toast('Alarma enviada a '+a.email);
+    }
+  }).catch(function(){});
+}
+// ---- Modal de configuracion ----
+function openAlarmsModal(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  const a=c.alarms||{email:'',rules:[]};
+  window._alarmDraft={clientId:clientId,email:a.email||'',rules:JSON.parse(JSON.stringify(a.rules||[]))};
+  renderAlarmsModal();
+}
+function renderAlarmsModal(){
+  const d=window._alarmDraft;
+  const c=DB.clients.find(function(x){return x.id===d.clientId;});
+  const M=c?computeAlarmMetrics(c):null;
+  const optHtml=function(sel){return ALARM_METRICS.map(function(m){return '<option value="'+m.id+'"'+(m.id===sel?' selected':'')+'>'+m.label+'</option>';}).join('');};
+  const rows=d.rules.map(function(r,i){
+    const met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||ALARM_METRICS[0];
+    const cur=M?M[r.metric]:null;
+    const hit=(cur!=null)&&(r.op==='gt'? cur>Number(r.value) : cur<Number(r.value));
+    return '<div style="display:grid;grid-template-columns:22px 1fr 84px 90px 110px 26px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">'
+      +'<input type="checkbox" '+(r.enabled?'checked':'')+' onchange="window._alarmDraft.rules['+i+'].enabled=this.checked">'
+      +'<select class="btn btn-sm" style="width:100%;text-align:left" onchange="window._alarmDraft.rules['+i+'].metric=this.value;renderAlarmsModal()">'+optHtml(r.metric)+'</select>'
+      +'<select class="btn btn-sm" onchange="window._alarmDraft.rules['+i+'].op=this.value;renderAlarmsModal()"><option value="gt"'+(r.op==='gt'?' selected':'')+'>mayor a</option><option value="lt"'+(r.op==='lt'?' selected':'')+'>menor a</option></select>'
+      +'<input type="number" step="any" value="'+(r.value!=null?r.value:'')+'" placeholder="umbral" onchange="window._alarmDraft.rules['+i+'].value=this.value" style="padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--mono);font-size:12px;width:100%">'
+      +'<span class="mono" style="font-size:11px;color:'+(cur==null?'var(--text3)':(hit?'var(--redx)':'var(--accent)'))+'">'+(cur==null?'sin dato':('ahora: '+fmtAlarmVal(met.fmt,cur)+(hit?' !':'')))+'</span>'
+      +'<button class="btn btn-sm" style="padding:4px 8px;color:var(--redx);border-color:transparent" onclick="window._alarmDraft.rules.splice('+i+',1);renderAlarmsModal()">x</button>'
+      +'</div>';
+  }).join('');
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Alarmas de benchmark</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Se evaluan sobre los ultimos 7 dias cada vez que el tracker refresca los datos en vivo (al abrir Ads & Guiones). Si una regla se dispara, manda un mail (maximo 1 por regla cada 24 h).</div>'
+    +'<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Enviar a</div>'
+    +'<input type="email" id="alarm-email" value="'+esc(d.email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Reglas</div>'
+    +(rows||'<div style="font-size:12px;color:var(--text3);padding:10px 0">Sin reglas todavia.</div>')
+    +'<button class="btn btn-sm" style="margin-top:10px" onclick="window._alarmDraft.rules.push({id:\'al-\'+Date.now()+Math.floor(Math.random()*999),metric:\'cpl\',op:\'gt\',value:\'\',enabled:true});renderAlarmsModal()">+ Agregar regla</button>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:18px">'
+    +'<button class="btn btn-sm" onclick="testAlarmEmail()" style="color:var(--text3)">Probar envio</button>'
+    +'<div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="saveAlarms()">Guardar</button></div>'
+    +'</div></div></div>';
+}
+function saveAlarms(){
+  const d=window._alarmDraft;
+  const c=DB.clients.find(function(x){return x.id===d.clientId;});
+  if(!c) return;
+  const emailEl=document.getElementById('alarm-email');
+  d.email=emailEl?emailEl.value.trim():d.email;
+  c.alarms=c.alarms||{};
+  c.alarms.email=d.email;
+  c.alarms.rules=d.rules.filter(function(r){return r.metric&&r.value!==''&&r.value!=null;});
+  c.alarms.lastSent=c.alarms.lastSent||{};
+  save();
+  closeModal();
+  if(typeof toast==='function') toast('Alarmas guardadas');
+  renderTab();
+}
+function testAlarmEmail(){
+  const d=window._alarmDraft;
+  const emailEl=document.getElementById('alarm-email');
+  const to=(emailEl?emailEl.value.trim():'')||d.email;
+  if(!to){ if(typeof toast==='function') toast('Ingresa un email primero'); return; }
+  const proxy=getGhlProxy();
+  if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion (proxy) primero'); return; }
+  const c=DB.clients.find(function(x){return x.id===d.clientId;});
+  const url=proxy.url+'?action=alert&secret='+encodeURIComponent(proxy.secret)
+    +'&to='+encodeURIComponent(to)
+    +'&subject='+encodeURIComponent('[EVOLVE] Prueba de alarmas - '+(c?c.name:''))
+    +'&body='+encodeURIComponent('Este es un envio de prueba del sistema de alarmas de EVOLVE. Si lo recibiste, el Apps Script quedo bien configurado.');
+  fetch(url).then(function(r){return r.json();}).then(function(res){
+    if(typeof toast==='function') toast(res&&res.ok?'Mail de prueba enviado a '+to:('Error: '+((res&&res.error)||'desconocido')));
+  }).catch(function(e){ if(typeof toast==='function') toast('Error de red: '+e.message); });
+}
+
 function kickLiveRefresh(c){
   window._liveLastKick=window._liveLastKick||{};
   const last=window._liveLastKick[c.id]||0;
   if(Date.now()-last<60000) return; // maximo 1 refresh por minuto por cliente
   window._liveLastKick[c.id]=Date.now();
   refreshLiveLine(c.id).then(function(line){
-    // line===null cuando ya habia un refresh en curso: NO re-renderizar (evita loop)
-    if(line && S.tab==='ads' && S.clientId===c.id) renderTab();
+    if(!line) return; // null = ya habia un refresh en curso (evita loop)
+    const cc=DB.clients.find(function(x){return x.id===c.id;});
+    if(cc) checkAlarms(cc);
+    if(S.tab==='ads' && S.clientId===c.id) renderTab();
   });
 }
 
@@ -2111,6 +2274,7 @@ function renderTab(){
           ?'<button class="btn btn-sm btn-primary" onclick="syncMetaAds('+c.id+')" id="meta-sync-btn">Sincronizar Meta</button>'
            +'<button class="btn btn-sm" onclick="openMetaConfig('+c.id+')" style="color:var(--text3);border-color:var(--border)">Editar token</button>'
           :'<button class="btn btn-sm" onclick="openMetaConfig('+c.id+')" style="color:var(--amberx);border-color:rgba(240,168,48,0.4)">Conectar Meta</button>')
+        +(function(){var st=alarmStatus(c);var dot=st.breached?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--redx);margin-left:5px"></span>':'';var n=st.active?' ('+st.active+')':'';return '<button class="btn btn-sm" onclick="openAlarmsModal('+c.id+')">Alarmas'+n+dot+'</button>';})()
         +'</div></div>'
         +(metaTokenCheck&&metaAccountIdCheck&&c.conversionLines&&c.conversionLines.length
           ?'<div id="meta-data-container"></div>'
@@ -2151,6 +2315,7 @@ function renderTab(){
           <button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:var(--text3);border-color:var(--border)">Editar token</button>`
           :`<button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:var(--amberx);border-color:rgba(240,168,48,0.4)">Conectar Meta</button>`}
         <button class="btn btn-sm" onclick="openEditLineModal(${c.id},'${activeLine.id}')">Editar ads</button>
+        ${(function(){var st=alarmStatus(c);var dot=st.breached?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--redx);margin-left:5px"></span>':'';var n=st.active?' ('+st.active+')':'';return '<button class="btn btn-sm" onclick="openAlarmsModal('+c.id+')">Alarmas'+n+dot+'</button>';})()}
       </div>
     </div>`+
 `${activeLine.metaCampaigns&&activeLine.metaCampaigns.length?`
