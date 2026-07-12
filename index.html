@@ -1546,36 +1546,108 @@ function pickJourneyLead(c){
 
 function buildLeadJourneyStages(c, opp){
   const stages=[];
-  if(opp.createdAt){
-    const fields=[];
-    if(opp.source&&opp.source.utmSource) fields.push(['UTM Source', opp.source.utmSource]);
-    if(opp.source&&opp.source.utmAd) fields.push(['UTM Ad', opp.source.utmAd]);
-    if(opp.source&&opp.source.utmCampaign) fields.push(['UTM Campaign', opp.source.utmCampaign]);
-    if(opp.tags&&opp.tags.length) fields.push(['Tags', opp.tags.join(', ')]);
-    if(!fields.length) fields.push(['Contacto', opp.contactName||'-']);
-    stages.push({t:'Contacto creado', src:'GHL', date:new Date(opp.createdAt), fields:fields});
+  const s0=opp.source||{};
+  const created=opp.createdAt?new Date(opp.createdAt):new Date();
+  const rules=getGhlRules(c);
+  const stageN=_n(opp.pipelineStage);
+  const inR=function(arr){return arr&&arr.length&&arr.indexOf(stageN)>=0;};
+  const est=deriveEstado(opp);
+  const won=est.label==='Ganado';
+
+  // 1) Origen publicitario (si hay rastro del anuncio)
+  const hasAdTrace=!!(s0.utmAd||s0.adId||s0.utmCampaign||s0.utmContent);
+  const _landing=(s0.referrer&&/^https?:/.test(String(s0.referrer)))?String(s0.referrer):'';
+  if(hasAdTrace){
+    var campName=s0.utmCampaign||'';
+    var al=getActiveLine(c.conversionLines||[]);
+    ((al&&al.metaCampaigns)||[]).forEach(function(cp){ if(String(cp.id)===String(campName)) campName=cp.name||campName; });
+    // buscar el preview del anuncio en el arbol sincronizado (por id o nombre)
+    var adUrl='';
+    ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+      ((cp.adsets)||[]).forEach(function(as){
+        ((as.ads)||[]).forEach(function(ad){
+          if(adUrl||!ad.previewUrl) return;
+          var byId=s0.adId&&String(ad.id)===String(s0.adId);
+          var un=_n(s0.utmAd||s0.utmContent||'');
+          var an=_n(ad.name||'');
+          var byName=un.length>=4&&an&&(an===un||an.indexOf(un)>=0||un.indexOf(an)>=0);
+          if(byId||byName) adUrl=ad.previewUrl;
+        });
+      });
+    });
+    const f1=[];
+    if(s0.utmAd||s0.utmContent) f1.push(['Anuncio', s0.utmAd||s0.utmContent]);
+    if(campName) f1.push(['Campana', campName]);
+    if(s0.utmSource) f1.push(['Fuente', s0.utmSource]);
+    if(adUrl) f1.push(['Ver anuncio', adUrl]);
+    else if(s0.adId&&c.metaAccountId) f1.push(['Ver anuncio', 'https://adsmanager.facebook.com/adsmanager/manage/ads?act='+c.metaAccountId+'&selected_ad_ids='+s0.adId]);
+    else if(s0.adId) f1.push(['Ad ID', s0.adId]);
+    if(_landing) f1.push(['Landing que vio', _landing]);
+    stages.push({t:'Vio el anuncio', src:'Meta', date:created, approx:true, fields:f1});
   }
+
+  // 2) Contacto creado (registro)
+  const f2=[];
+  const _fuente=(function(){
+    var ref=String(s0.referrer||'').toLowerCase();
+    var srcU=String(s0.utmSource||'').toLowerCase();
+    var isMeta=srcU==='meta'||srcU==='facebook'||srcU==='instagram';
+    var isFbRef=ref.indexOf('facebook.com')>=0||ref.indexOf('instagram.com')>=0;
+    if(ref.indexOf('http')===0&&!isFbRef) return isMeta?'Landing (Meta)':'Landing';
+    if(isMeta||isFbRef) return 'Meta';
+    return s0.utmSource||'';
+  })();
+  if(_fuente) f2.push(['Fuente', _fuente]);
+  const _geo=(opp.geo&&(opp.geo.location||opp.geo.timezone))||'';
+  if(_geo) f2.push(['Ubicacion', _geo]);
+  if(opp.contactEmail) f2.push(['Email', opp.contactEmail]);
+  if(opp.contactPhone) f2.push(['Telefono', opp.contactPhone]);
+  if(!hasAdTrace&&_landing) f2.push(['Landing que vio', _landing]);
+  if(opp.tags&&opp.tags.length) f2.push(['Tags', opp.tags.join(', ')]);
+  if(!f2.length) f2.push(['Contacto', opp.contactName||'-']);
+  stages.push({t:'Contacto creado', src:'GHL', date:created, fields:f2});
+
+  // 3) Etapas del funnel inferidas desde el stage actual + reglas
+  const isSql=opp._sql||inR(rules.sql);
+  const pastAgenda=inR(rules.agendas)||inR(rules.asistencias)||inR(rules.noShows)||inR(rules.llamadaEnVivo)||inR(rules.presentaciones)||won;
   const linkedCall=(c.fathomCalls||[]).find(function(cl){return cl.linkedOppId===opp.id;});
+  const pastAsistencia=inR(rules.asistencias)||inR(rules.llamadaEnVivo)||inR(rules.presentaciones)||!!linkedCall||(won&&(rules.asistencias.length||rules.llamadaEnVivo.length));
+  if(rules.agendas.length&&pastAgenda){
+    stages.push({t:'Agendo llamada', src:'GHL', date:created, approx:true, fields:[['Como se infiere','El stage actual esta despues de la agenda en el pipeline']]});
+  }
+  if(pastAsistencia){
+    stages.push({t:'Asistio (llamada en vivo)', src:'GHL', date:created, approx:true, fields:[['Como se infiere',linkedCall?'Hay una llamada de Fathom vinculada':'El stage actual implica que asistio']]});
+  }
+  if(isSql){
+    stages.push({t:'Califico como SQL', src:'GHL', date:created, approx:true, fields:[['Criterio', opp._sql?'Marcado como SQL':'Stage dentro de las reglas de SQL']]});
+  }
   if(linkedCall){
     const d=parseDDMMYYYY(linkedCall.date);
-    stages.push({t:'Llamada (Fathom)', src:'Fathom', date:d||new Date(opp.createdAt||Date.now()),
+    stages.push({t:'Llamada (Fathom)', src:'Fathom', date:d||created,
       fields:[['Titulo',linkedCall.title||'-'],['Duracion',linkedCall.duration||'-'],['Sentiment',linkedCall.sentiment||'-']]});
   }
-  const est=deriveEstado(opp);
+  if(rules.presentaciones.length&&(inR(rules.presentaciones)||won)){
+    stages.push({t:'Presentacion de oferta', src:'GHL', date:created, approx:true, fields:[['Como se infiere', inR(rules.presentaciones)?'Stage actual de presentacion':'Se gano la oportunidad']]});
+  }
+
+  // 4) Estado actual
+  const diasDesde=Math.floor((Date.now()-created.getTime())/86400000);
   stages.push({t:'Estado actual: '+est.label, src:'Conversion de ventas', date:new Date(),
-    fields:[['Stage',opp.pipelineStage||'-'],['SQL',opp._sql?'Si':'No'],['Valor',opp.monetaryValue?('$'+opp.monetaryValue):'-']]});
+    fields:[['Stage',opp.pipelineStage||'-'],['SQL',isSql?'Si':'No'],['Valor',opp.monetaryValue?('$'+Number(opp.monetaryValue).toLocaleString('en-US')):'-'],['Dias desde el registro',diasDesde]]});
   return stages;
 }
 
 function initLeadJourney3D(c, opp){
   const stages=buildLeadJourneyStages(c, opp);
   const n=stages.length;
-  const templates={
-    2:[{x:-90,y:-10,z:20},{x:90,y:10,z:-20}],
-    3:[{x:-140,y:-20,z:40},{x:0,y:25,z:-20},{x:140,y:-10,z:10}]
-  };
-  const posArr=templates[n]||templates[3];
-  stages.forEach(function(s,i){ s.pos=posArr[i]||{x:i*100-100,y:0,z:0}; });
+  stages.forEach(function(s,i){
+    const t=n>1?i/(n-1):0.5;
+    s.pos={
+      x:Math.round(-190+t*380),
+      y:Math.round(Math.sin(i*2.1+0.6)*42),
+      z:Math.round(Math.cos(i*1.3)*50)
+    };
+  });
 
   const bgStars=Array.from({length:30},function(){
     return {x:(Math.random()-0.5)*500,y:(Math.random()-0.5)*280,z:(Math.random()-0.5)*300-80,r:Math.random()*1.5+0.5};
@@ -1591,12 +1663,17 @@ function initLeadJourney3D(c, opp){
   function detailHtml(i){
     const s=stages[i];
     const rows=s.fields.map(function(f){
-      return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:12px"><span style="color:var(--text3)">'+esc(f[0])+'</span><span style="color:var(--text)">'+esc(String(f[1]))+'</span></div>';
+      const v=String(f[1]);
+      const isUrl=/^https?:\/\//.test(v);
+      const val=isUrl
+        ?'<a href="'+esc(v)+'" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">'+esc(v.replace(/^https?:\/\/(www\.)?/,''))+'</a>'
+        :'<span style="color:var(--text)">'+esc(v)+'</span>';
+      return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:6px 0;border-top:1px solid var(--border);font-size:12px"><span style="color:var(--text3);white-space:nowrap">'+esc(f[0])+'</span>'+val+'</div>';
     }).join('');
     return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
       +'<div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px">'
         +'<div style="font-size:13px;font-weight:500;color:var(--text)">'+esc(s.t)+'</div>'
-        +'<div style="font-size:11px;color:var(--text3)">'+fmtD(s.date)+' &middot; '+esc(s.src)+'</div>'
+        +'<div style="font-size:11px;color:var(--text3)">'+(s.approx?'inferido del recorrido':fmtD(s.date))+' &middot; '+esc(s.src)+'</div>'
       +'</div>'
       +rows
     +'</div>';
