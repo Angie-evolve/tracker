@@ -1808,6 +1808,81 @@ function liveSectionHtml(c){
     +liveHtml
     +'</div>';
 }
+// ================= INFORME SEMANAL AUTOMATICO (lunes 10hs via Apps Script) =================
+function openWeeklyReportModal(){
+  const email=localStorage.getItem('evold-report-email')||'';
+  const pushed=localStorage.getItem('evold-report-pushed');
+  const clientsOk=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Informe semanal automatico</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">Cada lunes ~10hs (Argentina), el Apps Script arma el informe de la semana pasada de cada cliente (Meta + GHL) y lo manda por mail. Corre solo, sin abrir el tracker.</div>'
+    +'<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Enviar a</div>'
+    +'<input type="email" id="wr-email" value="'+esc(email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
+    +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
+    +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
+    +(pushed?'<br>Ultima sincronizacion: '+new Date(+pushed).toLocaleString('es-AR'):'')
+    +'</div>'
+    +'<div id="wr-status" style="font-size:11.5px;color:var(--text3);margin-bottom:12px"></div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:16px;border-top:1px solid var(--border);padding-top:10px">'
+    +'Setup unico en el Apps Script (una sola vez):<br>'
+    +'1. Configuracion del proyecto &rarr; zona horaria: America/Argentina/Buenos_Aires.<br>'
+    +'2. Ejecutar la funcion <span class="mono">setupWeeklyTrigger</span> desde el editor (crea el disparador de los lunes).'
+    +'</div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px">'
+    +'<button class="btn btn-sm" onclick="testWeeklyReportNow()" style="color:var(--text3)">Enviar prueba ahora</button>'
+    +'<div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="pushWeeklyReportConfig()">Guardar y sincronizar</button></div>'
+    +'</div></div></div>';
+}
+async function pushWeeklyReportConfig(){
+  const proxy=getGhlProxy();
+  if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion (proxy) primero'); return; }
+  const emailEl=document.getElementById('wr-email');
+  const email=(emailEl?emailEl.value.trim():'');
+  if(!email){ if(typeof toast==='function') toast('Ingresa un email'); return; }
+  const st=document.getElementById('wr-status');
+  const setSt=function(t){ if(st) st.innerHTML=t; };
+  localStorage.setItem('evold-report-email',email);
+  const enc=encodeURIComponent;
+  try{
+    setSt('Guardando email destino...');
+    await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_settings&email='+enc(email)).then(function(r){return r.json();});
+    const clients=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+    let ok=0;
+    for(let i=0;i<clients.length;i++){
+      const c=clients[i];
+      setSt('Sincronizando '+(i+1)+'/'+clients.length+': '+esc(c.name)+'...');
+      const al=getActiveLine(c.conversionLines||[]);
+      const payload={name:c.name,ghlToken:c.ghl.token,ghlLocation:c.ghl.locationId,
+        metaToken:c.metaToken||'',metaAccountId:c.metaAccountId||'',
+        excluded:(al&&al.excludedCampaigns)||[],rules:getGhlRules(c)};
+      const r=await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_config&clientKey='+enc(String(c.id))+'&payload='+enc(JSON.stringify(payload))).then(function(x){return x.json();}).catch(function(){return null;});
+      if(r&&r.ok) ok++;
+      await new Promise(function(r2){setTimeout(r2,150);});
+    }
+    localStorage.setItem('evold-report-pushed',String(Date.now()));
+    setSt('<span style="color:var(--accent)">Listo: '+ok+'/'+clients.length+' clientes sincronizados. Recorda re-sincronizar si cambias tokens, reglas o campanas excluidas.</span>');
+    if(typeof toast==='function') toast('Informe semanal configurado ('+ok+' clientes)');
+    if(S.tab==='integraciones') renderTab();
+  }catch(e){
+    setSt('<span style="color:var(--redx)">Error: '+esc(e.message)+' - actualiza el Apps Script a la v4.</span>');
+  }
+}
+function testWeeklyReportNow(){
+  const proxy=getGhlProxy();
+  if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion primero'); return; }
+  const st=document.getElementById('wr-status');
+  if(st) st.innerHTML='Generando y enviando informes de la semana pasada... (puede tardar 1-2 min)';
+  fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)+'&action=run_weekly_report_now')
+    .then(function(r){return r.json();})
+    .then(function(res){
+      if(st) st.innerHTML=res&&res.ok?'<span style="color:var(--accent)">Enviado - revisa tu casilla (y spam la primera vez).</span>':'<span style="color:var(--redx)">Error: '+esc((res&&res.error)||'desconocido')+'</span>';
+    })
+    .catch(function(e){ if(st) st.innerHTML='<span style="color:var(--redx)">Error de red: '+esc(e.message)+'</span>'; });
+}
+
 // ================= ALARMAS (benchmarks -> email via Apps Script) =================
 const ALARM_METRICS=[
   // Tiempo real (ventana movil de 7 dias)
@@ -2625,6 +2700,10 @@ function renderTab(){
         desc:'Genera reportes de estado del cliente y emails de delegacion de tareas con IA.',
         detail:iaOk?'API key cargada':'',
         action:'openAnthropicKeyModal()',actionLabel:iaOk?'Cambiar key':'Conectar'}),
+      card({name:'Informe semanal automatico',st:(localStorage.getItem('evold-report-pushed')&&localStorage.getItem('evold-report-email'))?'ok':'no',
+        desc:'Cada lunes ~10hs el Apps Script manda por mail el informe de la semana pasada de cada cliente (inversion Meta + funnel GHL), sin abrir el tracker.',
+        detail:localStorage.getItem('evold-report-email')?('&rarr; '+esc(localStorage.getItem('evold-report-email'))+' &middot; sync '+new Date(+localStorage.getItem('evold-report-pushed')||Date.now()).toLocaleDateString('es-AR')):'',
+        action:'openWeeklyReportModal()',actionLabel:localStorage.getItem('evold-report-pushed')?'Configurar':'Activar'}),
       card({name:'Alarmas por email',st:alarmOk?'ok':'no',
         desc:'Benchmarks sobre los ultimos 7 dias (CPL, costo por agenda, registros...). Si algo se sale, manda un mail via el Apps Script.',
         detail:alarmOk?(alarmN+' regla'+(alarmN>1?'s':'')+' activa'+(alarmN>1?'s':'')+' &rarr; '+esc(c.alarms.email)):'',
