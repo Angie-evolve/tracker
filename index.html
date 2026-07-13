@@ -1827,10 +1827,25 @@ function _tkOrigen(t){
   return (!t.source||t.source==='Manual')?'Manual':'Llamada';
 }
 function _tkDias(a,b){ return Math.max(0,Math.round((b-a)/86400000)); }
+function resetTicketsHistory(){
+  if(!confirm('Reiniciar el historial de tickets?\n\nEl tablero va a contar solo los tickets delegados desde hoy en adelante. Las tareas viejas siguen en la pestana Tareas de cada cliente, pero dejan de aparecer aca y de contar en las metricas.')) return;
+  localStorage.setItem('evold-tickets-since',String(Date.now()));
+  if(typeof toast==='function') toast('Historial reiniciado - contando desde hoy');
+  showTickets();
+}
+function showFullTicketsHistory(){
+  localStorage.removeItem('evold-tickets-since');
+  showTickets();
+}
 function showTickets(){
   S.view='tickets'; S.clientId=null; renderSidebar();
+  const _since=+(localStorage.getItem('evold-tickets-since')||0);
   const all=_ticketRows();
-  const tickets=all.filter(function(r){return r.t.delegated;});
+  const tickets=all.filter(function(r){
+    if(!r.t.delegated) return false;
+    if(!_since) return true;
+    return r.t.delegatedAt && new Date(r.t.delegatedAt).getTime()>=_since;
+  });
   const sinDelegar=all.filter(function(r){return !r.t.delegated&&!r.t.done;}).length;
   const now=new Date();
   const endOfDue=function(t){ if(!t.due) return null; const d=new Date(t.due); d.setHours(23,59,59,999); return d; };
@@ -1928,8 +1943,14 @@ function showTickets(){
 
   document.getElementById('main-content').innerHTML=''
     +'<div style="padding:32px 36px;max-width:1200px">'
-    +'<div style="font-size:17px;font-weight:600;color:var(--strong);margin-bottom:3px">Tickets</div>'
-    +'<div style="font-size:12px;color:var(--text3);margin-bottom:22px">Tareas delegadas por mail (con numero de ticket) o extraidas de llamadas. '+(sinDelegar?sinDelegar+' tareas pendientes sin delegar en los clientes.':'')+'</div>'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:3px">'
+    +'<div style="font-size:17px;font-weight:600;color:var(--strong)">Tickets</div>'
+    +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
+    +'</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:22px">Tareas delegadas por mail (con numero de ticket) o extraidas de llamadas. '
+    +(sinDelegar?sinDelegar+' tareas pendientes sin delegar en los clientes. ':'')
+    +(_since?'<span style="color:var(--text2)">Contando desde el '+new Date(_since).toLocaleDateString('es-AR')+'</span> &middot; <a href="javascript:void(0)" onclick="showFullTicketsHistory()" style="color:var(--accent);text-decoration:none">ver historial completo</a>':'')
+    +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">'
     +kpi('Abiertos',abiertos.length)
     +kpi('Vencidos',vencidos.length,vencidos.length>0)
@@ -5296,6 +5317,23 @@ function addTaskManual(clientId){
   save();renderTab();
 }
 
+// Proximo numero de ticket segun la propia app: max de todos los tickets delegados + 1
+function nextTicketFromApp(){
+  var max=0;
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(!t.ticket) return;
+      var n=parseInt(String(t.ticket).replace(/[^0-9]/g,''),10);
+      if(!isNaN(n)&&n>max) max=n;
+    });
+  });
+  var ls=parseInt(localStorage.getItem('evold-last-ticket')||'0',10);
+  if(ls>max) max=ls;
+  return max+1;
+}
+
+var TICKETS_PROXY='https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+
 async function delegateTask(clientId, taskId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -5326,25 +5364,57 @@ async function delegateTask(clientId, taskId){
     +(sqlCount?'SQLs calificados: '+sqlCount+'\n':'')
     +'\n'+callContext;
 
-  var delegationTemplate='SISTEMA DE DELEGACION DE TAREAS:\n'
-    +'- Colaboradora: Ashy (ashy@evolvemindhub.com)\n'
-    +'- Firmante: Angie\n'
-    +'- Template: estilo "4 Horas Semanales" - directo, sin ambiguedad, con autonomia clara\n'
-    +'- El asunto debe tener formato: [#TICKET-N] Accion requerida: [TAREA] - Deadline [FECHA]\n'
-    +'- Incluir checklist si corresponde al tipo (Implementacion Embudos, Campanas, Cambios Urgentes)\n'
-    +'- Incluir sistema de confirmacion de 3 preguntas y regla de silencio\n'
-    +'- Siempre firmar como Angie';
+  var delegationTemplate='SISTEMA DE DELEGACION DE TAREAS (instructivo "4 Horas Semanales"):\n'
+    +'- Colaboradora: Ashy (ashy@evolvemindhub.com) | Firmante: Angie (NUNCA preguntar por estos datos)\n'
+    +'- Asunto: [#TICKET-N] Accion requerida: [TAREA] - Deadline [FECHA]\n'
+    +'- Cuerpo: arranca "Hola Ashy," + linea "Ticket: #N - [Tarea]" + descripcion en 1 linea + "Objetivo:" medible.\n'
+    +'\nAUTONOMIA (inferir segun tarea):\n'
+    +'- Dentro de su expertise -> "Tu autonomia: Total. Decides [X,Y,Z]. No necesitas aprobaciones previas."\n'
+    +'- Parcialmente nueva -> "Puedes decidir sobre [A,B,C]. Debes consultarme para [D,E]."\n'
+    +'- Muy especifica -> "Sigue exactamente estos pasos: [lista]."\n'
+    +'\nCHECKLISTS AUTOMATICOS (insertar el que corresponda DESPUES de autonomia y ANTES de Timeline; copiar tal cual; si no encaja ninguno, no incluir checklist):\n'
+    +'1) IMPLEMENTACION DE EMBUDOS (si menciona pixel/landing/formulario/pipeline/automatizaciones/calendario/emails de notificacion):\n'
+    +'Checklist de implementacion:\n[ ] Pixel de seguimiento instalado y verificado\n[ ] Filtro API configurado\n[ ] Pipeline conectado\n[ ] Automatizaciones de seguimiento activas\n[ ] Landing A/B creada y publicada\n[ ] Pagina de gracias configurada\n[ ] Calendario integrado (si aplica)\n[ ] Formulario funcional y testeado\n[ ] Emails de notificacion interna configurados\n[ ] Emails de notificacion al cliente configurados\n'
+    +'2) IMPLEMENTACION DE CAMPANAS (crear campana/subir anuncios/presupuesto/segmentacion/objetivo):\n'
+    +'Checklist de implementacion:\n[ ] Anuncios subidos y programados\n[ ] Pixel de conversion creado e instalado\n[ ] Dominio verificado y confirmado\n[ ] Objetivo de campana definido correctamente\n[ ] Presupuesto configurado segun brief\n[ ] Segmentacion implementada y verificada\n[ ] Campana testeada antes de activar\n'
+    +'3) CAMBIOS URGENTES - CAMPANAS (cambio de objetivo/testeo urgente/nueva segmentacion en campana existente):\n'
+    +'Checklist de cambios:\n[ ] Nuevo objetivo aplicado (Meta Forms / WhatsApp / otro)\n[ ] Testeo implementado (nueva campana / conjunto de anuncios)\n[ ] Segmentacion actualizada\n[ ] Anuncios ajustados segun cambios\n[ ] Verificacion de funcionamiento completada\n'
+    +'4) CAMBIOS URGENTES - EMBUDO (modificar landing/formulario/calendario, urgente en embudo):\n'
+    +'Checklist de cambios:\n[ ] Landing: copys actualizados\n[ ] Landing: elementos modificados\n[ ] Landing: diseno ajustado\n[ ] Formulario: preguntas actualizadas\n[ ] Formulario: estructura modificada\n[ ] Calendario: disponibilidad ajustada\n[ ] Calendario: responsable asignado\n[ ] Calendario: notas de la cita configuradas\n[ ] Cambios testeados y verificados\n'
+    +'\nTIMELINE: 2 hitos con fecha -> entregable intermedio y final.\n'
+    +'CONFIRMACION (obligatoria): "RESPONDE A ESTE EMAIL [timeframe] confirmando: 1. Entendiste el objetivo? 2. Esta claro el deadline ([FECHA])? 3. Leiste los documentos completos?" Timeframe: urgente -> 15-30 min; del dia -> hoy antes de [hora]; no critica -> 24 horas.\n'
+    +'REGLA DE SILENCIO (obligatoria): segundo email en [X horas] SOLO SI necesita accesos/bloqueo/recurso; si no llega, se asume que avanza. X: simple 2-3h, media 3-6h, compleja 24h.\n'
+    +'CIERRE: "Despues de eso, solo comunicate cuando [condicion]." + "Adelante!" + firma "Angie".\n'
+    +'PROHIBIDO: lenguaje vago ("lo antes posible","cuando puedas"), omitir confirmacion o regla de silencio, inventar datos.';
 
-  // Read last ticket from sheets proxy
-  var nextTicket=1;
+  // Proximo ticket: lo calcula la propia app (tickets ya delegados en todos los clientes).
+  // El Sheet se consulta solo como red de seguridad (3s max) por si hay tickets viejos
+  // creados fuera de la app con un numero mas alto - se toma el maximo de ambos.
+  var nextTicket=nextTicketFromApp();
   try{
-    var ticketResp=await fetch('https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec?secret=evolve-tracker&action=last_ticket');
-    var ticketData=await ticketResp.json();
-    if(ticketData.ok) nextTicket=ticketData.nextTicket||1;
-    else nextTicket=parseInt(localStorage.getItem('evold-last-ticket')||'0',10)+1;
-  }catch(e){
-    nextTicket=parseInt(localStorage.getItem('evold-last-ticket')||'0',10)+1;
-  }
+    var ticketData=await Promise.race([
+      fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=last_ticket').then(function(r){return r.json();}),
+      new Promise(function(res){setTimeout(function(){res(null);},3000);})
+    ]);
+    if(ticketData&&ticketData.ok&&ticketData.nextTicket&&ticketData.nextTicket>nextTicket){
+      nextTicket=ticketData.nextTicket;
+    }
+  }catch(e){}
+
+  // Buscar materiales relacionados en Google Drive (silencioso; si falla, se sigue sin materiales)
+  var driveMaterials=[];
+  try{
+    var _kw=String(t.text||'').split(/\s+/).filter(function(w){return w.length>=5;}).slice(0,4).join(' ');
+    var _dq=await Promise.race([
+      fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=drive_search&client='+encodeURIComponent(c.name)+'&q='+encodeURIComponent(_kw)).then(function(r){return r.json();}),
+      new Promise(function(res){setTimeout(function(){res(null);},7000);})
+    ]);
+    if(_dq&&_dq.ok&&_dq.files&&_dq.files.length) driveMaterials=_dq.files.slice(0,5);
+  }catch(e){}
+  var materialsBlock=driveMaterials.length
+    ? 'MATERIALES ENCONTRADOS EN DRIVE (incluirlos en la seccion "Detalles completos aqui:" con este formato "- [nombre]: [url]"):\n'
+      +driveMaterials.map(function(f){return '- '+f.name+': '+f.url;}).join('\n')+'\n\n'
+    : 'MATERIALES: no se encontraron archivos en Drive. En "Detalles completos aqui:" escribi "[Angie: agrega el link al brief]".\n\n';
 
   var prompt='Sos un asistente especializado en redactar mails de delegacion de tareas.\n\n'
     +delegationTemplate+'\n\n'
@@ -5353,6 +5423,7 @@ async function delegateTask(clientId, taskId){
     +(t.responsible?'- Responsable: '+t.responsible+'\n':'')
     +(t.due?'- Deadline: '+t.due+'\n':'')
     +'\nCONTEXTO DEL PROYECTO:\n'+projectContext+'\n\n'
+    +materialsBlock
     +'INSTRUCCIONES:\n'
     +'1. El numero de ticket a usar es #'+nextTicket+'. Usalo en el asunto y en el cuerpo del mail\n'
     +'2. Infiere el tipo de tarea y agrega el checklist correspondiente si aplica\n'
@@ -5445,7 +5516,7 @@ function confirmDelegate(clientId, taskId){
 
   // Write to Sheet via sheets proxy
   if(t&&c){
-    var logUrl='https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec'
+    var logUrl=TICKETS_PROXY
       +'?secret=evolve-tracker'
       +'&action=log_task'
       +'&ticket='+encodeURIComponent(usedTicket||'')
@@ -5465,9 +5536,33 @@ function confirmDelegate(clientId, taskId){
       .catch(function(){});
   }
 
-  if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:440px">'
-    +'<div class="modal-title" style="color:#1D9E75;margin-bottom:12px">Listo para enviar</div>'
-    +'<div style="font-size:12px;color:var(--text2);margin-bottom:16px">Mail redactado. Abri los links para completar:</div>'
+  // Crear el borrador REAL en Gmail (casilla de Angie) via el script de tickets
+  var _setSt=function(id,html){var e=document.getElementById(id);if(e)e.innerHTML=html;};
+  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_draft'
+      +'&to='+encodeURIComponent('ashy@evolvemindhub.com')
+      +'&subject='+encodeURIComponent(subjectVal)
+      +'&body='+encodeURIComponent(bodyVal))
+    .then(function(r){return r.json();})
+    .then(function(d){_setSt('dg-draft-st',d&&d.ok?'<span style="color:var(--accent)">Borrador creado en Gmail (Borradores de Angie)</span>':'<span style="color:var(--amberx)">Borrador automatico no disponible ('+esc((d&&d.error)||'actualiza el script de tickets')+') - usa el boton de Gmail</span>');})
+    .catch(function(){_setSt('dg-draft-st','<span style="color:var(--amberx)">Borrador automatico no disponible - usa el boton de Gmail</span>');});
+
+  // Crear el evento en el calendario "Tasks" (10 min, invita a Ashy)
+  if(t&&t.due){
+    fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_event'
+        +'&date='+encodeURIComponent(t.due)
+        +'&title='+encodeURIComponent('[#TICKET-'+(usedTicket||'')+'] Deadline: '+(t.text||'').slice(0,80))
+        +'&desc='+encodeURIComponent('Deadline para: '+(t.text||'')+'\n\nTicket: #'+(usedTicket||'')+'\nCliente: '+(c?c.name:'')+'\nAsignado a: Ashy'))
+      .then(function(r){return r.json();})
+      .then(function(d){_setSt('dg-event-st',d&&d.ok?'<span style="color:var(--accent)">Evento creado en Calendar ('+esc(d.calendar||'Tasks')+') - '+esc(t.due)+' 12:00, 10 min</span>':'<span style="color:var(--amberx)">Evento automatico no disponible ('+esc((d&&d.error)||'actualiza el script')+') - usa el boton de Calendar</span>');})
+      .catch(function(){_setSt('dg-event-st','<span style="color:var(--amberx)">Evento automatico no disponible - usa el boton de Calendar</span>');});
+  }
+
+  if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:480px">'
+    +'<div class="modal-title" style="color:#1D9E75;margin-bottom:12px">Ticket #'+esc(String(usedTicket||''))+' delegado</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;font-size:11.5px;margin-bottom:14px">'
+    +'<div id="dg-draft-st" style="color:var(--text3)">Creando borrador en Gmail...</div>'
+    +(t&&t.due?'<div id="dg-event-st" style="color:var(--text3)">Creando evento en Calendar (Tasks)...</div>':'<div style="color:var(--text3)">Sin deadline - no se crea evento de Calendar</div>')
+    +'</div>'
     +'<div style="display:flex;flex-direction:column;gap:10px">'
     +'<a href="'+gmailUrl+'" target="_blank" class="btn btn-primary" style="text-align:center;text-decoration:none;padding:10px 16px">'
     +'Abrir en Gmail - ashy@evolvemindhub.com</a>'
