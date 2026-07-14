@@ -1839,6 +1839,29 @@ function _tkOrigen(t){
   return (!t.source||t.source==='Manual')?'Manual':'Llamada';
 }
 function _tkDias(a,b){ return Math.max(0,Math.round((b-a)/86400000)); }
+function ticketDragStart(i){ window._tkDrag=i; }
+function ticketDragOver(ev){ ev.preventDefault(); }
+function ticketDrop(ev,i){
+  ev.preventDefault();
+  const from=window._tkDrag;
+  window._tkDrag=null;
+  const arr=window._tkList||[];
+  if(from==null||from===i||!arr[from]||!arr[i]) return;
+  if(arr[from].done||arr[i].done) return; // las hechas no se reordenan
+  const moved=arr.splice(from,1)[0];
+  arr.splice(i,0,moved);
+  // persistir: prio = posicion nueva entre las no-hechas visibles
+  let p=1;
+  arr.forEach(function(k){
+    if(k.done) return;
+    const c=DB.clients.find(function(x){return x.id===k.cid;});
+    const t=c&&(c.tasks||[]).find(function(x){return x.id===k.tid;});
+    if(t){ t.prio=p; p++; }
+  });
+  save();
+  showTickets();
+}
+
 function resetTicketsHistory(){
   if(!confirm('Reiniciar el historial de tickets?\n\nEl tablero va a contar solo los tickets delegados desde hoy en adelante. Las tareas viejas siguen en la pestana Tareas de cada cliente, pero dejan de aparecer aca y de contar en las metricas.')) return;
   localStorage.setItem('evold-tickets-since',String(Date.now()));
@@ -1893,12 +1916,23 @@ function showTickets(){
   else if(filter==='hechos') list=hechos;
   // orden: vencidos primero, luego abiertos mas viejos, luego hechos recientes
   list=[...list].sort(function(a,b){
-    const av=!a.t.done&&endOfDue(a.t)&&endOfDue(a.t)<now?0:(!a.t.done?1:2);
-    const bv=!b.t.done&&endOfDue(b.t)&&endOfDue(b.t)<now?0:(!b.t.done?1:2);
-    if(av!==bv) return av-bv;
-    if(av<2) return String(a.t.delegatedAt||'').localeCompare(String(b.t.delegatedAt||''));
+    const doneA=a.t.done?1:0, doneB=b.t.done?1:0;
+    if(doneA!==doneB) return doneA-doneB; // hechas al final
+    if(!doneA){
+      // prioridad manual (drag & drop) manda; sin prio va despues
+      const pa=(a.t.prio!=null)?a.t.prio:1e9;
+      const pb=(b.t.prio!=null)?b.t.prio:1e9;
+      if(pa!==pb) return pa-pb;
+      // fallback: vencidas primero, despues las mas viejas
+      const av=endOfDue(a.t)&&endOfDue(a.t)<now?0:1;
+      const bv=endOfDue(b.t)&&endOfDue(b.t)<now?0:1;
+      if(av!==bv) return av-bv;
+      return String(a.t.delegatedAt||'').localeCompare(String(b.t.delegatedAt||''));
+    }
     return String(b.t.doneAt||'').localeCompare(String(a.t.doneAt||''));
   });
+  // lista visible para el drag & drop de prioridades
+  window._tkList=list.map(function(r){return {cid:r.c.id,tid:r.t.id,done:!!r.t.done};});
 
   const kpi=function(label,val,red){
     return '<div class="metric-card"'+(red?' style="background:rgba(216,90,48,0.08);border:0.5px solid rgba(216,90,48,0.25)"':'')+'>'
@@ -1911,7 +1945,7 @@ function showTickets(){
   };
   const fmtF=function(iso){ if(!iso) return '-'; const d=new Date(iso); return d.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}); };
 
-  const rowsHtml=list.map(function(r){
+  const rowsHtml=list.map(function(r,_i){
     const t=r.t, c=r.c;
     const d=endOfDue(t);
     const venc=!t.done&&d&&d<now;
@@ -1926,8 +1960,10 @@ function showTickets(){
       estado='<span class="pill pill-amber" style="font-size:10px">Abierta</span>';
       if(t.delegatedAt) extra=_tkDias(new Date(t.delegatedAt),now)+' d abierta';
     }
-    return '<tr style="border-bottom:1px solid var(--border)">'
-      +'<td style="padding:10px 12px;white-space:nowrap"><input type="checkbox" '+(t.done?'checked':'')+' onchange="toggleTask('+c.id+','+t.id+',this.checked)" style="margin-right:8px;vertical-align:middle">'
+    return '<tr '+(t.done?'':'draggable="true" ondragstart="ticketDragStart('+_i+')" ondragover="ticketDragOver(event)" ondrop="ticketDrop(event,'+_i+')" ')+'style="border-bottom:1px solid var(--border)">'
+      +'<td style="padding:10px 12px;white-space:nowrap">'
+      +(t.done?'<span style="display:inline-block;width:14px"></span>':'<span title="Arrastra para priorizar" style="cursor:grab;color:var(--text3);margin-right:6px;font-size:12px;user-select:none">&#8801;</span>')
+      +'<input type="checkbox" '+(t.done?'checked':'')+' onchange="toggleTask('+c.id+','+t.id+',this.checked)" style="margin-right:8px;vertical-align:middle">'
       +'<span class="mono" style="font-size:11.5px;color:var(--accent)">'+esc(t.ticket||'-')+'</span></td>'
       +'<td style="padding:10px 12px;white-space:nowrap;cursor:pointer;color:var(--strong)" onclick="selectClient('+c.id+');S.tab=\'tareas\';renderClient()">'+esc(c.name)+'</td>'
       +'<td style="padding:10px 12px;max-width:340px">'+esc(t.text||'')+'</td>'
