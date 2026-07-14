@@ -1997,6 +1997,7 @@ function openWeeklyReportModal(){
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
     +(pushed?'<br>Ultima sincronizacion: '+new Date(+pushed).toLocaleString('es-AR'):'')
     +'</div>'
+    +'<div id="wr-diag" style="font-size:11px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:9px 11px;margin-bottom:12px;line-height:1.7">Diagnosticando el Apps Script...</div>'
     +'<div id="wr-status" style="font-size:11.5px;color:var(--text3);margin-bottom:12px"></div>'
     +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:16px;border-top:1px solid var(--border);padding-top:10px">'
     +'Setup unico en el Apps Script (una sola vez):<br>'
@@ -2008,6 +2009,28 @@ function openWeeklyReportModal(){
     +'<div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
     +'<button class="btn btn-sm btn-primary" onclick="pushWeeklyReportConfig()">Guardar y sincronizar</button></div>'
     +'</div></div></div>';
+  weeklyReportDiag();
+}
+// Consulta al Apps Script que le falta para que el informe salga solo
+function weeklyReportDiag(){
+  const el=document.getElementById('wr-diag');
+  if(!el) return;
+  const proxy=getGhlProxy();
+  if(!proxy.url){ el.innerHTML='<span style="color:var(--redx)">Falta la conexion (proxy) - configurala en Integraciones &rarr; GoHighLevel.</span>'; return; }
+  Promise.race([
+    fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)+'&action=report_status').then(function(r){return r.json();}),
+    new Promise(function(res){setTimeout(function(){res(null);},8000);})
+  ]).then(function(d){
+    if(!d){ el.innerHTML='<span style="color:var(--amberx)">El Apps Script no responde - revisa la URL del proxy.</span>'; return; }
+    if(!d.ok){ el.innerHTML='<span style="color:var(--redx)">El Apps Script no tiene la v4</span> - pega el archivo evold-ghl-proxy.gs completo y crea una NUEVA VERSION al implementar.'; return; }
+    const li=function(ok,okTxt,badTxt){ return '<div>'+(ok?'<span style="color:var(--accent)">&#10003;</span> '+okTxt:'<span style="color:var(--redx)">&#10007;</span> '+badTxt)+'</div>'; };
+    el.innerHTML=''
+      +li(!!d.email,'Email destino en el script: '+esc(d.email),'Falta el email destino - toca "Guardar y sincronizar"')
+      +li((d.clients||[]).length>0,(d.clients||[]).length+' clientes con config en el script','Sin clientes en el script - toca "Guardar y sincronizar"')
+      +li(!!d.trigger,'Disparador de los lunes ACTIVO','Disparador de los lunes NO creado - abri el editor del Apps Script y ejecuta setupWeeklyTrigger una vez');
+  }).catch(function(e){
+    el.innerHTML='<span style="color:var(--redx)">Error consultando el script: '+esc(e.message)+'</span>';
+  });
 }
 async function pushWeeklyReportConfig(){
   const proxy=getGhlProxy();
@@ -5510,10 +5533,13 @@ async function delegateTask(clientId, taskId){
       +'<input id="delegate-subject" value="'+esc(subject)+'" style="width:100%;background:none;border:none;color:var(--text);font-size:12px;font-weight:500;outline:none">'
       +'</div>'
       +'<textarea id="delegate-body" style="width:100%;min-height:260px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;padding:12px;line-height:1.6;resize:vertical">'+esc(body)+'</textarea>'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:8px">Al confirmar: se crea el borrador en Gmail + evento en Calendar Tasks con el deadline.</div>'
+      +'<label style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);margin-top:10px;cursor:pointer">'
+      +'<input type="checkbox" id="dg-send-direct" '+(localStorage.getItem('evold-delegate-send')==='1'?'checked':'')+'>'
+      +'Enviar directo a Ashy (sin dejar en Borradores)</label>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:6px">Al confirmar: '+(localStorage.getItem('evold-delegate-send')==='1'?'se ENVIA el mail a Ashy':'se crea el borrador en Gmail (falta apretar Enviar)')+' + evento en Calendar Tasks con el deadline.</div>'
       +'<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">'
       +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-      +'<button class="btn btn-sm btn-primary" onclick="confirmDelegate('+clientId+','+taskId+')">OK - Crear borrador y evento</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="confirmDelegate('+clientId+','+taskId+')">OK - Delegar</button>'
       +'</div></div></div>';
 
     // Store draft data for confirmation step
@@ -5586,14 +5612,23 @@ function confirmDelegate(clientId, taskId){
 
   // Crear el borrador REAL en Gmail (casilla de Angie) via el script de tickets
   var _setSt=function(id,html){var e=document.getElementById(id);if(e)e.innerHTML=html;};
+  var _sendDirect=(function(){
+    var cb=document.getElementById('dg-send-direct');
+    var v=cb?(cb.checked?'1':'0'):(localStorage.getItem('evold-delegate-send')||'0');
+    localStorage.setItem('evold-delegate-send',v);
+    return v==='1';
+  })();
   fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_draft'
       +'&to='+encodeURIComponent('ashy@evolvemindhub.com')
       +'&subject='+encodeURIComponent(subjectVal)
-      +'&body='+encodeURIComponent(bodyVal))
+      +'&body='+encodeURIComponent(bodyVal)
+      +(_sendDirect?'&send=1':''))
     .then(function(r){return r.json();})
     .then(function(d){
       if(d&&d.ok){
-        _setSt('dg-draft-st','<span style="color:var(--accent)">Borrador creado en Gmail (Borradores de Angie) - solo falta apretar Enviar</span>');
+        _setSt('dg-draft-st',_sendDirect&&d.sent
+          ?'<span style="color:var(--accent)">Mail ENVIADO a ashy@evolvemindhub.com</span>'
+          :'<span style="color:var(--accent)">Borrador creado en Gmail (Borradores de Angie) - solo falta apretar Enviar</span>');
         var gb=document.getElementById('dg-gmail-btn'); if(gb) gb.style.display='none';
       } else {
         _setSt('dg-draft-st','<span style="color:var(--amberx)">Borrador automatico no disponible ('+esc((d&&d.error)||'instala el addon en el script de tickets')+') - usa el boton de Gmail</span>');
@@ -5622,7 +5657,7 @@ function confirmDelegate(clientId, taskId){
   if(modal) modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:480px">'
     +'<div class="modal-title" style="color:#1D9E75;margin-bottom:12px">Ticket #'+esc(String(usedTicket||''))+' delegado</div>'
     +'<div style="display:flex;flex-direction:column;gap:6px;font-size:11.5px;margin-bottom:14px">'
-    +'<div id="dg-draft-st" style="color:var(--text3)">Creando borrador en Gmail...</div>'
+    +'<div id="dg-draft-st" style="color:var(--text3)">'+(localStorage.getItem('evold-delegate-send')==='1'?'Enviando mail a Ashy...':'Creando borrador en Gmail...')+'</div>'
     +(t&&t.due?'<div id="dg-event-st" style="color:var(--text3)">Creando evento en Calendar (Tasks)...</div>':'<div style="color:var(--text3)">Sin deadline - no se crea evento de Calendar</div>')
     +'</div>'
     +'<div style="display:flex;flex-direction:column;gap:10px">'
