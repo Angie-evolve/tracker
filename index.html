@@ -502,7 +502,7 @@ const _metaSpendInFlight={};
 function _metaSpendKey(c,period){
   const al=getActiveLine(c.conversionLines||[]);
   const excluded=((al&&al.excludedCampaigns)||[]).slice().sort();
-  return {key:period+'|'+excluded.join(','), excluded:excluded};
+  return {key:'v2|'+period+'|'+excluded.join(','), excluded:excluded};
 }
 async function fetchMetaSpendPeriod(clientId,period){
   const c=DB.clients.find(function(x){return x.id===clientId;});
@@ -526,11 +526,13 @@ async function fetchMetaSpendPeriod(clientId,period){
       insSpec='insights.date_preset(maximum)';
     }
     insSpec+='.breakdowns(country).limit(500)';
-    const fields='id,'+insSpec+'{spend}';
+    const fields='id,'+insSpec+'{spend,actions}';
     let url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&limit=200&access_token='+c.metaToken;
-    let spend=0, pages=0;
+    let spend=0, views=0, pages=0;
     const byCamp={};
+    const vByCamp={};
     const byCountry={}; // solo campanas incluidas, clave = nombre de pais
+    const vByCountry={};
     while(url && pages<5){
       const res=await fetch(url);
       const data=await res.json();
@@ -540,18 +542,21 @@ async function fetchMetaSpendPeriod(clientId,period){
         const rows=(camp.insights&&camp.insights.data)||[];
         rows.forEach(function(row){
           const v=parseFloat(row.spend||0);
+          let lv=0;
+          (row.actions||[]).forEach(function(a){ if(a.action_type==='landing_page_view') lv+=parseInt(a.value||0); });
           byCamp[String(camp.id)]=(byCamp[String(camp.id)]||0)+v;
+          vByCamp[String(camp.id)]=(vByCamp[String(camp.id)]||0)+lv;
           if(included){
-            spend+=v;
+            spend+=v; views+=lv;
             const pais=_ISO_PAIS[String(row.country||'').toUpperCase()]||String(row.country||'');
-            if(pais) byCountry[pais]=(byCountry[pais]||0)+v;
+            if(pais){ byCountry[pais]=(byCountry[pais]||0)+v; vByCountry[pais]=(vByCountry[pais]||0)+lv; }
           }
         });
       });
       url=data.paging&&data.paging.next;
       pages++;
     }
-    c._metaSpend[sk.key]={spend:spend,byCampaign:byCamp,byCountry:byCountry,at:Date.now()};
+    c._metaSpend[sk.key]={spend:spend,views:views,byCampaign:byCamp,viewsByCampaign:vByCamp,byCountry:byCountry,viewsByCountry:vByCountry,at:Date.now()};
     save();
     return c._metaSpend[sk.key];
   }catch(e){
@@ -1785,6 +1790,7 @@ function liveSectionHtml(c){
       {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
       {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
       {label:'Registros (GHL)',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return f?String(f.registros):fmtVal((l.metrics||{}).registros);}},
+      {label:'Opt-in landing',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const reg=f?f.registros:Number((l.metrics||{}).registros)||0;const pv=Number((l.metrics||{}).pageViews)||0;return (pv>0&&reg>0)?(Math.round(reg/pv*1000)/10)+'%':'<span style="color:var(--text3)" title="Registros de GHL sobre vistas de landing de Meta">-</span>';}},
       {label:'SQL (GHL)',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return f?String(f.sql):fmtVal((l.metrics||{}).sql);}},
       {label:'Costo calificado',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;const q=f?f.sql:(Number((l.metrics||{}).sql)||0);return (q>0&&spent)?'USD '+(spent/q).toFixed(2):'<span style="color:var(--text3)">-</span>';}},
       {label:'Agendas totales',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
@@ -4858,6 +4864,17 @@ function renderVentasTab(c, el){
   }
   html+='<div class="vh-cols">'
     +vhCol('Top of funnel',[
+      vhRow('Registros',String(opsSeg.length)),
+      vhRow('Opt-in landing',(function(){
+        if(spendSource!=='live'||!metaConfigured) return '<span class="zero" title="Activa la fuente Tiempo real para calcular el opt-in con vistas de Meta">-</span>';
+        let vv=null;
+        if(segCampId&&_msCache&&_msCache.viewsByCampaign&&_msCache.viewsByCampaign[segCampId]!=null) vv=_msCache.viewsByCampaign[segCampId];
+        else if(segPais&&_msCache&&_msCache.viewsByCountry&&_msCache.viewsByCountry[segPais]!=null) vv=_msCache.viewsByCountry[segPais];
+        else if(!segCampId&&!segPais&&_msCache&&_msCache.views!=null) vv=_msCache.views;
+        const den=(_segSpendOk||(!segCampId&&!segPais))?opsSeg.length:opsP.length;
+        if(!vv||!den) return '<span class="zero">-</span>';
+        return (Math.round(den/vv*1000)/10)+'% <span style="font-size:10px;color:var(--text3)">('+den+'/'+vv.toLocaleString('en-US')+')</span>';
+      })()),
       vhRow('Agendas totales',m_agendas),
       vhRow('Shows pendientes',m_pend),
       vhRow('No shows',m_noshow),
