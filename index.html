@@ -93,7 +93,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .sidebar.collapsed .nav-item .nav-item-icon.client-av{display:flex;background:#2a2a2a !important;color:#d0d0d0 !important;font-weight:500 !important}
 .sidebar.collapsed .client-av.is-idle{background:#1e1e1e !important;color:#7a7a7a !important}
 .client-row{position:relative;overflow:hidden}
-.client-live-sweep{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(29,158,117,.13),transparent);background-size:60% 100%;background-repeat:no-repeat;animation:clientSweep 2.6s linear infinite}
+.client-live-sweep{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent 20%,rgba(29,158,117,.07),transparent 80%);background-size:120% 100%;background-repeat:no-repeat;animation:clientSweep 4.5s ease-in-out infinite}
 .sidebar.collapsed .client-live-sweep{display:none}
 @keyframes clientSweep{0%{background-position:-120% 0}100%{background-position:220% 0}}
 .client-state{position:relative;font-size:8.5px;font-family:var(--mono);letter-spacing:.04em;flex-shrink:0}
@@ -2246,6 +2246,78 @@ function testWeeklyReportNow(){
       if(st) st.innerHTML=res&&res.ok?'<span style="color:var(--accent)">Enviado - revisa tu casilla (y spam la primera vez).</span>':'<span style="color:var(--redx)">Error: '+esc((res&&res.error)||'desconocido')+'</span>';
     })
     .catch(function(e){ if(st) st.innerHTML='<span style="color:var(--redx)">Error de red: '+esc(e.message)+'</span>'; });
+}
+
+// ================= RECORDS DE EFICIENCIA (libro de mejores marcas por cliente) =================
+var _REC_DEFS=[
+  {key:'cac',label:'CAC (costo por cliente)'},
+  {key:'reg',label:'Costo por registro'},
+  {key:'sql',label:'Costo por calificada / SQL'},
+  {key:'agenda',label:'Costo por agenda'},
+  {key:'asist',label:'Costo por asistencia'},
+  {key:'viva',label:'Costo por llamada en vivo'}
+];
+// Guarda el primer valor y el mejor (minimo) valor historico por metrica.
+function captureRecords(c,vals){
+  c.records=c.records||{};
+  var now=new Date().toISOString();
+  var changed=false;
+  Object.keys(vals).forEach(function(k){
+    var v=vals[k];
+    if(v==null||!isFinite(v)||v<=0) return;
+    var r=c.records[k];
+    if(!r){
+      c.records[k]={first:v,firstAt:now,best:v,bestAt:now};
+      changed=true;
+    } else if(v<r.best-1e-9){
+      r.prevBest=r.best; r.prevBestAt=r.bestAt;
+      r.best=v; r.bestAt=now;
+      r.justBeaten=Date.now(); // para el destello "nuevo record"
+      changed=true;
+    }
+  });
+  if(changed) save();
+  return changed;
+}
+function recordsSectionHtml(c){
+  var recs=c.records||{};
+  var have=_REC_DEFS.filter(function(d){return recs[d.key];});
+  if(!have.length){
+    return '<div style="margin-top:26px">'
+      +'<div class="vh-label" style="border:0;padding:0;margin-bottom:8px">Records</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:14px 16px;line-height:1.6">'
+      +'Todavia no hay records. Se capturan solos: cuando mires estos costos con la fuente Tiempo real, la app guarda tu primera marca y despues cada vez que bajes un costo, registra el nuevo record.'
+      +'</div></div>';
+  }
+  var fmtD=function(iso){return iso?new Date(iso).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',yy:'2-digit',year:'2-digit'}):'-';};
+  var cards=have.map(function(d){
+    var r=recs[d.key];
+    var mejora=(r.first>0&&r.best<r.first)?Math.round((1-r.best/r.first)*100):0;
+    var fresh=r.justBeaten&&(Date.now()-r.justBeaten<1000*60*60*24*3);
+    return '<div style="background:var(--bg2);border:1px solid '+(fresh?'rgba(29,158,117,0.4)':'var(--border)')+';border-radius:var(--radius-lg);padding:14px 16px;position:relative">'
+      +(fresh?'<span class="pill pill-green" style="position:absolute;top:12px;right:12px;font-size:9px">nuevo record</span>':'')
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">'+d.label+'</div>'
+      +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">'
+        +'<span style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--mono)">$'+r.best.toFixed(2)+'</span>'
+        +(mejora>0?'<span style="font-size:11px;color:var(--accent)">&darr; '+mejora+'%</span>':'')
+      +'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3)">mejor marca &middot; '+fmtD(r.bestAt)+'</div>'
+      +'<div style="margin-top:9px;padding-top:9px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:10.5px;color:var(--text3)">'
+        +'<span>arranque: <span class="mono" style="color:var(--text2)">$'+r.first.toFixed(2)+'</span></span>'
+        +'<span>'+fmtD(r.firstAt)+'</span>'
+      +'</div></div>';
+  }).join('');
+  return '<div style="margin-top:26px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+    +'<div class="vh-label" style="border:0;padding:0">Records &middot; mejores marcas de eficiencia</div>'
+    +'<button class="btn btn-sm" style="color:var(--text3)" onclick="resetRecords('+c.id+')">Reiniciar</button>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px">'+cards+'</div></div>';
+}
+function resetRecords(clientId){
+  if(!confirm('Reiniciar los records de este cliente? Se borran todas las marcas guardadas y se empezara a capturar de nuevo.')) return;
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(c){ c.records={}; save(); if(typeof renderTab==='function') renderTab(); }
 }
 
 // ================= NOVEDADES DE CONVERSION DE VENTAS (diff entre syncs) =================
@@ -4928,6 +5000,8 @@ function renderVentasTab(c, el){
   const cCalif=_rules.llamadaEnVivo.length?opsCost.filter(function(o){return _rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0&&o._sql;}).length:null;
   const cWon=opsCost.filter(function(o){return deriveEstado(o).label==='Ganado';}).length;
   const costo=function(n){return (n&&accSpentAll!=null)?money(accSpentAll/n):null;};
+  // valor numerico puro por metrica (para records); null si no calculable
+  const costoNum=function(n){return (n&&accSpentAll!=null&&accSpentAll>0)?accSpentAll/n:null;};
 
   // --- HTML ---
   const vhRow=function(l,v){
@@ -5022,6 +5096,13 @@ function renderVentasTab(c, el){
     +'<div style="display:flex;gap:6px;align-items:center"><span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Inversion segun</span>'
     +'<button class="vh-chip '+(spendSource==='lineas'?'on':'')+'" onclick="setVentasSpendSource(\'lineas\')">Lineas</button>'
     +'<button class="vh-chip '+(spendSource==='live'?'on':'')+'" onclick="setVentasSpendSource(\'live\')">Tiempo real</button></div></div>';
+  // Capturar records de eficiencia (solo cuando NO hay segmento activo: el record es del cliente completo)
+  if(!segCampId&&!segPais){
+    captureRecords(c,{
+      cac:costoNum(cWon), reg:costoNum(opsCost.length), sql:costoNum(cCalif),
+      agenda:costoNum(cAg), asist:costoNum(cntStages(opsCost,_rules.asistencias)), viva:costoNum(cViva)
+    });
+  }
   html+='<div class="vh-costs">'
     +vhCost('Inversion',accSpentAll!=null?money(accSpentAll):null)
     +vhCost('Costo por agenda',costo(cAg))
@@ -5030,6 +5111,7 @@ function renderVentasTab(c, el){
     +vhCost('Costo por presentacion',costo(cPres))
     +vhCost('CAC',costo(cWon))
     +'</div>';
+  html+=recordsSectionHtml(c);
   html+=(timeToCierreNeedsSetup?'<div style="font-size:11px;color:var(--text3);margin:0 0 16px">Time to cierre necesita que el Apps Script tambien mande la fecha de actualizacion (updatedAt) de cada oportunidad - avisame si queres que te arme ese cambio.</div>':'');
   html+=(!_rules.agendas.length&&!_rules.asistencias.length&&!_rules.noShows.length&&!_rules.presentaciones.length?'<div style="font-size:11px;color:var(--text3);margin:0 0 16px">Configura que stages cuentan como agenda / asistencia / no show / presentacion en el boton "Reglas". Las metricas con &mdash; dependen de eso.</div>':'');
 
