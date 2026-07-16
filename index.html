@@ -1850,6 +1850,77 @@ function liveSectionHtml(c){
 }
 
 // ================= TICKETS: tablero global de tareas delegadas + rendimiento =================
+// Estados manuales/automaticos de un ticket (ademas de hecha/vencida)
+// Escanea respuestas de Ashy via el Apps Script de tickets y marca estados sugeridos
+function scanTicketReplies(){
+  if(typeof TICKETS_PROXY==='undefined'||!TICKETS_PROXY){ if(typeof toast==='function') toast('Falta el script de tickets'); return; }
+  if(typeof toast==='function') toast('Revisando respuestas de Ashy...');
+  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=scan_replies')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.ok){ if(typeof toast==='function') toast('No se pudo revisar ('+((d&&d.error)||'actualiza el addon del script')+')','red'); return; }
+      const byTicket={};
+      (d.replies||[]).forEach(function(rp){ if(rp.ticket&&rp.estado) byTicket[String(rp.ticket).replace(/[^0-9]/g,'')]={estado:rp.estado,at:rp.at}; });
+      let n=0;
+      DB.clients.forEach(function(c){
+        (c.tasks||[]).forEach(function(t){
+          if(!t.ticket||t.done) return;
+          const num=String(t.ticket).replace(/[^0-9]/g,'');
+          const hit=byTicket[num];
+          if(hit&&hit.estado!==t.estado){
+            t.estadoSugerido=hit.estado; t.estadoSugeridoAt=hit.at||new Date().toISOString(); n++;
+          }
+        });
+      });
+      save();
+      if(S.view==='tickets') showTickets();
+      if(typeof toast==='function') toast(n?n+' ticket'+(n>1?'s':'')+' con estado sugerido':'Sin respuestas nuevas de Ashy');
+    })
+    .catch(function(e){ if(typeof toast==='function') toast('Error de red revisando respuestas','red'); });
+}
+
+var _TK_ESTADOS={
+  'proceso':{label:'En proceso',pill:'pill-blue'},
+  'revision':{label:'En revision',pill:'pill-amber'},
+  'bloqueada':{label:'Bloqueada',pill:'pill-red'},
+  'finalizada':{label:'Finalizada',pill:'pill-green'}
+};
+function applyTicketEstado(clientId,taskId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t||!t.estadoSugerido) return;
+  t.estado=t.estadoSugerido;
+  if(t.estado==='finalizada'){ t.done=true; t.doneAt=t.estadoSugeridoAt||new Date().toISOString(); }
+  delete t.estadoSugerido; delete t.estadoSugeridoAt;
+  save();
+  if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+}
+function dismissTicketEstado(clientId,taskId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  delete t.estadoSugerido; delete t.estadoSugeridoAt;
+  save();
+  if(S.view==='tickets') showTickets();
+}
+function cycleTicketEstado(clientId,taskId){
+  const orden=['','proceso','revision','bloqueada','finalizada'];
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  const i=orden.indexOf(t.estado||'');
+  setTicketEstado(clientId,taskId,orden[(i+1)%orden.length]);
+}
+function setTicketEstado(clientId,taskId,estado){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  t.estado=estado||'';
+  if(estado==='finalizada'){ t.done=true; t.doneAt=new Date().toISOString(); }
+  save();
+  if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+}
+
 function _ticketRows(){
   const rows=[];
   DB.clients.forEach(function(c){
@@ -1972,15 +2043,31 @@ function showTickets(){
     const d=endOfDue(t);
     const venc=!t.done&&d&&d<now;
     let estado, extra='';
+    const ST=_TK_ESTADOS[t.estado];
     if(t.done){
       estado='<span class="pill pill-green" style="font-size:10px">Hecha</span>';
       if(t.doneAt&&t.delegatedAt) extra='resuelta en '+_tkDias(new Date(t.delegatedAt),new Date(t.doneAt))+' d';
+    } else if(t.estado&&ST){
+      estado='<span class="pill '+ST.pill+'" style="font-size:10px;cursor:pointer" title="Cambiar estado" onclick="event.stopPropagation();cycleTicketEstado('+c.id+','+t.id+')">'+ST.label+'</span>';
+      if(venc) extra=_tkDias(d,now)+' d de atraso';
+      else if(t.delegatedAt) extra=_tkDias(new Date(t.delegatedAt),now)+' d abierta';
     } else if(venc){
       estado='<span class="pill pill-red" style="font-size:10px">Vencida</span>';
       extra=_tkDias(d,now)+' d de atraso';
     } else {
-      estado='<span class="pill pill-amber" style="font-size:10px">Abierta</span>';
+      estado='<span class="pill pill-amber" style="font-size:10px;cursor:pointer" title="Marcar estado a mano" onclick="event.stopPropagation();cycleTicketEstado('+c.id+','+t.id+')">Abierta</span>';
       if(t.delegatedAt) extra=_tkDias(new Date(t.delegatedAt),now)+' d abierta';
+    }
+    // sugerencia detectada desde el mail de Ashy (aun sin confirmar)
+    let sugg='';
+    if(!t.done&&t.estadoSugerido&&t.estadoSugerido!==t.estado){
+      const SS=_TK_ESTADOS[t.estadoSugerido];
+      if(SS) sugg='<div style="margin-top:5px;display:flex;align-items:center;gap:6px">'
+        +'<span style="font-size:10px;color:var(--text3)">Ashy respondio &rarr; parece</span>'
+        +'<span class="pill '+SS.pill+'" style="font-size:9.5px;opacity:.85">'+SS.label+'</span>'
+        +'<button class="btn btn-sm" style="padding:1px 7px;font-size:9.5px;border-color:var(--accent);color:var(--accent)" onclick="event.stopPropagation();applyTicketEstado('+c.id+','+t.id+')">confirmar</button>'
+        +'<button class="btn btn-sm" style="padding:1px 6px;font-size:9.5px;color:var(--text3)" onclick="event.stopPropagation();dismissTicketEstado('+c.id+','+t.id+')">&times;</button>'
+        +'</div>';
     }
     return '<tr '+(t.done?'':'draggable="true" ondragstart="ticketDragStart('+_i+')" ondragover="ticketDragOver(event)" ondrop="ticketDrop(event,'+_i+')" ')+'style="border-bottom:1px solid var(--border)">'
       +'<td style="padding:10px 12px;white-space:nowrap">'
@@ -1993,7 +2080,7 @@ function showTickets(){
       +'<td style="padding:10px 12px;white-space:nowrap">'+esc(t.responsible||'Ashy')+'</td>'
       +'<td style="padding:10px 12px;white-space:nowrap" class="mono" style="font-size:11.5px">'+fmtF(t.delegatedAt)+'</td>'
       +'<td style="padding:10px 12px;white-space:nowrap" class="mono">'+(t.due?fmtF(t.due):'-')+'</td>'
-      +'<td style="padding:10px 12px;white-space:nowrap">'+estado+(extra?' <span style="font-size:10.5px;color:var(--text3)">'+extra+'</span>':'')+'</td>'
+      +'<td style="padding:10px 12px">'+estado+(extra?' <span style="font-size:10.5px;color:var(--text3)">'+extra+'</span>':'')+sugg+'</td>'
       +'</tr>';
   }).join('');
 
@@ -2017,6 +2104,7 @@ function showTickets(){
     +'<div style="font-size:17px;font-weight:600;color:var(--strong)">Tickets</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
+    +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
     +'</div>'
     +'</div>'
