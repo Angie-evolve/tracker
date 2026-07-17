@@ -515,7 +515,7 @@ function _metaSpendKey(c,period){
   const excluded=((al&&al.excludedCampaigns)||[]).slice().sort();
   var suf=period;
   if(period==='custom'){ var cr=(S.ventasCustom||{}); suf='custom|'+(cr.from||'')+'|'+(cr.to||''); }
-  return {key:'v2|'+suf+'|'+excluded.join(','), excluded:excluded};
+  return {key:'v3|'+suf+'|'+excluded.join(','), excluded:excluded};
 }
 async function fetchMetaSpendPeriod(clientId,period){
   const c=DB.clients.find(function(x){return x.id===clientId;});
@@ -549,6 +549,9 @@ async function fetchMetaSpendPeriod(clientId,period){
     const vByCamp={};
     const byCountry={}; // solo campanas incluidas, clave = nombre de pais
     const vByCountry={};
+    const byCampCountry={}; // cruce: 'campId||pais' -> spend
+    const vByCampCountry={};
+    const countriesByCamp={}; // campId -> {pais:spend} para saber que paises tiene cada campana
     while(url && pages<5){
       const res=await fetch(url);
       const data=await res.json();
@@ -562,9 +565,16 @@ async function fetchMetaSpendPeriod(clientId,period){
           (row.actions||[]).forEach(function(a){ if(a.action_type==='landing_page_view') lv+=parseInt(a.value||0); });
           byCamp[String(camp.id)]=(byCamp[String(camp.id)]||0)+v;
           vByCamp[String(camp.id)]=(vByCamp[String(camp.id)]||0)+lv;
+          const pais=_ISO_PAIS[String(row.country||'').toUpperCase()]||String(row.country||'');
+          if(pais){
+            const ck=String(camp.id)+'||'+pais;
+            byCampCountry[ck]=(byCampCountry[ck]||0)+v;
+            vByCampCountry[ck]=(vByCampCountry[ck]||0)+lv;
+            countriesByCamp[String(camp.id)]=countriesByCamp[String(camp.id)]||{};
+            countriesByCamp[String(camp.id)][pais]=(countriesByCamp[String(camp.id)][pais]||0)+v;
+          }
           if(included){
             spend+=v; views+=lv;
-            const pais=_ISO_PAIS[String(row.country||'').toUpperCase()]||String(row.country||'');
             if(pais){ byCountry[pais]=(byCountry[pais]||0)+v; vByCountry[pais]=(vByCountry[pais]||0)+lv; }
           }
         });
@@ -572,7 +582,7 @@ async function fetchMetaSpendPeriod(clientId,period){
       url=data.paging&&data.paging.next;
       pages++;
     }
-    c._metaSpend[sk.key]={spend:spend,views:views,byCampaign:byCamp,viewsByCampaign:vByCamp,byCountry:byCountry,viewsByCountry:vByCountry,at:Date.now()};
+    c._metaSpend[sk.key]={spend:spend,views:views,byCampaign:byCamp,viewsByCampaign:vByCamp,byCountry:byCountry,viewsByCountry:vByCountry,byCampCountry:byCampCountry,vByCampCountry:vByCampCountry,countriesByCamp:countriesByCamp,at:Date.now()};
     save();
     return c._metaSpend[sk.key];
   }catch(e){
@@ -1784,8 +1794,9 @@ function initLeadJourney3D(c, opp){
 }
 
 function setVentasSpendSource(src){ S.ventasSpendSource=src; renderTab(); }
-function setVentasView(v){ S.ventasView=v; S.ventasSeg=null; renderTab(); }
+function setVentasView(v){ S.ventasView=v; S.ventasSeg=null; S.ventasPais=null; renderTab(); }
 function setVentasTab(t){ S.ventasTab=t; renderTab(); }
+function setVentasPais(p){ S.ventasPais=p?decodeURIComponent(p):null; renderTab(); }
 function setVentasPeriod(p){ S.ventasPeriod=p; renderTab(); }
 // Rango de fechas custom: {from:'YYYY-MM-DD', to:'YYYY-MM-DD'}
 function _customRange(){
@@ -1829,7 +1840,7 @@ function applyCustomRange(){
 function setVentasSeg(k){
   if(k!=null) k=decodeURIComponent(k);
   S.ventasSeg=(S.ventasSeg===k?null:k);
-  renderTab();
+  S.ventasPais=null; renderTab();
 }
 
 function filterGhlTable(val, clientId){
@@ -4974,7 +4985,15 @@ function renderVentasTab(c, el){
   const segKeys=Object.keys(segMap).sort(function(a,b){return segMap[b]-segMap[a];}).slice(0,10);
   let seg=S.ventasSeg;
   if(seg && segKeys.indexOf(seg)<0){ seg=null; S.ventasSeg=null; }
-  const opsSeg=seg? opsP.filter(function(o){return (keyOf(o)||'(sin dato)')===seg;}) : opsP;
+  let opsSeg=seg? opsP.filter(function(o){return (keyOf(o)||'(sin dato)')===seg;}) : opsP;
+  // cruce campana x pais: ademas del segmento de campana, filtrar por pais del contacto
+  if(view==='embudo'&&seg&&S.ventasPais){
+    opsSeg=opsSeg.filter(function(o){
+      var pc=(o.geo&&(o.geo.country||o.geo.countryName))||(o.source&&o.source.country)||'';
+      pc=_ISO_PAIS[String(pc).toUpperCase()]||pc;
+      return _n(pc)===_n(S.ventasPais);
+    });
+  }
 
   // --- Metricas del subset segun reglas de stages ---
   const cntStages=function(sub,arr){ if(!arr.length) return null; return sub.filter(function(o){return arr.indexOf(_n(o.pipelineStage))>=0;}).length; };
@@ -5029,22 +5048,29 @@ function renderVentasTab(c, el){
   if(view==='pais'&&seg&&seg!=='(sin dato)'){
     for(var _iso in _ISO_PAIS){ if(_n(_ISO_PAIS[_iso])===_n(seg)){ segPais=_ISO_PAIS[_iso]; break; } }
   }
-  const _needByCamp=!!(spendSource==='live'&&segCampId);
+  // Segundo eje "x Pais": solo activo en la vista Por campana con una campana elegida
+  let segCross=null; // nombre de pais del cruce
+  if(view==='embudo'&&segCampId&&S.ventasPais){ segCross=S.ventasPais; }
+  const _crossKey=(segCampId&&segCross)?(segCampId+'||'+segCross):null;
+  const _needCross=!!(spendSource==='live'&&_crossKey);
+  const _needByCamp=!!(spendSource==='live'&&segCampId&&!segCross);
   const _needByPais=!!(spendSource==='live'&&segPais);
-  const accSpentLive=_needByCamp
-    ? ((_msCache&&_msCache.byCampaign&&_msCache.byCampaign[segCampId]!=null)?_msCache.byCampaign[segCampId]:null)
-    : (_needByPais
-      ? ((_msCache&&_msCache.byCountry&&_msCache.byCountry[segPais]!=null)?_msCache.byCountry[segPais]:null)
-      : ((_msCache&&_msCache.spend!=null)?_msCache.spend:null));
+  const accSpentLive=_needCross
+    ? ((_msCache&&_msCache.byCampCountry&&_msCache.byCampCountry[_crossKey]!=null)?_msCache.byCampCountry[_crossKey]:null)
+    : (_needByCamp
+      ? ((_msCache&&_msCache.byCampaign&&_msCache.byCampaign[segCampId]!=null)?_msCache.byCampaign[segCampId]:null)
+      : (_needByPais
+        ? ((_msCache&&_msCache.byCountry&&_msCache.byCountry[segPais]!=null)?_msCache.byCountry[segPais]:null)
+        : ((_msCache&&_msCache.spend!=null)?_msCache.spend:null)));
   const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
-  if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000||(_needByCamp&&!_msCache.byCampaign)||(_needByPais&&!_msCache.byCountry))){
+  if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000||(_needByCamp&&!_msCache.byCampaign)||(_needByPais&&!_msCache.byCountry)||(_needCross&&!_msCache.byCampCountry))){
     fetchMetaSpendPeriod(c.id,period).then(function(){
       if(S.tab==='ventas'&&S.clientId===c.id) renderTab();
     });
   }
   // Denominadores: si la inversion esta segmentada por campana, contactos del segmento;
   // si no, contactos del periodo completo (coherente con la inversion total).
-  const _segSpendOk=((_needByCamp||_needByPais)&&accSpentLive!=null);
+  const _segSpendOk=((_needByCamp||_needByPais||_needCross)&&accSpentLive!=null);
   const opsCost=_segSpendOk?opsSeg:opsP;
   const cAg=cntStages(opsCost,_rules.agendas);
   const cViva=cntStages(opsCost,_rules.llamadaEnVivo);
@@ -5088,6 +5114,38 @@ function renderVentasTab(c, el){
       return '<button class="vh-chip '+(seg===k?'on':'')+'" onclick="setVentasSeg(\''+enc+'\')">'+esc(k)+' <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+segMap[k]+'</span></button>';
     }).join('')
     +'</div>';
+  // Segundo eje: cruce x Pais (solo en Por campana con una campana seleccionada)
+  if(view==='embudo'&&segCampId){
+    // paises disponibles para esta campana (de Meta si esta cacheado, si no de los contactos)
+    var _paisMap={};
+    if(_msCache&&_msCache.countriesByCamp&&_msCache.countriesByCamp[segCampId]){
+      Object.keys(_msCache.countriesByCamp[segCampId]).forEach(function(p){ _paisMap[p]=true; });
+    }
+    opsSeg.forEach(function(o){
+      var pc=(o.geo&&(o.geo.country||o.geo.countryName))||(o.source&&o.source.country)||'';
+      pc=_ISO_PAIS[String(pc).toUpperCase()]||pc;
+      if(pc) _paisMap[pc]=true;
+    });
+    // contar contactos por pais dentro de la campana (para el badge)
+    var _paisCount={};
+    (seg? opsP.filter(function(o){return (keyOf(o)||'(sin dato)')===seg;}):opsP).forEach(function(o){
+      var pc=(o.geo&&(o.geo.country||o.geo.countryName))||(o.source&&o.source.country)||'';
+      pc=_ISO_PAIS[String(pc).toUpperCase()]||pc;
+      if(pc) _paisCount[pc]=(_paisCount[pc]||0)+1;
+    });
+    var _paises=Object.keys(_paisMap).sort(function(a,b){return (_paisCount[b]||0)-(_paisCount[a]||0);});
+    if(_paises.length){
+      html+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-8px 0 22px">'
+        +'<span style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em">&times; Pais</span>'
+        +'<button class="vh-chip '+(!S.ventasPais?'on':'')+'" onclick="setVentasPais(null)" style="font-size:11px;padding:3px 9px">Todos</button>'
+        +_paises.map(function(p){
+          var encp=encodeURIComponent(p).replace(/'/g,'%27');
+          return '<button class="vh-chip '+(S.ventasPais===p?'on':'')+'" onclick="setVentasPais(\''+encp+'\')" style="font-size:11px;padding:3px 9px">'+esc(p)+(_paisCount[p]?' <span style="opacity:0.55;font-family:var(--mono);font-size:9.5px">'+_paisCount[p]+'</span>':'')+'</button>';
+        }).join('')
+        +(S.ventasPais?' <span style="font-size:10.5px;color:var(--accent)">'+esc(seg)+' &times; '+esc(S.ventasPais)+'</span>':'')
+        +'</div>';
+    }
+  }
   // Si en Por campana domina (sin dato), disparar enriquecimiento y avisar
   if(view==='embudo'){
     const _sinDato=segMap['(sin dato)']||0;
@@ -5148,7 +5206,7 @@ function renderVentasTab(c, el){
           ?' &middot; conecta Meta en Ads & Guiones para usar tiempo real'
           :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':period==='custom'?_fmtCustomLabel():'historico completo')+')'
             +(segCampId
-              ?' &middot; solo campana: '+esc(seg)
+              ?(segCross?' &middot; '+esc(seg)+' &times; '+esc(segCross):' &middot; solo campana: '+esc(seg))
               :segPais
               ?' &middot; solo pais: '+esc(segPais)
               :(function(){var al=getActiveLine(c.conversionLines||[]);var tot=(al&&al.metaCampaigns||[]).length;return tot?' &middot; '+(tot-_msk.excluded.length)+'/'+tot+' campanas incluidas':(_msk.excluded.length?' &middot; '+_msk.excluded.length+' campanas excluidas':' &middot; todas las campanas');})())
