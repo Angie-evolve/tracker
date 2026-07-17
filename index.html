@@ -513,7 +513,9 @@ const _metaSpendInFlight={};
 function _metaSpendKey(c,period){
   const al=getActiveLine(c.conversionLines||[]);
   const excluded=((al&&al.excludedCampaigns)||[]).slice().sort();
-  return {key:'v2|'+period+'|'+excluded.join(','), excluded:excluded};
+  var suf=period;
+  if(period==='custom'){ var cr=(S.ventasCustom||{}); suf='custom|'+(cr.from||'')+'|'+(cr.to||''); }
+  return {key:'v2|'+suf+'|'+excluded.join(','), excluded:excluded};
 }
 async function fetchMetaSpendPeriod(clientId,period){
   const c=DB.clients.find(function(x){return x.id===clientId;});
@@ -533,6 +535,9 @@ async function fetchMetaSpendPeriod(clientId,period){
       insSpec='insights.time_range({"since":"'+isoDate(first)+'","until":"'+isoDate(new Date())+'"})';
     }else if(period==='30d'){
       insSpec='insights.date_preset(last_30d)';
+    }else if(period==='custom'){
+      const cr=S.ventasCustom||{};
+      insSpec='insights.time_range({"since":"'+(cr.from||isoDate(new Date()))+'","until":"'+(cr.to||isoDate(new Date()))+'"})';
     }else{
       insSpec='insights.date_preset(maximum)';
     }
@@ -1781,6 +1786,45 @@ function initLeadJourney3D(c, opp){
 function setVentasSpendSource(src){ S.ventasSpendSource=src; renderTab(); }
 function setVentasView(v){ S.ventasView=v; S.ventasSeg=null; renderTab(); }
 function setVentasPeriod(p){ S.ventasPeriod=p; renderTab(); }
+// Rango de fechas custom: {from:'YYYY-MM-DD', to:'YYYY-MM-DD'}
+function _customRange(){
+  const r=S.ventasCustom;
+  if(!r||!r.from||!r.to) return null;
+  const from=new Date(r.from+'T00:00:00'), to=new Date(r.to+'T23:59:59');
+  if(isNaN(from)||isNaN(to)||from>to) return null;
+  return {from:from,to:to};
+}
+function openCustomRangeModal(){
+  const r=S.ventasCustom||{};
+  const today=isoDate(new Date());
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Rango personalizado</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px">Filtra el funnel y los costos entre dos fechas. Aplica a registros, ventas y la inversion de Meta.</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Desde</div>'
+    +'<input type="date" id="cr-from" value="'+(r.from||'')+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Hasta</div>'
+    +'<input type="date" id="cr-to" value="'+(r.to||today)+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
+    +'</div>'
+    +'<div id="cr-err" style="font-size:11px;color:var(--redx);margin-bottom:12px;min-height:14px"></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="applyCustomRange()">Aplicar</button>'
+    +'</div></div></div>';
+}
+function applyCustomRange(){
+  const from=(document.getElementById('cr-from')||{}).value||'';
+  const to=(document.getElementById('cr-to')||{}).value||'';
+  const err=document.getElementById('cr-err');
+  if(!from||!to){ if(err) err.textContent='Elegi ambas fechas'; return; }
+  if(new Date(from)>new Date(to)){ if(err) err.textContent='La fecha "desde" no puede ser posterior a "hasta"'; return; }
+  S.ventasCustom={from:from,to:to};
+  S.ventasPeriod='custom';
+  closeModal();
+  renderTab();
+}
 function setVentasSeg(k){
   if(k!=null) k=decodeURIComponent(k);
   S.ventasSeg=(S.ventasSeg===k?null:k);
@@ -4915,6 +4959,7 @@ function renderVentasTab(c, el){
     var d=new Date(o.createdAt);
     if(period==='mes') return d.getFullYear()===_now.getFullYear()&&d.getMonth()===_now.getMonth();
     if(period==='30d') return (_now-d)<=30*86400000;
+    if(period==='custom'){ const cr=_customRange(); return cr?(d>=cr.from&&d<=cr.to):true; }
     return true;
   };
   const opsP=ops.filter(inPeriod);
@@ -4954,12 +4999,17 @@ function renderVentasTab(c, el){
   const spendSource=S.ventasSpendSource||'lineas';
   // Ventana del periodo seleccionado (null = sin limite)
   let _pFrom=null;
+  let _pTo=null;
   if(period==='mes') _pFrom=new Date(_now.getFullYear(),_now.getMonth(),1);
   else if(period==='30d') _pFrom=new Date(_now-30*86400000);
+  else if(period==='custom'){ const cr=_customRange(); if(cr){ _pFrom=cr.from; _pTo=cr.to; } }
   const _lineOverlaps=function(l){
-    if(!_pFrom) return true;
+    if(!_pFrom&&!_pTo) return true;
+    var s=l.dateStart?new Date(l.dateStart):null;
     var e=l.dateEnd?new Date(l.dateEnd):null;
-    return !(e&&e<_pFrom);
+    if(_pFrom&&e&&e<_pFrom) return false;
+    if(_pTo&&s&&s>_pTo) return false;
+    return true;
   };
   // Fuente Lineas: suma de lineas que tocan el periodo
   const accSpentLineas=(c.conversionLines||[]).filter(_lineOverlaps).reduce(function(s,l){return s+(Number(l.metrics&&l.metrics.adSpent)||0);},0);
@@ -5014,9 +5064,12 @@ function renderVentasTab(c, el){
   let html=header(right);
   const vbtn=function(v,l){return '<button class="'+(view===v?'on':'')+'" onclick="setVentasView(\''+v+'\')">'+l+'</button>';};
   const pbtn=function(p,l){return '<button class="'+(period===p?'on':'')+'" onclick="setVentasPeriod(\''+p+'\')">'+l+'</button>';};
+  const _fmtCustomLabel=function(){var cr=_customRange();if(!cr)return 'Personalizado';var f=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2);};return f(cr.from)+' - '+f(cr.to);};
   html+='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
     +'<div class="vh-seg">'+vbtn('anuncios','Por anuncio')+vbtn('embudo','Por campaña')+vbtn('pais','Por pais')+'</div>'
-    +'<div class="vh-seg">'+pbtn('todo','Todo')+pbtn('mes','Este mes')+pbtn('30d','Ultimos 30 dias')+'</div>'
+    +'<div class="vh-seg">'+pbtn('todo','Todo')+pbtn('mes','Este mes')+pbtn('30d','Ultimos 30 dias')
+      +'<button class="'+(period==='custom'?'on':'')+'" onclick="openCustomRangeModal()">'
+      +(period==='custom'&&_customRange()?_fmtCustomLabel():'Personalizado')+'</button></div>'
     +'</div>';
   html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px">'
     +'<button class="vh-chip '+(seg==null?'on':'')+'" onclick="setVentasSeg(null)">Todos <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+opsP.length+'</span></button>'
@@ -5083,7 +5136,7 @@ function renderVentasTab(c, el){
       +(spendSource==='live'
         ?(!metaConfigured
           ?' &middot; conecta Meta en Ads & Guiones para usar tiempo real'
-          :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':'historico completo')+')'
+          :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':period==='custom'?_fmtCustomLabel():'historico completo')+')'
             +(segCampId
               ?' &middot; solo campana: '+esc(seg)
               :segPais
@@ -5097,7 +5150,7 @@ function renderVentasTab(c, el){
     +'<button class="vh-chip '+(spendSource==='lineas'?'on':'')+'" onclick="setVentasSpendSource(\'lineas\')">Lineas</button>'
     +'<button class="vh-chip '+(spendSource==='live'?'on':'')+'" onclick="setVentasSpendSource(\'live\')">Tiempo real</button></div></div>';
   // Capturar records de eficiencia (solo cuando NO hay segmento activo: el record es del cliente completo)
-  if(!segCampId&&!segPais){
+  if(!segCampId&&!segPais&&period!=='custom'){
     captureRecords(c,{
       cac:costoNum(cWon), reg:costoNum(opsCost.length), sql:costoNum(cCalif),
       agenda:costoNum(cAg), asist:costoNum(cntStages(opsCost,_rules.asistencias)), viva:costoNum(cViva)
