@@ -1232,9 +1232,15 @@ function clientDrop(ev, idx){
   ev.preventDefault();
   document.querySelectorAll('.nav-item.drag-over').forEach(function(el){el.classList.remove('drag-over');});
   if(_dragClientIdx===null || _dragClientIdx===idx) return;
-  var moved=DB.clients.splice(_dragClientIdx,1)[0];
-  DB.clients.splice(idx,0,moved);
+  // El sidebar muestra activeClients(); mapeamos esos indices a la posicion real en DB.clients
+  var act=activeClients();
+  var movedC=act[_dragClientIdx], targetC=act[idx];
   _dragClientIdx=null;
+  if(!movedC||!targetC) return;
+  var from=DB.clients.indexOf(movedC), to=DB.clients.indexOf(targetC);
+  if(from<0||to<0) return;
+  var moved=DB.clients.splice(from,1)[0];
+  DB.clients.splice(to,0,moved);
   save(); renderSidebar();
 }
 
@@ -1250,8 +1256,31 @@ function adsDot(c){
   return {color:hc('gray'),state:'gray',live:false,title:'Sin datos de Meta'};
 }
 
+// Clientes visibles (no archivados). El filtro por defecto oculta los que ya no estan en servicio.
+function toggleArchiveClient(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!c.archived){
+    if(!confirm('Archivar a '+c.name+'? Va a desaparecer del sidebar y de las metricas, pero se conserva todo su historial. Podes reactivarlo cuando quieras.')) return;
+    c.archived=true; c.archivedAt=new Date().toISOString();
+    save();
+    // si estabamos viendo ese cliente, volver al panel general
+    S.view='overview'; S.clientId=null;
+    renderSidebar(); showOverview();
+    if(typeof toast==='function') toast(c.name+' archivado');
+  } else {
+    c.archived=false; delete c.archivedAt;
+    save();
+    renderSidebar(); renderClient();
+    if(typeof toast==='function') toast(c.name+' reactivado');
+  }
+}
+function toggleShowArchived(){ S.showArchived=!S.showArchived; showOverview(); }
+function activeClients(){ return DB.clients.filter(function(c){return !c.archived;}); }
+function archivedClients(){ return DB.clients.filter(function(c){return c.archived;}); }
+
 function renderSidebar(){
-  document.getElementById('client-list').innerHTML=DB.clients.map((c,idx)=>`
+  document.getElementById('client-list').innerHTML=activeClients().map((c,idx)=>`
     <div class="nav-item client-row ${S.clientId===c.id&&S.view==='client'?'active':''}" id="client-item-${idx}"
       draggable="true" ondragstart="clientDragStart(${idx})" ondragover="clientDragOver(event,${idx})" ondrop="clientDrop(event,${idx})"
       onclick="selectClient(${c.id})" title="${adsDot(c).title}">
@@ -1279,7 +1308,7 @@ function showOverview(){
   const avgCPL=DB.clients.length?DB.clients.reduce((a,c)=>a+c.avgCPL,0)/DB.clients.length:0;
   document.getElementById('main-content').innerHTML=`
     <div class="topbar">
-      <div><div class="page-title">Panel general</div><div class="page-sub">${DB.clients.length} cliente${DB.clients.length!==1?'s':''} - ?ltima actualizacion: ${new Date().toLocaleDateString('es-AR')}</div></div>
+      <div><div class="page-title">Panel general</div><div class="page-sub">${activeClients().length} cliente${activeClients().length!==1?'s':''}${archivedClients().length?' &middot; '+archivedClients().length+' archivado'+(archivedClients().length!==1?'s':''):''} - ultima actualizacion: ${new Date().toLocaleDateString('es-AR')}</div></div>
       <div class="topbar-actions">
         <button class="btn" onclick="importData()" title="Importar backup"> Importar</button>
         <button class="btn" onclick="exportData()" title="Exportar backup"> Exportar</button>
@@ -1296,19 +1325,20 @@ function showOverview(){
         </div>
       </div>
       ${(()=>{
-        var activos=DB.clients.filter(function(cl){
+        var _base=activeClients();
+        var activos=_base.filter(function(cl){
           return hasCurrentlyActiveLine(cl.conversionLines||[]);
         });
         var now=new Date();
-        var conGarantia=DB.clients.filter(function(cl){
+        var conGarantia=_base.filter(function(cl){
           var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null;
           return end&&end>=now;
         });
-        var recurrentes=DB.clients.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
+        var recurrentes=_base.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
         var mrr=recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
         var ltv=activos.filter(function(cl){return cl.serviceType==='garantia'||!cl.serviceType;}).reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
-        var enRiesgo=DB.clients.filter(function(cl){return cl.health&&(cl.health.color==='red'||cl.health.color==='amber');});
-        var paraEscalar=DB.clients.filter(function(cl){return cl.health&&cl.health.color==='green';});
+        var enRiesgo=_base.filter(function(cl){return cl.health&&(cl.health.color==='red'||cl.health.color==='amber');});
+        var paraEscalar=_base.filter(function(cl){return cl.health&&cl.health.color==='green';});
         var now2=new Date();
         var vencidoActivo=activos.filter(function(cl){
           var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null;
@@ -1325,9 +1355,12 @@ function showOverview(){
           +'<div class="metric-card" style="background:rgba(186,117,23,0.08);border:0.5px solid rgba(186,117,23,0.2)"><div class="metric-label" style="color:#BA7517">Contrato vencido activo</div><div class="metric-value" style="color:#BA7517">'+vencidoActivo.length+'</div></div>'
           +'</div>';
       })()}
-      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Clientes</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Clientes${(function(){var n=archivedClients().length;return n?' <span style="color:var(--text3);text-transform:none;letter-spacing:0">('+activeClients().length+' activos)</span>':'';})()}</div>
+        ${(function(){var n=archivedClients().length;return n?'<button class="btn btn-sm" style="color:var(--text3)" onclick="toggleShowArchived()">'+(S.showArchived?'Ocultar archivados':'Ver archivados ('+n+')')+'</button>':'';})()}
+      </div>
       <div style="display:flex;flex-direction:column;gap:6px">
-        ${DB.clients.map(c=>{
+        ${(S.showArchived?DB.clients:activeClients()).map(c=>{
           var isActivo=hasCurrentlyActiveLine(c.conversionLines||[]);
           var tipoTag='';
           if(c.serviceType==='recurrente'||c.recurrente) tipoTag='<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(100,80,200,0.12);color:#9F8FE8;border:0.5px solid rgba(100,80,200,0.3)">Recurrente</span>';
@@ -1348,18 +1381,18 @@ function showOverview(){
             var line=getActiveLine(c.conversionLines||[]);
             sub2=(c.avgCPL?'CPL $'+c.avgCPL+' &nbsp;':'')+(line&&line.dateEnd?'Vence '+line.dateEnd+' &nbsp;':'')+(c.contractValue?'<span style="color:var(--accent)">$'+parseFloat(c.contractValue).toLocaleString()+'</span>':'');
           }
-          return '<div style="background:var(--bg2);'+borderStyle+';border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="selectClient('+c.id+')">'
+          return '<div style="background:var(--bg2);'+borderStyle+';border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;gap:12px;cursor:pointer'+(c.archived?';opacity:0.5':'')+'" onclick="selectClient('+c.id+')">'
             +'<div style="width:38px;height:38px;border-radius:50%;background:'+BG_COLORS[c.color%BG_COLORS.length]+';color:'+COLORS[c.color%COLORS.length]+';display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0">'+c.avatar+'</div>'
             +'<div style="flex:1;min-width:0">'
             +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap">'
             +'<span style="font-size:13px;font-weight:500;color:var(--text)">'+esc(c.name)+'</span>'
-            +activoTag+tipoTag
-            +(contratoVencido?'<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(186,117,23,0.12);color:#BA7517;border:0.5px solid rgba(186,117,23,0.3)">Contrato vencido</span>':'')
+            +(c.archived?'<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:var(--bg3);color:var(--text3);border:0.5px solid var(--border)">Archivado</span>':activoTag+tipoTag
+            +(contratoVencido?'<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(186,117,23,0.12);color:#BA7517;border:0.5px solid rgba(186,117,23,0.3)">Contrato vencido</span>':''))
             +'</div>'
             +'<div style="font-size:12px;color:var(--text2)">'+sub2+'</div>'
             +'</div>'
             +'<div style="text-align:right;flex-shrink:0">'
-            +(c.health.score!==null?'<div style="font-size:11px;color:var(--text3)">Salud</div><div style="font-size:13px;font-weight:500;color:'+healthColor+'">'+healthLabel+'</div>':'')
+            +(!c.archived&&c.health.score!==null?'<div style="font-size:11px;color:var(--text3)">Salud</div><div style="font-size:13px;font-weight:500;color:'+healthColor+'">'+healthLabel+'</div>':'')
             +'</div>'
             +'<span style="font-size:16px;color:var(--text3)">&rsaquo;</span>'
             +'</div>';
@@ -1425,7 +1458,11 @@ function renderClientFicha(c){
       <div style="text-align:center;max-width:520px">
         <div style="width:64px;height:64px;border-radius:50%;background:${BG_COLORS[c.color%BG_COLORS.length]};color:${COLORS[c.color%COLORS.length]};display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;margin:0 auto 16px">${c.avatar}</div>
         <div style="font-size:22px;font-weight:500;margin-bottom:6px">${esc(c.name)}</div>
+        ${c.archived?'<div style="display:inline-block;font-size:11px;padding:3px 10px;border-radius:20px;background:var(--bg3);color:var(--text3);border:0.5px solid var(--border);margin-bottom:4px">Cliente archivado &middot; no figura en el sidebar ni en las metricas</div>':''}
         <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:28px">${pillsHtml}</div>
+        <div style="margin-top:32px;padding-top:20px;border-top:1px solid var(--border)">
+          <button class="btn btn-sm" style="color:var(--text3)" onclick="toggleArchiveClient(${c.id})">${c.archived?'&#8631; Reactivar cliente':'&#128451; Archivar &mdash; ya no en servicio'}</button>
+        </div>
       </div>
     </div>`;
 }
@@ -2275,9 +2312,14 @@ async function pushWeeklyReportConfig(){
       const c=clients[i];
       setSt('Sincronizando '+(i+1)+'/'+clients.length+': '+esc(c.name)+'...');
       const al=getActiveLine(c.conversionLines||[]);
+      // conteo de tickets abiertos y vencidos de este cliente (tareas delegadas no hechas)
+      const _now=new Date();
+      const _tks=(c.tasks||[]).filter(function(t){return t.delegated&&t.ticket&&!t.done;});
+      const _venc=_tks.filter(function(t){var d=t.due?new Date(t.due):null;return d&&d<_now;}).length;
       const payload={name:c.name,ghlToken:c.ghl.token,ghlLocation:c.ghl.locationId,
         metaToken:c.metaToken||'',metaAccountId:c.metaAccountId||'',
-        excluded:(al&&al.excludedCampaigns)||[],rules:getGhlRules(c)};
+        excluded:(al&&al.excludedCampaigns)||[],rules:getGhlRules(c),
+        ticketsAbiertos:_tks.length,ticketsVencidos:_venc};
       const r=await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_config&clientKey='+enc(String(c.id))+'&payload='+enc(JSON.stringify(payload))).then(function(x){return x.json();}).catch(function(){return null;});
       if(r&&r.ok) ok++;
       await new Promise(function(r2){setTimeout(r2,150);});
