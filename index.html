@@ -582,7 +582,43 @@ async function fetchMetaSpendPeriod(clientId,period){
       url=data.paging&&data.paging.next;
       pages++;
     }
-    c._metaSpend[sk.key]={spend:spend,views:views,byCampaign:byCamp,viewsByCampaign:vByCamp,byCountry:byCountry,viewsByCountry:vByCountry,byCampCountry:byCampCountry,vByCampCountry:vByCampCountry,countriesByCamp:countriesByCamp,at:Date.now()};
+    // --- Gasto por ANUNCIO: segunda consulta a nivel /ads (Meta no lo da dentro de campaigns) ---
+    // Se agrupa por nombre de anuncio normalizado, que es como la vista "Por anuncio" agrupa los leads.
+    const byAd={};       // nombre normalizado de anuncio -> spend
+    const byAdId={};     // adId -> spend (por si el lead trae adId directo)
+    const vByAd={};      // nombre normalizado -> landing views
+    try{
+      let insSpecAd;
+      if(period==='mes'){ const first=new Date(); first.setDate(1); insSpecAd='insights.time_range({"since":"'+isoDate(first)+'","until":"'+isoDate(new Date())+'"})'; }
+      else if(period==='30d'){ insSpecAd='insights.date_preset(last_30d)'; }
+      else if(period==='custom'){ const cr=S.ventasCustom||{}; insSpecAd='insights.time_range({"since":"'+(cr.from||isoDate(new Date()))+'","until":"'+(cr.to||isoDate(new Date()))+'"})'; }
+      else { insSpecAd='insights.date_preset(maximum)'; }
+      insSpecAd+='.limit(1)';
+      const fieldsAd='id,name,campaign_id,'+insSpecAd+'{spend,actions}';
+      let urlAd='https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(fieldsAd)+'&limit=300&access_token='+c.metaToken;
+      let pagesAd=0;
+      while(urlAd && pagesAd<8){
+        const resAd=await fetch(urlAd);
+        const dataAd=await resAd.json();
+        if(dataAd.error) break; // si falla el nivel ads, no rompemos el resto
+        (dataAd.data||[]).forEach(function(ad){
+          const included=sk.excluded.indexOf(ad.campaign_id)===-1;
+          if(!included) return;
+          const ins=(ad.insights&&ad.insights.data&&ad.insights.data[0])||null;
+          if(!ins) return;
+          const v=parseFloat(ins.spend||0);
+          let lv=0;
+          (ins.actions||[]).forEach(function(a){ if(a.action_type==='landing_page_view') lv+=parseInt(a.value||0); });
+          if(ad.id){ byAdId[String(ad.id)]=(byAdId[String(ad.id)]||0)+v; }
+          const nm=_n(ad.name||'');
+          if(nm){ byAd[nm]=(byAd[nm]||0)+v; vByAd[nm]=(vByAd[nm]||0)+lv; }
+        });
+        urlAd=dataAd.paging&&dataAd.paging.next;
+        pagesAd++;
+      }
+    }catch(e){ /* nivel ads opcional: si falla, la vista por anuncio queda sin costo segmentado */ }
+
+    c._metaSpend[sk.key]={spend:spend,views:views,byCampaign:byCamp,viewsByCampaign:vByCamp,byCountry:byCountry,viewsByCountry:vByCountry,byCampCountry:byCampCountry,vByCampCountry:vByCampCountry,countriesByCamp:countriesByCamp,byAd:byAd,byAdId:byAdId,vByAd:vByAd,at:Date.now()};
     save();
     return c._metaSpend[sk.key];
   }catch(e){
@@ -5103,26 +5139,32 @@ function renderVentasTab(c, el){
   // Segundo eje "x Pais": solo activo en la vista Por campana con una campana elegida
   let segCross=null; // nombre de pais del cruce
   if(view==='embudo'&&segCampId&&S.ventasPais){ segCross=S.ventasPais; }
+  // Por anuncio: el segmento es el nombre del anuncio; Meta lo da con una consulta a nivel /ads
+  let segAdName=null;
+  if(view==='anuncios'&&seg&&seg!=='(sin dato)'){ segAdName=_n(seg); }
   const _crossKey=(segCampId&&segCross)?(segCampId+'||'+segCross):null;
   const _needCross=!!(spendSource==='live'&&_crossKey);
   const _needByCamp=!!(spendSource==='live'&&segCampId&&!segCross);
   const _needByPais=!!(spendSource==='live'&&segPais);
-  const accSpentLive=_needCross
+  const _needByAd=!!(spendSource==='live'&&segAdName);
+  const accSpentLive=_needByAd
+    ? ((_msCache&&_msCache.byAd&&_msCache.byAd[segAdName]!=null)?_msCache.byAd[segAdName]:null)
+    : (_needCross
     ? ((_msCache&&_msCache.byCampCountry&&_msCache.byCampCountry[_crossKey]!=null)?_msCache.byCampCountry[_crossKey]:null)
     : (_needByCamp
       ? ((_msCache&&_msCache.byCampaign&&_msCache.byCampaign[segCampId]!=null)?_msCache.byCampaign[segCampId]:null)
       : (_needByPais
         ? ((_msCache&&_msCache.byCountry&&_msCache.byCountry[segPais]!=null)?_msCache.byCountry[segPais]:null)
-        : ((_msCache&&_msCache.spend!=null)?_msCache.spend:null)));
+        : ((_msCache&&_msCache.spend!=null)?_msCache.spend:null))));
   const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
-  if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000||(_needByCamp&&!_msCache.byCampaign)||(_needByPais&&!_msCache.byCountry)||(_needCross&&!_msCache.byCampCountry))){
+  if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000||(_needByCamp&&!_msCache.byCampaign)||(_needByPais&&!_msCache.byCountry)||(_needCross&&!_msCache.byCampCountry)||(_needByAd&&!_msCache.byAd))){
     fetchMetaSpendPeriod(c.id,period).then(function(){
       if(S.tab==='ventas'&&S.clientId===c.id) renderTab();
     });
   }
   // Denominadores: si la inversion esta segmentada por campana, contactos del segmento;
   // si no, contactos del periodo completo (coherente con la inversion total).
-  const _segSpendOk=((_needByCamp||_needByPais||_needCross)&&accSpentLive!=null);
+  const _segSpendOk=((_needByCamp||_needByPais||_needCross||_needByAd)&&accSpentLive!=null);
   const opsCost=_segSpendOk?opsSeg:opsP;
   const cAg=cntStages(opsCost,_rules.agendas);
   const cViva=cntStages(opsCost,_rules.llamadaEnVivo);
@@ -5257,6 +5299,8 @@ function renderVentasTab(c, el){
           :' &middot; inversion de Meta ('+(period==='mes'?'este mes':period==='30d'?'ultimos 30 dias':period==='custom'?_fmtCustomLabel():'historico completo')+')'
             +(segCampId
               ?(segCross?' &middot; '+esc(seg)+' &times; '+esc(segCross):' &middot; solo campana: '+esc(seg))
+              :segAdName
+              ?' &middot; solo anuncio: '+esc(seg)
               :segPais
               ?' &middot; solo pais: '+esc(segPais)
               :(function(){var al=getActiveLine(c.conversionLines||[]);var tot=(al&&al.metaCampaigns||[]).length;return tot?' &middot; '+(tot-_msk.excluded.length)+'/'+tot+' campanas incluidas':(_msk.excluded.length?' &middot; '+_msk.excluded.length+' campanas excluidas':' &middot; todas las campanas');})())
