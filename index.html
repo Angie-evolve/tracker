@@ -3283,6 +3283,7 @@ function renderTab(){
           var totalReach=included.reduce(function(s,c){return s+(c.reach||0);},0);
           var totalThru=included.reduce(function(s,c){return s+(c.thruPlays||0);},0);
           var totalResults=included.reduce(function(s,c){return s+(c.results||0);},0);
+          var freqProm=totalReach>0?(total.impressions/totalReach).toFixed(2):'';
           var costPerRes=totalResults>0?(total.spend/totalResults).toFixed(2):'';
           // "Resultados" se calcula como leads (o vistas landing, o clics) segun lo que haya.
           // Si termino siendo el mismo numero que "Leads", no lo mostramos duplicado.
@@ -3294,6 +3295,7 @@ function renderTab(){
             {l:'Clics',v:total.clicks.toLocaleString()},
             {l:'CTR',v:ctr?ctr+'%':'-'},
             {l:'CPM',v:total.impressions>0?'$'+(total.spend/total.impressions*1000).toFixed(2):'-'},
+            {l:'Frecuencia',v:freqProm||'-'},
             {l:'Vistas landing',v:totalLV||'-'},
             {l:'ThruPlays',v:totalThru||'-'},
             {l:'Resultados',v:resultsSameAsLeads?'-':(totalResults||'-')},
@@ -3306,6 +3308,7 @@ function renderTab(){
       </div>
       <div style="border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px;display:flex">
         ${(()=>{
+          var _adWins=adWinsMap(c);
           var leftRows=['<div style="height:36px;display:flex;align-items:center;padding:0 12px;font-size:11px;font-weight:500;color:var(--text3);background:var(--bg3);border-bottom:0.5px solid var(--border)">Campana</div>'];
           var _guionHeadW=180;
           var _guionHead='<div style="flex-shrink:0;width:'+_guionHeadW+'px;height:36px;display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:500;color:var(--text3);background:var(--bg3);border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border)">Guion</div>';
@@ -3330,8 +3333,10 @@ function renderTab(){
                 metricRows.push(metaRowMetrics(as)+_guionCell(c,null,_guionHeadW));
                 if(asOpen&&as.ads&&as.ads.length){
                   as.ads.forEach(function(ad){
-                    leftRows.push(metaRowLeft('&nbsp;&nbsp;&nbsp;&nbsp;'+ad.name, false, false, '', ad.status==='ACTIVE', true, ad.thumbnail, ad.id, c.metaAccountId||''));
-                    metricRows.push(metaRowMetrics(ad)+_guionCell(c,ad,_guionHeadW));
+                    var _win=_adWins[_n(ad.name||'')]||null;
+                    var _isWinner=_win&&_win.winner;
+                    leftRows.push(metaRowLeft('&nbsp;&nbsp;&nbsp;&nbsp;'+ad.name, false, false, '', ad.status==='ACTIVE', true, ad.thumbnail, ad.id, c.metaAccountId||'', _isWinner, _win));
+                    metricRows.push(metaRowMetrics(ad, _isWinner)+_guionCell(c,ad,_guionHeadW,_isWinner));
                   });
                 }
               });
@@ -5661,7 +5666,7 @@ var META_METRIC_COLS=[
   {key:'igProfileVisits',l:'Visitas perfil IG',w:120,fmt:function(v){return v||'-';}}
 ];
 
-function metaRowLeft(name, expandable, open, onclick, active, indent, thumb, adId, actId){
+function metaRowLeft(name, expandable, open, onclick, active, indent, thumb, adId, actId, isWinner, winData){
   var rowH=52;
   var arrow=expandable?'<span style="font-size:10px;color:var(--text3);transition:transform .15s;display:inline-block;'+(open?'transform:rotate(90deg)':'')+';margin-right:6px">&#9654;</span>':'';
   var thumbHtml='';
@@ -5669,19 +5674,50 @@ function metaRowLeft(name, expandable, open, onclick, active, indent, thumb, adI
     thumbHtml=thumb?'<img src="'+thumb+'" style="width:32px;height:32px;object-fit:cover;border-radius:4px;flex-shrink:0;margin-right:8px">':'<div style="width:32px;height:32px;background:var(--bg3);border-radius:4px;flex-shrink:0;margin-right:8px"></div>';
   }
   var clickAttr=onclick?' onclick="'+onclick+'" style="cursor:pointer"':(adId?' onclick="openAdPreview(\'\',\''+adId+'\',\''+(actId||'')+'\')" style="cursor:pointer"':'');
+  var winBadge='';
+  if(isWinner&&winData){
+    var wtxt=winData.cierres>0?(winData.cierres+' cierre'+(winData.cierres>1?'s':'')):(winData.calif+' calif.');
+    winBadge='<span style="font-size:9px;font-weight:600;color:var(--accent);background:rgba(29,158,117,0.14);border-radius:20px;padding:1px 7px;margin-left:6px;white-space:nowrap">GANADOR &middot; '+wtxt+'</span>';
+  }
   var statusLine=adId!==undefined?'<div style="font-size:10px;color:'+(active?'var(--accent)':'var(--text3)')+'">'+(active?'activo':'pausado')+(adId?' <span style="color:var(--text3)">Ver en Meta &rarr;</span>':'')+'</div>':'';
-  return '<div style="flex-shrink:0;width:190px;display:flex;align-items:center;padding:0 12px;height:'+rowH+'px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border)"'+clickAttr+'>'
+  var winBg=isWinner?'background:rgba(29,158,117,0.06);':'';
+  return '<div style="flex-shrink:0;width:190px;display:flex;align-items:center;padding:0 12px;height:'+rowH+'px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);'+winBg+(isWinner?'box-shadow:inset 3px 0 0 var(--accent);':'')+'"'+clickAttr+'>'
     +(thumb!==undefined?thumbHtml:'')
     +'<div style="min-width:0;flex:1">'
-    +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+arrow+name+'</div>'
+    +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+arrow+name+winBadge+'</div>'
     +statusLine
     +(adId===undefined?'<div style="font-size:10px;color:'+(active?'var(--accent)':'var(--text3)')+'">'+(active?'activa':'pausada')+'</div>':'')
     +'</div></div>';
 }
 
+// Mapa de "wins" por anuncio: cuenta calificados y cierres cruzando las oportunidades de GHL
+// (por nombre de anuncio normalizado) y marca al ganador (el de mas cierres, o mas calificados).
+function adWinsMap(c){
+  var map={};
+  var ops=(c.ghl&&c.ghl.opportunities)||[];
+  if(!ops.length) return map;
+  ops.forEach(function(o){
+    var s=o.source||{};
+    var adName=faGet(o.formAnswers,['utm_ad','utm ad'])||s.utmAd||s.utmContent||'';
+    var k=_n(adName);
+    if(!k) return;
+    if(!map[k]) map[k]={calif:0,cierres:0,winner:false};
+    if(o._sql) map[k].calif++;
+    if(o.status==='won') map[k].cierres++;
+  });
+  // Elegir ganador: primero por cierres; si nadie cerro, por calificados. Debe tener al menos 1.
+  var bestKey=null, bestC=-1, bestQ=-1;
+  for(var k in map){
+    var m=map[k];
+    if(m.cierres>bestC || (m.cierres===bestC && m.calif>bestQ)){ bestC=m.cierres; bestQ=m.calif; bestKey=k; }
+  }
+  if(bestKey && (map[bestKey].cierres>0 || map[bestKey].calif>0)) map[bestKey].winner=true;
+  return map;
+}
+
 // Celda de la columna "Guion" en la tabla de Meta. Solo editable en filas de anuncio (ad!=null).
-function _guionCell(c,ad,w){
-  var base='flex-shrink:0;width:'+w+'px;height:52px;display:flex;align-items:center;padding:0 10px;border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border);font-size:12px';
+function _guionCell(c,ad,w,isWinner){
+  var base='flex-shrink:0;width:'+w+'px;height:52px;display:flex;align-items:center;padding:0 10px;border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border);font-size:12px'+(isWinner?';background:rgba(29,158,117,0.06)':'');
   if(!ad||!ad.id){ return '<div style="'+base+';color:var(--text3)"></div>'; }
   var g=(c.adScriptsByAd&&c.adScriptsByAd[ad.id]&&c.adScriptsByAd[ad.id].guion)||'';
   if(g){
@@ -5734,11 +5770,12 @@ function deleteGuionAd(clientId,adId){
   if(typeof toast==='function') toast('Guion borrado');
 }
 
-function metaRowMetrics(obj){
+function metaRowMetrics(obj, isWinner){
   return META_METRIC_COLS.map(function(col){
     var v=obj[col.key];
     var disp=col.fmt(v);
     var style='flex-shrink:0;width:'+col.w+'px;height:52px;display:flex;align-items:center;padding:0 10px;border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border);font-size:12px';
+    if(isWinner) style+=';background:rgba(29,158,117,0.06)';
     if(col.color&&disp!=='-') style+=';color:var(--accent)';
     if(col.bold) style+=';font-weight:500';
     return '<div style="'+style+'">'+disp+'</div>';
