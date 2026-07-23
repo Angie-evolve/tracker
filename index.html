@@ -1286,9 +1286,28 @@ function adsDot(c){
   const camps=(al&&al.metaCampaigns)||[];
   const roll=(c.liveLines||[]).find(function(l){return l.rolling;});
   const spending=!!(roll&&roll.metrics&&Number(roll.metrics.adSpent)>0);
-  const anyActive=camps.some(function(cp){return String(cp.status||'').toUpperCase()==='ACTIVE';});
-  if(anyActive||spending) return {color:hc('green'),state:'green',live:true,title:'Campanas activas gastando presupuesto'};
-  if(camps.length||c.metaToken) return {color:hc('amber'),state:'amber',live:false,title:'Campanas pausadas / sin gasto'};
+  // Un anuncio entrega de verdad solo si los TRES niveles estan activos.
+  // Pausar a nivel adset o anuncio no cambia el status de la campana en Meta,
+  // asi que mirar solo la campana daba falsos "LIVE".
+  let hayArbol=false, entregando=false;
+  camps.forEach(function(cp){
+    const cpOn=String(cp.status||'').toUpperCase()==='ACTIVE';
+    ((cp.adsets)||[]).forEach(function(as){
+      const asOn=String(as.status||'').toUpperCase()==='ACTIVE';
+      ((as.ads)||[]).forEach(function(ad){
+        hayArbol=true;
+        if(cpOn&&asOn&&String(ad.status||'').toUpperCase()==='ACTIVE') entregando=true;
+      });
+    });
+  });
+  // Si todavia no sincronizamos el detalle de anuncios, caemos al status de campana.
+  const anyActiveCamp=camps.some(function(cp){return String(cp.status||'').toUpperCase()==='ACTIVE';});
+  const activo=hayArbol?entregando:anyActiveCamp;
+  const _sync=(al&&al.metaSyncAt)?(' - ultimo sync de Meta: '+new Date(al.metaSyncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):'';
+  if(activo) return {color:hc('green'),state:'green',live:true,title:'Anuncios entregando'+_sync};
+  // Todo pausado pero con gasto dentro de la ventana de 7 dias: se apago hace poco.
+  if(spending) return {color:hc('amber'),state:'amber',live:false,title:'Pausada hace poco - todavia hay gasto en la ventana de 7 dias'+_sync};
+  if(camps.length||c.metaToken) return {color:hc('amber'),state:'amber',live:false,title:'Campanas pausadas / sin gasto'+_sync};
   return {color:hc('gray'),state:'gray',live:false,title:'Sin datos de Meta'};
 }
 
