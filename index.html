@@ -3956,6 +3956,7 @@ function renderTab(){
           <button class="btn btn-sm" onclick="openMetaRangeModal(${c.id})" style="font-size:11px">${activeLine.metaSince||'?'} a ${activeLine.metaUntil||'?'}</button>
           `:''}
           <button class="btn btn-sm btn-primary" onclick="syncMetaAds(${c.id})" id="meta-sync-btn">Sincronizar Meta</button>
+          <button class="btn btn-sm" onclick="openFxModal(${c.id})" title="Moneda de la cuenta publicitaria y conversion a USD">${c.metaCurrency?esc(c.metaCurrency)+(fxActiva(c)?' \u2192 USD':''):'Moneda'}</button>
           <button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:var(--text3);border-color:var(--border)">Editar token</button>`
           :`<button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:var(--amberx);border-color:rgba(240,168,48,0.4)">Conectar Meta</button>`}
         <button class="btn btn-sm" onclick="openEditLineModal(${c.id},'${activeLine.id}')">Editar ads</button>
@@ -3985,20 +3986,22 @@ function renderTab(){
           // "Resultados" se calcula como leads (o vistas landing, o clics) segun lo que haya.
           // Si termino siendo el mismo numero que "Leads", no lo mostramos duplicado.
           var resultsSameAsLeads=totalResults>0&&totalResults===total.leads;
+          // $ = moneda original de la cuenta; si hay tasa cargada, se convierte a USD
+          var _m=function(v){ return '$'+aUsd(c,Number(v)).toFixed(2); };
           return [
-            {l:'Gasto total',v:'$'+total.spend.toFixed(2)},
+            {l:'Gasto total',v:_m(total.spend)},
             {l:'Alcance',v:totalReach.toLocaleString()},
             {l:'Impresiones',v:total.impressions.toLocaleString()},
             {l:'Clics',v:total.clicks.toLocaleString()},
             {l:'CTR',v:ctr?ctr+'%':'-'},
-            {l:'CPM',v:total.impressions>0?'$'+(total.spend/total.impressions*1000).toFixed(2):'-'},
+            {l:'CPM',v:total.impressions>0?_m(total.spend/total.impressions*1000):'-'},
             {l:'Frecuencia',v:freqProm||'-'},
             {l:'Vistas landing',v:totalLV||'-'},
             {l:'ThruPlays',v:totalThru||'-'},
             {l:'Resultados',v:resultsSameAsLeads?'-':(totalResults||'-')},
-            {l:'Costo/resultado',v:resultsSameAsLeads?'-':(costPerRes?'$'+costPerRes:'-')},
+            {l:'Costo/resultado',v:resultsSameAsLeads?'-':(costPerRes?_m(costPerRes):'-')},
             {l:'Leads',v:total.leads||'-'},
-            {l:'CPL',v:cpl?'$'+cpl:'-'}
+            {l:'CPL',v:cpl?_m(cpl):'-'}
           ].filter(function(m){return m.v&&m.v!=='-'&&m.v!=='0';})
           .map(m=>'<div style="background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 12px"><div style="font-size:10px;color:var(--text3);margin-bottom:4px">'+m.l+'</div><div style="font-size:16px;font-weight:500;color:var(--accent)">'+m.v+'</div></div>').join('');
         })()}
@@ -7098,6 +7101,78 @@ function metaRowMetrics(obj, isWinner){
   }).join('');
 }
 
+// ================= MONEDA Y CONVERSION A USD =================
+// La moneda sale de la API de Meta (c.metaCurrency), no se adivina.
+// La tasa es MANUAL y a proposito: para ARS el dolar oficial no refleja lo que
+// realmente te cuesta la pauta, y no hay una fuente confiable y estable del blue
+// que se pueda consumir desde el navegador. Ademas, para cerrar un mes conviene
+// fijar la tasa del periodo y que no cambie sola cada vez que abris la app.
+function getFx(c){
+  c.fx=c.fx||{rate:null,updatedAt:null,label:''};
+  return c.fx;
+}
+function fxActiva(c){
+  const f=getFx(c);
+  return !!(f.rate && Number(f.rate)>0 && (c.metaCurrency||'')!=='USD');
+}
+// Convierte un monto de la moneda de la cuenta a USD. Si no hay tasa, no toca nada.
+function aUsd(c, monto){
+  if(!fxActiva(c)) return monto;
+  const n=Number(monto);
+  if(!isFinite(n)) return monto;
+  return n/Number(getFx(c).rate);
+}
+function monedaLabel(c){
+  const m=c.metaCurrency||'';
+  if(!m) return 'moneda sin identificar';
+  return m+(fxActiva(c)?(' \u2192 USD @ '+getFx(c).rate):'');
+}
+function openFxModal(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  const f=getFx(c);
+  const m=c.metaCurrency||'';
+  const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Conversion a USD</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+    +(m?('La cuenta publicitaria de '+esc(c.name)+' factura en <b>'+esc(m)+'</b>.')
+       :'Todavia no sincronizaste Meta, asi que no se detecto la moneda de la cuenta.')
+    +' Pone cuantas unidades de esa moneda equivalen a 1 USD. Si trabajas con dolar blue, pone el blue.</div>'
+    +(m==='USD'?'<div style="font-size:12px;color:var(--accent);margin-bottom:14px">Esta cuenta ya factura en dolares: no hace falta convertir.</div>':'')
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">1 USD = ? '+esc(m||'moneda local')+'</div>'
+    +'<input id="fx-rate" type="number" step="0.01" value="'+esc(f.rate!=null?String(f.rate):'')+'" placeholder="1350" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Referencia (opcional)</div>'
+    +'<input id="fx-label" value="'+esc(f.label||'')+'" placeholder="blue 23/07" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'</div>'
+    +(f.updatedAt?'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Ultima actualizacion: '+new Date(f.updatedAt).toLocaleString('es-AR')+'</div>':'')
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:16px">Afecta a inversion, CPL, CPM, CPC y todos los costos derivados. Los datos de Meta se siguen guardando en moneda original: la conversion es solo de presentacion, asi que cambiar la tasa no rompe nada.</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +(f.rate?'<button class="btn btn-sm" style="color:var(--redx);margin-right:auto" onclick="borrarFx('+clientId+')">Quitar conversion</button>':'')
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="guardarFx('+clientId+')">Guardar</button>'
+    +'</div></div></div>';
+}
+function guardarFx(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  const r=parseFloat((document.getElementById('fx-rate')||{}).value||'');
+  const f=getFx(c);
+  if(!isFinite(r)||r<=0){ toast('Pone una tasa valida','red'); return; }
+  f.rate=r;
+  f.label=((document.getElementById('fx-label')||{}).value||'').trim();
+  f.updatedAt=new Date().toISOString();
+  save(); closeModal(); renderTab();
+  toast('Conversion activada: 1 USD = '+r+' '+(c.metaCurrency||''));
+}
+function borrarFx(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  c.fx={rate:null,updatedAt:null,label:''};
+  save(); closeModal(); renderTab();
+  toast('Conversion desactivada - vuelve a moneda original');
+}
+
 async function syncMetaAds(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.metaToken||!c.metaAccountId) return;
@@ -7129,6 +7204,19 @@ async function syncMetaAds(clientId){
   var timeRange='{"since":"'+since+'","until":"'+until+'"}';
 
   try{
+    // Moneda de la cuenta publicitaria. Meta la devuelve en el objeto de la cuenta,
+    // asi que no hay que adivinarla mirando la magnitud de los numeros.
+    try{
+      var accResp=await fetch('https://graph.facebook.com/v19.0/'+actId
+        +'?fields=currency,name,timezone_name&access_token='+token);
+      var accData=await accResp.json();
+      if(accData && accData.currency){
+        c.metaCurrency=accData.currency;
+        c.metaAccountName=accData.name||'';
+        save();
+      }
+    }catch(e){ /* si falla, seguimos: la moneda es informativa */ }
+
     // Fetch campaigns with insights
     var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type';
     var fieldsStr='id,name,status,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
