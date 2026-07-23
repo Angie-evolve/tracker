@@ -2300,15 +2300,113 @@ async function convTestHilos(contactId){
         return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
           +'<span style="flex:1;font-size:12.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(k.lastMessageBody||'(sin preview)')+'</span>'
           +'<span style="font-size:10.5px;color:var(--text3)">'+esc(k.type||'')+'</span>'
-          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" onclick="convTestMensajes(\''+_jsEsc(k.id)+'\')">Leer</button>'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" onclick="window._convContactId=\''+_jsEsc(k.contactId||'')+'\';convTestMensajes(\''+_jsEsc(k.id)+'\')">Leer</button>'
           +'</div>';
       }).join('');
   }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
 }
+// ---- Lista de prioridades por WhatsApp ----
+// El orden respeta la prioridad manual del tablero (drag & drop), asi lo que
+// ve Ashy es exactamente lo que vos ordenaste. Si no, el mensaje contradice
+// al tablero y deja de ser confiable.
+function _tkOrdenados(resp){
+  const now=new Date();
+  const endOfDue=function(t){ if(!t.due) return null; const d=new Date(t.due); d.setHours(23,59,59,999); return d; };
+  const out=[];
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(!t.delegated||t.done) return;
+      if(resp&&_n(t.responsible||'Ashy')!==_n(resp)) return;
+      out.push({t:t,c:c,venc:endOfDue(t)&&endOfDue(t)<now});
+    });
+  });
+  out.sort(function(a,b){
+    const pa=(a.t.prio!=null)?a.t.prio:1e9, pb=(b.t.prio!=null)?b.t.prio:1e9;
+    if(pa!==pb) return pa-pb;
+    if(a.venc!==b.venc) return a.venc?-1:1;
+    return String(a.t.delegatedAt||'').localeCompare(String(b.t.delegatedAt||''));
+  });
+  return out;
+}
+function _tkTextoLista(resp){
+  const arr=_tkOrdenados(resp);
+  if(!arr.length) return 'No hay tareas abiertas.';
+  const now=new Date();
+  const lineas=arr.map(function(r,i){
+    const t=r.t;
+    let extra='';
+    if(r.venc){
+      const d=new Date(t.due); d.setHours(23,59,59,999);
+      extra=' (VENCIDA hace '+_tkDias(d,now)+' d)';
+    } else if(t.due){
+      const dd=new Date(t.due); dd.setHours(23,59,59,999);
+      const dias=_tkDias(now,dd);
+      extra=dias===0?' (vence hoy)':' (vence en '+dias+' d)';
+    }
+    return (i+1)+'. '+(t.ticket||'#?')+' - '+r.c.name+' - '+t.text+extra;
+  });
+  return 'Hola! Estas son las prioridades, en orden:\n\n'+lineas.join('\n')+'\n\nCualquier duda me avisas.';
+}
+function openEnviarListaModal(){
+  const resps=[];
+  DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){
+    if(t.delegated&&!t.done){ const k=(t.responsible||'Ashy').trim()||'Ashy'; if(resps.indexOf(k)<0) resps.push(k); }
+  });});
+  if(!resps.length) resps.push('Ashy');
+  const cid=localStorage.getItem('evold-conv-hilo-cid')||'';
+  const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Enviar lista de prioridades</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">En el mismo orden que ordenaste el tablero. Podes editar el texto antes de mandarlo.</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
+    +'<span style="font-size:11px;color:var(--text3)">Responsable</span>'
+    +'<select id="el-resp" onchange="elRefrescar()" style="'+inp+'">'+resps.map(function(r){return '<option value="'+esc(r)+'">'+esc(r)+'</option>';}).join('')+'</select>'
+    +'</div>'
+    +'<textarea id="el-texto" rows="12" style="'+inp+';width:100%;box-sizing:border-box;line-height:1.6;resize:vertical">'+esc(_tkTextoLista(resps[0]))+'</textarea>'
+    +'<div id="el-info" style="font-size:10.5px;color:var(--text3);margin-top:6px"></div>'
+    +(cid?'':'<div style="font-size:11.5px;color:var(--amberx);margin-top:10px">Todavia no marcaste el hilo del equipo. Abrilo en Conversaciones y apreta "Usar como hilo del equipo" para poder enviar.</div>')
+    +'<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +(cid?'<button class="btn btn-sm btn-primary" id="el-send" onclick="elEnviar()">Enviar por WhatsApp</button>':'')
+    +'</div></div></div>';
+  elRefrescar(true);
+}
+function elRefrescar(soloInfo){
+  const ta=document.getElementById('el-texto'); if(!ta) return;
+  if(!soloInfo) ta.value=_tkTextoLista((document.getElementById('el-resp')||{}).value||'');
+  const n=ta.value.length;
+  const info=document.getElementById('el-info');
+  if(info) info.innerHTML=n+' caracteres'+(n>1500?' <span style="color:var(--amberx)">- muy largo, puede cortarse al enviarse</span>':'');
+}
+async function elEnviar(){
+  const cid=localStorage.getItem('evold-conv-hilo-cid')||'';
+  const txt=((document.getElementById('el-texto')||{}).value||'').trim();
+  if(!cid||!txt) return;
+  const url=localStorage.getItem('evold-conv-url')||'';
+  const sec=localStorage.getItem('evold-conv-secret')||'evolve-tracker';
+  const tok=localStorage.getItem('evold-conv-token')||'';
+  const loc=localStorage.getItem('evold-conv-loc')||'';
+  if(!url||!tok){ toast('Falta configurar Conversaciones','red'); return; }
+  const btn=document.getElementById('el-send');
+  if(btn){ btn.disabled=true; btn.textContent='Enviando...'; }
+  try{
+    const r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'secret='+encodeURIComponent(sec)
+      +'&token='+encodeURIComponent(tok)+'&location='+encodeURIComponent(loc)
+      +'&action=conv_send&contactId='+encodeURIComponent(cid)
+      +'&tipo=SMS&mensaje='+encodeURIComponent(txt));
+    const d=await r.json();
+    if(d.ok){ closeModal(); toast('Lista enviada'); }
+    else { toast('No se pudo enviar: '+(d.error||''),'red'); if(btn){ btn.disabled=false; btn.textContent='Enviar por WhatsApp'; } }
+  }catch(e){ toast('Error: '+e.message,'red'); if(btn){ btn.disabled=false; btn.textContent='Enviar por WhatsApp'; } }
+}
+
 // ---- Hilo del equipo: analisis de mensajes -> candidatos a ticket ----
 function convGuardarHilo(convId,nom){
   localStorage.setItem('evold-conv-hilo',convId);
   localStorage.setItem('evold-conv-hilo-nom',nom||'');
+  if(window._convContactId) localStorage.setItem('evold-conv-hilo-cid',window._convContactId);
   toast('Hilo del equipo guardado');
   convTestMensajes(convId);
 }
@@ -2468,7 +2566,10 @@ async function convTestMensajes(convId){
       return;
     }
     window._convMsgs=d.messages;
+    window._convId=convId;
     const esHilo=localStorage.getItem('evold-conv-hilo')===convId;
+    // El tipo del ultimo mensaje es la mejor pista de por que canal responder
+    const tipoSug=(d.messages[0]&&d.messages[0].type)||'SMS';
     out.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
       +'<span style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em">'+d.messages.length+' mensajes leidos'+(esHilo?' &middot; hilo del equipo':'')+'</span>'
       +'<span style="display:flex;gap:7px">'
@@ -2483,8 +2584,41 @@ async function convTestMensajes(convId){
           +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'+(mio?'vos':'ella/el')+' &middot; '+esc(m.type||'')+' &middot; '+esc(String(m.dateAdded||'').slice(0,16))+'</div>'
           +'</div>';
       }).join('')
-      +'</div>';
+      +'</div>'
+      +(window._convContactId
+        ?'<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">'
+          +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+          +'<input id="cvt-msg" placeholder="Escribi un mensaje..." style="flex:1;min-width:200px;padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none">'
+          +'<select id="cvt-tipo" style="padding:8px 9px;font-size:11.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text)">'
+          +['SMS','WhatsApp','Live_Chat','Email'].map(function(t){
+            // TYPE_CUSTOM_SMS -> SMS. Es el caso de los proveedores externos tipo Applevel.
+            var sug=/custom_sms|^sms|type_sms/i.test(String(tipoSug))?'SMS':tipoSug;
+            return '<option value="'+t+'"'+(_n(sug).indexOf(_n(t))>=0?' selected':'')+'>'+t+'</option>';
+          }).join('')
+          +'</select>'
+          +'<button class="btn btn-sm" id="cvt-send" onclick="convEnviarMsg()">Enviar</button>'
+          +'</div>'
+          +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px">Si el hilo entra por un proveedor externo (Applevel), el tipo correcto es SMS aunque el canal real sea WhatsApp. La ventana de 24 h de Meta no aplica en ese caso.</div>'
+          +'</div>'
+        :'');
   }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
+}
+async function convEnviarMsg(){
+  const ctx=_cvtCtx();
+  const txt=((document.getElementById('cvt-msg')||{}).value||'').trim();
+  const tipo=((document.getElementById('cvt-tipo')||{}).value||'SMS');
+  if(!txt) return;
+  const btn=document.getElementById('cvt-send');
+  if(btn){ btn.disabled=true; btn.textContent='Enviando...'; }
+  try{
+    const r=await fetch(_cvtUrl(ctx,'&action=conv_send&contactId='+encodeURIComponent(window._convContactId)
+      +'&tipo='+encodeURIComponent(tipo)+'&mensaje='+encodeURIComponent(txt)));
+    const d=await r.json();
+    if(d.ok){ toast('Mensaje enviado como '+d.enviadoComo); convTestMensajes(window._convId); }
+    else { document.getElementById('cvt-out').innerHTML=_cvtErr(d)
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:8px">Proba con otro tipo de canal en el selector.</div>'; }
+  }catch(e){ toast('Error: '+e.message,'red'); }
+  if(btn){ btn.disabled=false; btn.textContent='Enviar'; }
 }
 
 function showTickets(){
@@ -2666,6 +2800,7 @@ function showTickets(){
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
     +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
+    +'<button class="btn btn-sm" onclick="openEnviarListaModal()" title="Manda las tareas abiertas en orden de prioridad">Enviar prioridades</button>'
     +'<button class="btn btn-sm" onclick="openConvTestModal()" style="color:var(--text3)" title="Conexion con la subcuenta interna para leer conversaciones">Conversaciones</button>'
     +'</div>'
     +'</div>'
