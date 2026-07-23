@@ -3212,8 +3212,10 @@ function renderTab(){
     const activeLine = getActiveLine(c.conversionLines);
     const metaTokenCheck=c.metaToken||'';
     const metaAccountIdCheck=c.metaAccountId||'';
+    S.adsSub=S.adsSub||'metricas';
+    if(S.adsSub==='lab'){ renderGuionLab(c, el); return; }
     if(!activeLine||!(activeLine.metaCampaigns&&activeLine.metaCampaigns.length)){
-      el.innerHTML='<div style="padding:20px 0">'
+      el.innerHTML=adsSubNav()+'<div style="padding:20px 0">'
         +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
         +'<div style="font-size:13px;color:var(--text2)">No hay ads cargados en la linea activa.</div>'
         +'<div style="display:flex;gap:8px">'
@@ -3241,7 +3243,7 @@ function renderTab(){
     const metaToken=c.metaToken||'';
     const metaAccountId=c.metaAccountId||'';
     const metaDays=activeLine.metaDays||30;
-    el.innerHTML=`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    el.innerHTML=adsSubNav()+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;font-weight:500;color:var(--strong)">Linea activa: <span style="color:var(--accent)">${activeLine.version}</span></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${metaToken&&metaAccountId?`
@@ -5780,6 +5782,438 @@ function adWinsMap(c){
     if(bestKey) map[bestKey].winner=true;
   }
   return map;
+}
+
+// ================= LABORATORIO DE GUIONES (Ads & Guiones -> "Guionizador") =================
+// Flujo: analisis del ganador -> angulos competidores -> guion completo.
+// El SOP vive editable adentro de la app (global + ajustes por cliente) y se inyecta en cada
+// prompt. Cada guion generado queda como borrador y se puede vincular al anuncio real que
+// termino corriendo, para que el SOP se actualice con evidencia y no con intuicion.
+
+function adsSubNav(){
+  var sub=S.adsSub||'metricas';
+  var b=function(k,l){
+    var on=sub===k;
+    return '<button onclick="setAdsSub(\''+k+'\')" style="font-size:12px;padding:6px 16px;border-radius:99px;border:1px solid '
+      +(on?'transparent':'var(--border2)')+';background:'+(on?'var(--accent)':'transparent')+';color:'
+      +(on?'var(--on-accent)':'var(--text2)')+';cursor:pointer;font-family:var(--font)">'+l+'</button>';
+  };
+  return '<div style="display:flex;gap:8px;margin-bottom:18px">'+b('metricas','Metricas')+b('lab','Guionizador')+'</div>';
+}
+function setAdsSub(k){ S.adsSub=k; renderTab(); }
+
+// ---------- SOP ----------
+function getSopGlobal(){ DB.sop=DB.sop||{text:'',updatedAt:null,history:[]}; return DB.sop; }
+function getSopCliente(c){ c.sopAjustes=c.sopAjustes||{text:'',updatedAt:null}; return c.sopAjustes; }
+function sopCombinado(c){
+  var g=getSopGlobal(), l=getSopCliente(c), out='';
+  if(g.text) out+='=== SOP DE GUIONIZACION (agencia) ===\n'+g.text;
+  if(l.text) out+='\n\n=== AJUSTES ESPECIFICOS PARA '+String(c.name||'').toUpperCase()+' ===\n'+l.text;
+  return out.trim();
+}
+
+function openSopModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var g=getSopGlobal(), l=getSopCliente(c);
+  var hist=(g.history||[]);
+  var histHtml=hist.length
+    ? hist.map(function(h,i){
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border)">'
+          +'<span style="font-size:11.5px;color:var(--text3)">'+new Date(h.ts).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})
+          +' &middot; '+String(h.text||'').length+' caracteres</span>'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" onclick="restaurarSopVersion('+clientId+','+i+')">Restaurar</button>'
+          +'</div>';
+      }).join('')
+    : '<div style="font-size:11.5px;color:var(--text3);padding:8px 0">Todavia no hay versiones guardadas.</div>';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:760px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">SOP de guionizacion</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Se inyecta en cada analisis y en cada guion que genera la app. Editalo cuando aprendas algo nuevo.</div>'
+    +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">SOP global &middot; aplica a todos los clientes</label>'
+    +'<textarea id="sop-global" rows="14" placeholder="Pega aca tu SOP: como armas un hook, estructura del guion, tono, largos, que evitar, ejemplos de lo que funciono..." style="width:100%;box-sizing:border-box;padding:11px 13px;font-size:12.5px;line-height:1.6;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);resize:vertical;outline:none">'+esc(g.text||'')+'</textarea>'
+    +'<label style="font-size:11px;color:var(--text3);display:block;margin:14px 0 4px">Ajustes para '+esc(c.name)+' &middot; se suma al global</label>'
+    +'<textarea id="sop-cliente" rows="6" placeholder="Particularidades de este cliente: buyer, objeciones tipicas, palabras prohibidas, oferta, precio, tono..." style="width:100%;box-sizing:border-box;padding:11px 13px;font-size:12.5px;line-height:1.6;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);resize:vertical;outline:none">'+esc(l.text||'')+'</textarea>'
+    +'<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Versiones anteriores del SOP global</div>'
+    +histHtml
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:18px">'
+    +'<button class="btn btn-primary" onclick="guardarSop('+clientId+')">Guardar</button>'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'</div>'
+    +'</div></div>';
+}
+function guardarSop(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var g=getSopGlobal(), l=getSopCliente(c);
+  var nuevoG=(document.getElementById('sop-global').value||'').trim();
+  var nuevoL=(document.getElementById('sop-cliente').value||'').trim();
+  if(g.text && nuevoG!==g.text){
+    g.history=[{ts:new Date().toISOString(),text:g.text}].concat(g.history||[]).slice(0,20);
+  }
+  g.text=nuevoG; g.updatedAt=new Date().toISOString();
+  l.text=nuevoL; l.updatedAt=new Date().toISOString();
+  save(); closeModal(); renderTab(); toast('SOP guardado');
+}
+function restaurarSopVersion(clientId,i){
+  var g=getSopGlobal(); var h=(g.history||[])[i]; if(!h) return;
+  var ta=document.getElementById('sop-global');
+  if(ta){ ta.value=h.text||''; toast('Version cargada - apreta Guardar para confirmar'); }
+}
+
+// ---------- Datos del laboratorio ----------
+function getLab(c){
+  c.guionLab=c.guionLab||{baseAdId:'',analisis:null,angulos:[],drafts:[]};
+  return c.guionLab;
+}
+function labAdsDisponibles(c){
+  var out=[], wins=(typeof adWinsMap==='function')?adWinsMap(c):{};
+  (c.conversionLines||[]).forEach(function(l){
+    (l.metaCampaigns||[]).forEach(function(camp){
+      (camp.adsets||[]).forEach(function(as){
+        (as.ads||[]).forEach(function(ad){
+          if(!ad||!ad.id) return;
+          for(var i=0;i<out.length;i++){ if(out[i].id===ad.id) return; }
+          var w=wins[_n(ad.name||'')]||{calif:0,cierres:0,winner:false};
+          out.push({id:ad.id,name:ad.name||ad.id,camp:camp.name||'',adset:as.name||'',m:ad,win:w});
+        });
+      });
+    });
+  });
+  out.sort(function(a,b){
+    return (b.win.cierres-a.win.cierres)||(b.win.calif-a.win.calif)||((b.m.leads||0)-(a.m.leads||0));
+  });
+  return out;
+}
+function labFreq(m){
+  var f=Number(m.frequency)||0;
+  if(!f && Number(m.reach)>0) f=Number(m.impressions||0)/Number(m.reach);
+  return f;
+}
+function labAdBase(c){
+  var lab=getLab(c), ads=labAdsDisponibles(c);
+  if(!ads.length) return null;
+  if(lab.baseAdId){
+    for(var i=0;i<ads.length;i++){ if(ads[i].id===lab.baseAdId) return ads[i]; }
+  }
+  for(var j=0;j<ads.length;j++){ if(ads[j].win.winner) return ads[j]; }
+  return ads[0];
+}
+function labContextoAnuncio(c,a){
+  var m=a.m||{}, f=labFreq(m);
+  var g=(c.adScriptsByAd&&c.adScriptsByAd[a.id])||{};
+  var L=[];
+  L.push('Anuncio: '+a.name);
+  L.push('Campana: '+(a.camp||'-')+' | Adset: '+(a.adset||'-'));
+  L.push('Gasto: $'+(Number(m.spend)||0).toFixed(2));
+  L.push('Impresiones: '+(m.impressions||0)+' | Alcance: '+(m.reach||0));
+  L.push('Frecuencia: '+(f?f.toFixed(2):'sin dato'));
+  L.push('CTR: '+(m.ctr||'-')+'% | CPC: $'+(m.cpc||'-')+' | CPM: $'+(m.cpm||'-'));
+  L.push('Leads: '+(m.leads||0)+' | Costo por lead: $'+(m.cpl||'-'));
+  L.push('ThruPlays: '+(m.thruPlays||0)+(m.costPerThruPlay?(' | costo por thruplay: $'+m.costPerThruPlay):''));
+  L.push('Vistas de landing: '+(m.landingViews||0));
+  L.push('--- Resultado real en el CRM, no en Meta ---');
+  L.push('Leads calificados: '+(a.win.calif||0)+' | Cierres: '+(a.win.cierres||0));
+  L.push(a.win.winner?'Marcado como GANADOR por resultado de negocio.':'No es el ganador actual.');
+  if(g.guion){ L.push('--- Guion actual de este anuncio ---'); L.push(g.guion); }
+  else { L.push('(No hay guion cargado para este anuncio: el analisis va a ser solo sobre metricas.)'); }
+  if(g.notas) L.push('Notas del guion: '+g.notas);
+  return L.join('\n');
+}
+function labContextoCompetencia(c,base){
+  var ads=labAdsDisponibles(c).filter(function(a){return a.id!==base.id;}).slice(0,6);
+  if(!ads.length) return '(No hay otros anuncios para comparar.)';
+  return ads.map(function(a){
+    var m=a.m||{};
+    return '- '+a.name+': CPL $'+(m.cpl||'-')+' | CTR '+(m.ctr||'-')+'% | leads '+(m.leads||0)
+      +' | calificados '+(a.win.calif||0)+' | cierres '+(a.win.cierres||0)+' | frecuencia '+(labFreq(m)?labFreq(m).toFixed(2):'-');
+  }).join('\n');
+}
+
+// ---------- Llamada a la IA ----------
+async function labIA(prompt, maxTokens){
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey) throw new Error('Falta la API key de Anthropic. Cargala en Integraciones.');
+  var r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens||1600,messages:[{role:'user',content:prompt}]})
+  });
+  var d=await r.json();
+  if(d.error) throw new Error(d.error.message||'Error de la API');
+  return (d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('\n').trim();
+}
+function labBusy(id,on,label){
+  var b=document.getElementById(id); if(!b) return;
+  b.disabled=!!on; if(label) b.textContent=label;
+}
+
+// ---------- Paso 1: analisis ----------
+async function labAnalizar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var lab=getLab(c), base=labAdBase(c);
+  if(!base){ toast('No hay anuncios sincronizados de Meta','red'); return; }
+  labBusy('lab-btn-analisis',true,'Analizando...');
+  var sop=sopCombinado(c);
+  var prompt=(sop?sop+'\n\n':'')
+    +'Sos analista de performance creativa en una agencia. Analiza este anuncio para decidir como reemplazarlo o competirle.\n\n'
+    +'=== ANUNCIO BASE ===\n'+labContextoAnuncio(c,base)+'\n\n'
+    +'=== OTROS ANUNCIOS DE LA CUENTA ===\n'+labContextoCompetencia(c,base)+'\n\n'
+    +'Devolve un analisis breve y filoso en texto plano (sin markdown, sin titulos con #), con estas cuatro partes separadas por una linea en blanco:\n'
+    +'1. QUE ESTA FUNCIONANDO: que hace bien este anuncio y por que, apoyandote en los numeros.\n'
+    +'2. SENALES DE FATIGA: leer la frecuencia, el CTR y el CPL. Si la frecuencia supera 2.5 decilo explicito. Si no hay senales de desgaste, decilo igual de claro en vez de inventarlas.\n'
+    +'3. LA BRECHA META vs CRM: comparar volumen de leads contra calificados y cierres. Si trae muchos leads que no califican, ese es el problema principal y hay que decirlo.\n'
+    +'4. QUE ATACAR EN EL PROXIMO CREATIVO: la recomendacion concreta.\n\n'
+    +'Se concreto y usa los numeros reales. No repitas el brief. Maximo 300 palabras.';
+  try{
+    var txt=await labIA(prompt,1200);
+    lab.analisis={texto:txt,ts:new Date().toISOString(),adId:base.id,adName:base.name};
+    lab.angulos=[];
+    save(); renderTab(); toast('Analisis listo');
+  }catch(e){ toast('Error: '+e.message,'red'); labBusy('lab-btn-analisis',false,'Analizar anuncio base'); }
+}
+
+// ---------- Paso 2: angulos ----------
+async function labAngulos(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var lab=getLab(c), base=labAdBase(c);
+  if(!base){ toast('No hay anuncio base','red'); return; }
+  labBusy('lab-btn-angulos',true,'Generando...');
+  var sop=sopCombinado(c);
+  var prompt=(sop?sop+'\n\n':'')
+    +'Sos estratega creativo. Necesito angulos nuevos para competirle al anuncio ganador (o reemplazarlo si se quemo la frecuencia).\n\n'
+    +'=== ANUNCIO BASE ===\n'+labContextoAnuncio(c,base)+'\n\n'
+    +(lab.analisis&&lab.analisis.texto?('=== ANALISIS PREVIO ===\n'+lab.analisis.texto+'\n\n'):'')
+    +'Propone 4 angulos DISTINTOS entre si. No variaciones del mismo hook: angulos con tesis diferentes '
+    +'(distinto dolor, distinto momento del buyer, distinto enemigo, distinta prueba). Al menos uno tiene que ser '
+    +'deliberadamente arriesgado o contraintuitivo.\n\n'
+    +'Responde SOLO con un array JSON valido, sin markdown ni texto alrededor:\n'
+    +'[{"titulo":"nombre corto del angulo","tesis":"la idea central en una frase","hook":"el gancho literal de los primeros 3 segundos","porQue":"por que deberia funcionar segun los datos del anuncio base","riesgo":"que puede salir mal"}]';
+  try{
+    var txt=await labIA(prompt,1600);
+    txt=txt.replace(/^[^\[]*\[/,'[').replace(/\][^\]]*$/,']');
+    var arr=JSON.parse(txt);
+    lab.angulos=arr.map(function(a,i){ return {id:'ang'+Date.now()+'_'+i,titulo:a.titulo||'Angulo '+(i+1),tesis:a.tesis||'',hook:a.hook||'',porQue:a.porQue||'',riesgo:a.riesgo||''}; });
+    save(); renderTab(); toast(lab.angulos.length+' angulos generados');
+  }catch(e){ toast('Error: '+e.message,'red'); labBusy('lab-btn-angulos',false,'Generar angulos'); }
+}
+
+// ---------- Paso 3: guion ----------
+async function labEscribir(clientId,angId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var lab=getLab(c), base=labAdBase(c);
+  var ang=null; (lab.angulos||[]).forEach(function(a){ if(a.id===angId) ang=a; });
+  if(!ang||!base) return;
+  labBusy('lab-w-'+angId,true,'Escribiendo...');
+  var sop=sopCombinado(c);
+  var prompt=(sop?sop+'\n\n':'')
+    +'Escribi el guion completo del anuncio siguiendo estrictamente el SOP de arriba. Si el SOP define una estructura, respetala al pie de la letra.\n\n'
+    +'=== ANGULO ELEGIDO ===\nTitulo: '+ang.titulo+'\nTesis: '+ang.tesis+'\nHook: '+ang.hook+'\nPor que: '+ang.porQue+'\n\n'
+    +'=== ANUNCIO BASE QUE TIENE QUE SUPERAR ===\n'+labContextoAnuncio(c,base)+'\n\n'
+    +'Devolve el guion en texto plano listo para grabar, sin markdown. Marca las secciones en mayuscula '
+    +'(HOOK, DESARROLLO, PRUEBA, CTA o las que indique el SOP). Si conviene, agrega entre parentesis indicaciones '
+    +'de camara o de edicion. Al final, en una linea aparte que empiece con "NOTA:", explica en una sola frase '
+    +'que hipotesis se esta probando con este guion.';
+  try{
+    var txt=await labIA(prompt,2000);
+    lab.drafts=lab.drafts||[];
+    lab.drafts.unshift({
+      id:'d'+Date.now(), ts:new Date().toISOString(),
+      angulo:ang.titulo, hook:ang.hook, guion:txt,
+      baseAdId:base.id, baseAdName:base.name,
+      estado:'borrador', adIdProd:'', notas:''
+    });
+    save(); renderTab(); toast('Guion generado y guardado como borrador');
+  }catch(e){ toast('Error: '+e.message,'red'); labBusy('lab-w-'+angId,false,'Escribir guion'); }
+}
+
+// ---------- Borradores ----------
+function labDraftEstado(clientId,draftId,estado){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var lab=getLab(c);
+  (lab.drafts||[]).forEach(function(d){ if(d.id===draftId){ d.estado=estado; if(estado!=='produccion') d.adIdProd=''; } });
+  save(); renderTab();
+}
+function labDraftBorrar(clientId,draftId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var lab=getLab(c);
+  lab.drafts=(lab.drafts||[]).filter(function(d){return d.id!==draftId;});
+  save(); renderTab(); toast('Borrador eliminado');
+}
+function labDraftVincular(clientId,draftId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var ads=labAdsDisponibles(c);
+  var opts=ads.map(function(a){return '<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>';}).join('');
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Vincular al anuncio real</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Elegi que anuncio de Meta salio de este guion. Asi la app puede mostrarte despues como performo de verdad.</div>'
+    +'<select id="lab-link-ad" style="width:100%;padding:9px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none">'+opts+'</select>'
+    +'<div style="display:flex;gap:8px;margin-top:18px">'
+    +'<button class="btn btn-primary" onclick="labDraftVincularOk('+clientId+',\''+_jsEsc(draftId)+'\')">Vincular</button>'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'</div></div></div>';
+}
+function labDraftVincularOk(clientId,draftId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var adId=(document.getElementById('lab-link-ad')||{}).value||'';
+  var lab=getLab(c);
+  (lab.drafts||[]).forEach(function(d){ if(d.id===draftId){ d.adIdProd=adId; d.estado='produccion'; } });
+  save(); closeModal(); renderTab(); toast('Guion vinculado - ahora podes medir si funciono');
+}
+function labVerDraft(clientId,draftId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var d=null; (getLab(c).drafts||[]).forEach(function(x){ if(x.id===draftId) d=x; });
+  if(!d) return;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:680px;width:94%;max-height:86vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">'+esc(d.angulo)+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px">Generado el '+new Date(d.ts).toLocaleString('es-AR')+' &middot; base: '+esc(d.baseAdName||'-')+'</div>'
+    +'<div style="font-size:13px;line-height:1.75;color:var(--text);white-space:pre-wrap;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px 16px">'+esc(d.guion)+'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:16px">'
+    +'<button class="btn btn-primary" onclick="labCopiar(\''+_jsEsc(draftId)+'\','+clientId+')">Copiar guion</button>'
+    +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+    +'</div></div></div>';
+}
+function labCopiar(draftId,clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var d=null; (getLab(c).drafts||[]).forEach(function(x){ if(x.id===draftId) d=x; });
+  if(!d) return;
+  try{ navigator.clipboard.writeText(d.guion); toast('Guion copiado'); }
+  catch(e){ toast('No se pudo copiar','red'); }
+}
+
+// ---------- Render ----------
+function renderGuionLab(c,el){
+  var lab=getLab(c), ads=labAdsDisponibles(c), base=labAdBase(c);
+  var sop=getSopGlobal(), sopCli=getSopCliente(c);
+  var haySop=!!(sop.text||sopCli.text);
+  var hasKey=!!localStorage.getItem('evold-anthropic-key');
+  var h=adsSubNav();
+
+  // Barra superior: anuncio base + SOP
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em">Anuncio base</span>'
+    +(ads.length
+      ?'<select onchange="(function(v){var cc=DB.clients.find(function(x){return x.id==='+c.id+'});getLab(cc).baseAdId=v;getLab(cc).analisis=null;getLab(cc).angulos=[];save();renderTab();})(this.value)" style="font-size:12px;padding:5px 9px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font);max-width:340px;outline:none">'
+        +ads.map(function(a){
+          return '<option value="'+esc(a.id)+'"'+(base&&base.id===a.id?' selected':'')+'>'
+            +(a.win.winner?'\u2605 ':'')+esc(a.name)+' \u00b7 '+(a.win.cierres||0)+' cierres'+'</option>';
+        }).join('')
+      +'</select>'
+      :'<span style="font-size:12px;color:var(--text3)">sin anuncios sincronizados</span>')
+    +'</div>'
+    +'<button class="btn btn-sm" onclick="openSopModal('+c.id+')">'+(haySop?'Editar SOP':'\u26a0 Cargar SOP')+'</button>'
+    +'</div>';
+
+  if(!hasKey){
+    h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--amberx);margin-bottom:16px">Falta tu API key de Anthropic. Cargala en Integraciones para poder generar.</div>';
+  }
+  if(!haySop){
+    h+='<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--text2);margin-bottom:16px">Todavia no cargaste el SOP. Podes generar igual, pero los guiones van a salir genericos: el SOP es lo que los hace tuyos.</div>';
+  }
+  if(!ads.length){
+    h+='<div class="empty"><div class="empty-icon"></div><div>Sincroniza Meta para traer los anuncios y arrancar.</div></div>';
+    el.innerHTML=h; return;
+  }
+
+  // Ficha del anuncio base
+  var m=base.m||{}, f=labFreq(m);
+  var chip=function(l,v,warn){
+    return '<div style="flex:1;min-width:96px"><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">'+l+'</div>'
+      +'<div class="mono" style="font-size:14px;color:'+(warn?'var(--amberx)':'var(--strong)')+'">'+v+'</div></div>';
+  };
+  h+='<div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:20px">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    +(base.win.winner?'<span style="color:var(--accent)">\u2605</span>':'')
+    +'<span style="font-size:13px;font-weight:500;color:var(--strong)">'+esc(base.name)+'</span></div>'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap">'
+    +chip('Frecuencia',f?f.toFixed(2):'-',f>2.5)
+    +chip('CPL','$'+(m.cpl||'-'))
+    +chip('CTR',(m.ctr||'-')+'%')
+    +chip('Leads',String(m.leads||0))
+    +chip('Calificados',String(base.win.calif||0))
+    +chip('Cierres',String(base.win.cierres||0))
+    +'</div>'
+    +(f>2.5?'<div style="margin-top:11px;font-size:11.5px;color:var(--amberx)">Frecuencia por encima de 2.5: la audiencia ya vio este anuncio demasiadas veces. Es momento de renovar.</div>':'')
+    +'</div>';
+
+  // Paso 1
+  h+='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Paso 1 &middot; Analisis</div>';
+  if(lab.analisis&&lab.analisis.texto){
+    h+='<div style="font-size:13px;line-height:1.75;color:var(--text);white-space:pre-wrap;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:8px">'+esc(lab.analisis.texto)+'</div>'
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:22px">'
+      +'<button class="btn btn-sm" id="lab-btn-analisis" onclick="labAnalizar('+c.id+')">Volver a analizar</button>'
+      +'<span style="font-size:11px;color:var(--text3)">'+new Date(lab.analisis.ts).toLocaleString('es-AR')+'</span></div>';
+  } else {
+    h+='<div style="margin-bottom:22px"><button class="btn btn-primary" id="lab-btn-analisis" onclick="labAnalizar('+c.id+')">Analizar anuncio base</button></div>';
+  }
+
+  // Paso 2
+  h+='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Paso 2 &middot; Angulos</div>';
+  if((lab.angulos||[]).length){
+    h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:10px">'
+      +lab.angulos.map(function(a){
+        return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 15px;display:flex;flex-direction:column;gap:7px">'
+          +'<div style="font-size:13px;font-weight:500;color:var(--strong)">'+esc(a.titulo)+'</div>'
+          +(a.tesis?'<div style="font-size:12px;color:var(--text2);line-height:1.55">'+esc(a.tesis)+'</div>':'')
+          +(a.hook?'<div style="font-size:12px;color:var(--text);line-height:1.55;border-left:2px solid var(--accent);padding-left:9px">'+esc(a.hook)+'</div>':'')
+          +(a.porQue?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5">'+esc(a.porQue)+'</div>':'')
+          +(a.riesgo?'<div style="font-size:11px;color:var(--amberx);line-height:1.5">Riesgo: '+esc(a.riesgo)+'</div>':'')
+          +'<button class="btn btn-sm btn-primary" id="lab-w-'+esc(a.id)+'" style="margin-top:4px;align-self:flex-start" onclick="labEscribir('+c.id+',\''+_jsEsc(a.id)+'\')">Escribir guion</button>'
+          +'</div>';
+      }).join('')
+      +'</div>'
+      +'<div style="margin-bottom:22px"><button class="btn btn-sm" id="lab-btn-angulos" onclick="labAngulos('+c.id+')">Generar otros angulos</button></div>';
+  } else {
+    h+='<div style="margin-bottom:22px"><button class="btn'+(lab.analisis?' btn-primary':'')+'" id="lab-btn-angulos" onclick="labAngulos('+c.id+')">Generar angulos</button>'
+      +(lab.analisis?'':'<span style="font-size:11.5px;color:var(--text3);margin-left:10px">Mejor despues del analisis, pero podes saltearlo.</span>')+'</div>';
+  }
+
+  // Paso 3: borradores
+  h+='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Paso 3 &middot; Guiones generados</div>';
+  if(!(lab.drafts||[]).length){
+    h+='<div style="font-size:12px;color:var(--text3);padding:14px 0">Todavia no generaste ningun guion. Elegi un angulo y escribilo.</div>';
+  } else {
+    h+=lab.drafts.map(function(d){
+      var pillStyle=d.estado==='produccion'?'pill-green':(d.estado==='descartado'?'pill-red':'pill-blue');
+      var perf='';
+      if(d.estado==='produccion'&&d.adIdProd){
+        var real=null; ads.forEach(function(a){ if(a.id===d.adIdProd) real=a; });
+        if(real){
+          var rm=real.m||{};
+          var mejorCPL=(Number(rm.cpl)&&Number((base.m||{}).cpl))?(Number(rm.cpl)<Number((base.m||{}).cpl)):null;
+          perf='<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--text2)">'
+            +'Corriendo como <strong style="color:var(--text)">'+esc(real.name)+'</strong> &middot; '
+            +'CPL $'+(rm.cpl||'-')+' &middot; leads '+(rm.leads||0)+' &middot; calificados '+(real.win.calif||0)+' &middot; cierres '+(real.win.cierres||0)
+            +(mejorCPL===true?' <span style="color:var(--accent)">&middot; mejor CPL que el base</span>':(mejorCPL===false?' <span style="color:var(--amberx)">&middot; peor CPL que el base</span>':''))
+            +'</div>';
+        }
+      }
+      return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:13px 15px;margin-bottom:10px">'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px">'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span style="font-size:13px;font-weight:500;color:var(--strong)">'+esc(d.angulo)+'</span>'
+        +'<span class="pill '+pillStyle+'" style="font-size:9.5px">'+esc(d.estado)+'</span></div>'
+        +'<span style="font-size:11px;color:var(--text3)">'+new Date(d.ts).toLocaleDateString('es-AR')+'</span>'
+        +'</div>'
+        +'<div style="font-size:12px;color:var(--text2);line-height:1.6;max-height:56px;overflow:hidden;margin-bottom:9px">'+esc(String(d.guion||'').slice(0,220))+'...</div>'
+        +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm" onclick="labVerDraft('+c.id+',\''+_jsEsc(d.id)+'\')">Ver completo</button>'
+        +(d.estado!=='produccion'?'<button class="btn btn-sm" onclick="labDraftVincular('+c.id+',\''+_jsEsc(d.id)+'\')">Marcar en produccion</button>':'<button class="btn btn-sm" onclick="labDraftEstado('+c.id+',\''+_jsEsc(d.id)+'\',\'borrador\')">Volver a borrador</button>')
+        +(d.estado!=='descartado'?'<button class="btn btn-sm" onclick="labDraftEstado('+c.id+',\''+_jsEsc(d.id)+'\',\'descartado\')">Descartar</button>':'')
+        +'<button class="btn btn-sm" style="color:var(--redx);margin-left:auto" onclick="labDraftBorrar('+c.id+',\''+_jsEsc(d.id)+'\')">Borrar</button>'
+        +'</div>'+perf
+        +'</div>';
+    }).join('');
+    h+='<div style="font-size:11.5px;color:var(--text3);margin-top:12px;line-height:1.6">Cuando un guion en produccion funcione (o fracase), entra al SOP y sumale lo que aprendiste. Ese es el punto: que el SOP mejore con evidencia.</div>';
+  }
+
+  el.innerHTML=h;
 }
 
 // Celda de la columna "Guion" en la tabla de Meta. Solo editable en filas de anuncio (ad!=null).
