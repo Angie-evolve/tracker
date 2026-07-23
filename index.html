@@ -5677,14 +5677,14 @@ function metaRowLeft(name, expandable, open, onclick, active, indent, thumb, adI
   var winBadge='';
   if(isWinner&&winData){
     var wtxt=winData.cierres>0?(winData.cierres+' cierre'+(winData.cierres>1?'s':'')):(winData.calif+' calif.');
-    winBadge='<span style="font-size:9px;font-weight:600;color:var(--accent);background:rgba(29,158,117,0.14);border-radius:20px;padding:1px 7px;margin-left:6px;white-space:nowrap">GANADOR &middot; '+wtxt+'</span>';
+    winBadge='<span style="font-size:9px;font-weight:600;color:var(--accent);background:rgba(29,158,117,0.18);border-radius:20px;padding:1px 6px;white-space:nowrap">GANADOR &middot; '+wtxt+'</span>';
   }
-  var statusLine=adId!==undefined?'<div style="font-size:10px;color:'+(active?'var(--accent)':'var(--text3)')+'">'+(active?'activo':'pausado')+(adId?' <span style="color:var(--text3)">Ver en Meta &rarr;</span>':'')+'</div>':'';
-  var winBg=isWinner?'background:rgba(29,158,117,0.06);':'';
+  var statusLine=adId!==undefined?'<div style="font-size:10px;color:'+(active?'var(--accent)':'var(--text3)')+';overflow:hidden;white-space:nowrap">'+(winBadge||((active?'activo':'pausado')+(adId?' <span style="color:var(--text3)">Ver en Meta &rarr;</span>':'')))+'</div>':'';
+  var winBg=isWinner?'background:rgba(29,158,117,0.09);':'';
   return '<div style="flex-shrink:0;width:190px;display:flex;align-items:center;padding:0 12px;height:'+rowH+'px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);'+winBg+(isWinner?'box-shadow:inset 3px 0 0 var(--accent);':'')+'"'+clickAttr+'>'
     +(thumb!==undefined?thumbHtml:'')
     +'<div style="min-width:0;flex:1">'
-    +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+arrow+name+winBadge+'</div>'
+    +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(isWinner?'<span style="color:var(--accent);margin-right:3px">&#9733;</span>':'')+arrow+name+'</div>'
     +statusLine
     +(adId===undefined?'<div style="font-size:10px;color:'+(active?'var(--accent)':'var(--text3)')+'">'+(active?'activa':'pausada')+'</div>':'')
     +'</div></div>';
@@ -5696,6 +5696,14 @@ function adWinsMap(c){
   var map={};
   var ops=(c.ghl&&c.ghl.opportunities)||[];
   if(!ops.length) return map;
+  // Misma logica que usa la vista de ventas: calificados por reglas del cliente, ganados por deriveEstado
+  var rules=(typeof getGhlRules==='function')?getGhlRules(c):{};
+  var SQLS=(rules.sql&&rules.sql.length)?rules.sql:['tomando decision','nda','segunda llamada'];
+  var isSql=function(o){ return o._sql||SQLS.indexOf(_n(o.pipelineStage))>=0; };
+  var isWon=function(o){
+    if(typeof deriveEstado==='function'){ try{ return deriveEstado(o).label==='Ganado'; }catch(e){} }
+    return o.status==='won';
+  };
   ops.forEach(function(o){
     var s=o.source||{};
     var fa=o.formAnswers||{};
@@ -5703,16 +5711,17 @@ function adWinsMap(c){
     var k=_n(adName);
     if(!k) return;
     if(!map[k]) map[k]={calif:0,cierres:0,winner:false};
-    if(o._sql) map[k].calif++;
-    if(o.status==='won') map[k].cierres++;
+    if(isSql(o)) map[k].calif++;
+    if(isWon(o)) map[k].cierres++;
   });
-  // Elegir ganador: primero por cierres; si nadie cerro, por calificados. Debe tener al menos 1.
-  var bestKey=null, bestC=-1, bestQ=-1;
-  for(var k in map){
-    var m=map[k];
-    if(m.cierres>bestC || (m.cierres===bestC && m.calif>bestQ)){ bestC=m.cierres; bestQ=m.calif; bestKey=k; }
+  // Ganadores: todos los que tienen al menos 1 cierre. Si ninguno cerro, el de mas calificados.
+  var hayCierres=false;
+  for(var k1 in map){ if(map[k1].cierres>0){ map[k1].winner=true; hayCierres=true; } }
+  if(!hayCierres){
+    var bestKey=null, bestQ=0;
+    for(var k2 in map){ if(map[k2].calif>bestQ){ bestQ=map[k2].calif; bestKey=k2; } }
+    if(bestKey) map[bestKey].winner=true;
   }
-  if(bestKey && (map[bestKey].cierres>0 || map[bestKey].calif>0)) map[bestKey].winner=true;
   return map;
 }
 
