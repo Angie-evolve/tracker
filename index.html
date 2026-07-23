@@ -3309,6 +3309,18 @@ function renderTab(){
       <div style="border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px;display:flex">
         ${(()=>{
           var _adWins=adWinsMap(c);
+          // Si ninguna oportunidad trae el UTM del anuncio, no se puede marcar ganadores:
+          // disparamos el enriquecimiento en background (como hace la vista de ventas).
+          if(!Object.keys(_adWins).length && c.ghl && c.ghl.token && (c.ghl.opportunities||[]).length){
+            var _pxE=getGhlProxy();
+            if(_pxE.url){
+              window._enrichKickAt=window._enrichKickAt||{};
+              if(Date.now()-(window._enrichKickAt['ads'+c.id]||0)>5*60000){
+                window._enrichKickAt['ads'+c.id]=Date.now();
+                enrichContactsBackground(c,_pxE);
+              }
+            }
+          }
           var leftRows=['<div style="height:36px;display:flex;align-items:center;padding:0 12px;font-size:11px;font-weight:500;color:var(--text3);background:var(--bg3);border-bottom:0.5px solid var(--border)">Campana</div>'];
           var _guionHeadW=180;
           var _guionHead='<div style="flex-shrink:0;width:'+_guionHeadW+'px;height:36px;display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:500;color:var(--text3);background:var(--bg3);border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border)">Guion</div>';
@@ -4899,7 +4911,10 @@ async function enrichContactsBackground(c, proxy){
   const _now=Date.now();
   const toEnrich=(c.ghl.opportunities||[]).filter(function(o){
     if(!o.contactId) return false;
-    if(o._enrichTry && (_now-o._enrichTry)<24*3600000) return false;
+    // Si el intento anterior fallo (proxy caido, secreto mal, etc) reintentamos a los 15 min,
+    // no a las 24h: si no, un problema temporal de conexion deja los UTM vacios todo el dia.
+    var wait=o._enrichOk?24*3600000:15*60000;
+    if(o._enrichTry && (_now-o._enrichTry)<wait) return false;
     return (!o.source.utmAd || !o.source.utmCampaign || !o.geo.location || !o.tags);
   });
   if(!toEnrich.length) return;
@@ -4921,6 +4936,7 @@ async function enrichContactsBackground(c, proxy){
         if(data.utmSource && !opp.source.utmSource) opp.source.utmSource=data.utmSource;
         var dTags=data.tags||data.contactTags||null;
         if(dTags && Array.isArray(dTags) && dTags.length) opp.tags=dTags;
+        opp._enrichOk=true;
         enriched++;
         if(enriched%10===0){ save(); }
       }
