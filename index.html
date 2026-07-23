@@ -2046,6 +2046,7 @@ function liveSectionHtml(c){
       +'</div>';
   return '<div style="margin-top:30px">'
     +'<div style="font-size:15px;font-weight:600;color:var(--strong)">Tiempo real (beta)</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-top:3px">Ventana movil fija de 7 dias &middot; no sigue el rango de fechas de arriba</div>'
     +'<div style="height:1px;background:var(--border);margin:10px 0 16px"></div>'
     +liveHtml
     +'</div>';
@@ -3410,9 +3411,7 @@ function renderTab(){
             <option value="custom" ${metaDays==='custom'?'selected':''}>Rango personalizado</option>
           </select>
           ${metaDays==='custom'?`
-          <input type="date" id="meta-since-input" value="${activeLine.metaSince||''}" onchange="changeMetaCustomRange(${c.id})" style="font-size:11px;padding:4px 6px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2)">
-          <span style="font-size:11px;color:var(--text3)">a</span>
-          <input type="date" id="meta-until-input" value="${activeLine.metaUntil||''}" onchange="changeMetaCustomRange(${c.id})" style="font-size:11px;padding:4px 6px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2)">
+          <button class="btn btn-sm" onclick="openMetaRangeModal(${c.id})" style="font-size:11px">${activeLine.metaSince||'?'} a ${activeLine.metaUntil||'?'}</button>
           `:''}
           <button class="btn btn-sm btn-primary" onclick="syncMetaAds(${c.id})" id="meta-sync-btn">Sincronizar Meta</button>
           <button class="btn btn-sm" onclick="openMetaConfig(${c.id})" style="color:var(--text3);border-color:var(--border)">Editar token</button>`
@@ -5835,20 +5834,53 @@ function saveMetaConfig(clientId){
   syncMetaAds(clientId);
 }
 
+// Mismo modal que usa Conversion de ventas, pero aplicado al rango de Meta en Ads & Guiones.
+// El anterior eran dos inputs sueltos que, si completabas solo uno, no hacian nada en silencio.
+function openMetaRangeModal(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  const al=getActiveLine(c.conversionLines||[]); if(!al) return;
+  const today=isoDate(new Date());
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Rango personalizado</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px">Filtra las metricas de Meta entre dos fechas: campanas, conjuntos y anuncios. No afecta al bloque de Tiempo real, que siempre muestra los ultimos 7 dias.</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Desde</div>'
+    +'<input type="date" id="mr-from" value="'+(al.metaSince||'')+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Hasta</div>'
+    +'<input type="date" id="mr-to" value="'+(al.metaUntil||today)+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
+    +'</div>'
+    +'<div id="mr-err" style="font-size:11px;color:var(--redx);margin-bottom:12px;min-height:14px"></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="applyMetaRange('+clientId+')">Aplicar y sincronizar</button>'
+    +'</div></div></div>';
+}
+function applyMetaRange(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  const al=getActiveLine(c.conversionLines||[]); if(!al) return;
+  const from=(document.getElementById('mr-from')||{}).value||'';
+  const to=(document.getElementById('mr-to')||{}).value||'';
+  const err=document.getElementById('mr-err');
+  if(!from||!to){ if(err) err.textContent='Elegi ambas fechas'; return; }
+  if(new Date(from)>new Date(to)){ if(err) err.textContent='La fecha "desde" no puede ser posterior a "hasta"'; return; }
+  al.metaDays='custom'; al.metaSince=from; al.metaUntil=to;
+  save(); closeModal(); syncMetaAds(clientId);
+}
+
 function changeMetaDays(clientId, days){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var activeLine=c.conversionLines&&getActiveLine(c.conversionLines);
   if(!activeLine) return;
   if(days==='custom'){
-    activeLine.metaDays='custom';
     if(!activeLine.metaSince){
       var now=new Date();
       activeLine.metaUntil=now.toISOString().slice(0,10);
       activeLine.metaSince=new Date(now-30*24*60*60*1000).toISOString().slice(0,10);
     }
-    save();
-    renderTab();
+    openMetaRangeModal(clientId);
     return;
   }
   activeLine.metaDays=parseInt(days);
