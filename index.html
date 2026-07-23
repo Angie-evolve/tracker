@@ -2168,6 +2168,166 @@ function showFullTicketsHistory(){
   localStorage.removeItem('evold-tickets-since');
   showTickets();
 }
+// ================= PRUEBA DE LECTURA DE CONVERSACIONES (GHL) =================
+// Diagnostico previo a la idea de leer tareas por WhatsApp. Valida el camino
+// completo: proxy -> GHL -> app, sin depender todavia de WhatsApp.
+function openConvTestModal(){
+  const clientes=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+  const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  const savedTok=localStorage.getItem('evold-conv-token')||'';
+  const savedLoc=localStorage.getItem('evold-conv-loc')||'';
+  const conectada=!!(savedTok&&savedLoc);
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:680px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Conversaciones &middot; subcuenta interna</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">La subcuenta de la agencia, donde vive tu hilo con el equipo. Es una conexion propia de Tickets: no es un cliente y no entra en ninguna metrica. Necesita el addon de conversaciones en el proxy de Oportunidades y los scopes conversations.readonly, conversations/message.readonly y contacts.readonly.</div>'
+    +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">URL del script de conversaciones (/exec)</div>'
+    +'<input id="cvt-url" value="'+esc(localStorage.getItem('evold-conv-url')||'')+'" placeholder="https://script.google.com/.../exec" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Secreto</div>'
+    +'<input id="cvt-secret" value="'+esc(localStorage.getItem('evold-conv-secret')||'evolve-tracker')+'" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Token de la subcuenta (pit-...)</div>'
+    +'<input id="cvt-token" value="'+esc(savedTok)+'" placeholder="pit-xxxxxxxx" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Location ID</div>'
+    +'<input id="cvt-loc" value="'+esc(savedLoc)+'" placeholder="Settings - Business Info" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn btn-sm" onclick="convTestPing()" title="Verifica que el script responda, sin tocar GHL">Probar script</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="convTestHilos(\'\')">Ver ultimos hilos</button>'
+    +'<input id="cvt-q" placeholder="buscar contacto por nombre o telefono" style="'+inp+';flex:1;min-width:190px">'
+    +'<button class="btn btn-sm" onclick="convTestBuscar()">Buscar</button>'
+    +(conectada?'<span style="font-size:11px;color:var(--accent)">token guardado</span>':'')
+    +'</div>'
+    +'<div id="cvt-out" style="font-size:12px;color:var(--text3)">Pega el token de la subcuenta interna y apreta "Ver ultimos hilos".</div>'
+    +'<div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border)">'
+    +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Diagnostico</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<span style="font-size:11.5px;color:var(--text3)">Si la subcuenta interna todavia no tiene mensajes, proba contra un cliente que si tenga:</span>'
+    +'<select id="cvt-client" onchange="convTestPick()" style="'+inp+';font-size:11.5px;padding:5px 8px">'
+    +'<option value="manual">interna</option>'
+    +clientes.map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>';}).join('')
+    +'</select></div></div>'
+    +'<div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
+}
+function convTestPick(){
+  const v=(document.getElementById('cvt-client')||{}).value;
+  const t=document.getElementById('cvt-token'), l=document.getElementById('cvt-loc');
+  if(v==='manual'){
+    t.value=localStorage.getItem('evold-conv-token')||'';
+    l.value=localStorage.getItem('evold-conv-loc')||'';
+    return;
+  }
+  const c=DB.clients.find(function(x){return x.id===+v;});
+  if(c&&c.ghl){ t.value=c.ghl.token||''; l.value=c.ghl.locationId||''; }
+}
+function _cvtCtx(){
+  const tok=((document.getElementById('cvt-token')||{}).value||'').trim();
+  const loc=((document.getElementById('cvt-loc')||{}).value||'').trim();
+  const url=((document.getElementById('cvt-url')||{}).value||'').trim();
+  const sec=((document.getElementById('cvt-secret')||{}).value||'').trim();
+  if(url) localStorage.setItem('evold-conv-url',url);
+  if(sec) localStorage.setItem('evold-conv-secret',sec);
+  // Solo recordamos token/location cuando son de la subcuenta interna
+  if((document.getElementById('cvt-client')||{}).value==='manual'&&tok&&loc){
+    localStorage.setItem('evold-conv-token',tok);
+    localStorage.setItem('evold-conv-loc',loc);
+  }
+  // Script propio de conversaciones. Si todavia no lo cargaste, caemos al
+  // proxy de Oportunidades (sirve si preferiste pegarle el addon ahi).
+  const px=getGhlProxy();
+  return {tok:tok,loc:loc,url:url||px.url,secret:sec||px.secret};
+}
+function _cvtUrl(ctx,extra){
+  return ctx.url+(ctx.url.indexOf('?')>=0?'&':'?')
+    +'secret='+encodeURIComponent(ctx.secret)
+    +'&token='+encodeURIComponent(ctx.tok)
+    +'&location='+encodeURIComponent(ctx.loc)
+    +extra;
+}
+async function convTestPing(){
+  const ctx=_cvtCtx(); const out=document.getElementById('cvt-out');
+  if(!ctx.url){ out.innerHTML='<span style="color:var(--redx)">Pega la URL /exec del script.</span>'; return; }
+  out.innerHTML='Probando el script...';
+  try{
+    const r=await fetch(ctx.url+(ctx.url.indexOf('?')>=0?'&':'?')+'secret='+encodeURIComponent(ctx.secret)+'&action=ping');
+    const d=await r.json();
+    out.innerHTML=d.ok
+      ?'<span style="color:var(--accent)">Script vivo: '+esc(d.service||'ok')+'</span>'
+      :'<span style="color:var(--redx)">'+esc(d.error||'respuesta invalida')+'</span>';
+  }catch(e){ out.innerHTML='<span style="color:var(--redx)">No respondio: '+esc(e.message)+'. Revisa que el deploy sea "Cualquier persona".</span>'; }
+}
+function _cvtErr(d){
+  return '<div style="font-size:12px;color:var(--redx);line-height:1.6">Error'+(d&&d.status?' (HTTP '+d.status+')':'')+': '+esc((d&&d.error)||'sin respuesta')+'</div>'
+    +((d&&(d.raw||d.data))?'<pre style="font-size:10.5px;color:var(--text3);background:var(--bg3);padding:10px;border-radius:6px;overflow:auto;max-height:180px;white-space:pre-wrap">'+esc(JSON.stringify(d.raw||d.data,null,1)).slice(0,1200)+'</pre>':'');
+}
+async function convTestBuscar(){
+  const ctx=_cvtCtx(); const out=document.getElementById('cvt-out');
+  if(!ctx.url){ out.innerHTML='<span style="color:var(--redx)">Pega la URL /exec del script de conversaciones.</span>'; return; }
+  if(!ctx.tok||!ctx.loc){ out.innerHTML='<span style="color:var(--redx)">Pega el token y el Location ID de la subcuenta.</span>'; return; }
+  const q=(document.getElementById('cvt-q')||{}).value||'';
+  out.innerHTML='Buscando...';
+  try{
+    const r=await fetch(_cvtUrl(ctx,'&action=conv_contacts&q='+encodeURIComponent(q)));
+    const d=await r.json();
+    if(!d.ok){ out.innerHTML=_cvtErr(d); return; }
+    if(!d.contacts.length){ out.innerHTML='<span style="color:var(--text3)">Sin contactos para esa busqueda.</span>'; return; }
+    out.innerHTML='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Contactos</div>'
+      +d.contacts.map(function(k){
+        return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+          +'<span style="flex:1;font-size:12.5px;color:var(--text)">'+esc(k.name)+'</span>'
+          +'<span style="font-size:11px;color:var(--text3)">'+esc(k.phone||k.email||'')+'</span>'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" onclick="convTestHilos(\''+_jsEsc(k.id)+'\')">Ver hilos</button>'
+          +'</div>';
+      }).join('');
+  }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
+}
+async function convTestHilos(contactId){
+  const ctx=_cvtCtx(); const out=document.getElementById('cvt-out');
+  out.innerHTML='Buscando conversaciones...';
+  try{
+    const r=await fetch(_cvtUrl(ctx,'&action=conv_list&contactId='+encodeURIComponent(contactId)));
+    const d=await r.json();
+    if(!d.ok){ out.innerHTML=_cvtErr(d); return; }
+    if(!d.conversations.length){ out.innerHTML='<span style="color:var(--text3)">Ese contacto no tiene conversaciones. Mandale un mensaje desde GHL y volve a probar.</span><div style="margin-top:10px"><button class="btn btn-sm" onclick="convTestBuscar()">Volver</button></div>'; return; }
+    out.innerHTML='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Conversaciones</div>'
+      +d.conversations.map(function(k){
+        return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+          +'<span style="flex:1;font-size:12.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(k.lastMessageBody||'(sin preview)')+'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3)">'+esc(k.type||'')+'</span>'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" onclick="convTestMensajes(\''+_jsEsc(k.id)+'\')">Leer</button>'
+          +'</div>';
+      }).join('');
+  }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
+}
+async function convTestMensajes(convId){
+  const ctx=_cvtCtx(); const out=document.getElementById('cvt-out');
+  out.innerHTML='Leyendo mensajes...';
+  try{
+    const r=await fetch(_cvtUrl(ctx,'&action=conv_messages&conversationId='+encodeURIComponent(convId)));
+    const d=await r.json();
+    if(!d.ok){ out.innerHTML=_cvtErr(d); return; }
+    if(!d.messages.length){
+      out.innerHTML='<span style="color:var(--text3)">La conversacion existe pero no devolvio mensajes.</span>'
+        +(d.sample?'<pre style="font-size:10.5px;color:var(--text3);background:var(--bg3);padding:10px;border-radius:6px;overflow:auto;max-height:200px;white-space:pre-wrap">'+esc(JSON.stringify(d.sample,null,1))+'</pre>':'');
+      return;
+    }
+    out.innerHTML='<div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Funciona &middot; '+d.messages.length+' mensajes leidos</div>'
+      +'<div style="max-height:300px;overflow:auto">'
+      +d.messages.map(function(m){
+        const mio=m.direction==='outbound';
+        return '<div style="padding:7px 10px;margin-bottom:6px;border-radius:8px;background:var(--bg3);border-left:2px solid '+(mio?'var(--accent)':'var(--border2)')+'">'
+          +'<div style="font-size:12.5px;color:var(--text);white-space:pre-wrap">'+esc(m.body||'(sin texto)')+(m.attachments?' <span style="color:var(--text3)">['+m.attachments+' adjunto(s)]</span>':'')+'</div>'
+          +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'+(mio?'vos':'ella/el')+' &middot; '+esc(m.type||'')+' &middot; '+esc(String(m.dateAdded||'').slice(0,16))+'</div>'
+          +'</div>';
+      }).join('')
+      +'</div>';
+  }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
+}
+
 function showTickets(){
   S.view='tickets'; S.clientId=null; renderSidebar();
   const _since=+(localStorage.getItem('evold-tickets-since')||0);
@@ -2347,6 +2507,7 @@ function showTickets(){
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
     +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
+    +'<button class="btn btn-sm" onclick="openConvTestModal()" style="color:var(--text3)" title="Conexion con la subcuenta interna para leer conversaciones">Conversaciones</button>'
     +'</div>'
     +'</div>'
     +'<div style="font-size:12px;color:var(--text3);margin-bottom:22px">Tareas delegadas por mail (con numero de ticket) o extraidas de llamadas. '
