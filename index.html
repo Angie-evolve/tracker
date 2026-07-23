@@ -2598,6 +2598,8 @@ const ALARM_METRICS=[
   {id:'costoSql',group:'Tiempo real (7 dias)',label:'Costo por llamada calificada en vivo',fmt:'money'},
   {id:'registros',group:'Tiempo real (7 dias)',label:'Registros',fmt:'num'},
   {id:'sqls',group:'Tiempo real (7 dias)',label:'Llamadas calificadas en vivo',fmt:'num'},
+  {id:'frecuencia',group:'Tiempo real (7 dias)',label:'Frecuencia',fmt:'num'},
+  {id:'optInLinea',group:'Tiempo real (7 dias)',label:'Opt-in % (linea activa)',fmt:'pct'},
   // Conversion de ventas (funnel historico de GHL)
   {id:'vtaAgendas',group:'Conversion de ventas',label:'Agendas totales',fmt:'num'},
   {id:'vtaShowsPct',group:'Conversion de ventas',label:'Shows (%)',fmt:'pct'},
@@ -2669,6 +2671,20 @@ function computeAlarmMetrics(c){
   }
   // --- Lineas (acumulado del sheet) ---
   const lines=c.conversionLines||[];
+  // Frecuencia y opt-in salen de la LINEA ACTIVA, que es lo que esta corriendo hoy.
+  // La frecuencia se calcula igual que en Ads & Guiones: impresiones / alcance,
+  // sumando solo las campanas incluidas (las que no estan destildadas).
+  const _al=getActiveLine(lines);
+  if(_al){
+    const inc=(_al.metaCampaigns||[]).filter(function(camp){
+      return (_al.excludedCampaigns||[]).indexOf(camp.id)===-1;
+    });
+    let _imp=0,_reach=0;
+    inc.forEach(function(camp){ _imp+=Number(camp.impressions)||0; _reach+=Number(camp.reach)||0; });
+    out.frecuencia=_reach>0?_imp/_reach:null;
+    const _oi=(_al.metrics||{}).optIn;
+    out.optInLinea=(_oi!==null&&_oi!==undefined&&_oi!=='')?Number(_oi):null;
+  }
   if(lines.length){
     const num=function(v){var n=Number(v);return isNaN(n)?0:n;};
     const accS=lines.reduce(function(s,li){return s+num(li.metrics&&li.metrics.adSpent);},0);
@@ -2686,9 +2702,125 @@ function computeAlarmMetrics(c){
   }
   return Object.keys(out).length?out:null;
 }
-function alarmStatus(c){
+// ================= REGLAS POR DEFECTO DE LA AGENCIA =================
+// Se aplican solas a todos los clientes. Cada cliente puede apagarlas sin borrarlas
+// del global: se guarda el apagado en c.alarms.offDefaults, asi si manana la queres
+// de vuelta la prendes y sigue con el umbral global actualizado.
+const DEFAULT_ALARM_SEED=[
+  {id:'def-frecuencia',metric:'frecuencia',op:'gt',value:2,enabled:true},
+  {id:'def-optin',metric:'optInLinea',op:'lt',value:1,enabled:true}
+];
+function getDefaultAlarms(){
+  if(!DB.defaultAlarms){
+    DB.defaultAlarms={email:'',rules:DEFAULT_ALARM_SEED.map(function(r){
+      return {id:r.id,metric:r.metric,op:r.op,value:r.value,enabled:r.enabled};
+    })};
+  }
+  DB.defaultAlarms.rules=DB.defaultAlarms.rules||[];
+  return DB.defaultAlarms;
+}
+// Mail al que avisar: el del cliente si lo configuro, si no el global.
+function alarmEmailFor(c){
   const a=c.alarms||{};
-  const rules=(a.rules||[]).filter(function(r){return r.enabled;});
+  return a.email||getDefaultAlarms().email||'';
+}
+// Motivo por el que un cliente no evalua (o evalua parcialmente) sus alarmas.
+// Archivado = no corre nada. Sin pauta activa = solo se pausan las de tiempo real:
+// con las campanas apagadas la frecuencia queda congelada alta y el opt-in en cero,
+// asi que dispararian sin que haya nada que accionar. Contrato y funnel siguen vivos.
+function alarmsPausedReason(c){
+  if(c.archived) return 'Cliente archivado: no se evalua ninguna alarma.';
+  const d=(typeof adsDot==='function')?adsDot(c):{live:true};
+  if(!d.live) return 'Sin pauta activa: las alarmas de tiempo real (frecuencia, opt-in, costos) quedan en pausa. Las de contrato y funnel de ventas siguen corriendo.';
+  return '';
+}
+function _alarmMetricGroup(id){
+  const m=ALARM_METRICS.find(function(x){return x.id===id;});
+  return m?m.group:'';
+}
+// Reglas que realmente corren para un cliente: las globales que no apago + las propias.
+function effectiveAlarmRules(c){
+  if(c.archived) return [];
+  const a=c.alarms||{};
+  const off=a.offDefaults||{};
+  const def=getDefaultAlarms().rules
+    .filter(function(r){ return r.enabled && !off[r.id]; })
+    .map(function(r){
+      const x={}; for(var k in r) x[k]=r[k]; x._default=true; return x;
+    });
+  let all=def.concat(a.rules||[]);
+  const d=(typeof adsDot==='function')?adsDot(c):{live:true};
+  if(!d.live){
+    all=all.filter(function(r){ return _alarmMetricGroup(r.metric)!=='Tiempo real (7 dias)'; });
+  }
+  return all;
+}
+function toggleDefaultAlarm(clientId,ruleId){
+  const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  c.alarms=c.alarms||{email:'',rules:[],lastSent:{}};
+  c.alarms.offDefaults=c.alarms.offDefaults||{};
+  if(c.alarms.offDefaults[ruleId]) delete c.alarms.offDefaults[ruleId];
+  else c.alarms.offDefaults[ruleId]=true;
+  save(); renderTab();
+}
+function openDefaultAlarmsModal(clientId){
+  const d=getDefaultAlarms();
+  window._defAlarmDraft={email:d.email||'',rules:d.rules.map(function(r){
+    return {id:r.id,metric:r.metric,op:r.op,value:r.value,enabled:r.enabled};
+  }),backTo:clientId};
+  renderDefaultAlarmsModal();
+}
+function renderDefaultAlarmsModal(){
+  const d=window._defAlarmDraft;
+  const groups=[];
+  ALARM_METRICS.forEach(function(m){ if(groups.indexOf(m.group)<0) groups.push(m.group); });
+  const optsFor=function(sel){
+    return groups.map(function(g){
+      return '<optgroup label="'+g+'">'+ALARM_METRICS.filter(function(m){return m.group===g;}).map(function(m){
+        return '<option value="'+m.id+'"'+(m.id===sel?' selected':'')+'>'+m.label+'</option>';
+      }).join('')+'</optgroup>';
+    }).join('');
+  };
+  const inp='padding:7px 9px;font-size:12px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  const filas=d.rules.map(function(r,i){
+    const met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||ALARM_METRICS[0];
+    return '<div style="display:flex;gap:7px;align-items:center;margin-bottom:8px">'
+      +'<input type="checkbox" '+(r.enabled?'checked':'')+' onchange="_defAlarmDraft.rules['+i+'].enabled=this.checked" title="Activa globalmente">'
+      +'<select style="'+inp+';flex:1" onchange="_defAlarmDraft.rules['+i+'].metric=this.value;renderDefaultAlarmsModal()">'+optsFor(r.metric)+'</select>'
+      +'<select style="'+inp+'" onchange="_defAlarmDraft.rules['+i+'].op=this.value">'
+      +'<option value="gt"'+(r.op==='gt'?' selected':'')+'>supera</option>'
+      +'<option value="lt"'+(r.op==='lt'?' selected':'')+'>baja de</option></select>'
+      +'<input type="number" step="0.01" value="'+esc(String(r.value))+'" style="'+inp+';width:88px" oninput="_defAlarmDraft.rules['+i+'].value=this.value">'
+      +'<span style="font-size:11px;color:var(--text3);width:30px">'+(met.fmt==='pct'?'%':(met.fmt==='money'?'$':''))+'</span>'
+      +'<button class="btn btn-sm" style="color:var(--redx)" onclick="_defAlarmDraft.rules.splice('+i+',1);renderDefaultAlarmsModal()">&times;</button>'
+      +'</div>';
+  }).join('');
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:720px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Reglas por defecto de la agencia</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Se aplican a todos los clientes automaticamente. Cada cliente puede apagarlas desde su propia pestana de Alarmas.</div>'
+    +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Mail por defecto (si el cliente no tiene uno propio)</label>'
+    +'<input id="def-alarm-email" type="email" value="'+esc(d.email||'')+'" placeholder="vos@agencia.com" style="'+inp+';width:100%;box-sizing:border-box;margin-bottom:18px">'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Reglas</div>'
+    +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Sin reglas por defecto.</div>')
+    +'<button class="btn btn-sm" onclick="_defAlarmDraft.rules.push({id:\'def-\'+Date.now(),metric:\'frecuencia\',op:\'gt\',value:2,enabled:true});renderDefaultAlarmsModal()">+ Agregar regla</button>'
+    +'<div style="display:flex;gap:8px;margin-top:20px">'
+    +'<button class="btn btn-primary" onclick="saveDefaultAlarms()">Guardar</button>'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'</div></div></div>';
+}
+function saveDefaultAlarms(){
+  const d=window._defAlarmDraft; if(!d) return;
+  const g=getDefaultAlarms();
+  g.email=(document.getElementById('def-alarm-email').value||'').trim();
+  g.rules=d.rules.filter(function(r){return r.metric&&r.value!==''&&r.value!=null;});
+  save(); closeModal(); renderTab();
+  toast('Reglas por defecto guardadas - se aplican a todos los clientes');
+}
+
+function alarmStatus(c){
+  const rules=effectiveAlarmRules(c).filter(function(r){return r.enabled;});
   if(!rules.length) return {active:0,breached:0};
   const M=computeAlarmMetrics(c);
   let breached=0;
@@ -2701,15 +2833,18 @@ function alarmStatus(c){
 }
 // Evalua y manda UN mail por cliente con todas las reglas disparadas (cooldown 24h por regla)
 function checkAlarms(c){
+  c.alarms=c.alarms||{email:'',rules:[],lastSent:{}};
   const a=c.alarms;
-  if(!a||!a.email||!(a.rules||[]).length) return;
+  const _email=alarmEmailFor(c);
+  const _rules=effectiveAlarmRules(c);
+  if(!_email||!_rules.length) return;
   const M=computeAlarmMetrics(c);
   if(!M) return;
   const proxy=getGhlProxy();
   if(!proxy.url) return;
   a.lastSent=a.lastSent||{};
   const triggered=[];
-  (a.rules||[]).forEach(function(r){
+  _rules.forEach(function(r){
     if(!r.enabled) return;
     const v=M[r.metric];
     if(v==null) return;
@@ -2724,14 +2859,14 @@ function checkAlarms(c){
   const subject='[EVOLVE] '+c.name+': '+triggered.length+' metrica'+(triggered.length>1?'s':'')+' fuera de benchmark';
   const body='Cliente: '+c.name+'\nVentana: ultimos 7 dias\nGenerado: '+new Date().toLocaleString('es-AR')+'\n\n'+lines.join('\n')+'\n\nAbri el tracker (Ads & Guiones / Conversion de ventas) para el detalle.';
   const url=proxy.url+'?action=alert&secret='+encodeURIComponent(proxy.secret)
-    +'&to='+encodeURIComponent(a.email)
+    +'&to='+encodeURIComponent(_email)
     +'&subject='+encodeURIComponent(subject)
     +'&body='+encodeURIComponent(body);
   fetch(url).then(function(r){return r.json();}).then(function(res){
     if(res&&res.ok){
       triggered.forEach(function(t){ a.lastSent[t.r.id]=Date.now(); });
       save();
-      if(typeof toast==='function') toast('Alarma enviada a '+a.email);
+      if(typeof toast==='function') toast('Alarma enviada a '+_email);
     }
   }).catch(function(){});
 }
@@ -3378,8 +3513,9 @@ function renderTab(){
     const sheetsOk=!!localStorage.getItem('evold-api-key');
     const fathomN=(c.fathomCalls||[]).length;
     const iaOk=!!localStorage.getItem('evold-anthropic-key');
-    const alarmOk=!!(c.alarms&&c.alarms.email&&(c.alarms.rules||[]).some(function(r){return r.enabled;}));
-    const alarmN=c.alarms?((c.alarms.rules||[]).filter(function(r){return r.enabled;}).length):0;
+    const _effR=effectiveAlarmRules(c).filter(function(r){return r.enabled;});
+    const alarmOk=!!(alarmEmailFor(c)&&_effR.length);
+    const alarmN=_effR.length;
 
     const pill=function(st){
       if(st==='ok') return '<span class="pill pill-green" style="font-size:10px">Conectado</span>';
@@ -3430,7 +3566,7 @@ function renderTab(){
         action:'openWeeklyReportModal()',actionLabel:localStorage.getItem('evold-report-pushed')?'Configurar':'Activar'}),
       card({name:'Alarmas por email',st:alarmOk?'ok':'no',
         desc:'Benchmarks sobre los ultimos 7 dias (CPL, costo por agenda, registros...). Si algo se sale, manda un mail via el Apps Script.',
-        detail:alarmOk?(alarmN+' regla'+(alarmN>1?'s':'')+' activa'+(alarmN>1?'s':'')+' &rarr; '+esc(c.alarms.email)):'',
+        detail:alarmOk?(alarmN+' regla'+(alarmN>1?'s':'')+' activa'+(alarmN>1?'s':'')+' &rarr; '+esc(alarmEmailFor(c))):'',
         action:'openAlarmsModal('+c.id+')',actionLabel:alarmOk?'Editar reglas':'Configurar'})
     ].join('');
 
@@ -3454,7 +3590,7 @@ function renderTab(){
   else if(S.tab==='alarmas'){
     const a=c.alarms||{email:'',rules:[],lastSent:{}};
     const M=computeAlarmMetrics(c)||{};
-    const rules=a.rules||[];
+    const rules=effectiveAlarmRules(c);
     const activas=rules.filter(function(r){return r.enabled;});
     let breached=0;
     activas.forEach(function(r){
@@ -3469,21 +3605,60 @@ function renderTab(){
     html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:22px">'
       +'<div class="metric-card"><div class="metric-label">Reglas activas</div><div class="metric-value">'+activas.length+'</div></div>'
       +'<div class="metric-card"'+(breached?' style="background:rgba(216,90,48,0.08);border:0.5px solid rgba(216,90,48,0.25)"':'')+'><div class="metric-label"'+(breached?' style="color:var(--redx)"':'')+'>Fuera de benchmark ahora</div><div class="metric-value"'+(breached?' style="color:var(--redx)"':'')+'>'+breached+'</div></div>'
-      +'<div class="metric-card"><div class="metric-label">Enviar a</div><div class="metric-value" style="font-size:14px;word-break:break-all">'+(a.email?esc(a.email):'<span style="color:var(--text3)">sin configurar</span>')+'</div></div>'
+      +'<div class="metric-card"><div class="metric-label">Enviar a</div><div class="metric-value" style="font-size:14px;word-break:break-all">'+(alarmEmailFor(c)?esc(alarmEmailFor(c))+(a.email?'':'<span style="font-size:10px;color:var(--text3)"> (global)</span>'):'<span style="color:var(--text3)">sin configurar</span>')+'</div></div>'
       +'<div class="metric-card"><div class="metric-label">Ultimo aviso</div><div class="metric-value" style="font-size:14px">'+(lastSentTs?new Date(lastSentTs).toLocaleDateString('es-AR')+' '+new Date(lastSentTs).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}):'<span style="color:var(--text3)">nunca</span>')+'</div></div>'
       +'</div>';
     // acciones
-    html+='<div style="display:flex;gap:8px;margin-bottom:22px">'
-      +'<button class="btn btn-sm btn-primary" onclick="openAlarmsModal('+c.id+')">'+(rules.length?'Editar reglas':'Crear reglas')+'</button>'
-      +(a.email?'<button class="btn btn-sm" onclick="window._alarmDraft={clientId:'+c.id+',email:\''+esc(a.email)+'\',rules:[]};testAlarmEmail()">Probar envio</button>':'')
+    html+='<div style="display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm btn-primary" onclick="openAlarmsModal('+c.id+')">'+((a.rules||[]).length?'Editar reglas de este cliente':'Crear regla propia')+'</button>'
+      +'<button class="btn btn-sm" onclick="openDefaultAlarmsModal('+c.id+')">Reglas por defecto</button>'
+      +(alarmEmailFor(c)?'<button class="btn btn-sm" onclick="window._alarmDraft={clientId:'+c.id+',email:\''+esc(alarmEmailFor(c))+'\',rules:[]};testAlarmEmail()">Probar envio</button>':'')
       +'</div>';
+
+    // --- Reglas por defecto: estado y toggle para este cliente ---
+    var _pausaMsg=alarmsPausedReason(c);
+    if(_pausaMsg){
+      html+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--amberx);margin-bottom:18px">'+esc(_pausaMsg)+'</div>';
+    }
+    var _defs=getDefaultAlarms().rules;
+    if(_defs.length){
+      var _off=(a.offDefaults||{});
+      html+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:22px">'
+        +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px">'
+        +'<span style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Reglas por defecto de la agencia</span>'
+        +'<span style="font-size:10.5px;color:var(--text3)">apagalas solo para '+esc(c.name)+'</span></div>';
+      _defs.forEach(function(r){
+        var met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||{label:r.metric,fmt:'num'};
+        var _corre=effectiveAlarmRules(c).some(function(x){return x.id===r.id;});
+        var apagada=!r.enabled||!!_off[r.id]||!_corre;
+        var cur=M[r.metric];
+        var hit=!apagada&&cur!=null&&(r.op==='gt'?cur>Number(r.value):cur<Number(r.value));
+        var estado=!r.enabled?'<span class="pill pill-gray" style="font-size:10px">Off global</span>'
+          :_off[r.id]?'<span class="pill pill-gray" style="font-size:10px">Apagada aca</span>'
+          :!_corre?'<span class="pill pill-gray" style="font-size:10px">En pausa</span>'
+          :cur==null?'<span class="pill pill-gray" style="font-size:10px">Sin dato</span>'
+          :hit?'<span class="pill pill-red" style="font-size:10px">Fuera</span>'
+          :'<span class="pill pill-green" style="font-size:10px">OK</span>';
+        html+='<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border)'+(apagada?';opacity:0.5':'')+'">'
+          +'<div><div style="font-size:12.5px;color:var(--text)">'+met.label+'</div>'
+          +'<div class="mono" style="font-size:10.5px;color:var(--text3)">'+(r.op==='gt'?'avisar si supera ':'avisar si baja de ')+fmtAlarmVal(met.fmt,Number(r.value))+'</div></div>'
+          +'<div style="display:flex;align-items:center;gap:12px">'
+          +'<span class="mono" style="font-size:12.5px;color:'+(cur==null?'var(--text3)':hit?'var(--redx)':'var(--strong)')+'">'+fmtAlarmVal(met.fmt,cur)+'</span>'
+          +estado
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 10px" onclick="toggleDefaultAlarm('+c.id+',\''+_jsEsc(r.id)+'\')">'+(_off[r.id]?'Prender':'Apagar')+'</button>'
+          +'</div></div>';
+      });
+      html+='</div>';
+    }
     // tabla de reglas agrupadas con estado en vivo
-    if(rules.length){
+    const propias=(a.rules||[]);
+    if(propias.length){
       const groups=[];
       ALARM_METRICS.forEach(function(m){ if(groups.indexOf(m.group)<0) groups.push(m.group); });
+      html+='<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px">Reglas propias de '+esc(c.name)+'</div>';
       html+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
       groups.forEach(function(g){
-        const gr=rules.filter(function(r){var m=ALARM_METRICS.find(function(x){return x.id===r.metric;});return m&&m.group===g;});
+        const gr=propias.filter(function(r){var m=ALARM_METRICS.find(function(x){return x.id===r.metric;});return m&&m.group===g;});
         if(!gr.length) return;
         html+='<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">'+g+'</div>';
         gr.forEach(function(r){
@@ -3504,7 +3679,7 @@ function renderTab(){
       });
       html+='</div>';
       html+='<div style="font-size:11px;color:var(--text3);margin-top:12px">Las reglas se evaluan al refrescar los datos en vivo (al abrir Ads & Guiones). Cada regla avisa por mail como maximo una vez cada 24 h.</div>';
-    } else {
+    } else if(!getDefaultAlarms().rules.length){
       html+='<div style="padding:40px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin reglas configuradas</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:420px;margin:0 auto">Crea benchmarks sobre cualquier metrica de la app - tiempo real, funnel de ventas, lineas historicas o contrato - y recibi un mail cuando algo se salga.</div>'
@@ -5327,7 +5502,15 @@ function renderVentasTab(c, el){
     +'<button class="vh-chip '+(seg==null?'on':'')+'" onclick="setVentasSeg(null)">Todos <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+opsP.length+'</span></button>'
     +segKeys.map(function(k){
       var enc=encodeURIComponent(k).replace(/'/g,'%27');
-      return '<button class="vh-chip '+(seg===k?'on':'')+'" onclick="setVentasSeg(\''+enc+'\')">'+esc(k)+' <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+segMap[k]+'</span></button>';
+      // En "Por anuncio", distinguir atribucion real de anuncio vs. fallback a campana/fuente.
+      // Sin esto, un nombre de campana parece un anuncio y se lee como atribucion que no existe.
+      var noEsAnuncio='';
+      if(view==='anuncios' && k!=='(sin dato)'){
+        var esReal=false;
+        Object.keys(_adIdx.ads).forEach(function(id){ if(_adIdx.ads[id]===k) esReal=true; });
+        if(!esReal) noEsAnuncio=' <span title="Sin atribucion de anuncio: esto es la campana o la fuente, no el anuncio" style="color:var(--amberx);font-size:10px">&#9679;</span>';
+      }
+      return '<button class="vh-chip '+(seg===k?'on':'')+'" onclick="setVentasSeg(\''+enc+'\')">'+esc(k)+' <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+segMap[k]+'</span>'+noEsAnuncio+'</button>';
     }).join('')
     +'</div>';
   // Segundo eje: cruce x Pais (solo en Por campana con una campana seleccionada)
