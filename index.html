@@ -4054,7 +4054,7 @@ async function extractContractWithAI(clientId, file, driveUrl){
         'anthropic-version':'2023-06-01',
         'anthropic-dangerous-direct-browser-access':'true'
       },
-      body:JSON.stringify({model:'claude-opus-4-5',max_tokens:600,messages})
+      body:JSON.stringify({model:'claude-opus-4-8',max_tokens:600,messages})
     });
     if(!res.ok){
       const err=await res.json().catch(()=>({}));
@@ -4429,7 +4429,7 @@ async function generateCallReport(clientId){
         'anthropic-dangerous-direct-browser-access':'true'
       },
       body:JSON.stringify({
-        model:'claude-opus-4-5',
+        model:'claude-opus-4-8',
         max_tokens:3500,
         messages:[{role:'user',content:prompt}]
       })
@@ -5093,9 +5093,11 @@ function renderVentasTab(c, el){
     if(/Costa_Rica/i.test(tz)) return 'Costa Rica';
     return '';
   };
+  const _adIdx=metaAdIndex(c);
   const adOf=function(o){
     var s=o.source||{};
-    return faGet(o.formAnswers,['utm_ad','utm ad']) || s.utmAd || s.utmContent || s.utmCampaign || s.utmSource || '';
+    var raw=faGet(o.formAnswers,['utm_ad','utm ad']) || s.utmAd || s.utmContent || s.utmCampaign || s.utmSource || '';
+    return resolveAdLabel(c, raw, _adIdx);
   };
   const geoOf=function(o){
     var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']);
@@ -5749,6 +5751,34 @@ function metaRowLeft(name, expandable, open, onclick, active, indent, thumb, adI
     +'</div></div>';
 }
 
+// Indice de todo el arbol de Meta: id -> nombre, para anuncios, adsets y campanas.
+// Sirve para los clientes donde el utm_ad se cargo con el ID numerico del anuncio
+// en vez de su nombre (o quedo apuntando al adset / campana).
+// Recorre TODAS las lineas, no solo la activa: las oportunidades viejas referencian
+// anuncios de lineas anteriores.
+function metaAdIndex(c){
+  var idx={ads:{},adsets:{},camps:{}};
+  (c.conversionLines||[]).forEach(function(l){
+    ((l.metaCampaigns)||[]).forEach(function(cp){
+      if(cp&&cp.id&&cp.name) idx.camps[String(cp.id)]=cp.name;
+      ((cp.adsets)||[]).forEach(function(as){
+        if(as&&as.id&&as.name) idx.adsets[String(as.id)]=as.name;
+        ((as.ads)||[]).forEach(function(ad){
+          if(ad&&ad.id&&ad.name) idx.ads[String(ad.id)]=ad.name;
+        });
+      });
+    });
+  });
+  return idx;
+}
+// Traduce un valor de utm_ad al nombre real. Si no es un ID conocido, lo devuelve tal cual.
+function resolveAdLabel(c, raw, idx){
+  var s=String(raw===null||raw===undefined?'':raw).trim();
+  if(!s) return '';
+  idx=idx||metaAdIndex(c);
+  return idx.ads[s]||idx.adsets[s]||idx.camps[s]||s;
+}
+
 // Mapa de "wins" por anuncio: cuenta calificados y cierres cruzando las oportunidades de GHL
 // (por nombre de anuncio normalizado) y marca al ganador (el de mas cierres, o mas calificados).
 function adWinsMap(c){
@@ -5763,11 +5793,12 @@ function adWinsMap(c){
     if(typeof deriveEstado==='function'){ try{ return deriveEstado(o).label==='Ganado'; }catch(e){} }
     return o.status==='won';
   };
+  var idx=metaAdIndex(c);
   ops.forEach(function(o){
     var s=o.source||{};
     var fa=o.formAnswers||{};
     var adName=fa['utm_ad']||fa['utm ad']||s.utmAd||s.utmContent||'';
-    var k=_n(adName);
+    var k=_n(resolveAdLabel(c, adName, idx));
     if(!k) return;
     if(!map[k]) map[k]={calif:0,cierres:0,winner:false};
     if(isSql(o)) map[k].calif++;
@@ -5781,6 +5812,11 @@ function adWinsMap(c){
     for(var k2 in map){ if(map[k2].calif>bestQ){ bestQ=map[k2].calif; bestKey=k2; } }
     if(bestKey) map[bestKey].winner=true;
   }
+  // Alias por ID: asi el lookup funciona tanto por nombre como por id del anuncio.
+  Object.keys(idx.ads).forEach(function(id){
+    var kn=_n(idx.ads[id]);
+    if(map[kn]&&!map[id]) map[id]=map[kn];
+  });
   return map;
 }
 
@@ -5938,7 +5974,7 @@ async function labIA(prompt, maxTokens){
   var r=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens||1600,messages:[{role:'user',content:prompt}]})
+    body:JSON.stringify({model:'claude-sonnet-5',max_tokens:maxTokens||1600,messages:[{role:'user',content:prompt}]})
   });
   var d=await r.json();
   if(d.error) throw new Error(d.error.message||'Error de la API');
@@ -6111,7 +6147,10 @@ function renderGuionLab(c,el){
     +'</div>';
 
   if(!hasKey){
-    h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--amberx);margin-bottom:16px">Falta tu API key de Anthropic. Cargala en Integraciones para poder generar.</div>';
+    h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:11px 14px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+      +'<span style="font-size:12px;color:var(--amberx)">Falta tu API key de Anthropic para poder generar.</span>'
+      +'<button class="btn btn-sm" style="border-color:rgba(240,168,48,0.45);color:var(--amberx)" onclick="openAnthropicKeyModal()">Cargar API key</button>'
+      +'</div>';
   }
   if(!haySop){
     h+='<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--text2);margin-bottom:16px">Todavia no cargaste el SOP. Podes generar igual, pero los guiones van a salir genericos: el SOP es lo que los hace tuyos.</div>';
@@ -6723,7 +6762,7 @@ async function delegateTask(clientId, taskId){
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1500,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:prompt}]})
     });
     var data=await r.json();
     if(data.error) throw new Error(data.error.message);
@@ -6906,7 +6945,7 @@ async function extractTasksFromCalls(clientId){
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:800,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:800,messages:[{role:'user',content:prompt}]})
     });
     var data=await r.json();
     if(data.error) throw new Error(data.error.message);
@@ -6994,7 +7033,7 @@ async function runSQLAnalysis(clientId){
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1200,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1200,messages:[{role:'user',content:prompt}]})
     });
     var data=await r.json();
     if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
