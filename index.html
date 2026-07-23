@@ -2328,8 +2328,8 @@ async function convAnalizar(convId){
     });
   });
   const nombres=DB.clients.map(function(c){return c.name;}).join(', ');
-  const hilo=msgs.slice(0,60).map(function(m){
-    return (m.direction==='outbound'?'YO':'ELLA')+' ('+String(m.dateAdded||'').slice(0,16)+'): '+String(m.body||'').replace(/\s+/g,' ').slice(0,400);
+  const hilo=msgs.slice(0,50).map(function(m){
+    return (m.direction==='outbound'?'YO':'ELLA')+' ('+String(m.dateAdded||'').slice(0,10)+'): '+String(m.body||'').replace(/\s+/g,' ').slice(0,220);
   }).join('\n');
   const prompt='Sos un asistente que lee la conversacion de trabajo entre una duena de agencia y su colaboradora, '
     +'y detecta dos cosas: tareas nuevas que se delegaron, y tareas ya existentes que se dieron por terminadas.\n\n'
@@ -2340,7 +2340,9 @@ async function convAnalizar(convId){
     +'- Se CONSERVADOR. Charla, confirmaciones sueltas ("dale", "ok", "genial") y opiniones NO son tareas.\n'
     +'- Una tarea es un pedido concreto y accionable. Si dudas, no la incluyas.\n'
     +'- Un cierre es cuando ella dice que algo YA esta hecho y matchea con un ticket abierto de la lista.\n'
-    +'- El cliente tiene que ser uno de la lista; si no podes determinarlo, deja el campo vacio.\n\n'
+    +'- El cliente tiene que ser uno de la lista; si no podes determinarlo, deja el campo vacio.\n'
+    +'- La evidencia: maximo 12 palabras, recortada del chat.\n'
+    +'- Maximo 8 tareas y 8 cierres. Si hay mas, quedate con los mas claros.\n\n'
     +'Responde SOLO con un JSON valido, sin markdown:\n'
     +'{"tareas":[{"texto":"la tarea en imperativo","cliente":"nombre exacto o vacio","evidencia":"la frase del chat que lo justifica"}],'
     +'"cierres":[{"ticket":"#N","evidencia":"la frase que dice que esta hecho"}]}';
@@ -2348,19 +2350,32 @@ async function convAnalizar(convId){
     const r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1600,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,messages:[{role:'user',content:prompt}]})
     });
     const d=await r.json();
     if(d.error) throw new Error(d.error.message);
     let txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
-    txt=txt.replace(/^[^{]*\{/,'{').replace(/\}[^}]*$/,'}');
-    const res=JSON.parse(txt);
+    // Recorte robusto: del primer { al ultimo }. Si no hay cierre, la respuesta
+    // vino truncada y no tiene sentido intentar parsearla.
+    const ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini){
+      window._convRaw=txt;
+      throw new Error('La respuesta vino incompleta'+(d.stop_reason==='max_tokens'?' (corto por limite de tokens)':'')+'. Apreta "Ver respuesta cruda" para inspeccionarla.');
+    }
+    const res=JSON.parse(txt.slice(ini,fin+1));
     window._convCand={tareas:res.tareas||[],cierres:res.cierres||[]};
     localStorage.setItem('evold-conv-lastscan',String(Date.now()));
     convRenderCandidatos();
   }catch(e){
-    out.innerHTML='<span style="color:var(--redx)">Error al analizar: '+esc(e.message)+'</span>';
+    out.innerHTML='<div style="font-size:12px;color:var(--redx);line-height:1.6">Error al analizar: '+esc(e.message)+'</div>'
+      +(window._convRaw?'<button class="btn btn-sm" style="margin-top:8px" onclick="convVerRaw()">Ver respuesta cruda</button>':'');
   }
+  if(btn){ btn.disabled=false; btn.textContent='Proponer tareas'; }
+}
+function convVerRaw(){
+  const out=document.getElementById('cvt-out');
+  out.innerHTML='<pre style="font-size:10.5px;color:var(--text3);background:var(--bg3);padding:10px;border-radius:6px;overflow:auto;max-height:300px;white-space:pre-wrap">'
+    +esc(String(window._convRaw||'').slice(0,3000))+'</pre>';
 }
 function convRenderCandidatos(){
   const out=document.getElementById('cvt-out');
