@@ -4841,6 +4841,41 @@ function saveClientGhl(clientId){
   if(token&&loc) syncGhl(clientId,false); else renderTab();
 }
 
+/**
+ * Fusiona lo que vuelve de GHL con lo que ya teniamos guardado, en vez de pisarlo.
+ * GHL manda el dato "crudo" (stage, status, valor); todo lo que enriquecimos contacto
+ * por contacto (utmAd, campaign, pais, tags) y lo que marcaste a mano (_sql) vive solo
+ * en local: si reemplazamos el array entero, se pierde y hay que reconstruirlo de cero.
+ * truncated = la paginacion corto por el tope de seguridad, asi que "no vino" != "se borro".
+ */
+function mergeGhlOpps(prevOps, freshOps, truncated){
+  const prev={};
+  (prevOps||[]).forEach(function(o){ prev[String(o.id)]=o; });
+  const keep=function(fresh, old, path, field){
+    const fSrc=fresh[path]||(fresh[path]={});
+    const oSrc=old[path]||{};
+    if(!fSrc[field] && oSrc[field]) fSrc[field]=oSrc[field];
+  };
+  const merged=(freshOps||[]).map(function(o){
+    const old=prev[String(o.id)];
+    if(!old) return o;
+    keep(o, old, 'source', 'utmAd');
+    keep(o, old, 'source', 'utmCampaign');
+    keep(o, old, 'source', 'utmSource');
+    keep(o, old, 'geo', 'location');
+    if((!o.tags || !o.tags.length) && old.tags && old.tags.length) o.tags=old.tags;
+    if(old._sql) o._sql=true;              // calificacion manual: no se pierde nunca
+    if(old._enrichOk) o._enrichOk=true;    // ya lo enriquecimos: no volver a pedirlo
+    if(old._enrichTry) o._enrichTry=old._enrichTry;
+    delete prev[String(o.id)];
+    return o;
+  });
+  // Lo que quedo en prev son opps que GHL no devolvio: se eliminaron alla (las soltamos)
+  // salvo que la paginacion se haya cortado, en cuyo caso las conservamos por las dudas.
+  if(truncated){ Object.keys(prev).forEach(function(k){ merged.push(prev[k]); }); }
+  return merged;
+}
+
 async function syncGhl(clientId, silent){
   const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
   const proxy=getGhlProxy();
@@ -4857,6 +4892,7 @@ async function syncGhl(clientId, silent){
     var allOpps=[];
     var startAfter=null;
     var page=1;
+    var truncated=false;
     while(true){
       var u=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
         +'secret='+encodeURIComponent(proxy.secret)
@@ -4864,7 +4900,7 @@ async function syncGhl(clientId, silent){
         +'&location='+encodeURIComponent(c.ghl.locationId)
         +'&action=opportunities&limit='+pageLimit;
       if(startAfter) u+='&startAfter='+encodeURIComponent(startAfter);
-      toast('Sincronizando pagina '+page+'... ('+allOpps.length+' hasta ahora)');
+      if(!silent) toast('Sincronizando pagina '+page+'... ('+allOpps.length+' hasta ahora)');
       const res=await fetch(u, {method:'GET', signal:controller.signal});
       const text=await res.text();
       let data;
@@ -4882,14 +4918,14 @@ async function syncGhl(clientId, silent){
       if(!nextSA || nextSA===startAfter){ break; } // no new cursor
       startAfter=nextSA;
       page++;
-      if(page>5) break; // safety: max 500
+      if(page>5){ truncated=true; break; } // safety: max 500
     }
     clearTimeout(timer);
     const nChanges=computeGhlChanges(c, allOpps);
-    c.ghl.opportunities=allOpps;
+    c.ghl.opportunities=mergeGhlOpps(c.ghl.opportunities, allOpps, truncated);
     c.ghl.lastSync=new Date().toISOString();
     c.ghl._syncing=false; save();
-    toast(allOpps.length+' oportunidades sincronizadas'+(nChanges?' \u00b7 '+nChanges+' novedades':''));
+    if(!silent||nChanges) toast(allOpps.length+' oportunidades sincronizadas'+(nChanges?' \u00b7 '+nChanges+' novedades':''));
     renderTab();
     enrichContactsBackground(c, proxy);
   }catch(e){
@@ -4923,13 +4959,14 @@ async function enrichContactsBackground(c, proxy){
     +'&token='+encodeURIComponent(c.ghl.token)
     +'&location='+encodeURIComponent(c.ghl.locationId);
   var enriched=0;
-  for(var i=0;i<toEnrich.length;i++){
-    var opp=toEnrich[i];
+  const CONC=3; // 3 en paralelo: baja el tiempo ~3x sin castigar la cuota del Apps Script
+  const one=async function(opp){
     try{
       var url=base+'&action=contact&contactId='+encodeURIComponent(opp.contactId);
       var res=await fetch(url);
       var data=await res.json();
       if(data.ok){
+        opp.source=opp.source||{}; opp.geo=opp.geo||{};
         if(data.utmAd) opp.source.utmAd=data.utmAd;
         if(data.location) opp.geo.location=data.location;
         if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
@@ -4938,11 +4975,15 @@ async function enrichContactsBackground(c, proxy){
         if(dTags && Array.isArray(dTags) && dTags.length) opp.tags=dTags;
         opp._enrichOk=true;
         enriched++;
-        if(enriched%10===0){ save(); }
       }
     }catch(e){}
     opp._enrichTry=Date.now();
-    await new Promise(function(r){setTimeout(r,100);}); // 100ms between requests
+  };
+  for(var i=0;i<toEnrich.length;i+=CONC){
+    await Promise.all(toEnrich.slice(i,i+CONC).map(one));
+    save(); // persistimos cada tanda: si cerras la pestaña, no se pierde lo ya enriquecido
+    if(i && i%30===0){ renderTab(); } // refresco parcial para ver los anuncios poblarse
+    await new Promise(function(r){setTimeout(r,120);});
   }
   if(enriched>0){ save(); renderTab(); toast(enriched+' contactos enriquecidos'); }
 }
