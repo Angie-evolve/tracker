@@ -2328,23 +2328,26 @@ function _tkOrdenados(resp){
   });
   return out;
 }
+function _tkKey(r){ return r.c.id+':'+r.t.id; }
+function _tkLinea(r,now){
+  const t=r.t;
+  let extra='';
+  if(r.venc){
+    const d=new Date(t.due); d.setHours(23,59,59,999);
+    extra=' (VENCIDA hace '+_tkDias(d,now)+' d)';
+  } else if(t.due){
+    const dd=new Date(t.due); dd.setHours(23,59,59,999);
+    const dias=_tkDias(now,dd);
+    extra=dias===0?' (vence hoy)':' (vence en '+dias+' d)';
+  }
+  return (t.ticket||'#?')+' - '+r.c.name+' - '+t.text+extra;
+}
+// Arma el mensaje solo con lo tildado, respetando el orden del tablero.
 function _tkTextoLista(resp){
-  const arr=_tkOrdenados(resp);
-  if(!arr.length) return 'No hay tareas abiertas.';
   const now=new Date();
-  const lineas=arr.map(function(r,i){
-    const t=r.t;
-    let extra='';
-    if(r.venc){
-      const d=new Date(t.due); d.setHours(23,59,59,999);
-      extra=' (VENCIDA hace '+_tkDias(d,now)+' d)';
-    } else if(t.due){
-      const dd=new Date(t.due); dd.setHours(23,59,59,999);
-      const dias=_tkDias(now,dd);
-      extra=dias===0?' (vence hoy)':' (vence en '+dias+' d)';
-    }
-    return (i+1)+'. '+(t.ticket||'#?')+' - '+r.c.name+' - '+t.text+extra;
-  });
+  const arr=_tkOrdenados(resp).filter(function(r){ return window._elSel[_tkKey(r)]; });
+  if(!arr.length) return '';
+  const lineas=arr.map(function(r,i){ return (i+1)+'. '+_tkLinea(r,now); });
   return 'Hola! Estas son las prioridades, en orden:\n\n'+lineas.join('\n')+'\n\nCualquier duda me avisas.';
 }
 function openEnviarListaModal(){
@@ -2355,30 +2358,75 @@ function openEnviarListaModal(){
   if(!resps.length) resps.push('Ashy');
   const cid=localStorage.getItem('evold-conv-hilo-cid')||'';
   const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  // Por defecto entran todas: desmarcar lo que sobra es mas rapido que marcar de a una
+  window._elSel={};
+  _tkOrdenados(resps[0]).forEach(function(r){ window._elSel[_tkKey(r)]=true; });
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:600px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div class="modal" style="max-width:620px;width:94%;max-height:88vh;overflow:auto">'
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Enviar lista de prioridades</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">En el mismo orden que ordenaste el tablero. Podes editar el texto antes de mandarlo.</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Destilda lo que no quieras mandar. El mensaje se rearma solo, en el orden del tablero.</div>'
     +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
     +'<span style="font-size:11px;color:var(--text3)">Responsable</span>'
-    +'<select id="el-resp" onchange="elRefrescar()" style="'+inp+'">'+resps.map(function(r){return '<option value="'+esc(r)+'">'+esc(r)+'</option>';}).join('')+'</select>'
+    +'<select id="el-resp" onchange="elCambiarResp()" style="'+inp+'">'+resps.map(function(r){return '<option value="'+esc(r)+'">'+esc(r)+'</option>';}).join('')+'</select>'
+    +'<button class="btn btn-sm" style="font-size:11px" onclick="elTodas(true)">Todas</button>'
+    +'<button class="btn btn-sm" style="font-size:11px" onclick="elTodas(false)">Ninguna</button>'
     +'</div>'
-    +'<textarea id="el-texto" rows="12" style="'+inp+';width:100%;box-sizing:border-box;line-height:1.6;resize:vertical">'+esc(_tkTextoLista(resps[0]))+'</textarea>'
+    +'<div id="el-lista"></div>'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin:16px 0 6px">Mensaje</div>'
+    +'<textarea id="el-texto" rows="9" oninput="elInfo()" style="'+inp+';width:100%;box-sizing:border-box;line-height:1.6;resize:vertical"></textarea>'
     +'<div id="el-info" style="font-size:10.5px;color:var(--text3);margin-top:6px"></div>'
     +(cid?'':'<div style="font-size:11.5px;color:var(--amberx);margin-top:10px">Todavia no marcaste el hilo del equipo. Abrilo en Conversaciones y apreta "Usar como hilo del equipo" para poder enviar.</div>')
     +'<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">'
     +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
     +(cid?'<button class="btn btn-sm btn-primary" id="el-send" onclick="elEnviar()">Enviar por WhatsApp</button>':'')
     +'</div></div></div>';
-  elRefrescar(true);
+  elRender();
 }
-function elRefrescar(soloInfo){
+function elRender(){
+  const resp=(document.getElementById('el-resp')||{}).value||'';
+  const now=new Date();
+  const arr=_tkOrdenados(resp);
+  const cont=document.getElementById('el-lista');
+  if(!arr.length){
+    cont.innerHTML='<div style="font-size:12px;color:var(--text3);padding:10px 0">No hay tareas abiertas para '+esc(resp)+'.</div>';
+  } else {
+    cont.innerHTML=arr.map(function(r){
+      const k=_tkKey(r);
+      return '<label style="display:flex;align-items:flex-start;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+        +'<input type="checkbox" '+(window._elSel[k]?'checked':'')+' onchange="window._elSel[\''+k+'\']=this.checked;elTexto()" style="margin-top:2px">'
+        +'<span style="flex:1;font-size:12.5px;color:'+(r.venc?'var(--redx)':'var(--text)')+'">'+esc(_tkLinea(r,now))+'</span>'
+        +'</label>';
+    }).join('');
+  }
+  elTexto();
+}
+function elTexto(){
   const ta=document.getElementById('el-texto'); if(!ta) return;
-  if(!soloInfo) ta.value=_tkTextoLista((document.getElementById('el-resp')||{}).value||'');
+  ta.value=_tkTextoLista((document.getElementById('el-resp')||{}).value||'');
+  elInfo();
+}
+function elInfo(){
+  const ta=document.getElementById('el-texto'); if(!ta) return;
   const n=ta.value.length;
+  const sel=Object.keys(window._elSel||{}).filter(function(k){return window._elSel[k];}).length;
   const info=document.getElementById('el-info');
-  if(info) info.innerHTML=n+' caracteres'+(n>1500?' <span style="color:var(--amberx)">- muy largo, puede cortarse al enviarse</span>':'');
+  const btn=document.getElementById('el-send');
+  if(btn) btn.disabled=!n;
+  if(info) info.innerHTML=sel+' tarea'+(sel===1?'':'s')+' seleccionada'+(sel===1?'':'s')+' &middot; '+n+' caracteres'
+    +(n>1500?' <span style="color:var(--amberx)">- muy largo, puede cortarse</span>':'')
+    +(n?'':' <span style="color:var(--text3)">- marca al menos una</span>');
+}
+function elTodas(v){
+  const resp=(document.getElementById('el-resp')||{}).value||'';
+  _tkOrdenados(resp).forEach(function(r){ window._elSel[_tkKey(r)]=v; });
+  elRender();
+}
+function elCambiarResp(){
+  const resp=(document.getElementById('el-resp')||{}).value||'';
+  window._elSel={};
+  _tkOrdenados(resp).forEach(function(r){ window._elSel[_tkKey(r)]=true; });
+  elRender();
 }
 async function elEnviar(){
   const cid=localStorage.getItem('evold-conv-hilo-cid')||'';
