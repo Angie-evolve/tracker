@@ -2181,7 +2181,7 @@ function openConvTestModal(){
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:680px;width:94%;max-height:88vh;overflow:auto">'
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Conversaciones &middot; subcuenta interna</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">La subcuenta de la agencia, donde vive tu hilo con el equipo. Es una conexion propia de Tickets: no es un cliente y no entra en ninguna metrica. Necesita el addon de conversaciones en el proxy de Oportunidades y los scopes conversations.readonly, conversations/message.readonly y contacts.readonly.</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">La subcuenta de la agencia, donde vive tu hilo con el equipo. Es una conexion propia de Tickets: no es un cliente y no entra en ninguna metrica. Necesita el script "EVOLVE Conversaciones" desplegado, y que el token de la subcuenta tenga los scopes conversations.readonly, conversations/message.readonly y contacts.readonly.</div>'
     +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">'
     +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">URL del script de conversaciones (/exec)</div>'
     +'<input id="cvt-url" value="'+esc(localStorage.getItem('evold-conv-url')||'')+'" placeholder="https://script.google.com/.../exec" style="'+inp+';width:100%;box-sizing:border-box"></div>'
@@ -2262,6 +2262,8 @@ async function convTestPing(){
 }
 function _cvtErr(d){
   return '<div style="font-size:12px;color:var(--redx);line-height:1.6">Error'+(d&&d.status?' (HTTP '+d.status+')':'')+': '+esc((d&&d.error)||'sin respuesta')+'</div>'
+    +((d&&d.endpoint)?'<div style="font-size:11px;color:var(--text3);margin-top:4px">Endpoint: <span class="mono">'+esc(d.endpoint.split('?')[0])+'</span></div>':'')
+    +((d&&d.scopeNecesario)?'<div style="font-size:11.5px;color:var(--amberx);margin-top:4px">Falta tildar el scope <b>'+esc(d.scopeNecesario)+'</b> en la Private Integration.</div>':'')
     +((d&&(d.raw||d.data))?'<pre style="font-size:10.5px;color:var(--text3);background:var(--bg3);padding:10px;border-radius:6px;overflow:auto;max-height:180px;white-space:pre-wrap">'+esc(JSON.stringify(d.raw||d.data,null,1)).slice(0,1200)+'</pre>':'');
 }
 async function convTestBuscar(){
@@ -2303,6 +2305,141 @@ async function convTestHilos(contactId){
       }).join('');
   }catch(e){ out.innerHTML='<span style="color:var(--redx)">'+esc(e.message)+'</span>'; }
 }
+// ---- Hilo del equipo: analisis de mensajes -> candidatos a ticket ----
+function convGuardarHilo(convId,nom){
+  localStorage.setItem('evold-conv-hilo',convId);
+  localStorage.setItem('evold-conv-hilo-nom',nom||'');
+  toast('Hilo del equipo guardado');
+  convTestMensajes(convId);
+}
+async function convAnalizar(convId){
+  const out=document.getElementById('cvt-out');
+  const apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ toast('Falta la API key de Anthropic','red'); return; }
+  const msgs=window._convMsgs||[];
+  if(!msgs.length){ toast('No hay mensajes para analizar','red'); return; }
+  const btn=document.getElementById('cvt-analizar');
+  if(btn){ btn.disabled=true; btn.textContent='Analizando...'; }
+  // Contexto: tickets abiertos, para poder detectar cierres ademas de altas
+  const abiertos=[];
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(t.delegated&&!t.done) abiertos.push((t.ticket||'#?')+' | '+c.name+' | '+t.text);
+    });
+  });
+  const nombres=DB.clients.map(function(c){return c.name;}).join(', ');
+  const hilo=msgs.slice(0,60).map(function(m){
+    return (m.direction==='outbound'?'YO':'ELLA')+' ('+String(m.dateAdded||'').slice(0,16)+'): '+String(m.body||'').replace(/\s+/g,' ').slice(0,400);
+  }).join('\n');
+  const prompt='Sos un asistente que lee la conversacion de trabajo entre una duena de agencia y su colaboradora, '
+    +'y detecta dos cosas: tareas nuevas que se delegaron, y tareas ya existentes que se dieron por terminadas.\n\n'
+    +'=== CONVERSACION (mas reciente primero) ===\n'+hilo+'\n\n'
+    +'=== TICKETS ABIERTOS HOY ===\n'+(abiertos.join('\n')||'(ninguno)')+'\n\n'
+    +'=== CLIENTES DE LA AGENCIA ===\n'+nombres+'\n\n'
+    +'Reglas:\n'
+    +'- Se CONSERVADOR. Charla, confirmaciones sueltas ("dale", "ok", "genial") y opiniones NO son tareas.\n'
+    +'- Una tarea es un pedido concreto y accionable. Si dudas, no la incluyas.\n'
+    +'- Un cierre es cuando ella dice que algo YA esta hecho y matchea con un ticket abierto de la lista.\n'
+    +'- El cliente tiene que ser uno de la lista; si no podes determinarlo, deja el campo vacio.\n\n'
+    +'Responde SOLO con un JSON valido, sin markdown:\n'
+    +'{"tareas":[{"texto":"la tarea en imperativo","cliente":"nombre exacto o vacio","evidencia":"la frase del chat que lo justifica"}],'
+    +'"cierres":[{"ticket":"#N","evidencia":"la frase que dice que esta hecho"}]}';
+  try{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1600,messages:[{role:'user',content:prompt}]})
+    });
+    const d=await r.json();
+    if(d.error) throw new Error(d.error.message);
+    let txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+    txt=txt.replace(/^[^{]*\{/,'{').replace(/\}[^}]*$/,'}');
+    const res=JSON.parse(txt);
+    window._convCand={tareas:res.tareas||[],cierres:res.cierres||[]};
+    localStorage.setItem('evold-conv-lastscan',String(Date.now()));
+    convRenderCandidatos();
+  }catch(e){
+    out.innerHTML='<span style="color:var(--redx)">Error al analizar: '+esc(e.message)+'</span>';
+  }
+}
+function convRenderCandidatos(){
+  const out=document.getElementById('cvt-out');
+  const cd=window._convCand||{tareas:[],cierres:[]};
+  const opts=[...DB.clients].sort(function(a,b){return String(a.name).localeCompare(String(b.name));})
+    .map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>';}).join('');
+  let h='';
+  if(!cd.tareas.length&&!cd.cierres.length){
+    h='<div style="font-size:12px;color:var(--text3)">No encontre tareas ni cierres claros en estos mensajes. Es un buen resultado: prefiero no inventar.</div>';
+  }
+  if(cd.cierres.length){
+    h+='<div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Parecen terminadas</div>';
+    h+=cd.cierres.map(function(k,i){
+      return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:8px">'
+        +'<div style="font-size:12.5px;color:var(--strong)">'+esc(k.ticket||'#?')+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin:4px 0 9px;font-style:italic">"'+esc(k.evidencia||'')+'"</div>'
+        +'<div style="display:flex;gap:7px">'
+        +'<button class="btn btn-sm" onclick="convCerrarTicket('+i+')">Marcar hecho</button>'
+        +'<button class="btn btn-sm" style="color:var(--text3)" onclick="convDescartar(\'cierres\','+i+')">Descartar</button>'
+        +'</div></div>';
+    }).join('');
+  }
+  if(cd.tareas.length){
+    h+='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin:14px 0 8px">Parecen tareas nuevas</div>';
+    h+=cd.tareas.map(function(k,i){
+      const match=DB.clients.find(function(c){return _n(c.name)===_n(k.cliente||'');});
+      return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:8px">'
+        +'<div style="font-size:12.5px;color:var(--strong)">'+esc(k.texto||'')+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin:4px 0 9px;font-style:italic">"'+esc(k.evidencia||'')+'"</div>'
+        +'<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">'
+        +'<select id="cvc-cli-'+i+'" style="font-size:11.5px;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text)">'
+        +opts.replace('value="'+(match?match.id:'')+'"','value="'+(match?match.id:'')+'" selected')+'</select>'
+        +'<input id="cvc-resp-'+i+'" value="Ashy" style="font-size:11.5px;padding:4px 8px;width:74px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text)">'
+        +'<button class="btn btn-sm btn-primary" onclick="convCrearTicket('+i+')">Crear ticket</button>'
+        +'<button class="btn btn-sm" style="color:var(--text3)" onclick="convDescartar(\'tareas\','+i+')">Descartar</button>'
+        +'</div></div>';
+    }).join('');
+  }
+  out.innerHTML=h;
+}
+function convDescartar(tipo,i){
+  window._convCand[tipo].splice(i,1);
+  convRenderCandidatos();
+}
+function convCrearTicket(i){
+  const k=(window._convCand.tareas||[])[i]; if(!k) return;
+  const cid=+((document.getElementById('cvc-cli-'+i)||{}).value||0);
+  const resp=((document.getElementById('cvc-resp-'+i)||{}).value||'Ashy').trim()||'Ashy';
+  const c=DB.clients.find(function(x){return x.id===cid;});
+  if(!c){ toast('Elegi un cliente','red'); return; }
+  c.tasks=c.tasks||[];
+  // Ya se delego por chat, asi que entra como delegada: no dispara mail.
+  c.tasks.unshift({
+    id:Date.now(), text:k.texto, responsible:resp, due:'', done:false,
+    source:'WhatsApp', delegated:true, delegatedAt:new Date().toISOString(),
+    ticket:'#'+nextTicketFromApp()
+  });
+  save();
+  window._convCand.tareas.splice(i,1);
+  convRenderCandidatos();
+  toast('Ticket creado en '+c.name);
+}
+function convCerrarTicket(i){
+  const k=(window._convCand.cierres||[])[i]; if(!k) return;
+  const num=String(k.ticket||'').replace(/[^0-9]/g,'');
+  let hecho=false;
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(t.delegated&&!t.done&&String(t.ticket||'').replace(/[^0-9]/g,'')===num){
+        t.done=true; t.doneAt=new Date().toISOString(); hecho=true;
+      }
+    });
+  });
+  save();
+  window._convCand.cierres.splice(i,1);
+  convRenderCandidatos();
+  toast(hecho?('Ticket '+k.ticket+' marcado como hecho'):'No encontre ese ticket abierto','red');
+}
+
 async function convTestMensajes(convId){
   const ctx=_cvtCtx(); const out=document.getElementById('cvt-out');
   out.innerHTML='Leyendo mensajes...';
@@ -2315,7 +2452,14 @@ async function convTestMensajes(convId){
         +(d.sample?'<pre style="font-size:10.5px;color:var(--text3);background:var(--bg3);padding:10px;border-radius:6px;overflow:auto;max-height:200px;white-space:pre-wrap">'+esc(JSON.stringify(d.sample,null,1))+'</pre>':'');
       return;
     }
-    out.innerHTML='<div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Funciona &middot; '+d.messages.length+' mensajes leidos</div>'
+    window._convMsgs=d.messages;
+    const esHilo=localStorage.getItem('evold-conv-hilo')===convId;
+    out.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+      +'<span style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em">'+d.messages.length+' mensajes leidos'+(esHilo?' &middot; hilo del equipo':'')+'</span>'
+      +'<span style="display:flex;gap:7px">'
+      +(esHilo?'':'<button class="btn btn-sm" onclick="convGuardarHilo(\''+_jsEsc(convId)+'\',\'\')">Usar como hilo del equipo</button>')
+      +'<button class="btn btn-sm btn-primary" id="cvt-analizar" onclick="convAnalizar(\''+_jsEsc(convId)+'\')">Proponer tareas</button>'
+      +'</span></div>'
       +'<div style="max-height:300px;overflow:auto">'
       +d.messages.map(function(m){
         const mio=m.direction==='outbound';
