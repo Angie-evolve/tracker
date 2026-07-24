@@ -6499,6 +6499,10 @@ var META_METRIC_COLS=[
   {key:'ctr',       l:'CTR unico',            w:90,  fmt:function(v){return v+'%';}},
   {key:'thruPlays', l:'ThruPlays',            w:90,  fmt:function(v){return v||'-';}},
   {key:'costPerThruPlay',l:'Costo/ThruPlay',  w:110, fmt:function(v){return v?'$'+Number(v).toFixed(2):'-';}, money:true},
+  {key:'avgWatch',  l:'Tiempo prom.',         w:100, fmt:function(v){return v?Number(v).toFixed(1)+'s':'-';}},
+  {key:'ret25',     l:'Ret. 25%',             w:85,  fmt:function(v){return v?v+'%':'-';}},
+  {key:'ret50',     l:'Ret. 50%',             w:85,  fmt:function(v){return v?v+'%':'-';}},
+  {key:'ret100',    l:'Ret. 100%',            w:90,  fmt:function(v){return v?v+'%':'-';}},
   {key:'landingViews',l:'Visitas pag. destino',w:130,fmt:function(v){return v||'-';}},
   {key:'costPerLanding',l:'Costo/visita',     w:110, fmt:function(v){return v?'$'+Number(v).toFixed(2):'-';}, money:true, color:true},
   {key:'results',   l:'Resultados',           w:90,  fmt:function(v){return v||'-';}, bold:true},
@@ -6728,6 +6732,17 @@ function labContextoAnuncio(c,a){
   L.push('CTR: '+(m.ctr||'-')+'% | CPC: $'+(m.cpc||'-')+' | CPM: $'+(m.cpm||'-'));
   L.push('Leads: '+(m.leads||0)+' | Costo por lead: $'+(m.cpl||'-'));
   L.push('ThruPlays: '+(m.thruPlays||0)+(m.costPerThruPlay?(' | costo por thruplay: $'+m.costPerThruPlay):''));
+  // Curva de retencion: es lo unico que dice DONDE del guion se pierde la gente.
+  // El CPL dice que algo esta mal; esto dice en que segundo.
+  if(m.videoPlays){
+    L.push('--- Retencion del video ---');
+    L.push('Reproducciones: '+m.videoPlays+(m.avgWatch?(' | tiempo promedio de visualizacion: '+m.avgWatch+' s'):''));
+    L.push('Llegaron al 25%: '+(m.ret25||'?')+'% | al 50%: '+(m.ret50||'?')+'% | al 75%: '+(m.ret75||'?')+'% | al final: '+(m.ret100||'?')+'%');
+    var r25=Number(m.ret25||0), r50=Number(m.ret50||0), r100=Number(m.ret100||0);
+    if(r25 && r25<40) L.push('LECTURA: se cae mas del 60% antes del primer cuarto: el problema esta en el hook o en los primeros segundos.');
+    else if(r25 && r50 && (r25-r50)>25) L.push('LECTURA: el hook retiene pero se desploma en el desarrollo: el medio del guion es el problema, no la apertura.');
+    else if(r100 && r100<5) L.push('LECTURA: casi nadie llega al final: revisar largo y ubicacion del CTA.');
+  }
   L.push('Vistas de landing: '+(m.landingViews||0));
   L.push('--- Resultado real en el CRM, no en Meta ---');
   L.push('Leads calificados: '+(a.win.calif||0)+' | Cierres: '+(a.win.cierres||0));
@@ -6781,6 +6796,8 @@ async function labAnalizar(clientId){
     +'2. SENALES DE FATIGA: leer la frecuencia, el CTR y el CPL. Si la frecuencia supera 2.5 decilo explicito. Si no hay senales de desgaste, decilo igual de claro en vez de inventarlas.\n'
     +'3. LA BRECHA META vs CRM: comparar volumen de leads contra calificados y cierres. Si trae muchos leads que no califican, ese es el problema principal y hay que decirlo.\n'
     +'4. QUE ATACAR EN EL PROXIMO CREATIVO: la recomendacion concreta.\n\n'
+    +'Si hay datos de retencion de video, usalos para decir EN QUE PARTE del guion se pierde la gente '
+    +'(apertura, desarrollo o cierre) en vez de hablar del creativo en general. Es el dato mas accionable que tenes.\n\n'
     +'Se concreto y usa los numeros reales. No repitas el brief. Maximo 300 palabras.';
   try{
     var txt=await labIA(prompt,1200);
@@ -7226,7 +7243,9 @@ async function syncMetaAds(clientId){
     }catch(e){ /* si falla, seguimos: la moneda es informativa */ }
 
     // Fetch campaigns with insights
-    var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type,video_thruplay_watched_actions,cost_per_thruplay';
+    var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type'
+      +',video_thruplay_watched_actions,cost_per_thruplay,video_play_actions,video_avg_time_watched_actions'
+      +',video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
     var fieldsStr='id,name,status,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
     var url='https://graph.facebook.com/v19.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
@@ -7272,7 +7291,7 @@ async function syncMetaAds(clientId){
                 clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
                 leads:m.leads,cpl:m.cpl,
                 landingViews:m.landingViews,costPerLanding:m.costPerLanding,
-                thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,
+                thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
                 results:m.results,costPerResult:m.costPerResult,
                 igFollows:m.igFollows,igProfileVisits:m.igProfileVisits
               };
@@ -7305,7 +7324,7 @@ async function syncMetaAds(clientId){
             clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
             leads:m.leads,cpl:m.cpl,
             landingViews:m.landingViews,costPerLanding:m.costPerLanding,
-            thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,
+            thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
             results:m.results,costPerResult:m.costPerResult,
             igFollows:m.igFollows,igProfileVisits:m.igProfileVisits,
             ads:(as.ads||[])
@@ -7317,7 +7336,7 @@ async function syncMetaAds(clientId){
 
     // Helper to extract metrics from insights
     function extractIns(ins, budget){
-      if(!ins) return {spend:0,impressions:0,reach:0,frequency:0,clicks:0,ctr:'0',cpc:'0',cpm:'0',leads:0,cpl:'',landingViews:0,thruPlays:0,costPerThruPlay:'',results:0,costPerResult:'',igFollows:0,igProfileVisits:0};
+      if(!ins) return {spend:0,impressions:0,reach:0,frequency:0,clicks:0,ctr:'0',cpc:'0',cpm:'0',leads:0,cpl:'',landingViews:0,thruPlays:0,costPerThruPlay:'',videoPlays:0,avgWatch:'',ret25:'',ret50:'',ret75:'',ret100:'',results:0,costPerResult:'',igFollows:0,igProfileVisits:0};
       var actions=ins.actions||[];
       function getAction(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseInt(a.value||0):0; }
       function getActionF(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseFloat(a.value||0):0; }
@@ -7331,6 +7350,22 @@ async function syncMetaAds(clientId){
         var vv=arr.find(function(x){return x.action_type==='video_view';});
         return parseInt((vv||arr[0]).value||0)||0;
       })();
+      // Metricas de video. Todas vienen como arrays propios de insights, no dentro
+      // de 'actions'. Se lee el elemento con action_type 'video_view' y si no, el primero.
+      function vidNum(campo){
+        var arr=ins[campo];
+        if(!arr||!arr.length) return 0;
+        var vv=arr.find(function(x){return x.action_type==='video_view';});
+        return parseFloat((vv||arr[0]).value||0)||0;
+      }
+      var videoPlays=vidNum('video_play_actions');
+      var avgWatch=vidNum('video_avg_time_watched_actions');
+      var p25=vidNum('video_p25_watched_actions');
+      var p50=vidNum('video_p50_watched_actions');
+      var p75=vidNum('video_p75_watched_actions');
+      var p100=vidNum('video_p100_watched_actions');
+      // La retencion se mide contra las reproducciones, que es como la muestra Meta.
+      var pct=function(n){ return videoPlays>0?(n/videoPlays*100).toFixed(1):''; };
       var igFollows=getAction('follow')+getAction('onsite_conversion.post_save');
       var igProfileVisits=getAction('onsite_conversion.messaging_first_reply');
       var spend=parseFloat(ins.spend||0);
@@ -7359,6 +7394,9 @@ async function syncMetaAds(clientId){
           if(arr&&arr.length){ var v=parseFloat(arr[0].value||0); if(v>0) return v.toFixed(2); }
           return thruPlays>0?(spend/thruPlays).toFixed(2):'';
         })(),
+        videoPlays:videoPlays,
+        avgWatch:avgWatch?avgWatch.toFixed(1):'',
+        ret25:pct(p25), ret50:pct(p50), ret75:pct(p75), ret100:pct(p100),
         results:results,
         costPerResult:cpr,
         igFollows:igFollows,
@@ -7380,7 +7418,7 @@ async function syncMetaAds(clientId){
         clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
         leads:m.leads,cpl:m.cpl,
         landingViews:m.landingViews,costPerLanding:m.costPerLanding,
-        thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,
+        thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
         results:m.results,costPerResult:m.costPerResult,
         igFollows:m.igFollows,igProfileVisits:m.igProfileVisits,
         adsets:(camp.adsets||[])
