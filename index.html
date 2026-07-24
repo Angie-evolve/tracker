@@ -2478,7 +2478,8 @@ async function convAnalizar(convId){
     return (m.direction==='outbound'?'YO':'ELLA')+' ('+String(m.dateAdded||'').slice(0,10)+'): '+String(m.body||'').replace(/\s+/g,' ').slice(0,220);
   }).join('\n');
   const prompt='Sos un asistente que lee la conversacion de trabajo entre una duena de agencia y su colaboradora, '
-    +'y detecta dos cosas: tareas nuevas que se delegaron, y tareas ya existentes que se dieron por terminadas.\n\n'
+    +'y detecta tres cosas: tareas nuevas delegadas, tareas existentes que se terminaron, y tareas existentes '
+    +'que cambiaron de estado sin terminar.\n\n'
     +'=== CONVERSACION (mas reciente primero) ===\n'+hilo+'\n\n'
     +'=== TICKETS ABIERTOS HOY ===\n'+(abiertos.join('\n')||'(ninguno)')+'\n\n'
     +'=== CLIENTES DE LA AGENCIA ===\n'+nombres+'\n\n'
@@ -2486,12 +2487,18 @@ async function convAnalizar(convId){
     +'- Se CONSERVADOR. Charla, confirmaciones sueltas ("dale", "ok", "genial") y opiniones NO son tareas.\n'
     +'- Una tarea es un pedido concreto y accionable. Si dudas, no la incluyas.\n'
     +'- Un cierre es cuando ella dice que algo YA esta hecho y matchea con un ticket abierto de la lista.\n'
+    +'- Un cambio de estado es cuando, sobre un ticket abierto de la lista, ella cuenta en que anda SIN darlo por terminado. Estados posibles:\n'
+    +'    proceso  = lo esta haciendo ahora ("estoy con eso", "ya arranque", "en eso ando")\n'
+    +'    revision = lo termino y espera tu OK o feedback ("te lo dejo para que revises", "fijate si va asi")\n'
+    +'    bloqueada = no puede avanzar por algo externo ("estoy esperando que me pases X", "no puedo hasta que...", "me falta acceso a...")\n'
+    +'  Solo incluilo si el ticket esta en la lista de abiertos y el estado es DISTINTO de lo obvio. Ante la duda, no lo pongas.\n'
     +'- El cliente tiene que ser uno de la lista; si no podes determinarlo, deja el campo vacio.\n'
     +'- La evidencia: maximo 12 palabras, recortada del chat.\n'
-    +'- Maximo 8 tareas y 8 cierres. Si hay mas, quedate con los mas claros.\n\n'
+    +'- Maximo 8 de cada tipo.\n\n'
     +'Responde SOLO con un JSON valido, sin markdown:\n'
-    +'{"tareas":[{"texto":"la tarea en imperativo","cliente":"nombre exacto o vacio","evidencia":"la frase del chat que lo justifica"}],'
-    +'"cierres":[{"ticket":"#N","evidencia":"la frase que dice que esta hecho"}]}';
+    +'{"tareas":[{"texto":"la tarea en imperativo","cliente":"nombre exacto o vacio","evidencia":"la frase"}],'
+    +'"cierres":[{"ticket":"#N","evidencia":"la frase que dice que esta hecho"}],'
+    +'"estados":[{"ticket":"#N","estado":"proceso|revision|bloqueada","evidencia":"la frase"}]}';
   try{
     const r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
@@ -2509,7 +2516,7 @@ async function convAnalizar(convId){
       throw new Error('La respuesta vino incompleta'+(d.stop_reason==='max_tokens'?' (corto por limite de tokens)':'')+'. Apreta "Ver respuesta cruda" para inspeccionarla.');
     }
     const res=JSON.parse(txt.slice(ini,fin+1));
-    window._convCand={tareas:res.tareas||[],cierres:res.cierres||[]};
+    window._convCand={tareas:res.tareas||[],cierres:res.cierres||[],estados:res.estados||[]};
     localStorage.setItem('evold-conv-lastscan',String(Date.now()));
     convRenderCandidatos();
   }catch(e){
@@ -2525,12 +2532,25 @@ function convVerRaw(){
 }
 function convRenderCandidatos(){
   const out=document.getElementById('cvt-out');
-  const cd=window._convCand||{tareas:[],cierres:[]};
+  const cd=window._convCand||{tareas:[],cierres:[],estados:[]};
   const opts=[...DB.clients].sort(function(a,b){return String(a.name).localeCompare(String(b.name));})
     .map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>';}).join('');
   let h='';
-  if(!cd.tareas.length&&!cd.cierres.length){
-    h='<div style="font-size:12px;color:var(--text3)">No encontre tareas ni cierres claros en estos mensajes. Es un buen resultado: prefiero no inventar.</div>';
+  if(!cd.tareas.length&&!cd.cierres.length&&!(cd.estados&&cd.estados.length)){
+    h='<div style="font-size:12px;color:var(--text3)">No encontre tareas, cierres ni cambios de estado claros. Es un buen resultado: prefiero no inventar.</div>';
+  }
+  if(cd.estados&&cd.estados.length){
+    var _EST={proceso:'En proceso',revision:'En revision',bloqueada:'Bloqueada'};
+    h+='<div style="font-size:11px;color:var(--amberx);text-transform:uppercase;letter-spacing:0.06em;margin:14px 0 8px">Cambiaron de estado</div>';
+    h+=cd.estados.map(function(k,i){
+      return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:8px">'
+        +'<div style="font-size:12.5px;color:var(--strong)">'+esc(k.ticket||'#?')+' &rarr; <b>'+esc(_EST[k.estado]||k.estado||'')+'</b></div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin:4px 0 9px;font-style:italic">"'+esc(k.evidencia||'')+'"</div>'
+        +'<div style="display:flex;gap:7px">'
+        +'<button class="btn btn-sm btn-primary" onclick="convAplicarEstado('+i+')">Aplicar estado</button>'
+        +'<button class="btn btn-sm" style="color:var(--text3)" onclick="convDescartar(\'estados\','+i+')">Descartar</button>'
+        +'</div></div>';
+    }).join('');
   }
   if(cd.cierres.length){
     h+='<div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Parecen terminadas</div>';
@@ -2583,6 +2603,22 @@ function convCrearTicket(i){
   window._convCand.tareas.splice(i,1);
   convRenderCandidatos();
   toast('Ticket creado en '+c.name);
+}
+function convAplicarEstado(i){
+  const k=(window._convCand.estados||[])[i]; if(!k) return;
+  const num=String(k.ticket||'').replace(/[^0-9]/g,'');
+  let ok=false;
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(t.delegated&&!t.done&&String(t.ticket||'').replace(/[^0-9]/g,'')===num){
+        t.estado=k.estado; ok=true;
+      }
+    });
+  });
+  save();
+  window._convCand.estados.splice(i,1);
+  convRenderCandidatos();
+  toast(ok?('Ticket '+k.ticket+' marcado como '+k.estado):'No encontre ese ticket abierto','red');
 }
 function convCerrarTicket(i){
   const k=(window._convCand.cierres||[])[i]; if(!k) return;
@@ -3941,7 +3977,7 @@ function renderTab(){
     const metaToken=c.metaToken||'';
     const metaAccountId=c.metaAccountId||'';
     const metaDays=activeLine.metaDays||30;
-    el.innerHTML=adsSubNav()+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    el.innerHTML=adsSubNav()+metaAvisosHtml(c)+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;font-weight:500;color:var(--strong)">Linea activa: <span style="color:var(--accent)">${activeLine.version}</span></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${metaToken&&metaAccountId?`
@@ -7267,6 +7303,83 @@ function borrarFx(clientId){
   toast('Conversion desactivada - vuelve a moneda original');
 }
 
+// Normaliza los avisos que devuelve Meta. issues_info trae mensajes tal cual
+// los muestra el Ads Manager ("Resultados bajos", "Publico saturado", etc.).
+// Junta todos los avisos de la linea activa y arma el cartel de arriba.
+function metaAvisos(c){
+  var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+  if(!al) return [];
+  var out=[], vistos={};
+  var push=function(tipo,titulo,detalle,donde){
+    var k=tipo+'|'+titulo+'|'+donde;
+    if(vistos[k]) return; vistos[k]=true;
+    out.push({tipo:tipo,titulo:titulo,detalle:detalle,donde:donde});
+  };
+  (al.metaCampaigns||[]).forEach(function(cp){
+    if((al.excludedCampaigns||[]).indexOf(cp.id)>=0) return;
+    (cp.issues||[]).forEach(function(i){ push('issue',i.titulo,i.detalle,cp.name); });
+    (cp.adsets||[]).forEach(function(as){
+      (as.issues||[]).forEach(function(i){ push('issue',i.titulo,i.detalle,as.name); });
+      var lb=_learningLabel(as.learning);
+      if(lb) push(as.learning==='LEARNING_LIMITED'?'issue':'info',lb,
+        as.learning==='LEARNING_LIMITED'
+          ? 'Meta no consigue suficientes conversiones para salir del aprendizaje: el conjunto va a entregar peor y mas caro.'
+          : 'El conjunto todavia esta optimizando. Los numeros de estos dias no son representativos.',
+        as.name);
+      (as.ads||[]).forEach(function(ad){
+        (ad.issues||[]).forEach(function(i){ push('issue',i.titulo,i.detalle,ad.name); });
+      });
+    });
+  });
+  // Sync viejo: no viene de Meta pero es igual de importante
+  if(al.metaSyncAt){
+    var dias=Math.floor((Date.now()-new Date(al.metaSyncAt).getTime())/86400000);
+    if(dias>=3) push('info','Datos desactualizados','Ultima sincronizacion hace '+dias+' dias. Sincroniza antes de tomar decisiones.','');
+  }
+  return out;
+}
+function metaAvisosHtml(c){
+  var av=metaAvisos(c);
+  if(!av.length) return '';
+  var graves=av.filter(function(a){return a.tipo==='issue';});
+  var col=graves.length?'var(--amberx)':'var(--text2)';
+  var bg=graves.length?'rgba(240,168,48,0.08)':'var(--bg2)';
+  var bd=graves.length?'rgba(240,168,48,0.3)':'var(--border)';
+  return '<div style="background:'+bg+';border:1px solid '+bd+';border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:16px">'
+    +'<div style="font-size:11px;color:'+col+';text-transform:uppercase;letter-spacing:0.06em;margin-bottom:9px">'
+    +'Avisos de Meta &middot; '+av.length+'</div>'
+    +av.slice(0,6).map(function(a){
+      return '<div style="display:flex;gap:9px;align-items:flex-start;padding:6px 0">'
+        +'<span style="color:'+(a.tipo==='issue'?'var(--amberx)':'var(--text3)')+';font-size:13px;line-height:1.3">&bull;</span>'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:12.5px;color:var(--strong)">'+esc(a.titulo)
+        +(a.donde?' <span style="color:var(--text3);font-weight:400">&middot; '+esc(a.donde)+'</span>':'')+'</div>'
+        +(a.detalle?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:2px">'+esc(a.detalle)+'</div>':'')
+        +'</div></div>';
+    }).join('')
+    +(av.length>6?'<div style="font-size:11px;color:var(--text3);margin-top:6px">y '+(av.length-6)+' mas</div>':'')
+    +'</div>';
+}
+
+function _metaIssues(obj){
+  var arr=(obj&&obj.issues_info)||[];
+  return arr.map(function(i){
+    return {
+      titulo:i.error_summary||i.error_type||'Aviso',
+      detalle:i.error_message||'',
+      nivel:i.level||''
+    };
+  }).slice(0,3);
+}
+// Traduccion de la fase de aprendizaje al castellano del Ads Manager
+function _learningLabel(v){
+  var k=String(v||'').toUpperCase();
+  if(k==='LEARNING') return 'En aprendizaje';
+  if(k==='LEARNING_LIMITED') return 'Aprendizaje limitado';
+  if(k==='SUCCESS') return '';
+  return '';
+}
+
 async function syncMetaAds(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.metaToken||!c.metaAccountId) return;
@@ -7315,7 +7428,7 @@ async function syncMetaAds(clientId){
     var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type'
       +',video_thruplay_watched_actions,cost_per_thruplay,video_play_actions,video_avg_time_watched_actions'
       +',video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
-    var fieldsStr='id,name,status,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
+    var fieldsStr='id,name,status,effective_status,issues_info,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
     var url='https://graph.facebook.com/v19.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
       +'&access_token='+token
@@ -7331,7 +7444,7 @@ async function syncMetaAds(clientId){
     // Fetch adsets + ads for each campaign
     for(var ci=0;ci<campaigns.length;ci++){
       try{
-        var adsetFieldsStr='id,name,status,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
+        var adsetFieldsStr='id,name,status,effective_status,issues_info,learning_stage_info,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
         var adsetUrl='https://graph.facebook.com/v19.0/'+campaigns[ci].id+'/adsets'
           +'?fields='+encodeURIComponent(adsetFieldsStr)
           +'&access_token='+token
@@ -7343,7 +7456,7 @@ async function syncMetaAds(clientId){
         // Fetch ads for each adset
         for(var ai=0;ai<adsets.length;ai++){
           try{
-            var adsFieldsStr='id,name,status,creative{id,name,thumbnail_url},insights.time_range('+timeRange+'){'+insFields+'}';
+            var adsFieldsStr='id,name,status,effective_status,issues_info,creative{id,name,thumbnail_url},insights.time_range('+timeRange+'){'+insFields+'}';
             var adsUrl='https://graph.facebook.com/v19.0/'+adsets[ai].id+'/ads'
               +'?fields='+encodeURIComponent(adsFieldsStr)
               +'&access_token='+token
@@ -7355,6 +7468,7 @@ async function syncMetaAds(clientId){
               var m=extractIns(ins);
               return {
                 id:ad.id,name:ad.name,status:ad.status,previewUrl:'',
+                effectiveStatus:ad.effective_status||'', issues:_metaIssues(ad),
                 thumbnail:ad.creative&&ad.creative.thumbnail_url||'',
                 spend:m.spend,impressions:m.impressions,reach:m.reach,frequency:m.frequency,
                 clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
@@ -7388,6 +7502,8 @@ async function syncMetaAds(clientId){
           var bud=as.daily_budget||as.lifetime_budget||0;
           return {
             id:as.id,name:as.name,status:as.status,
+            effectiveStatus:as.effective_status||'', issues:_metaIssues(as),
+            learning:(as.learning_stage_info&&as.learning_stage_info.status)||'',
             spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
             impressions:m.impressions,reach:m.reach,frequency:m.frequency,
             clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
@@ -7482,6 +7598,7 @@ async function syncMetaAds(clientId){
       var bud=camp.daily_budget||camp.lifetime_budget||0;
       return {
         id:camp.id,name:camp.name,status:camp.status,
+        effectiveStatus:camp.effective_status||'', issues:_metaIssues(camp),
         spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
         impressions:m.impressions,reach:m.reach,frequency:m.frequency,
         clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
