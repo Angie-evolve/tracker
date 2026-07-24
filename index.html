@@ -2937,6 +2937,7 @@ function showTickets(){
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
     +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
     +'<button class="btn btn-sm" onclick="scanFathomRecaps()" title="Extrae tareas de los recaps de llamadas de Fathom en tu mail">Tareas de llamadas</button>'
+    +'<button class="btn btn-sm" onclick="openTicketsProxyModal()" style="color:var(--text3)" title="Configurar la URL del script de Gmail">Config script</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
     +'<button class="btn btn-sm" onclick="openEnviarListaModal()" title="Manda las tareas abiertas en orden de prioridad">Enviar prioridades</button>'
     +'<button class="btn btn-sm" onclick="openConvTestModal()" style="color:var(--text3)" title="Conexion con la subcuenta interna para leer conversaciones">Conversaciones</button>'
@@ -7815,7 +7816,53 @@ function nextTicketFromApp(){
   return max+1;
 }
 
-var TICKETS_PROXY='https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+// URL del script de Tickets (Gmail/Drive/Calendar). Se puede editar desde la app
+// con el boton "Config script" del tablero de Tickets. Si no se configuro, cae al
+// valor de siempre. El deploy tiene que ser "Cualquier persona" o el navegador lo
+// bloquea por CORS.
+var TICKETS_PROXY=localStorage.getItem('evold-tickets-proxy')
+  || 'https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+function openTicketsProxyModal(){
+  var cur=localStorage.getItem('evold-tickets-proxy')||TICKETS_PROXY;
+  var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  var esRestringido=/\/a\/macros\//.test(cur);
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Script de Tickets (Gmail)</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">La URL /exec del proyecto de Tickets. El deploy tiene que ser "Cualquier persona": si la URL tiene <span class="mono">/a/macros/</span> es de acceso restringido y el navegador la bloquea.</div>'
+    +(esRestringido?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL actual es de acceso restringido (/a/macros/). Redeploya el script como "Cualquier persona" y pega la URL nueva aca.</div>':'')
+    +'<input id="tp-url" value="'+esc(cur)+'" placeholder="https://script.google.com/macros/s/.../exec" style="'+inp+';width:100%;box-sizing:border-box;margin-bottom:10px">'
+    +'<button class="btn btn-sm" onclick="probarTicketsProxy()">Probar conexion</button>'
+    +'<span id="tp-result" style="font-size:11.5px;margin-left:10px"></span>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="guardarTicketsProxy()">Guardar</button>'
+    +'</div></div></div>';
+}
+function guardarTicketsProxy(){
+  var u=((document.getElementById('tp-url')||{}).value||'').trim();
+  if(!u){ toast('Pega la URL','red'); return; }
+  localStorage.setItem('evold-tickets-proxy',u);
+  TICKETS_PROXY=u;
+  closeModal();
+  toast('Script de Tickets guardado');
+}
+async function probarTicketsProxy(){
+  var u=((document.getElementById('tp-url')||{}).value||'').trim();
+  var out=document.getElementById('tp-result');
+  if(!u){ out.innerHTML='<span style="color:var(--redx)">Pega la URL</span>'; return; }
+  out.innerHTML='<span style="color:var(--text3)">probando...</span>';
+  try{
+    var r=await fetch(u+(u.indexOf('?')>=0?'&':'?')+'secret=evolve-tracker&action=fathom_recaps&days=14');
+    var d=await r.json();
+    if(d&&d.ok){ out.innerHTML='<span style="color:var(--accent)">Funciona &middot; '+((d.recaps||[]).length)+' recaps</span>'; }
+    else if(d&&d.error){ out.innerHTML='<span style="color:var(--amberx)">Responde pero: '+esc(d.error)+' (agrega el addon de Fathom)</span>'; }
+    else { out.innerHTML='<span style="color:var(--amberx)">Respuesta inesperada</span>'; }
+  }catch(e){
+    out.innerHTML='<span style="color:var(--redx)">Bloqueado (CORS). El deploy tiene que ser "Cualquier persona".</span>';
+  }
+}
 
 async function delegateTask(clientId, taskId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
