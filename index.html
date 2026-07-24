@@ -2711,9 +2711,10 @@ async function convEnviarMsg(){
 // Fathom a veces lista como "action item" cosas que no son tarea (contexto,
 // decisiones), asi que vos confirmas cual entra.
 function scanFathomRecaps(){
-  if(typeof TICKETS_PROXY==='undefined'||!TICKETS_PROXY){ toast('Falta el script de tickets','red'); return; }
+  var _url=fathomProxyUrl();
+  if(!_url){ toast('Configura el script de Fathom','red'); return; }
   toast('Buscando recaps de Fathom en el mail...');
-  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=fathom_recaps&days=14')
+  fetch(_url+(_url.indexOf('?')>=0?'&':'?')+'secret=evolve-tracker&action=fathom_recaps&days=14')
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||!d.ok){ toast('No se pudo leer el mail ('+((d&&d.error)||'actualiza el addon del script')+')','red'); return; }
@@ -2937,7 +2938,7 @@ function showTickets(){
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
     +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
     +'<button class="btn btn-sm" onclick="scanFathomRecaps()" title="Extrae tareas de los recaps de llamadas de Fathom en tu mail">Tareas de llamadas</button>'
-    +'<button class="btn btn-sm" onclick="openTicketsProxyModal()" style="color:var(--text3)" title="Configurar la URL del script de Gmail">Config script</button>'
+    +'<button class="btn btn-sm" onclick="openTicketsProxyModal()" style="color:var(--text3)" title="Configurar la URL del script que lee Fathom">Config Fathom</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
     +'<button class="btn btn-sm" onclick="openEnviarListaModal()" title="Manda las tareas abiertas en orden de prioridad">Enviar prioridades</button>'
     +'<button class="btn btn-sm" onclick="openConvTestModal()" style="color:var(--text3)" title="Conexion con la subcuenta interna para leer conversaciones">Conversaciones</button>'
@@ -7822,16 +7823,20 @@ function nextTicketFromApp(){
 // bloquea por CORS.
 var TICKETS_PROXY=localStorage.getItem('evold-tickets-proxy')
   || 'https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+// Fathom puede vivir en su propio proyecto. Si no se configura, usa el de Tickets.
+function fathomProxyUrl(){ return localStorage.getItem('evold-fathom-proxy') || TICKETS_PROXY; }
 function openTicketsProxyModal(){
-  var cur=localStorage.getItem('evold-tickets-proxy')||TICKETS_PROXY;
+  var cur=localStorage.getItem('evold-fathom-proxy')||localStorage.getItem('evold-tickets-proxy')||'';
   var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
   var esRestringido=/\/a\/macros\//.test(cur);
+  var falta=!/\/exec$/.test(cur.trim());
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:560px;width:94%">'
-    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Script de Tickets (Gmail)</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">La URL /exec del proyecto de Tickets. El deploy tiene que ser "Cualquier persona": si la URL tiene <span class="mono">/a/macros/</span> es de acceso restringido y el navegador la bloquea.</div>'
-    +(esRestringido?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL actual es de acceso restringido (/a/macros/). Redeploya el script como "Cualquier persona" y pega la URL nueva aca.</div>':'')
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Script de Fathom (Gmail)</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">La URL /exec del proyecto que lee los recaps de Fathom. El deploy tiene que ser "Cualquier persona" (Anyone) y la URL tiene que terminar en <span class="mono">/exec</span>. Copiala con el boton Copy del deploy, no la selecciones a mano.</div>'
+    +(esRestringido?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL es de acceso restringido (/a/macros/). Redeploya como "Cualquier persona".</div>':'')
+    +(cur&&falta?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL no termina en /exec: parece incompleta. Volve a copiarla con el boton Copy.</div>':'')
     +'<input id="tp-url" value="'+esc(cur)+'" placeholder="https://script.google.com/macros/s/.../exec" style="'+inp+';width:100%;box-sizing:border-box;margin-bottom:10px">'
     +'<button class="btn btn-sm" onclick="probarTicketsProxy()">Probar conexion</button>'
     +'<span id="tp-result" style="font-size:11.5px;margin-left:10px"></span>'
@@ -7843,10 +7848,10 @@ function openTicketsProxyModal(){
 function guardarTicketsProxy(){
   var u=((document.getElementById('tp-url')||{}).value||'').trim();
   if(!u){ toast('Pega la URL','red'); return; }
-  localStorage.setItem('evold-tickets-proxy',u);
-  TICKETS_PROXY=u;
+  if(!/\/exec$/.test(u)){ toast('La URL tiene que terminar en /exec','red'); return; }
+  localStorage.setItem('evold-fathom-proxy',u);
   closeModal();
-  toast('Script de Tickets guardado');
+  toast('Script de Fathom guardado');
 }
 async function probarTicketsProxy(){
   var u=((document.getElementById('tp-url')||{}).value||'').trim();
