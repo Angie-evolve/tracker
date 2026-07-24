@@ -2960,7 +2960,7 @@ function _tkAlarmasHtml(){
   DB.clients.forEach(function(c){
     try{
       var st=alarmStatus(c);
-      if(st && st.breached>0) disparadas.push({c:c, n:st.breached});
+      if(st && st.breached>0) disparadas.push({c:c, n:st.breached, detalle:st.detalle||[]});
     }catch(e){ /* si un cliente no tiene datos, se saltea */ }
   });
   if(!disparadas.length) return '';
@@ -2972,11 +2972,18 @@ function _tkAlarmasHtml(){
     +'<span style="font-size:11px;color:var(--redx);text-transform:uppercase;letter-spacing:0.06em;font-weight:500">Alarmas de clientes &middot; '+total+' fuera de benchmark</span>'
     +'</div>'
     +disparadas.map(function(x){
-      return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;cursor:pointer" onclick="selectClient('+x.c.id+');S.tab=\'alarmas\';renderClient()">'
+      var metricas=x.detalle.map(function(d){
+        return '<div style="font-size:11px;color:var(--text3);padding-left:16px;margin-top:2px">'
+          +esc(d.label)+': <span style="color:var(--redx)">'+esc(d.valor)+'</span> '
+          +'<span style="color:var(--text3)">('+(d.op==='gt'?'max ':'min ')+esc(d.limite)+')</span></div>';
+      }).join('');
+      return '<div style="padding:7px 0;border-top:1px solid rgba(216,90,48,0.15)">'
+        +'<div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="selectClient('+x.c.id+');S.tab=\'alarmas\';renderClient()">'
         +'<span style="width:6px;height:6px;border-radius:50%;background:var(--redx);flex-shrink:0"></span>'
-        +'<span style="flex:1;font-size:12.5px;color:var(--strong)">'+esc(x.c.name)+'</span>'
-        +'<span style="font-size:11px;color:var(--redx)">'+x.n+' metrica'+(x.n>1?'s':'')+' fuera</span>'
+        +'<span style="flex:1;font-size:12.5px;color:var(--strong);font-weight:500">'+esc(x.c.name)+'</span>'
         +'<span style="font-size:11px;color:var(--text3)">ver &rarr;</span>'
+        +'</div>'
+        +metricas
         +'</div>';
     }).join('')
     +'</div>';
@@ -3860,15 +3867,24 @@ function saveDefaultAlarms(){
 
 function alarmStatus(c){
   const rules=effectiveAlarmRules(c).filter(function(r){return r.enabled;});
-  if(!rules.length) return {active:0,breached:0};
+  if(!rules.length) return {active:0,breached:0,detalle:[]};
   const M=computeAlarmMetrics(c);
-  let breached=0;
+  let breached=0; const detalle=[];
   if(M) rules.forEach(function(r){
     const v=M[r.metric];
     if(v==null) return;
-    if(r.op==='gt'? v>Number(r.value) : v<Number(r.value)) breached++;
+    if(r.op==='gt'? v>Number(r.value) : v<Number(r.value)){
+      breached++;
+      const met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||{label:r.metric,fmt:'num'};
+      detalle.push({
+        label:met.label,
+        valor:fmtAlarmVal(met.fmt,v),
+        limite:fmtAlarmVal(met.fmt,Number(r.value)),
+        op:r.op
+      });
+    }
   });
-  return {active:rules.length,breached:breached};
+  return {active:rules.length,breached:breached,detalle:detalle};
 }
 // Evalua y manda UN mail por cliente con todas las reglas disparadas (cooldown 24h por regla)
 function checkAlarms(c){
