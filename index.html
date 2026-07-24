@@ -7226,7 +7226,7 @@ async function syncMetaAds(clientId){
     }catch(e){ /* si falla, seguimos: la moneda es informativa */ }
 
     // Fetch campaigns with insights
-    var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type';
+    var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type,video_thruplay_watched_actions,cost_per_thruplay';
     var fieldsStr='id,name,status,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
     var url='https://graph.facebook.com/v19.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
@@ -7323,7 +7323,14 @@ async function syncMetaAds(clientId){
       function getActionF(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseFloat(a.value||0):0; }
       var leads=getAction('lead')+getAction('onsite_conversion.lead_grouped')+getAction('onsite_conversion.messaging_first_reply')+getAction('onsite_web_lead');
       var landingViews=getAction('landing_page_view');
-      var thruPlays=getAction('video_thruplay_watched');
+      // ThruPlays no viene dentro de 'actions': es un campo propio de insights,
+      // un array donde el valor util suele estar en el primer elemento.
+      var thruPlays=(function(){
+        var arr=ins.video_thruplay_watched_actions;
+        if(!arr||!arr.length) return 0;
+        var vv=arr.find(function(x){return x.action_type==='video_view';});
+        return parseInt((vv||arr[0]).value||0)||0;
+      })();
       var igFollows=getAction('follow')+getAction('onsite_conversion.post_save');
       var igProfileVisits=getAction('onsite_conversion.messaging_first_reply');
       var spend=parseFloat(ins.spend||0);
@@ -7347,7 +7354,11 @@ async function syncMetaAds(clientId){
         landingViews:landingViews,
         costPerLanding:landingViews>0?(spend/landingViews).toFixed(2):'',
         thruPlays:thruPlays,
-        costPerThruPlay:thruPlays>0?(spend/thruPlays).toFixed(2):'',
+        costPerThruPlay:(function(){
+          var arr=ins.cost_per_thruplay;
+          if(arr&&arr.length){ var v=parseFloat(arr[0].value||0); if(v>0) return v.toFixed(2); }
+          return thruPlays>0?(spend/thruPlays).toFixed(2):'';
+        })(),
         results:results,
         costPerResult:cpr,
         igFollows:igFollows,
