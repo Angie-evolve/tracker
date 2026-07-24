@@ -2228,9 +2228,15 @@ function openConvTestModal(){
     +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Location ID</div>'
     +'<input id="cvt-loc" value="'+esc(savedLoc)+'" placeholder="Settings - Business Info" style="'+inp+';width:100%;box-sizing:border-box"></div>'
     +'</div>'
+    +'<div style="margin-bottom:12px">'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Tu numero de WhatsApp (el que usas con el equipo, el de Applevel)</div>'
+    +'<input id="cvt-minum" value="'+esc(localStorage.getItem('evold-conv-mi-numero')||'')+'" placeholder="+549..." style="'+inp+';width:100%;box-sizing:border-box">'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">El escaneo solo mira conversaciones de este numero. Los chats de ventas con otro numero se ignoran.</div>'
+    +'</div>'
     +'<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">'
     +'<button class="btn btn-sm" onclick="convTestPing()" title="Verifica que el script responda, sin tocar GHL">Probar script</button>'
-    +'<button class="btn btn-sm btn-primary" onclick="convTestHilos(\'\')">Ver ultimos hilos</button>'
+    +'<button class="btn btn-sm btn-primary" id="cvt-escanear" onclick="convEscanearTodo()" title="Lee las ultimas conversaciones de TODA la subcuenta y junta las tareas">Escanear todo</button>'
+    +'<button class="btn btn-sm" onclick="convTestHilos(\'\')">Ver ultimos hilos</button>'
     +'<input id="cvt-q" placeholder="buscar contacto por nombre o telefono" style="'+inp+';flex:1;min-width:190px">'
     +'<button class="btn btn-sm" onclick="convTestBuscar()">Buscar</button>'
     +(conectada?'<span style="font-size:11px;color:var(--accent)">token guardado</span>':'')
@@ -2265,6 +2271,9 @@ function _cvtCtx(){
   const sec=((document.getElementById('cvt-secret')||{}).value||'').trim();
   if(url) localStorage.setItem('evold-conv-url',url);
   if(sec) localStorage.setItem('evold-conv-secret',sec);
+  // Tu numero de WhatsApp: se guarda para filtrar el escaneo a tu hilo con el equipo
+  const miNum=((document.getElementById('cvt-minum')||{}).value||'').trim();
+  if(miNum) localStorage.setItem('evold-conv-mi-numero',miNum);
   // Solo recordamos token/location cuando son de la subcuenta interna
   if((document.getElementById('cvt-client')||{}).value==='manual'&&tok&&loc){
     localStorage.setItem('evold-conv-token',tok);
@@ -2492,6 +2501,105 @@ function convGuardarHilo(convId,nom){
   toast('Hilo del equipo guardado');
   convTestMensajes(convId);
 }
+// Escaneo global: lee las ultimas conversaciones de TODA la subcuenta, analiza
+// cada una y junta todos los candidatos en una sola cola. Conservador con IA,
+// pero incluye todo lo accionable (vos filtras despues). Cada tarea dice de que
+// chat salio, para que sepas el contexto al aprobar.
+async function convEscanearTodo(){
+  const ctx=_cvtCtx();
+  const out=document.getElementById('cvt-out');
+  const apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!ctx.url||!ctx.tok||!ctx.loc){ out.innerHTML='<span style="color:var(--redx)">Faltan datos de conexion (URL, token, location).</span>'; return; }
+  if(!apiKey){ toast('Falta la API key de Anthropic','red'); return; }
+  const btn=document.getElementById('cvt-escanear');
+  if(btn){ btn.disabled=true; btn.textContent='Escaneando...'; }
+  out.innerHTML='<span style="color:var(--text3)">Trayendo las ultimas conversaciones de la subcuenta...</span>';
+  try{
+    // Tu numero: sin el, avisamos, porque escanearia TODO incluidos los leads de ventas
+    const miNum=(localStorage.getItem('evold-conv-mi-numero')||'').trim();
+    if(!miNum){
+      out.innerHTML='<span style="color:var(--amberx)">Configura primero tu numero de WhatsApp arriba, si no el escaneo trae tambien los chats de ventas con leads. Pegalo y volve a intentar.</span>';
+      if(btn){btn.disabled=false;btn.textContent='Escanear todo';}
+      return;
+    }
+    // 1) Traer las conversaciones recientes filtradas por tu numero
+    const rL=await fetch(_cvtUrl(ctx,'&action=conv_recent&limit=40&phone='+encodeURIComponent(miNum)));
+    const dL=await rL.json();
+    if(!dL.ok){ out.innerHTML=_cvtErr(dL); if(btn){btn.disabled=false;btn.textContent='Escanear todo';} return; }
+    const convs=(dL.conversations||[]).filter(function(c){ return c.id; });
+    if(!convs.length){ out.innerHTML='<span style="color:var(--text3)">Sin conversaciones recientes con tu numero. Si esperabas ver algunas, revisa que el numero este bien escrito.</span>'; if(btn){btn.disabled=false;btn.textContent='Escanear todo';} return; }
+
+    // Contexto compartido para el analisis
+    const abiertos=[];
+    DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(t.delegated&&!t.done&&!t.deleted) abiertos.push((t.ticket||'#?')+' | '+c.name+' | '+t.text); }); });
+    const nombres=DB.clients.map(function(c){return c.name;}).join(', ');
+
+    const todas={tareas:[],cierres:[],estados:[]};
+    let leidas=0;
+    for(let i=0;i<convs.length;i++){
+      const cv=convs[i];
+      if(btn) btn.textContent='Analizando '+(i+1)+'/'+convs.length+'...';
+      out.innerHTML='<span style="color:var(--text3)">Analizando conversacion '+(i+1)+' de '+convs.length+' ('+esc(cv.contactName||'sin nombre')+')...</span>';
+      // 2) Traer mensajes de esta conversacion
+      let msgs=[];
+      try{
+        const rM=await fetch(_cvtUrl(ctx,'&action=conv_messages&conversationId='+encodeURIComponent(cv.id)));
+        const dM=await rM.json();
+        msgs=(dM.messages||dM.data||[]);
+      }catch(e){ continue; }
+      if(!msgs.length) continue;
+      leidas++;
+      const hilo=msgs.slice(0,40).map(function(m){
+        return (m.direction==='outbound'?'YO':'ELLOS')+': '+String(m.body||'').replace(/\s+/g,' ').slice(0,200);
+      }).join('\n');
+      // Adivinar el cliente por el nombre del contacto
+      const cliMatch=DB.clients.find(function(c){ return _n(cv.contactName||'').indexOf(_n(c.name))>=0 || _n(c.name).indexOf(_n(cv.contactName||''))>=0; });
+      const prompt='Sos un asistente que lee una conversacion de trabajo de una agencia y detecta TAREAS ACCIONABLES.\n\n'
+        +'=== CONVERSACION con '+(cv.contactName||'contacto')+' ===\n'+hilo+'\n\n'
+        +'=== TICKETS YA ABIERTOS ===\n'+(abiertos.join('\n')||'(ninguno)')+'\n\n'
+        +'=== CLIENTES ===\n'+nombres+'\n\n'
+        +'Incluye TODO lo accionable: cosas que hay que hacer, mandar, revisar, coordinar o seguir, '
+        +'venga de quien venga. La duena filtra despues, asi que ante la duda es mejor incluir.\n'
+        +'Pero NO incluyas charla pura, saludos, ni confirmaciones sueltas ("dale", "ok", "gracias").\n'
+        +'El cliente es uno de la lista o vacio. Evidencia: max 12 palabras del chat.\n'
+        +'Responde SOLO JSON, sin markdown: {"tareas":[{"texto":"en imperativo","cliente":"nombre o vacio","evidencia":"la frase"}]}';
+      try{
+        const r=await fetch('https://api.anthropic.com/v1/messages',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+          body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:prompt}]})
+        });
+        const d=await r.json();
+        if(d.error) continue;
+        let txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+        const ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+        if(ini<0||fin<=ini) continue;
+        const res=JSON.parse(txt.slice(ini,fin+1));
+        (res.tareas||[]).forEach(function(t){
+          todas.tareas.push({
+            texto:t.texto,
+            cliente:t.cliente||(cliMatch?cliMatch.name:''),
+            responsable:'',
+            evidencia:'Chat con '+(cv.contactName||'contacto')+': "'+(t.evidencia||'')+'"',
+            origen:'Conversacion'
+          });
+        });
+      }catch(e){ continue; }
+    }
+    window._convCand=todas;
+    localStorage.setItem('evold-conv-lastscan',String(Date.now()));
+    if(!todas.tareas.length){
+      out.innerHTML='<span style="color:var(--text3)">Escanee '+leidas+' conversaciones y no encontre tareas claras. Es un buen resultado: prefiero no inventar.</span>';
+    } else {
+      convRenderCandidatos();
+      toast(todas.tareas.length+' tareas de '+leidas+' conversaciones');
+    }
+  }catch(e){
+    out.innerHTML='<span style="color:var(--redx)">Error en el escaneo: '+esc(e.message)+'</span>';
+  }
+  if(btn){ btn.disabled=false; btn.textContent='Escanear todo'; }
+}
+
 async function convAnalizar(convId){
   const out=document.getElementById('cvt-out');
   const apiKey=localStorage.getItem('evold-anthropic-key');
