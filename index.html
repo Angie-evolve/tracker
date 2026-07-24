@@ -2126,8 +2126,17 @@ function setTicketEstado(clientId,taskId,estado){
 
 function _ticketRows(){
   const rows=[];
+  const now=new Date();
   DB.clients.forEach(function(c){
-    (c.tasks||[]).forEach(function(t){ rows.push({t:t,c:c}); });
+    (c.tasks||[]).forEach(function(t){
+      // Las tareas del cliente solo aparecen en TU tablero cuando se demoraron.
+      // Mientras el follow-up no vencio, viven solo en la pestana Tareas del cliente.
+      if(t.ownerCliente && !t.done){
+        const venc=t.followUpDue && new Date(t.followUpDue)<now;
+        if(!venc) return; // todavia no toca seguir: no ensucia el tablero
+      }
+      rows.push({t:t,c:c});
+    });
   });
   return rows;
 }
@@ -2593,16 +2602,37 @@ function convCrearTicket(i){
   const c=DB.clients.find(function(x){return x.id===cid;});
   if(!c){ toast('Elegi un cliente','red'); return; }
   c.tasks=c.tasks||[];
-  // Ya se delego por chat, asi que entra como delegada: no dispara mail.
-  c.tasks.unshift({
-    id:Date.now(), text:k.texto, responsible:resp, due:'', done:false,
-    source:k.origen||'WhatsApp', delegated:true, delegatedAt:new Date().toISOString(),
-    ticket:'#'+nextTicketFromApp()
-  });
+  // Es una tarea DEL CLIENTE si el responsable no es del equipo interno.
+  // Equipo interno = solo Angie (vos) y Ashy. El resto (Fernando, Mona, etc.)
+  // es gente del lado del cliente. El recap trae nombre completo, asi que
+  // matcheamos por el primer nombre.
+  const equipo=['angie','ashy'];
+  const primerNombre=_n(resp).split(/\s+/)[0];
+  const esInterno=equipo.indexOf(primerNombre)>=0;
+  const esDelCliente=k.origen==='Llamada' && resp && !esInterno;
+  if(esDelCliente){
+    // Follow-up automatico: 5 dias habiles desde la llamada
+    const base=new Date();
+    let d=new Date(base), habiles=0;
+    while(habiles<5){ d.setDate(d.getDate()+1); const dw=d.getDay(); if(dw>=1&&dw<=5) habiles++; }
+    c.tasks.unshift({
+      id:Date.now(), text:k.texto, responsible:resp, done:false,
+      source:'Llamada', ownerCliente:true, followUpDue:d.toISOString(),
+      delegated:false, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp()
+    });
+    toast('Tarea de '+resp+' cargada en '+c.name+' (seguimiento en 5 dias habiles)');
+  } else {
+    c.tasks.unshift({
+      id:Date.now(), text:k.texto, responsible:resp, due:'', done:false,
+      source:k.origen||'WhatsApp', delegated:true, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp()
+    });
+    toast('Ticket creado en '+c.name);
+  }
   save();
   window._convCand.tareas.splice(i,1);
   convRenderCandidatos();
-  toast('Ticket creado en '+c.name);
 }
 function convAplicarEstado(i){
   const k=(window._convCand.estados||[])[i]; if(!k) return;
@@ -2740,8 +2770,38 @@ function scanFathomRecaps(){
       window._convCand={tareas:cand,cierres:[],estados:[]};
       openConvReviewModal();
       toast(cand.length+' tareas de '+recaps.length+' llamada'+(recaps.length>1?'s':''));
+      // Si hay API key, traducir al castellano en una sola llamada (no una por tarea).
+      traducirCandidatos();
     })
     .catch(function(e){ toast('Error de red leyendo el mail','red'); });
+}
+async function traducirCandidatos(){
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var tareas=(window._convCand&&window._convCand.tareas)||[];
+  if(!apiKey||!tareas.length) return;
+  // Solo traducir las que estan en ingles (evita gastar en las que ya vienen en espanol)
+  var enIngles=tareas.filter(function(t){ return /[a-z]/i.test(t.texto) && !/[áéíóúñ¿¡]/i.test(t.texto) && /\b(the|to|then|and|in|as|for|call|send|add|paste|schedule|record)\b/i.test(t.texto); });
+  if(!enIngles.length) return;
+  try{
+    var lista=tareas.map(function(t,i){ return i+'. '+t.texto; }).join('\n');
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:
+        'Traduci al castellano rioplatense estas tareas de trabajo, cortas y en imperativo. '
+        +'Manten nombres propios, siglas (CRM, AD2, R1) y numeros tal cual. Devolve SOLO un JSON '
+        +'{"0":"...","1":"..."} con el mismo indice de cada una, sin markdown:\n\n'+lista}]})
+    });
+    var d=await r.json();
+    if(d.error) return;
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini) return;
+    var map=JSON.parse(txt.slice(ini,fin+1));
+    tareas.forEach(function(t,i){ if(map[i]) t.texto=map[i]; });
+    convRenderCandidatos();
+    toast('Tareas traducidas al castellano');
+  }catch(e){ /* si falla, quedan en ingles: no es critico */ }
 }
 // Reusa la cola de revision de conversaciones para mostrar los candidatos.
 function openConvReviewModal(){
@@ -2869,7 +2929,9 @@ function showTickets(){
       +'<input type="checkbox" '+(t.done?'checked':'')+' onchange="toggleTask('+c.id+','+t.id+',this.checked)" style="margin-right:8px;vertical-align:middle">'
       +'<span class="mono" style="font-size:11.5px;color:var(--accent)">'+esc(t.ticket||'-')+'</span></td>'
       +'<td style="padding:10px 12px;white-space:nowrap;cursor:pointer;color:var(--strong)" onclick="selectClient('+c.id+');S.tab=\'tareas\';renderClient()">'+esc(c.name)+'</td>'
-      +'<td style="padding:10px 12px;max-width:340px">'+esc(t.text||'')+'</td>'
+      +'<td style="padding:10px 12px;max-width:340px">'
+      +(t.ownerCliente?'<span style="display:inline-block;background:rgba(216,90,48,0.14);color:var(--redx);font-size:9.5px;font-weight:600;padding:2px 7px;border-radius:20px;margin-right:7px;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle">Seguir a '+esc(t.responsible||'cliente')+'</span>':'')
+      +esc(t.text||'')+'</td>'
       +'<td style="padding:10px 12px;white-space:nowrap;color:var(--text3);font-size:11.5px" title="'+esc(t.source||'')+'">'+_tkOrigen(t)+'</td>'
       +'<td style="padding:10px 12px;white-space:nowrap">'+esc(t.responsible||'Ashy')+'</td>'
       +'<td style="padding:10px 12px;white-space:nowrap" class="mono" style="font-size:11.5px">'+fmtF(t.delegatedAt)+'</td>'
