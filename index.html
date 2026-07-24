@@ -6689,7 +6689,16 @@ function getLab(c){
 }
 function labAdsDisponibles(c){
   var out=[], wins=(typeof adWinsMap==='function')?adWinsMap(c):{};
-  (c.conversionLines||[]).forEach(function(l){
+  // La linea ACTIVA va primero. Un mismo anuncio puede existir en varias lineas,
+  // y nos quedamos con la primera aparicion: si arrancaramos por una linea vieja,
+  // ganaria una version sincronizada antes y sin los campos nuevos (retencion de
+  // video, por ejemplo). Ese era el motivo de que el analisis no viera la curva.
+  var lineas=(c.conversionLines||[]).slice();
+  var activa=(typeof getActiveLine==='function')?getActiveLine(lineas):null;
+  if(activa){
+    lineas.sort(function(a,b){ return (a===activa?-1:0)-(b===activa?-1:0); });
+  }
+  lineas.forEach(function(l){
     (l.metaCampaigns||[]).forEach(function(camp){
       (camp.adsets||[]).forEach(function(as){
         (as.ads||[]).forEach(function(ad){
@@ -6773,6 +6782,7 @@ async function labIA(prompt, maxTokens){
   });
   var d=await r.json();
   if(d.error) throw new Error(d.error.message||'Error de la API');
+  window._labStop=d.stop_reason||'';
   return (d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('\n').trim();
 }
 function labBusy(id,on,label){
@@ -6800,7 +6810,11 @@ async function labAnalizar(clientId){
     +'(apertura, desarrollo o cierre) en vez de hablar del creativo en general. Es el dato mas accionable que tenes.\n\n'
     +'Se concreto y usa los numeros reales. No repitas el brief. Maximo 300 palabras.';
   try{
-    var txt=await labIA(prompt,1200);
+    var txt=await labIA(prompt,2500);
+    // Si el modelo corto a mitad de frase, es mejor decirlo que dejar el texto colgado.
+    if(txt && !/[.!?\]]\s*$/.test(txt.trim())){
+      txt+='\n\n[El analisis se corto por limite de longitud. Volve a analizar o acorta el SOP.]';
+    }
     lab.analisis={texto:txt,ts:new Date().toISOString(),adId:base.id,adName:base.name};
     lab.angulos=[];
     save(); renderTab(); toast('Analisis listo');
