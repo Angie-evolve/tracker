@@ -2570,7 +2570,7 @@ function convRenderCandidatos(){
       const match=DB.clients.find(function(c){return _n(c.name)===_n(k.cliente||'');});
       return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:8px">'
         +'<div style="font-size:12.5px;color:var(--strong)">'+esc(k.texto||'')+'</div>'
-        +'<div style="font-size:11.5px;color:var(--text3);margin:4px 0 9px;font-style:italic">"'+esc(k.evidencia||'')+'"</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin:4px 0 9px;'+(k.origen==='Llamada'?'':'font-style:italic')+'">'+(k.origen==='Llamada'?'':'"')+esc(k.evidencia||'')+(k.origen==='Llamada'?'':'"')+'</div>'
         +'<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">'
         +'<select id="cvc-cli-'+i+'" style="font-size:11.5px;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text)">'
         +opts.replace('value="'+(match?match.id:'')+'"','value="'+(match?match.id:'')+'" selected')+'</select>'
@@ -2596,7 +2596,7 @@ function convCrearTicket(i){
   // Ya se delego por chat, asi que entra como delegada: no dispara mail.
   c.tasks.unshift({
     id:Date.now(), text:k.texto, responsible:resp, due:'', done:false,
-    source:'WhatsApp', delegated:true, delegatedAt:new Date().toISOString(),
+    source:k.origen||'WhatsApp', delegated:true, delegatedAt:new Date().toISOString(),
     ticket:'#'+nextTicketFromApp()
   });
   save();
@@ -2703,6 +2703,59 @@ async function convEnviarMsg(){
       +'<div style="font-size:11.5px;color:var(--text3);margin-top:8px">Proba con otro tipo de canal en el selector.</div>'; }
   }catch(e){ toast('Error: '+e.message,'red'); }
   if(btn){ btn.disabled=false; btn.textContent='Enviar'; }
+}
+
+// ---- Action items de las llamadas (Fathom via Gmail) ----
+// Trae los recaps de Fathom del mail y los convierte en candidatos a ticket,
+// la misma cola de revision que usan los mensajes de WhatsApp. No auto-crea:
+// Fathom a veces lista como "action item" cosas que no son tarea (contexto,
+// decisiones), asi que vos confirmas cual entra.
+function scanFathomRecaps(){
+  if(typeof TICKETS_PROXY==='undefined'||!TICKETS_PROXY){ toast('Falta el script de tickets','red'); return; }
+  toast('Buscando recaps de Fathom en el mail...');
+  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=fathom_recaps&days=14')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.ok){ toast('No se pudo leer el mail ('+((d&&d.error)||'actualiza el addon del script')+')','red'); return; }
+      var recaps=d.recaps||[];
+      if(!recaps.length){ toast('Sin recaps de Fathom en los ultimos 14 dias'); return; }
+      // Aplanar los action items, cada uno con el nombre de la reunion como pista de cliente
+      var cand=[];
+      recaps.forEach(function(rc){
+        (rc.actionItems||[]).forEach(function(it){
+          // El nombre de la reunion suele contener el cliente: lo intentamos matchear
+          var cli=DB.clients.find(function(c){
+            return _n(rc.meeting).indexOf(_n(c.name))>=0;
+          });
+          cand.push({
+            texto:it.texto,
+            responsable:it.responsable||'',
+            cliente:cli?cli.name:'',
+            evidencia:'Llamada: '+rc.meeting+' ('+rc.date+')',
+            origen:'Llamada'
+          });
+        });
+      });
+      window._convCand={tareas:cand,cierres:[],estados:[]};
+      openConvReviewModal();
+      toast(cand.length+' tareas de '+recaps.length+' llamada'+(recaps.length>1?'s':''));
+    })
+    .catch(function(e){ toast('Error de red leyendo el mail','red'); });
+}
+// Reusa la cola de revision de conversaciones para mostrar los candidatos.
+function openConvReviewModal(){
+  const opts=[...DB.clients].sort(function(a,b){return String(a.name).localeCompare(String(b.name));})
+    .map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>';}).join('');
+  const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Tareas de las llamadas</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px">Extraidas de los recaps de Fathom. Confirma cuales cargar y a que cliente van.</div>'
+    +'<div id="cvt-out"></div>'
+    +'<div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
+  convRenderCandidatos();
 }
 
 function showTickets(){
@@ -2883,6 +2936,7 @@ function showTickets(){
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn btn-sm btn-primary" onclick="openNewTicketModal()">+ Delegar tarea</button>'
     +'<button class="btn btn-sm" onclick="scanTicketReplies()" title="Busca respuestas de Ashy en Gmail y sugiere el estado de cada ticket">Revisar respuestas</button>'
+    +'<button class="btn btn-sm" onclick="scanFathomRecaps()" title="Extrae tareas de los recaps de llamadas de Fathom en tu mail">Tareas de llamadas</button>'
     +'<button class="btn btn-sm" onclick="resetTicketsHistory()" style="color:var(--text3)">Reiniciar historial</button>'
     +'<button class="btn btn-sm" onclick="openEnviarListaModal()" title="Manda las tareas abiertas en orden de prioridad">Enviar prioridades</button>'
     +'<button class="btn btn-sm" onclick="openConvTestModal()" style="color:var(--text3)" title="Conexion con la subcuenta interna para leer conversaciones">Conversaciones</button>'
