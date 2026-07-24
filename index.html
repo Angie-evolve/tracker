@@ -6761,6 +6761,35 @@ function labContextoAnuncio(c,a){
   if(g.notas) L.push('Notas del guion: '+g.notas);
   return L.join('\n');
 }
+// Anuncios que tienen guion cargado, con sus metricas y su curva de retencion.
+// Sin esto el analisis ve cada anuncio como una pieza suelta y no puede saber
+// que dos creativos comparten hook y solo difieren en el cierre.
+function labContextoVariantes(c, base){
+  var ads=labAdsDisponibles(c).filter(function(a){
+    var g=(c.adScriptsByAd&&c.adScriptsByAd[a.id])||{};
+    return !!g.guion;
+  });
+  if(ads.length<2) return '';
+  // Los mas relevantes primero: por cierres, calificados y volumen
+  ads.sort(function(x,y){
+    return (y.win.cierres-x.win.cierres)||(y.win.calif-x.win.calif)||((y.m.leads||0)-(x.m.leads||0));
+  });
+  return ads.slice(0,10).map(function(a){
+    var m=a.m||{}, g=c.adScriptsByAd[a.id];
+    var L=[];
+    L.push('### '+a.name+(a.id===base.id?'  <-- ES EL ANUNCIO BASE':''));
+    L.push('CTR '+(m.ctr||'-')+'% | CPL $'+(m.cpl||'-')+' | leads '+(m.leads||0)
+      +' | calificados '+(a.win.calif||0)+' | cierres '+(a.win.cierres||0));
+    if(m.videoPlays){
+      L.push('Retencion: 25% -> '+(m.ret25||'?')+'% | 50% -> '+(m.ret50||'?')+'% | final -> '+(m.ret100||'?')
+        +'% | tiempo promedio '+(m.avgWatch||'?')+'s');
+    }
+    L.push('GUION:');
+    L.push(String(g.guion).replace(/\s+/g,' ').slice(0,700));
+    return L.join('\n');
+  }).join('\n\n');
+}
+
 function labContextoCompetencia(c,base){
   var ads=labAdsDisponibles(c).filter(function(a){return a.id!==base.id;}).slice(0,6);
   if(!ads.length) return '(No hay otros anuncios para comparar.)';
@@ -6801,6 +6830,10 @@ async function labAnalizar(clientId){
     +'Sos analista de performance creativa en una agencia. Analiza este anuncio para decidir como reemplazarlo o competirle.\n\n'
     +'=== ANUNCIO BASE ===\n'+labContextoAnuncio(c,base)+'\n\n'
     +'=== OTROS ANUNCIOS DE LA CUENTA ===\n'+labContextoCompetencia(c,base)+'\n\n'
+    +(function(){
+      var v=labContextoVariantes(c,base);
+      return v?('=== GUIONES CARGADOS (para comparar componentes) ===\n'+v+'\n\n'):'';
+    })()
     +'Devolve un analisis breve y filoso en texto plano (sin markdown, sin titulos con #), con estas cuatro partes separadas por una linea en blanco:\n'
     +'1. QUE ESTA FUNCIONANDO: que hace bien este anuncio y por que, apoyandote en los numeros.\n'
     +'2. SENALES DE FATIGA: leer la frecuencia, el CTR y el CPL. Si la frecuencia supera 2.5 decilo explicito. Si no hay senales de desgaste, decilo igual de claro en vez de inventarlas.\n'
@@ -6808,9 +6841,17 @@ async function labAnalizar(clientId){
     +'4. QUE ATACAR EN EL PROXIMO CREATIVO: la recomendacion concreta.\n\n'
     +'Si hay datos de retencion de video, usalos para decir EN QUE PARTE del guion se pierde la gente '
     +'(apertura, desarrollo o cierre) en vez de hablar del creativo en general. Es el dato mas accionable que tenes.\n\n'
+    +'Si te pasaron guiones cargados, agrega una quinta parte:\n'
+    +'5. QUE COMPONENTE EXPLICA LA DIFERENCIA: mira los guiones y agrupa los anuncios que comparten hook, '
+    +'cuerpo o cierre (la nomenclatura de los nombres suele delatarlo, y el texto lo confirma). Despues deci '
+    +'que componente mueve la aguja: si todos los que comparten un hook retienen parecido sin importar el '
+    +'cierre, el hook manda; si con el mismo hook cambia mucho la calificacion, manda el cuerpo o el CTA. '
+    +'Se explicito sobre que variantes se probaron y cuales NO: si nunca se testeo un hook alternativo, decilo, '
+    +'porque es la variable sin explorar. Si no alcanzan los datos para separar el efecto de cada componente, '
+    +'decilo en vez de inventar una conclusion.\n\n'
     +'Se concreto y usa los numeros reales. No repitas el brief. Maximo 300 palabras.';
   try{
-    var txt=await labIA(prompt,2500);
+    var txt=await labIA(prompt,3500);
     // Si el modelo corto a mitad de frase, es mejor decirlo que dejar el texto colgado.
     if(txt && !/[.!?\]]\s*$/.test(txt.trim())){
       txt+='\n\n[El analisis se corto por limite de longitud. Volve a analizar o acorta el SOP.]';
