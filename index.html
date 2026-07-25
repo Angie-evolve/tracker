@@ -2872,6 +2872,90 @@ async function convEnviarMsg(){
 // la misma cola de revision que usan los mensajes de WhatsApp. No auto-crea:
 // Fathom a veces lista como "action item" cosas que no son tarea (contexto,
 // decisiones), asi que vos confirmas cual entra.
+// ---- Sincronizacion automatica de LLAMADAS (no solo tareas) ----
+// Usa los mismos recaps de Fathom que ya llegan a Gmail, pero en vez de sacar
+// solo action items, arma la llamada completa (titulo, fecha, resumen, riesgos),
+// la asigna al cliente por las palabras clave del mapeo y llena fathomCalls + hitos.
+// 100% automatico: sin pegar JSON, sin boton por cliente.
+function _fathomMatchClient(meeting){
+  var mn=_n(meeting);
+  if(!mn) return null;
+  var byKw=DB.clients.find(function(c){
+    return (c.fathomKeywords||[]).some(function(k){ return k && mn.indexOf(_n(k))>=0; });
+  });
+  if(byKw) return byKw;
+  return DB.clients.find(function(c){ return _n(c.name) && mn.indexOf(_n(c.name))>=0; })||null;
+}
+function _fathomAddMilestones(c, calls){
+  var existingIds=new Set((c.milestones||[]).map(function(m){return m.fathomId;}).filter(Boolean));
+  var news=calls.filter(function(cl){return !existingIds.has(cl.id);}).map(function(cl){
+    return {
+      type:cl.sentiment==='satisfecho'?'hito':'alerta',
+      title:cl.title,
+      date:cl.date,
+      body:(cl.summary||'')+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):''),
+      tags:[cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion',cl.duration].filter(Boolean),
+      fathomId:cl.id
+    };
+  });
+  if(!news.length) return;
+  if(!c.milestones) c.milestones=[];
+  c.milestones=c.milestones.concat(news);
+  c.milestones.sort(function(a,b){return String(b.date||'').split('/').reverse().join('').localeCompare(String(a.date||'').split('/').reverse().join(''));});
+}
+function syncFathomFromGmail(silent){
+  var url=fathomProxyUrl();
+  if(!url){ if(!silent) toast('Configura el script de Fathom','red'); return Promise.resolve({added:0}); }
+  if(!silent) toast('Sincronizando llamadas de Fathom...');
+  return fetch(url+(url.indexOf('?')>=0?'&':'?')+'secret=evolve-tracker&action=fathom_recaps&days=60')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.ok){ if(!silent) toast('No se pudo leer el mail ('+((d&&d.error)||'revisa el script')+')','red'); return {added:0}; }
+      var recaps=d.recaps||[];
+      var added=0, touched={};
+      recaps.forEach(function(rc){
+        var c=_fathomMatchClient(rc.meeting||rc.title||'');
+        if(!c) return;
+        var id=rc.id||('fathom-'+_n(rc.meeting||rc.title||'')+'-'+String(rc.date||'').replace(/\D/g,''));
+        c.fathomCalls=c.fathomCalls||[];
+        if(c.fathomCalls.some(function(x){return x.id===id;})) return;
+        var items=(rc.actionItems||[]).map(function(it){return (it&&it.texto)?it.texto:String(it||'');}).filter(Boolean);
+        var risks=rc.riskFlags||rc.riesgos||[];
+        var sentiment=rc.sentiment||(risks.length?'atencion':'satisfecho');
+        var call={
+          id:id,
+          title:rc.meeting||rc.title||'Llamada',
+          date:rc.date||new Date().toLocaleDateString('es-AR'),
+          duration:rc.duration||'',
+          sentiment:sentiment,
+          summary:rc.summary||rc.body||rc.recap||'',
+          actionItems:items,
+          riskFlags:risks,
+          initials:rc.initials||''
+        };
+        c.fathomCalls.unshift(call);
+        _fathomAddMilestones(c,[call]);
+        touched[c.id]=true; added++;
+      });
+      localStorage.setItem('evold-fathom-sync-at',String(Date.now()));
+      save();
+      if(S.view==='client') renderClient(); else if(S.view==='overview') showOverview();
+      if(!silent){
+        var nClients=Object.keys(touched).length;
+        toast(added?(added+' llamada'+(added>1?'s':'')+' nueva'+(added>1?'s':'')+' en '+nClients+' cliente'+(nClients>1?'s':'')):'Sin llamadas nuevas');
+      }
+      return {added:added, clients:Object.keys(touched).length};
+    })
+    .catch(function(e){ if(!silent) toast('Error de red leyendo el mail','red'); return {added:0}; });
+}
+// Auto-sync en segundo plano al abrir la app (maximo una vez cada 10 min).
+function autoSyncFathom(){
+  if(!fathomProxyUrl()) return;
+  var last=+(localStorage.getItem('evold-fathom-sync-at')||0);
+  if(Date.now()-last < 10*60*1000) return;
+  syncFathomFromGmail(true);
+}
+
 function scanFathomRecaps(){
   var _url=fathomProxyUrl();
   if(!_url){ toast('Configura el script de Fathom','red'); return; }
@@ -3092,6 +3176,7 @@ function toggleOverviewMenu(btn){
   m.innerHTML=''
     +it('openNewClientModal()','ti-plus','Nuevo cliente')
     +it('openSyncModal()','ti-refresh','Sincronizar Sheet')
+    +it('syncFathomFromGmail()','ti-phone','Sincronizar llamadas')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
     +it('importData()','ti-download','Importar backup',true)
     +it('exportData()','ti-upload','Exportar backup',true);
@@ -4424,9 +4509,15 @@ function renderTab(){
 
 
         <div style="margin-bottom:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Llamadas - Fathom</div>
-            <button class="btn btn-sm btn-primary" onclick="openImportFathomModal(${c.id})">+ Importar llamadas</button>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px">
+            <div style="display:flex;align-items:baseline;gap:10px;min-width:0">
+              <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Llamadas - Fathom</div>
+              ${(function(){var t=+(localStorage.getItem('evold-fathom-sync-at')||0);return t?'<span style="font-size:10px;color:var(--text3)">sinc. '+new Date(t).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</span>':'';})()}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0">
+              <button class="btn btn-sm" style="color:var(--text3)" onclick="openImportFathomModal(${c.id})" title="Pegar el JSON a mano (respaldo)">Pegar JSON</button>
+              <button class="btn btn-sm btn-primary" onclick="syncFathomFromGmail()">Sincronizar</button>
+            </div>
           </div>
           ${fathomCallsHTML(c)}
           <div style="margin-top:10px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">
@@ -8910,6 +9001,7 @@ if(localStorage.getItem('evold-sidebar-collapsed')==='1'){
   document.getElementById('sidebar').classList.add('collapsed');
 }
 renderSidebar();showOverview();
+try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
 </script>
 </body>
 </html>
