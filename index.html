@@ -2886,67 +2886,116 @@ function _fathomMatchClient(meeting){
   if(byKw) return byKw;
   return DB.clients.find(function(c){ return _n(c.name) && mn.indexOf(_n(c.name))>=0; })||null;
 }
-function _fathomAddMilestones(c, calls){
-  var existingIds=new Set((c.milestones||[]).map(function(m){return m.fathomId;}).filter(Boolean));
-  var news=calls.filter(function(cl){return !existingIds.has(cl.id);}).map(function(cl){
-    return {
-      type:cl.sentiment==='satisfecho'?'hito':'alerta',
-      title:cl.title,
-      date:cl.date,
-      body:(cl.summary||'')+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):''),
-      tags:[cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion',cl.duration].filter(Boolean),
-      fathomId:cl.id
-    };
-  });
-  if(!news.length) return;
+function _fathomUpsertMilestone(c, cl){
   if(!c.milestones) c.milestones=[];
-  c.milestones=c.milestones.concat(news);
+  var body=(cl.summary||'')+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):'');
+  var tipo=cl.sentiment==='satisfecho'?'hito':'alerta';
+  var tags=[cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion',cl.duration].filter(Boolean);
+  var ex=c.milestones.find(function(m){return m.fathomId===cl.id;});
+  if(ex){ ex.type=tipo; ex.title=cl.title; ex.date=cl.date; ex.body=body; ex.tags=tags; }
+  else { c.milestones.push({type:tipo,title:cl.title,date:cl.date,body:body,tags:tags,fathomId:cl.id}); }
+}
+function _fathomSortMilestones(c){
+  if(!c.milestones) return;
   c.milestones.sort(function(a,b){return String(b.date||'').split('/').reverse().join('').localeCompare(String(a.date||'').split('/').reverse().join(''));});
 }
-function syncFathomFromGmail(silent){
+// Heuristica: la llamada parece estar en ingles (para no gastar API en las que ya estan en castellano)
+function _fathomPareceIngles(cl){
+  var s=(cl.title||'')+' '+(cl.summary||'')+' '+((cl.actionItems||[]).join(' '))+' '+((cl.riskFlags||[]).join(' '));
+  return /[a-z]/i.test(s) && !/[áéíóúñ¿¡]/i.test(s) && /\b(the|to|and|for|with|send|book|edit|call|meeting|review|schedule|next|week|new|ready|feedback|shoot|coordinate|refresh)\b/i.test(s);
+}
+// Traduce al castellano titulo, resumen, action items y riesgos de un set de llamadas, en una sola llamada a la API.
+async function _fathomTraducirLlamadas(calls){
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey || !calls || !calls.length) return false;
+  var payload=calls.map(function(cl,i){ return {i:i, title:cl.title||'', summary:cl.summary||'', actionItems:cl.actionItems||[], riskFlags:cl.riskFlags||[]}; });
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2500,messages:[{role:'user',content:
+        'Traduci al castellano rioplatense TODOS los textos de estas llamadas de trabajo (title, summary, actionItems y riskFlags). '
+        +'Manten nombres propios, nombres de clientes, siglas y numeros tal cual. Los action items van cortos y en imperativo. '
+        +'Devolve SOLO un JSON array con la MISMA estructura y los mismos indices "i", sin markdown ni explicaciones:\n\n'+JSON.stringify(payload)}]})
+    });
+    var d=await r.json();
+    if(d.error) return false;
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('['), fin=txt.lastIndexOf(']');
+    if(ini<0||fin<=ini) return false;
+    var arr=JSON.parse(txt.slice(ini,fin+1));
+    arr.forEach(function(tr){
+      var cl=calls[tr.i]; if(!cl) return;
+      if(tr.title) cl.title=tr.title;
+      if(tr.summary) cl.summary=tr.summary;
+      if(Array.isArray(tr.actionItems)) cl.actionItems=tr.actionItems;
+      if(Array.isArray(tr.riskFlags)) cl.riskFlags=tr.riskFlags;
+    });
+    return true;
+  }catch(e){ return false; }
+}
+async function syncFathomFromGmail(silent){
   var url=fathomProxyUrl();
-  if(!url){ if(!silent) toast('Configura el script de Fathom','red'); return Promise.resolve({added:0}); }
+  if(!url){ if(!silent) toast('Configura el script de Fathom','red'); return {added:0}; }
   if(!silent) toast('Sincronizando llamadas de Fathom...');
-  return fetch(url+(url.indexOf('?')>=0?'&':'?')+'secret=evolve-tracker&action=fathom_recaps&days=60')
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(!d||!d.ok){ if(!silent) toast('No se pudo leer el mail ('+((d&&d.error)||'revisa el script')+')','red'); return {added:0}; }
-      var recaps=d.recaps||[];
-      var added=0, touched={};
-      recaps.forEach(function(rc){
-        var c=_fathomMatchClient(rc.meeting||rc.title||'');
-        if(!c) return;
-        var id=rc.id||('fathom-'+_n(rc.meeting||rc.title||'')+'-'+String(rc.date||'').replace(/\D/g,''));
-        c.fathomCalls=c.fathomCalls||[];
-        if(c.fathomCalls.some(function(x){return x.id===id;})) return;
-        var items=(rc.actionItems||[]).map(function(it){return (it&&it.texto)?it.texto:String(it||'');}).filter(Boolean);
-        var risks=rc.riskFlags||rc.riesgos||[];
-        var sentiment=rc.sentiment||(risks.length?'atencion':'satisfecho');
-        var call={
-          id:id,
-          title:rc.meeting||rc.title||'Llamada',
-          date:rc.date||new Date().toLocaleDateString('es-AR'),
-          duration:rc.duration||'',
-          sentiment:sentiment,
-          summary:rc.summary||rc.body||rc.recap||'',
-          actionItems:items,
-          riskFlags:risks,
-          initials:rc.initials||''
-        };
-        c.fathomCalls.unshift(call);
-        _fathomAddMilestones(c,[call]);
-        touched[c.id]=true; added++;
-      });
-      localStorage.setItem('evold-fathom-sync-at',String(Date.now()));
-      save();
-      if(S.view==='client') renderClient(); else if(S.view==='overview') showOverview();
-      if(!silent){
-        var nClients=Object.keys(touched).length;
-        toast(added?(added+' llamada'+(added>1?'s':'')+' nueva'+(added>1?'s':'')+' en '+nClients+' cliente'+(nClients>1?'s':'')):'Sin llamadas nuevas');
-      }
-      return {added:added, clients:Object.keys(touched).length};
-    })
-    .catch(function(e){ if(!silent) toast('Error de red leyendo el mail','red'); return {added:0}; });
+  var d;
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'secret=evolve-tracker&action=fathom_recaps&days=60');
+    d=await r.json();
+  }catch(e){ if(!silent) toast('Error de red leyendo el mail','red'); return {added:0}; }
+  if(!d||!d.ok){ if(!silent) toast('No se pudo leer el mail ('+((d&&d.error)||'revisa el script')+')','red'); return {added:0}; }
+  var recaps=d.recaps||[];
+  var added=0, nuevas=[], clientesTocados={};
+  recaps.forEach(function(rc){
+    var c=_fathomMatchClient(rc.meeting||rc.title||'');
+    if(!c) return;
+    var id=rc.id||('fathom-'+_n(rc.meeting||rc.title||'')+'-'+String(rc.date||'').replace(/\D/g,''));
+    c.fathomCalls=c.fathomCalls||[];
+    if(c.fathomCalls.some(function(x){return x.id===id;})) return;
+    var items=(rc.actionItems||[]).map(function(it){return (it&&it.texto)?it.texto:String(it||'');}).filter(Boolean);
+    var risks=rc.riskFlags||rc.riesgos||[];
+    var sentiment=rc.sentiment||(risks.length?'atencion':'satisfecho');
+    var call={ id:id, title:rc.meeting||rc.title||'Llamada', date:rc.date||new Date().toLocaleDateString('es-AR'),
+      duration:rc.duration||'', sentiment:sentiment, summary:rc.summary||rc.body||rc.recap||'',
+      actionItems:items, riskFlags:risks, initials:rc.initials||'', _cid:c.id };
+    c.fathomCalls.unshift(call);
+    nuevas.push(call); clientesTocados[c.id]=true; added++;
+  });
+
+  // Ademas de las nuevas, recuperar las ya guardadas que quedaron en ingles (p. ej. importadas antes de la traduccion)
+  var viejasIngles=[];
+  DB.clients.forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      if(nuevas.indexOf(cl)<0 && _fathomPareceIngles(cl)){ cl._cid=c.id; viejasIngles.push(cl); clientesTocados[c.id]=true; }
+    });
+  });
+
+  var paraTraducir=nuevas.concat(viejasIngles);
+  var hayApiKey=!!localStorage.getItem('evold-anthropic-key');
+  if(paraTraducir.length && hayApiKey){
+    if(!silent) toast('Traduciendo '+paraTraducir.length+' llamada'+(paraTraducir.length>1?'s':'')+' al castellano...');
+    await _fathomTraducirLlamadas(paraTraducir);
+  }
+
+  // (Re)construir los hitos con el texto ya traducido
+  Object.keys(clientesTocados).forEach(function(cid){
+    var c=DB.clients.find(function(x){return String(x.id)===String(cid);});
+    if(!c) return;
+    (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
+    _fathomSortMilestones(c);
+  });
+
+  localStorage.setItem('evold-fathom-sync-at',String(Date.now()));
+  save();
+  if(S.view==='client') renderClient(); else if(S.view==='overview') showOverview();
+  if(!silent){
+    var nClients=Object.keys(clientesTocados).length;
+    if(added) toast(added+' llamada'+(added>1?'s':'')+' nueva'+(added>1?'s':'')+(paraTraducir.length&&!hayApiKey?' (configura tu API key para traducir)':''));
+    else if(viejasIngles.length && hayApiKey) toast(viejasIngles.length+' llamada'+(viejasIngles.length>1?'s':'')+' traducida'+(viejasIngles.length>1?'s':''));
+    else if(viejasIngles.length && !hayApiKey) toast('Configura tu API key de Anthropic para traducir','red');
+    else toast('Sin llamadas nuevas');
+  }
+  return {added:added, clients:Object.keys(clientesTocados).length};
 }
 // Auto-sync en segundo plano al abrir la app (maximo una vez cada 10 min).
 function autoSyncFathom(){
