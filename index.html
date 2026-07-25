@@ -3146,6 +3146,37 @@ function ticketRestaurar(cid,tid){
   toast('Tarea restaurada');
 }
 
+function openTicketsCustomRange(){
+  const r=S.tkCustom||{};
+  const today=(new Date()).toISOString().split('T')[0];
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Rango personalizado</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px">Cuenta las tareas creadas y completadas entre dos fechas.</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Desde</div>'
+    +'<input type="date" id="tkcr-from" value="'+(r.from||'')+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;color-scheme:dark"></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Hasta</div>'
+    +'<input type="date" id="tkcr-to" value="'+(r.to||today)+'" max="'+today+'" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;color-scheme:dark"></div>'
+    +'</div>'
+    +'<div id="tkcr-err" style="font-size:11px;color:var(--redx);margin-bottom:12px;min-height:14px"></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="applyTicketsCustomRange()">Aplicar</button>'
+    +'</div></div></div>';
+}
+function applyTicketsCustomRange(){
+  const from=(document.getElementById('tkcr-from')||{}).value||'';
+  const to=(document.getElementById('tkcr-to')||{}).value||'';
+  const err=document.getElementById('tkcr-err');
+  if(!from||!to){ if(err) err.textContent='Elegi ambas fechas'; return; }
+  if(new Date(from)>new Date(to)){ if(err) err.textContent='La fecha "desde" no puede ser posterior a "hasta"'; return; }
+  S.tkCustom={from:from,to:to};
+  S.tkPeriod='custom';
+  closeModal();
+  showTickets();
+}
 function showTickets(){
   S.view='tickets'; S.clientId=null; renderSidebar();
   const _since=+(localStorage.getItem('evold-tickets-since')||0);
@@ -3170,18 +3201,33 @@ function showTickets(){
 
   // --- Periodo para las metricas de flujo (creadas / completadas por fecha) ---
   const _tkPeriod=S.tkPeriod||'7d';
-  const _periodStart=(function(){
-    if(_tkPeriod==='todo') return null;
+  let _periodStart=null, _periodEnd=null;
+  (function(){
+    if(_tkPeriod==='todo') return;
+    if(_tkPeriod==='custom'){
+      const cr=S.tkCustom||{};
+      if(cr.from) _periodStart=new Date(cr.from+'T00:00:00');
+      if(cr.to)   _periodEnd=new Date(cr.to+'T23:59:59');
+      return;
+    }
     const d=new Date(); d.setHours(0,0,0,0);
-    if(_tkPeriod==='hoy') return d;
-    if(_tkPeriod==='7d'){ d.setDate(d.getDate()-6); return d; }
-    if(_tkPeriod==='30d'){ d.setDate(d.getDate()-29); return d; }
-    return null;
+    if(_tkPeriod==='hoy'){ _periodStart=d; return; }
+    if(_tkPeriod==='7d'){ d.setDate(d.getDate()-6); _periodStart=d; return; }
+    if(_tkPeriod==='30d'){ d.setDate(d.getDate()-29); _periodStart=d; return; }
   })();
+  const _hasBound=!!(_periodStart||_periodEnd);
+  const _inPeriod=function(dt){ if(!dt) return false; if(_periodStart&&dt<_periodStart) return false; if(_periodEnd&&dt>_periodEnd) return false; return true; };
   const _tkCreatedAt=function(t){ return t.delegatedAt?new Date(t.delegatedAt):(typeof t.id==='number'&&t.id>1e12?new Date(t.id):null); };
-  const creadasP=tickets.filter(function(r){ if(!_periodStart) return true; const cc=_tkCreatedAt(r.t); return cc&&cc>=_periodStart; }).length;
-  const completadasP=hechos.filter(function(r){ if(!r.t.doneAt) return false; if(!_periodStart) return true; return new Date(r.t.doneAt)>=_periodStart; }).length;
-  const _periodLabel={hoy:'hoy','7d':'7 dias','30d':'30 dias',todo:'total'}[_tkPeriod]||_tkPeriod;
+  const creadasP=tickets.filter(function(r){ if(!_hasBound) return true; return _inPeriod(_tkCreatedAt(r.t)); }).length;
+  const completadasP=hechos.filter(function(r){ if(!r.t.doneAt) return false; if(!_hasBound) return true; return _inPeriod(new Date(r.t.doneAt)); }).length;
+  const _periodLabel=(function(){
+    if(_tkPeriod==='custom'){
+      const cr=S.tkCustom||{};
+      const short=function(s){ if(!s) return '?'; const p=s.split('-'); return p[2]+'/'+p[1]; };
+      return short(cr.from)+' a '+short(cr.to);
+    }
+    return {hoy:'hoy','7d':'7 dias','30d':'30 dias',todo:'total'}[_tkPeriod]||_tkPeriod;
+  })();
 
   // Rendimiento por responsable
   const porResp={};
@@ -3384,6 +3430,8 @@ function showTickets(){
         var act=_tkPeriod===p;
         return '<button class="btn btn-sm" onclick="S.tkPeriod=\''+p+'\';showTickets()" style="'+(act?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'+lbl+'</button>';
       }).join('')
+    +'<button class="btn btn-sm" onclick="openTicketsCustomRange()" style="'+(_tkPeriod==='custom'?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
+    +(_tkPeriod==='custom'?esc(_periodLabel):'Personalizado')+' &#9662;</button>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">'
     +kpi('Creadas &middot; '+_periodLabel,creadasP)
