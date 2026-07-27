@@ -3415,8 +3415,7 @@ function toggleTicketMenu(cid,tid,btn){
   t=t&&t.find(function(x){return x.id===tid;}); if(!t) return;
   var m=document.createElement('div'); m.className='tk-menu'; m.dataset.tid=tid;
   m.innerHTML=''
-    +'<div class="tk-menu-item" onclick="ticketEditar('+cid+','+tid+')"><i class="ti ti-edit"></i>Editar texto</div>'
-    +'<div class="tk-menu-item" onclick="ticketCambiarResp('+cid+','+tid+')"><i class="ti ti-user"></i>Cambiar responsable</div>'
+    +'<div class="tk-menu-item" onclick="ticketEditarModal('+cid+','+tid+')"><i class="ti ti-edit"></i>Editar tarea</div>'
     +'<div class="tk-menu-item" style="color:var(--redx)" onclick="ticketEliminar('+cid+','+tid+')"><i class="ti ti-trash"></i>Eliminar</div>';
   btn.parentElement.appendChild(m);
   setTimeout(function(){
@@ -3424,6 +3423,89 @@ function toggleTicketMenu(cid,tid,btn){
       if(!m.contains(ev.target)){ m.remove(); document.removeEventListener('click',_cl); }
     });
   },0);
+}
+function ticketEditarModal(cid,tid){
+  var c=DB.clients.find(function(x){return x.id===cid;});
+  var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
+  document.querySelectorAll('.tk-menu').forEach(function(m){m.remove();});
+  window._ted={cid:cid,tid:tid,attachments:(t.attachments||[]).map(function(a){return {url:a.url,label:a.label||a.url};})};
+  var inp='width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none';
+  var lbl='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
+  var estados=[['','Sin estado'],['proceso','En proceso'],['revision','En revision'],['bloqueada','Bloqueada'],['finalizada','Finalizada']];
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%;max-height:88vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:14px">Editar tarea '+(t.ticket||'')+'</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Tarea</div>'
+    +'<textarea id="ted-text" style="'+inp+';min-height:64px;resize:vertical">'+esc(t.text||'')+'</textarea></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    +'<div><div style="'+lbl+'">Cliente</div><select id="ted-cliente" style="'+inp+'">'
+    +DB.clients.map(function(x){return '<option value="'+x.id+'"'+(x.id===cid?' selected':'')+'>'+esc(x.name)+'</option>';}).join('')
+    +'</select></div>'
+    +'<div><div style="'+lbl+'">Responsable</div><input id="ted-resp" list="ted-resp-list" value="'+esc(t.responsible||'Ashy')+'" style="'+inp+'">'
+    +'<datalist id="ted-resp-list"><option value="Ashy"><option value="Angie"><option value="Martin"><option value="'+esc(c.name)+'"></datalist></div>'
+    +'</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Estado</div><select id="ted-estado" style="'+inp+'">'
+    +estados.map(function(e){return '<option value="'+e[0]+'"'+((t.estado||'')===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')
+    +'</select></div>'
+    +'<div style="margin-bottom:14px"><div style="'+lbl+'">Archivos / material</div>'
+    +'<div id="ted-attach" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>'
+    +'<div style="display:flex;gap:6px"><input id="ted-newurl" placeholder="Pega un link (Drive, WeTransfer, etc.)" style="'+inp+';flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();_tedAddAttach();}">'
+    +'<button class="btn btn-sm" onclick="_tedAddAttach()">Agregar</button></div></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="ticketGuardarEdicion()">Guardar</button>'
+    +'</div></div></div>';
+  _tedRenderAttach();
+}
+function _tedRenderAttach(){
+  var cont=document.getElementById('ted-attach'); if(!cont) return;
+  var att=(window._ted&&window._ted.attachments)||[];
+  if(!att.length){ cont.innerHTML='<div style="font-size:11px;color:var(--text3)">Sin archivos adjuntos.</div>'; return; }
+  cont.innerHTML=att.map(function(a,i){
+    return '<div style="display:flex;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">'
+      +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(a.url)+'">&#128206; '+esc(a.label||a.url)+'</span>'
+      +'<button class="btn btn-sm" style="border:none;color:var(--text3);padding:2px 6px" onclick="_tedRemoveAttach('+i+')" title="Quitar">&times;</button>'
+      +'</div>';
+  }).join('');
+}
+function _tedAddAttach(){
+  var el=document.getElementById('ted-newurl'); if(!el) return;
+  var url=(el.value||'').trim(); if(!url) return;
+  if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  window._ted.attachments=window._ted.attachments||[];
+  var label=url.replace(/^https?:\/\//,'').split('/')[0];
+  window._ted.attachments.push({url:url,label:label});
+  el.value=''; _tedRenderAttach();
+}
+function _tedRemoveAttach(i){
+  if(!window._ted||!window._ted.attachments) return;
+  window._ted.attachments.splice(i,1); _tedRenderAttach();
+}
+function ticketGuardarEdicion(){
+  var d=window._ted; if(!d) return;
+  var c=DB.clients.find(function(x){return x.id===d.cid;});
+  var t=c&&c.tasks.find(function(x){return x.id===d.tid;}); if(!t){ closeModal(); return; }
+  var text=(document.getElementById('ted-text')||{}).value||'';
+  var resp=(document.getElementById('ted-resp')||{}).value||'';
+  var estado=(document.getElementById('ted-estado')||{}).value||'';
+  var nuevoCid=parseInt((document.getElementById('ted-cliente')||{}).value||d.cid,10);
+  if(text.trim()) t.text=text.trim();
+  t.responsible=resp.trim()||t.responsible;
+  t.estado=estado;
+  if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
+  else if(t.done && estado){ t.done=false; delete t.doneAt; }
+  t.attachments=(d.attachments||[]).slice();
+  // Mover de cliente si cambio
+  if(nuevoCid && nuevoCid!==d.cid){
+    var nc=DB.clients.find(function(x){return x.id===nuevoCid;});
+    if(nc){
+      c.tasks=c.tasks.filter(function(x){return x.id!==t.id;});
+      nc.tasks=nc.tasks||[]; nc.tasks.unshift(t);
+    }
+  }
+  save(); closeModal(); showTickets();
+  toast('Tarea actualizada');
 }
 function ticketEditar(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
