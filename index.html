@@ -2112,11 +2112,13 @@ var _TK_ESTADOS={
   'bloqueada':{label:'Bloqueada',pill:'pill-red'},
   'finalizada':{label:'Finalizada',pill:'pill-green'}
 };
+// Registra cuando una tarea entra por primera vez en "en proceso" (para medir tiempo de trabajo).
+function _tkMarcarProceso(t){ if(t && t.estado==='proceso' && !t.procesoAt) t.procesoAt=new Date().toISOString(); }
 function applyTicketEstado(clientId,taskId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
   if(!t||!t.estadoSugerido) return;
-  t.estado=t.estadoSugerido;
+  t.estado=t.estadoSugerido; _tkMarcarProceso(t);
   if(t.estado==='finalizada'){ t.done=true; t.doneAt=t.estadoSugeridoAt||new Date().toISOString(); }
   delete t.estadoSugerido; delete t.estadoSugeridoAt;
   save();
@@ -2142,7 +2144,7 @@ function setTicketEstado(clientId,taskId,estado){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
   if(!t) return;
-  t.estado=estado||'';
+  t.estado=estado||''; _tkMarcarProceso(t);
   if(estado==='finalizada'){ t.done=true; t.doneAt=new Date().toISOString(); }
   save();
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
@@ -2942,7 +2944,7 @@ function convAplicarEstado(i){
   DB.clients.forEach(function(c){
     (c.tasks||[]).forEach(function(t){
       if(t.delegated&&!t.done&&String(t.ticket||'').replace(/[^0-9]/g,'')===num){
-        t.estado=k.estado; ok=true;
+        t.estado=k.estado; _tkMarcarProceso(t); ok=true;
       }
     });
   });
@@ -3431,7 +3433,7 @@ function ticketSetEstado(cid,tid,val){
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
   document.querySelectorAll('.tk-estado-menu').forEach(function(m){m.remove();});
   if(val==='hecha'){ t.done=true; if(!t.doneAt) t.doneAt=new Date().toISOString(); t.estado='finalizada'; }
-  else { if(t.done){ t.done=false; delete t.doneAt; } t.estado=val; }
+  else { if(t.done){ t.done=false; delete t.doneAt; } t.estado=val; _tkMarcarProceso(t); }
   save(); showTickets();
 }
 function toggleTicketMenu(cid,tid,btn){
@@ -3520,7 +3522,7 @@ function ticketGuardarEdicion(){
   var nuevoCid=parseInt((document.getElementById('ted-cliente')||{}).value||d.cid,10);
   if(text.trim()) t.text=text.trim();
   t.responsible=resp.trim()||t.responsible;
-  t.estado=estado;
+  t.estado=estado; _tkMarcarProceso(t);
   if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
   else if(t.done && estado){ t.done=false; delete t.doneAt; }
   t.attachments=(d.attachments||[]).slice();
@@ -3614,6 +3616,8 @@ function showTickets(){
   const hechos30=hechos.filter(function(r){return r.t.doneAt&&(now-new Date(r.t.doneAt))<30*86400000;});
   const conTiempos=hechos.filter(function(r){return r.t.doneAt&&r.t.delegatedAt;});
   const avgDias=conTiempos.length?(conTiempos.reduce(function(s,r){return s+_tkDias(new Date(r.t.delegatedAt),new Date(r.t.doneAt));},0)/conTiempos.length):null;
+  const conProceso=hechos.filter(function(r){return r.t.doneAt&&r.t.procesoAt;});
+  const avgProceso=conProceso.length?(conProceso.reduce(function(s,r){return s+_tkDias(new Date(r.t.procesoAt),new Date(r.t.doneAt));},0)/conProceso.length):null;
   const conDue=hechos.filter(function(r){return r.t.doneAt&&r.t.due;});
   const aTiempo=conDue.length?Math.round(conDue.filter(function(r){return new Date(r.t.doneAt)<=endOfDue(r.t);}).length/conDue.length*100):null;
 
@@ -3862,6 +3866,7 @@ function showTickets(){
     +kpi('Abiertos ahora',abiertos.length)
     +kpi('Vencidos',vencidos.length,vencidos.length>0)
     +kpi('Resolucion promedio',avgDias!=null?avgDias.toFixed(1)+' d':'-')
+    +kpi('En proceso &rarr; hecha',avgProceso!=null?avgProceso.toFixed(1)+' d':'-')
     +kpi('Entregas a tiempo',aTiempo!=null?aTiempo+'%':'-')
     +'</div>'
     +'<div style="display:flex;gap:8px;margin-bottom:14px">'
