@@ -2147,6 +2147,82 @@ function setTicketEstado(clientId,taskId,estado){
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
 }
 
+// ===== Registrar entrega (manual asistido): pegar el mensaje de Ash =====
+// La IA detecta a que tarea abierta corresponde, la pasa a "En revision" y engancha los links.
+function openEntregaModal(){
+  var mr=document.getElementById('modal-root');
+  mr.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Registrar entrega</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Pega el mensaje de Ash con la entrega. Detecto la tarea, la paso a <b style="color:var(--amberx)">En revision</b> y engancho los links.</div>'
+    +'<textarea id="entrega-txt" placeholder="Ej: Hola Angie, te paso los videos de dblandit A y B https://we.tl/... y la landing https://..." style="width:100%;min-height:140px;padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;resize:vertical;font-family:inherit"></textarea>'
+    +'<div id="entrega-err" style="font-size:11px;color:var(--redx);margin:8px 0 0;min-height:14px"></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" id="entrega-btn" onclick="procesarEntrega()">Detectar y registrar</button>'
+    +'</div></div></div>';
+  setTimeout(function(){var el=document.getElementById('entrega-txt');if(el)el.focus();},50);
+}
+async function procesarEntrega(){
+  var txt=(document.getElementById('entrega-txt')||{}).value||'';
+  var err=document.getElementById('entrega-err');
+  var btn=document.getElementById('entrega-btn');
+  if(!txt.trim()){ if(err) err.textContent='Pega el mensaje primero'; return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ if(err) err.textContent='Falta tu API key de Anthropic (link "? API key IA" en la ficha de un cliente)'; return; }
+  var cand=[];
+  DB.clients.forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(t.done||t.deleted) return;
+      cand.push({id:t.id, ticket:t.ticket||'', cliente:c.name, tarea:t.text||'', responsable:t.responsible||''});
+    });
+  });
+  if(!cand.length){ if(err) err.textContent='No hay tareas abiertas para asociar'; return; }
+  if(btn){ btn.disabled=true; btn.textContent='Detectando...'; }
+  if(err) err.textContent='';
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1200,messages:[{role:'user',content:
+        'Este es un mensaje de WhatsApp donde una colaboradora (Ash) entrega material de trabajo:\n\n"""'+txt+'"""\n\n'
+        +'Estas son las tareas abiertas del tablero (JSON):\n'+JSON.stringify(cand)+'\n\n'
+        +'Identifica a que tarea(s) corresponde la entrega. Extrae los links/URLs del material (WeTransfer, Drive, landing, etc.) y asignalos a la tarea correcta. '
+        +'Elegi estado: "revision" si entrega algo para revisar o aprobar (lo normal), o "finalizada" solo si dice explicitamente que quedo terminado/aprobado. '
+        +'Devolve SOLO un JSON array, sin markdown, con esta forma exacta: '
+        +'[{"id": <id de la tarea tal cual>, "estado": "revision" o "finalizada", "links": [{"url":"...","label":"texto corto"}], "nota":"resumen breve en castellano"}]. '
+        +'Si no hay match claro con ninguna tarea, devolve [].'}]})
+    });
+    var d=await r.json();
+    if(d.error){ if(err) err.textContent='Error IA: '+(d.error.message||'revisa la API key'); if(btn){btn.disabled=false;btn.textContent='Detectar y registrar';} return; }
+    var out=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=out.indexOf('['), fin=out.lastIndexOf(']');
+    var arr=(ini>=0&&fin>ini)?JSON.parse(out.slice(ini,fin+1)):[];
+    if(!arr.length){ if(err) err.textContent='No pude asociarlo a ninguna tarea. Revisa que el nombre del cliente o la tarea aparezca en el mensaje.'; if(btn){btn.disabled=false;btn.textContent='Detectar y registrar';} return; }
+    var aplicadas=0;
+    arr.forEach(function(m){
+      var found=null;
+      DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(String(t.id)===String(m.id)){ found=t; } }); });
+      if(!found) return;
+      found.estado=(m.estado==='finalizada')?'finalizada':'revision';
+      if(found.estado==='finalizada'){ found.done=true; found.doneAt=new Date().toISOString(); }
+      found.attachments=found.attachments||[];
+      (m.links||[]).forEach(function(l){
+        var url=(l&&l.url)?l.url:String(l||'');
+        if(url && !found.attachments.some(function(a){return a.url===url;})) found.attachments.push({url:url,label:(l&&l.label)?l.label:url});
+      });
+      if(m.nota) found.entregaNota=m.nota;
+      found.entregaAt=new Date().toISOString();
+      aplicadas++;
+    });
+    save();
+    closeModal();
+    if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+    toast(aplicadas?(aplicadas+' tarea'+(aplicadas>1?'s':'')+' a revision con material'):'Sin cambios');
+  }catch(e){ if(err) err.textContent='Error de red o respuesta invalida de la IA'; if(btn){btn.disabled=false;btn.textContent='Detectar y registrar';} }
+}
+
 function _ticketRows(){
   const rows=[];
   const now=new Date();
@@ -3200,6 +3276,7 @@ function toggleTicketsMenu(btn){
     +it('openNewTicketModal()','ti-plus','Delegar tarea')
     +it('openEnviarListaModal()','ti-send','Enviar prioridades')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    +it('openEntregaModal()','ti-package','Registrar entrega')
     +it('scanTicketReplies()','ti-mail-check','Revisar respuestas')
     +it('scanFathomRecaps()','ti-phone','Tareas de llamadas')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
@@ -3452,6 +3529,7 @@ function showTickets(){
       +'<div style=\"flex:1;min-width:0\">'
       +'<div class=\"tk-txt\">'+seguir+esc(t.text||'')+'</div>'
       +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(t.responsible||'Ashy')+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta+'</div>'
+      +((t.attachments&&t.attachments.length)?'<div style=\"margin-top:5px;display:flex;flex-wrap:wrap;gap:6px\">'+t.attachments.map(function(a){return '<a href=\"'+esc(a.url)+'\" target=\"_blank\" rel=\"noopener\" onclick=\"event.stopPropagation()\" style=\"font-size:10.5px;color:var(--accent);background:rgba(29,158,117,0.1);border:1px solid rgba(29,158,117,0.25);border-radius:6px;padding:2px 8px;text-decoration:none;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block\" title=\"'+esc(a.url)+'\">&#128206; '+esc(a.label||a.url)+'</a>';}).join('')+'</div>':'')
       +'</div>'
       +chip
       +'<span class=\"tk-pill\">'+esc(t.ticket||'-')+'</span>'
@@ -4561,11 +4639,7 @@ function renderTab(){
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px">
             <div style="display:flex;align-items:baseline;gap:10px;min-width:0">
               <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Llamadas - Fathom</div>
-              ${(function(){var t=+(localStorage.getItem('evold-fathom-sync-at')||0);return t?'<span style="font-size:10px;color:var(--text3)">sinc. '+new Date(t).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</span>':'';})()}
-            </div>
-            <div style="display:flex;gap:8px;flex-shrink:0">
-              <button class="btn btn-sm" style="color:var(--text3)" onclick="openImportFathomModal(${c.id})" title="Pegar el JSON a mano (respaldo)">Pegar JSON</button>
-              <button class="btn btn-sm btn-primary" onclick="syncFathomFromGmail()">Sincronizar</button>
+              ${(function(){var t=+(localStorage.getItem('evold-fathom-sync-at')||0);return t?'<span style="font-size:10px;color:var(--text3)">sinc. auto '+new Date(t).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</span>':'';})()}
             </div>
           </div>
           ${fathomCallsHTML(c)}
@@ -5625,7 +5699,7 @@ function fathomCallsHTML(c){
   if(!calls.length){
     return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
       +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
-      +'<div style="font-size:11px;color:var(--text3)">Configura las palabras clave y sincroniza</div>'
+      +'<div style="font-size:11px;color:var(--text3)">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen.</div>'
       +'</div>';
   }
   const opps = (c.ghl&&c.ghl.opportunities)||[];
