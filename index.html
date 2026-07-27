@@ -2609,7 +2609,7 @@ async function convEscanearTodo(){
     DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(t.delegated&&!t.done&&!t.deleted) abiertos.push((t.ticket||'#?')+' | '+c.name+' | '+t.text); }); });
     const nombres=DB.clients.map(function(c){return c.name;}).join(', ');
 
-    const todas={tareas:[],cierres:[],estados:[]};
+    const todas={tareas:[],cierres:[],estados:[],entregas:[]};
     let leidas=0;
     for(let i=0;i<convs.length;i++){
       const cv=convs[i];
@@ -2636,8 +2636,12 @@ async function convEscanearTodo(){
         +'Incluye TODO lo accionable: cosas que hay que hacer, mandar, revisar, coordinar o seguir, '
         +'venga de quien venga. La duena filtra despues, asi que ante la duda es mejor incluir.\n'
         +'Pero NO incluyas charla pura, saludos, ni confirmaciones sueltas ("dale", "ok", "gracias").\n'
-        +'El cliente es uno de la lista o vacio. Evidencia: max 12 palabras del chat.\n'
-        +'Responde SOLO JSON, sin markdown: {"tareas":[{"texto":"en imperativo","cliente":"nombre o vacio","evidencia":"la frase"}]}';
+        +'El cliente es uno de la lista o vacio. Evidencia: max 12 palabras del chat.\n\n'
+        +'ADEMAS detecta ENTREGAS: mensajes donde el equipo ENTREGA material terminado de un ticket YA ABIERTO '
+        +'(videos, landing, documento, archivos), casi siempre con links (WeTransfer, Drive, preview). '
+        +'Para cada entrega indica el numero de ticket de "TICKETS YA ABIERTOS" al que corresponde, '
+        +'el estado ("revision" si es para revisar o aprobar, "finalizada" solo si dice que quedo listo/aprobado) y los links.\n'
+        +'Responde SOLO JSON, sin markdown: {"tareas":[{"texto":"en imperativo","cliente":"nombre o vacio","evidencia":"la frase"}],"entregas":[{"ticket":"#25","estado":"revision","links":[{"url":"...","label":"texto corto"}],"evidencia":"la frase"}]}';
       try{
         const r=await fetch('https://api.anthropic.com/v1/messages',{
           method:'POST',
@@ -2659,15 +2663,40 @@ async function convEscanearTodo(){
             origen:'Conversacion'
           });
         });
+        (res.entregas||[]).forEach(function(e){ if(e&&e.ticket) todas.entregas.push(e); });
       }catch(e){ continue; }
     }
     window._convCand=todas;
     localStorage.setItem('evold-conv-lastscan',String(Date.now()));
+
+    // Aplicar ENTREGAS detectadas: pasar el ticket a revision/finalizada y adjuntar el material
+    var entregasAplicadas=0;
+    (todas.entregas||[]).forEach(function(e){
+      var num=String(e.ticket||'').replace(/[^0-9]/g,'');
+      if(!num) return;
+      DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){
+        if(t.done||t.deleted) return;
+        if(String(t.ticket||'').replace(/[^0-9]/g,'')!==num) return;
+        t.estado=(e.estado==='finalizada')?'finalizada':'revision';
+        if(t.estado==='finalizada'){ t.done=true; t.doneAt=new Date().toISOString(); }
+        t.attachments=t.attachments||[];
+        (e.links||[]).forEach(function(l){
+          var url=(l&&l.url)?l.url:String(l||'');
+          if(url && !t.attachments.some(function(a){return a.url===url;})) t.attachments.push({url:url,label:(l&&l.label)?l.label:url});
+        });
+        t.entregaAt=new Date().toISOString();
+        entregasAplicadas++;
+      }); });
+    });
+    if(entregasAplicadas){ save(); if(S.view==='tickets') showTickets(); }
+
+    var _msgEntregas=entregasAplicadas?(entregasAplicadas+' entrega'+(entregasAplicadas>1?'s':'')+' a revision con material'):'';
     if(!todas.tareas.length){
-      out.innerHTML='<span style="color:var(--text3)">Escanee '+leidas+' conversaciones y no encontre tareas claras. Es un buen resultado: prefiero no inventar.</span>';
+      out.innerHTML='<span style="color:var(--text3)">Escanee '+leidas+' conversaciones'+(entregasAplicadas?'. <b style="color:var(--accent)">'+_msgEntregas+'</b>.':' y no encontre tareas nuevas'+(entregasAplicadas?'':' ni entregas')+'. Es un buen resultado: prefiero no inventar.')+'</span>';
+      if(entregasAplicadas) toast(_msgEntregas);
     } else {
       convRenderCandidatos();
-      toast(todas.tareas.length+' tareas de '+leidas+' conversaciones');
+      toast(todas.tareas.length+' tarea'+(todas.tareas.length>1?'s':'')+' de '+leidas+' conversaciones'+(entregasAplicadas?' &middot; '+_msgEntregas:''));
     }
   }catch(e){
     out.innerHTML='<span style="color:var(--redx)">Error en el escaneo: '+esc(e.message)+'</span>';
