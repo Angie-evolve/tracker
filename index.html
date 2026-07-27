@@ -3616,8 +3616,21 @@ function showTickets(){
   const hechos30=hechos.filter(function(r){return r.t.doneAt&&(now-new Date(r.t.doneAt))<30*86400000;});
   const conTiempos=hechos.filter(function(r){return r.t.doneAt&&r.t.delegatedAt;});
   const avgDias=conTiempos.length?(conTiempos.reduce(function(s,r){return s+_tkDias(new Date(r.t.delegatedAt),new Date(r.t.doneAt));},0)/conTiempos.length):null;
+  // Backfill: tareas que ya estan "en proceso" pero sin marca de inicio -> arrancan a contar desde ahora.
+  var _bfProc=false;
+  DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){
+    if(!t.deleted && t.estado==='proceso' && !t.done && !t.procesoAt){ t.procesoAt=new Date().toISOString(); _bfProc=true; }
+  }); });
+  if(_bfProc) save();
   const conProceso=hechos.filter(function(r){return r.t.doneAt&&r.t.procesoAt;});
-  const avgProceso=conProceso.length?(conProceso.reduce(function(s,r){return s+_tkDias(new Date(r.t.procesoAt),new Date(r.t.doneAt));},0)/conProceso.length):null;
+  var _procDias=[];
+  DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){
+    if(t.deleted||!t.procesoAt) return;
+    var fin=(t.done&&t.doneAt)?new Date(t.doneAt):(t.estado==='proceso'?now:null);
+    if(!fin) return;
+    _procDias.push(Math.max(0,(fin-new Date(t.procesoAt))/86400000));
+  }); });
+  const avgProceso=_procDias.length?(_procDias.reduce(function(a,b){return a+b;},0)/_procDias.length):null;
   const conDue=hechos.filter(function(r){return r.t.doneAt&&r.t.due;});
   const aTiempo=conDue.length?Math.round(conDue.filter(function(r){return new Date(r.t.doneAt)<=endOfDue(r.t);}).length/conDue.length*100):null;
 
@@ -3866,7 +3879,7 @@ function showTickets(){
     +kpi('Abiertos ahora',abiertos.length)
     +kpi('Vencidos',vencidos.length,vencidos.length>0)
     +kpi('Resolucion promedio',avgDias!=null?avgDias.toFixed(1)+' d':'-')
-    +kpi('En proceso &rarr; hecha',avgProceso!=null?avgProceso.toFixed(1)+' d':'-')
+    +kpi('Tiempo en proceso',avgProceso!=null?avgProceso.toFixed(1)+' d':'-')
     +kpi('Entregas a tiempo',aTiempo!=null?aTiempo+'%':'-')
     +'</div>'
     +'<div style="display:flex;gap:8px;margin-bottom:14px">'
