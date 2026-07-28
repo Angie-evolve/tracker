@@ -6721,7 +6721,7 @@ async function enrichContactsBackground(c, proxy){
     // no a las 24h: si no, un problema temporal de conexion deja los UTM vacios todo el dia.
     var wait=o._enrichOk?24*3600000:15*60000;
     if(o._enrichTry && (_now-o._enrichTry)<wait) return false;
-    return (!o.source.utmAd || !o.source.utmCampaign || !o.geo.location || !o.tags);
+    return (!o.source.utmAd || !o.source.utmCampaign || !o.source.utmAdset || !o.geo.location || !o.tags);
   });
   if(!toEnrich.length) return;
   const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
@@ -6741,6 +6741,10 @@ async function enrichContactsBackground(c, proxy){
         if(data.location) opp.geo.location=data.location;
         if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
         if(data.utmSource && !opp.source.utmSource) opp.source.utmSource=data.utmSource;
+        // Conjunto de anuncios: del campo utmAdset, o parseado de la URL de atribucion si viene.
+        var _adsetD=data.utmAdset||data.utm_adset||data.adSet||data.adset||'';
+        if(!_adsetD){ var _u=data.url||data.attributionUrl||data.documentUrl||data.pageUrl||''; if(_u){ var _m=/[?&]utm_adset=([^&]+)/i.exec(String(_u)); if(_m) _adsetD=decodeURIComponent(_m[1].replace(/\+/g,' ')); } }
+        if(_adsetD && !opp.source.utmAdset) opp.source.utmAdset=_adsetD;
         var dTags=data.tags||data.contactTags||null;
         if(dTags && Array.isArray(dTags) && dTags.length) opp.tags=dTags;
         opp._enrichOk=true;
@@ -9249,31 +9253,36 @@ function saveColSelector(){
   }
 }
 
-// Deriva el CONJUNTO DE ANUNCIOS de un lead: primero desde su UTM directo; si no,
-// matchea su anuncio (utmAd/utmContent/adId) contra el arbol Meta campana->conjunto->anuncio.
+// Deriva el CONJUNTO DE ANUNCIOS real de un lead. Prioridad:
+//  1) parametro explicito de adset en la URL (utm_adset / adset / conjunto)
+//  2) match del anuncio contra el arbol Meta por ID (exacto) o por nombre UNICO
+//  3) ultimo recurso: utm_medium (suele ser una etiqueta generica, no el adset real)
 function _deriveAdset(c, opp){
   var fa=opp.formAnswers||{}, s=opp.source||{};
-  var faGetLocal=function(keys){ for(var k in fa){ var kl=_n(k).replace(/[_\s-]/g,''); for(var i=0;i<keys.length;i++){ if(kl===keys[i]){ var v=String(fa[k]||'').trim(); if(v) return v; } } } return ''; };
-  var direct=(s.utmAdset||'')||faGetLocal(['utmadset','adset','conjunto','utmmedium']);
-  if(direct) return direct;
+  var faOne=function(key){ for(var k in fa){ if(_n(k).replace(/[_\s-]/g,'')===key){ var v=String(fa[k]||'').trim(); if(v) return v; } } return ''; };
+  // 1) adset explicito
+  var explicit=(s.utmAdset||'')||faOne('utmadset')||faOne('adset')||faOne('conjunto');
+  if(explicit) return explicit;
+  // 2) derivar del arbol Meta
   var al=getActiveLine(c.conversionLines||[]);
   var camps=(al&&al.metaCampaigns)||[];
-  if(!camps.length) return '';
-  var map={};
-  camps.forEach(function(cp){ (cp.adsets||[]).forEach(function(as){
-    var asn=as.name||String(as.id||''); if(!asn) return;
-    if(as.id) map[String(as.id)]=asn; map['n:'+_n(asn)]=asn;
-    (as.ads||[]).forEach(function(ad){ if(ad.id) map[String(ad.id)]=asn; if(ad.name) map['n:'+_n(ad.name)]=asn; });
-  }); });
-  var cands=[s.adId, s.utmAd, s.utmContent, faGetLocal(['utmad','utmcontent'])];
-  for(var i=0;i<cands.length;i++){
-    var v=String(cands[i]||'').trim(); if(!v) continue;
-    if(map[v]) return map[v];
-    var vn=_n(v);
-    if(map['n:'+vn]) return map['n:'+vn];
-    if(vn.length>=4){ var keys=Object.keys(map); for(var j=0;j<keys.length;j++){ if(keys[j].indexOf('n:')!==0) continue; var nm=keys[j].slice(2); if(nm.indexOf(vn)>=0||vn.indexOf(nm)>=0) return map[keys[j]]; } }
+  if(camps.length){
+    var mapId={}, mapName={}; // mapName: nombre -> {adset:1,...} para detectar ambiguedad
+    camps.forEach(function(cp){ (cp.adsets||[]).forEach(function(as){
+      var asn=as.name||String(as.id||''); if(!asn) return;
+      if(as.id) mapId[String(as.id)]=asn;
+      (as.ads||[]).forEach(function(ad){
+        if(ad.id) mapId[String(ad.id)]=asn;
+        if(ad.name){ var kk='n:'+_n(ad.name); (mapName[kk]=mapName[kk]||{})[asn]=1; }
+      });
+    }); });
+    var idCands=[s.adId, s.adsetId, faOne('adsetid'), faOne('utmad'), faOne('utmcontent')];
+    for(var i=0;i<idCands.length;i++){ var v=String(idCands[i]||'').trim(); if(v&&mapId[v]) return mapId[v]; }
+    var nameCands=[s.utmAd, s.utmContent, faOne('utmad'), faOne('utmcontent')];
+    for(var j=0;j<nameCands.length;j++){ var vn=_n(nameCands[j]||''); if(!vn) continue; var set=mapName['n:'+vn]; if(set && Object.keys(set).length===1) return Object.keys(set)[0]; }
   }
-  return '';
+  // 3) etiqueta generica como ultimo recurso
+  return (s.utmMedium||'')||faOne('utmmedium')||'';
 }
 async function openOppDetail(oppId){
   const c=DB.clients.find(function(x){return x.id===S.clientId;});
