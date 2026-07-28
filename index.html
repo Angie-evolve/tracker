@@ -9248,6 +9248,32 @@ function saveColSelector(){
   }
 }
 
+// Deriva el CONJUNTO DE ANUNCIOS de un lead: primero desde su UTM directo; si no,
+// matchea su anuncio (utmAd/utmContent/adId) contra el arbol Meta campana->conjunto->anuncio.
+function _deriveAdset(c, opp){
+  var fa=opp.formAnswers||{}, s=opp.source||{};
+  var faGetLocal=function(keys){ for(var k in fa){ var kl=_n(k).replace(/[_\s-]/g,''); for(var i=0;i<keys.length;i++){ if(kl===keys[i]){ var v=String(fa[k]||'').trim(); if(v) return v; } } } return ''; };
+  var direct=(s.utmAdset||'')||faGetLocal(['utmadset','adset','conjunto','utmmedium']);
+  if(direct) return direct;
+  var al=getActiveLine(c.conversionLines||[]);
+  var camps=(al&&al.metaCampaigns)||[];
+  if(!camps.length) return '';
+  var map={};
+  camps.forEach(function(cp){ (cp.adsets||[]).forEach(function(as){
+    var asn=as.name||String(as.id||''); if(!asn) return;
+    if(as.id) map[String(as.id)]=asn; map['n:'+_n(asn)]=asn;
+    (as.ads||[]).forEach(function(ad){ if(ad.id) map[String(ad.id)]=asn; if(ad.name) map['n:'+_n(ad.name)]=asn; });
+  }); });
+  var cands=[s.adId, s.utmAd, s.utmContent, faGetLocal(['utmad','utmcontent'])];
+  for(var i=0;i<cands.length;i++){
+    var v=String(cands[i]||'').trim(); if(!v) continue;
+    if(map[v]) return map[v];
+    var vn=_n(v);
+    if(map['n:'+vn]) return map['n:'+vn];
+    if(vn.length>=4){ var keys=Object.keys(map); for(var j=0;j<keys.length;j++){ if(keys[j].indexOf('n:')!==0) continue; var nm=keys[j].slice(2); if(nm.indexOf(vn)>=0||vn.indexOf(nm)>=0) return map[keys[j]]; } }
+  }
+  return '';
+}
 async function openOppDetail(oppId){
   const c=DB.clients.find(function(x){return x.id===S.clientId;});
   if(!c) return;
@@ -9293,9 +9319,7 @@ async function openOppDetail(oppId){
     const tagsAll=opp.tags||[];
     const tagsHtml2=tagsAll.length?('<div style="margin-bottom:16px"><div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Tags</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:6px">'+tagsAll.map(function(t){return '<span class="pill" style="font-size:10px;padding:3px 9px;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)">'+esc(t)+'</span>';}).join('')+'</div></div>'):'';
-    var _faU=opp.formAnswers||{};
-    var _faUget=function(keys){ for(var k in _faU){ var kl=k.toLowerCase().trim().replace(/[_\s-]/g,''); for(var i=0;i<keys.length;i++){ if(kl===keys[i].replace(/[_\s-]/g,'')){ var v=String(_faU[k]||'').trim(); if(v) return v; } } } return ''; };
-    var _adsetU=(opp.source&&opp.source.utmAdset)||_faUget(['utmadset','adset','conjunto','utmmedium'])||'';
+    var _adsetU=_deriveAdset(c,opp);
     const utmHtml=(opp.source&&(opp.source.utmSource||opp.source.utmAd||opp.source.utmCampaign)||_adsetU)?('<div style="margin-bottom:16px"><div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Origen (UTM)</div>'
       +[['UTM Source',opp.source&&opp.source.utmSource],['UTM Ad',opp.source&&opp.source.utmAd],['Conjunto de anuncios',_adsetU],['UTM Campaign',opp.source&&opp.source.utmCampaign]].filter(function(p){return p[1];}).map(function(p){return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><span style="color:var(--text3)">'+p[0]+'</span><span style="color:var(--text2)">'+esc(p[1])+'</span></div>';}).join('')
       +'</div>'):'';
