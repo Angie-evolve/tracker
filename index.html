@@ -8825,11 +8825,8 @@ function createAndDelegateTicket(){
   if(!text){ if(typeof toast==='function') toast('Escribi la tarea'); return; }
   if(!targets.length){ if(typeof toast==='function') toast('Elegi un destino'); return; }
   if(targets.length>1){
-    // La delegacion por mail es de a un cliente. Para un grupo, la creamos en cada tablero.
-    targets.forEach(function(c){ c.tasks=c.tasks||[]; c.tasks.unshift(_ntNewTask(text,resp,due)); });
-    save(); closeModal();
-    if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
-    if(typeof toast==='function') toast('Cree la tarea en '+targets.length+' clientes (la delegacion por mail es de a uno)');
+    // Grupo: un solo mail a Ashy que lista todos los clientes + tarea en cada tablero.
+    delegateGroup(targets.map(function(c){return c.id;}), text, resp, due);
     return;
   }
   const c=targets[0];
@@ -8838,6 +8835,102 @@ function createAndDelegateTicket(){
   c.tasks.unshift({id:taskId,text:text,responsible:resp,due:due,done:false,source:'Manual'});
   save();
   delegateTask(c.id,taskId);
+}
+async function delegateGroup(clientIds, text, resp, due){
+  var clients=clientIds.map(function(id){return DB.clients.find(function(x){return x.id===id;});}).filter(Boolean);
+  if(!clients.length){ if(typeof toast==='function') toast('Sin clientes en el grupo'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ if(typeof toast==='function') toast('Configura tu API key de Anthropic','red'); return; }
+  var modal=document.getElementById('modal-root'); if(!modal) return;
+  modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:560px;text-align:center;padding:40px">'
+    +'<div style="font-size:13px;color:var(--text2);margin-bottom:8px">Preparando delegacion grupal...</div>'
+    +'<div style="font-size:11px;color:var(--text3)">Claude esta redactando el mail para '+clients.length+' clientes</div>'
+    +'</div></div>';
+  var nextTicket=nextTicketFromApp();
+  var clientList=clients.map(function(c){return c.name;}).join(', ');
+  var prompt='Sos un asistente que redacta mails de delegacion de tareas para una agencia.\n\n'
+    +'Colaboradora: Ashy (ashy@evolvemindhub.com). Firma: Angie. NUNCA preguntes por estos datos.\n'
+    +'Esta es UNA misma tarea que Ashy debe hacer para VARIOS clientes.\n\n'
+    +'TAREA: '+text+'\n'
+    +'CLIENTES (aplica a todos): '+clientList+'\n'
+    +(due?'DEADLINE: '+due+'\n':'')
+    +'RESPONSABLE: '+(resp||'Ashy')+'\n'
+    +'TICKET: #'+nextTicket+'\n\n'
+    +'Redacta un mail claro y accionable:\n'
+    +'- Asunto: "[#'+nextTicket+'] Accion requerida: '+text+' - Deadline '+(due||'a confirmar')+'"\n'
+    +'- Cuerpo: arranca "Hola Ashy,". Explica la tarea en 1-2 lineas. Aclara que aplica a estos clientes y listalos con vinetas: '+clientList+'. Da un objetivo medible. Pedi que confirme respondiendo este mail. Cierra con "Adelante!" y firma "Angie".\n'
+    +'- Nada de lenguaje vago. No inventes datos.\n\n'
+    +'Formato de respuesta:\nASUNTO: [asunto]\n---\n[cuerpo]';
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:prompt}]})});
+    var data=await r.json();
+    if(data.error) throw new Error(data.error.message);
+    var rawTxt=((data.content||[]).filter(function(b){return b&&b.type==='text';}).map(function(b){return b.text||'';}).join('')||'').trim();
+    if(!rawTxt) throw new Error('La IA no devolvio texto. Revisa tu API key de Anthropic.');
+    var sm=rawTxt.match(/ASUNTO:\s*(.+)/);
+    var subject=sm?sm[1].trim():'[#'+nextTicket+'] Accion requerida: '+text;
+    var body=rawTxt.replace(/ASUNTO:\s*.+/,'').replace(/^---\s*/m,'').trim();
+    window._pendingGroupDelegate={clientIds:clients.map(function(c){return c.id;}),text:text,resp:resp,due:due,subject:subject,body:body,ticket:nextTicket};
+    modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:620px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+      +'<div class="modal-title">Borrador de delegacion (grupo)</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+clients.length+' clientes &middot; revisa antes de enviar</div>'
+      +'</div>'
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:10px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:4px">ASUNTO</div>'
+      +'<input id="delegate-subject" value="'+esc(subject)+'" style="width:100%;background:none;border:none;color:var(--text);font-size:12px;font-weight:500;outline:none">'
+      +'</div>'
+      +'<textarea id="delegate-body" style="width:100%;min-height:260px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;padding:12px;line-height:1.6;resize:vertical">'+esc(body)+'</textarea>'
+      +'<label style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);margin-top:10px;cursor:pointer">'
+      +'<input type="checkbox" id="dg-send-direct" '+(localStorage.getItem('evold-delegate-send')==='1'?'checked':'')+'>'
+      +'Enviar directo a Ashy (sin dejar en Borradores)</label>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:6px">Al confirmar: se crea 1 borrador/mail a Ashy + la tarea en los '+clients.length+' clientes.</div>'
+      +'<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="confirmDelegateGroup()">OK - Delegar a '+clients.length+'</button>'
+      +'</div></div></div>';
+  }catch(e){
+    modal.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:420px">'
+      +'<div class="modal-title" style="color:var(--redx)">No se pudo redactar el mail</div>'
+      +'<div style="font-size:12px;color:var(--text2);margin:12px 0">'+esc(e.message)+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Las tareas no se crearon todavia. Proba de nuevo.</div>'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div></div>';
+  }
+}
+function confirmDelegateGroup(){
+  var d=window._pendingGroupDelegate; if(!d) return;
+  var subjectEl=document.getElementById('delegate-subject');
+  var bodyEl=document.getElementById('delegate-body');
+  var subjectVal=subjectEl?subjectEl.value.trim():d.subject;
+  var bodyVal=bodyEl?bodyEl.value.trim():d.body;
+  var _sendDirect=(function(){var cb=document.getElementById('dg-send-direct');var v=cb?(cb.checked?'1':'0'):(localStorage.getItem('evold-delegate-send')||'0');localStorage.setItem('evold-delegate-send',v);return v==='1';})();
+  d.clientIds.forEach(function(id){
+    var c=DB.clients.find(function(x){return x.id===id;}); if(!c) return;
+    c.tasks=c.tasks||[];
+    c.tasks.unshift({id:Date.now()+Math.floor(Math.random()*100000),text:d.text,responsible:d.resp||'Ashy',due:d.due,done:false,source:'Manual',delegated:true,delegatedAt:new Date().toISOString(),ticket:'#'+d.ticket});
+  });
+  localStorage.setItem('evold-last-ticket',d.ticket);
+  save();
+  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_draft'
+    +'&to='+encodeURIComponent('ashy@evolvemindhub.com')
+    +'&subject='+encodeURIComponent(subjectVal)
+    +'&body='+encodeURIComponent(bodyVal)
+    +(_sendDirect?'&send=1':''))
+    .then(function(r){return r.json();})
+    .then(function(res){ if(res&&res.ok){ if(typeof toast==='function') toast(_sendDirect&&res.sent?'Mail enviado a Ashy':'Borrador creado en Gmail'); } else { if(typeof toast==='function') toast('No se pudo crear el borrador automatico','amber'); } })
+    .catch(function(){ if(typeof toast==='function') toast('No se pudo crear el borrador automatico','amber'); });
+  try{
+    fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=log_task&ticket='+encodeURIComponent(d.ticket)
+      +'&task='+encodeURIComponent(d.text||'')
+      +'&client='+encodeURIComponent(d.clientIds.map(function(id){var c=DB.clients.find(function(x){return x.id===id;});return c?c.name:'';}).filter(Boolean).join(', '))
+      +'&deadline='+encodeURIComponent(d.due||'')
+      +'&responsible='+encodeURIComponent(d.resp||'Ashy')).then(function(r){return r.json();}).catch(function(){});
+  }catch(e){}
+  window._pendingGroupDelegate=null;
+  closeModal();
+  if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+  if(typeof toast==='function') toast('Delegado a Ashy para '+d.clientIds.length+' clientes (ticket #'+d.ticket+')');
 }
 function _createAndDelegateTicketOLD(){
   const cid=+((document.getElementById('nt-client')||{}).value||0);
