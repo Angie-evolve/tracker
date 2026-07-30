@@ -1551,6 +1551,7 @@ const CLIENT_TABS=[
   {k:'integraciones', l:'Integraciones', icon:'M9 7V2m6 5V2M7 7h10v4a5 5 0 01-10 0V7zm5 9v6'},
   {k:'alarmas', l:'Alarmas', icon:'M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0'},
   {k:'ventas', l:'Conversion de ventas', icon:'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'},
+  {k:'capacitacion', l:'Capacitacion', icon:'M12 14l9-5-9-5-9 5 9 5zm0 0v6M6 12v4a6 3 0 0012 0v-4'},
   {k:'tareas', l:'Tareas', icon:'M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11'}
 ];
 
@@ -1645,7 +1646,7 @@ function renderClient(){
     <div class="zoom-in">
     <div class="content">
       <button class="back-pill" onclick="backToFicha()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>volver a ${esc(c.name)}</button>
-      ${(S.tab==='ventas'||S.tab==='ads'||S.tab==='integraciones'||S.tab==='alarmas'||S.tab==='success'||S.tab==='tareas') ? '' : `
+      ${(S.tab==='ventas'||S.tab==='capacitacion'||S.tab==='ads'||S.tab==='integraciones'||S.tab==='alarmas'||S.tab==='success'||S.tab==='tareas') ? '' : `
       <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:10px">
         <span style="font-size:11px;color:var(--text3);margin-right:4px;text-transform:uppercase;letter-spacing:0.05em">Metricas:</span>
         <button class="btn btn-sm" onclick="setMetricsView('historico')" style="${_isHist?'border-color:rgba(29,158,117,0.5);color:var(--accent)':'color:var(--text3)'}">Historico</button>
@@ -5362,6 +5363,9 @@ function renderTab(){
   else if(S.tab==='ventas'){
     renderVentasTab(c, el);
   }
+  else if(S.tab==='capacitacion'){
+    renderCapacitacionTab(c, el);
+  }
 }
 
 // Modals
@@ -6819,6 +6823,118 @@ function _ghlAgo(iso){
   const h=Math.floor(mins/60); if(h<24) return 'hace '+h+' h'; return 'hace '+Math.floor(h/24)+' d';
 }
 
+/* ================= CAPACITACION (analisis de llamadas con SOP) ================= */
+const CAP_SOP_DEFAULT=`Sos un analista de procesos comerciales B2B. Analiza la(s) llamada(s) de venta a partir de la transcripcion, segun el framework "Anti-Fugazi B2B" de Martin Marquez. Criterios:
+1. Diagnosticar para resolver, no para presentar (entender el problema de raiz; evitar el "modo catalogo").
+2. Dividir bien el problema en capas/partes, no tratarlo como una sola cosa.
+3. No dar precio antes de tiempo (recien con el diagnostico cerrado o si el prospecto lo pide, con transparencia).
+4. Presentar SIEMPRE en vivo; nunca mandar la cotizacion suelta por mail/WhatsApp.
+5. Cerrar el next step confirmado EN EL MOMENTO (pedir aceptar la invitacion ahi mismo, no solo prometer el link).
+6. Ofrecer un paso de bajo riesgo (LRS) ante friccion de precio o liquidez (recorte de alcance, diagnostico pago, demo acotado).
+7. Manejar confianza -> compromiso -> precio con criterio; buscar el bien comun, no el cierre a cualquier costo.
+
+FORMATO DE SALIDA (respetalo):
+- Breve linea de contexto (Estado y Rubro del prospecto si se puede inferir).
+- "Que funciono bien": vinetas que arrancan con "✔ ", citando momentos puntuales de la llamada.
+- "Que ajustar": vinetas que arrancan con "⚠ ", cada una atada a un criterio del framework y a un momento concreto.
+- "Sugerencia concreta": 1 parrafo accionable al cierre.
+- Si hay varias llamadas (R1, R2, R3, R4), desglosalo por cada una.
+
+Tono: constructivo, especifico y honesto. No inventes datos que no esten en la transcripcion. Escribi en español rioplatense.`;
+function _capSop(){ return localStorage.getItem('evold-cap-sop')||CAP_SOP_DEFAULT; }
+function _capKey(o){ return String(o.contactId||o.id||''); }
+function capSaveSop(){ var t=(document.getElementById('cap-sop')||{}).value||''; localStorage.setItem('evold-cap-sop', t); if(typeof toast==='function') toast('SOP guardado'); }
+function capResetSop(){ localStorage.removeItem('evold-cap-sop'); if(typeof toast==='function') toast('SOP restaurado al de fabrica'); renderTab(); }
+function _capFmt(txt){
+  var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  return esc(txt||'').replace(/\n/g,'<br>')
+    .replace(/(^|<br>)\s*✔\s?/g,'$1<span style="color:var(--accent)">✔</span> ')
+    .replace(/(^|<br>)\s*⚠\s?/g,'$1<span style="color:#BA7517">⚠</span> ')
+    .replace(/(^|<br>)\s*#{1,3}\s?(.+?)(?=<br>|$)/g,'$1<b style="color:var(--strong)">$2</b>');
+}
+function renderCapacitacionTab(c, el){
+  var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var opps=(c.ghl&&c.ghl.opportunities)||[];
+  DB.cap=DB.cap||{};
+  var open=S._capSopOpen;
+  var sopHtml='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:18px;overflow:hidden">'
+    +'<div onclick="S._capSopOpen=!S._capSopOpen;renderTab()" style="display:flex;align-items:center;justify-content:space-between;padding:12px 15px;cursor:pointer;background:var(--bg2)">'
+    +'<div style="font-size:12.5px;font-weight:500;color:var(--strong)">SOP de evaluacion <span style="color:var(--text3);font-weight:400">(se aplica a todas las capacitaciones)</span></div>'
+    +'<span style="color:var(--text3);font-size:12px">'+(open?'ocultar &#9652;':'editar &#9662;')+'</span></div>'
+    +(open?('<div style="padding:14px 15px">'
+      +'<textarea id="cap-sop" style="width:100%;min-height:220px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;padding:12px;line-height:1.6;resize:vertical;font-family:var(--font)">'+esc(_capSop())+'</textarea>'
+      +'<div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end">'
+      +'<button class="btn btn-sm" onclick="capResetSop()">Restaurar de fabrica</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="capSaveSop()">Guardar SOP</button></div></div>'):'')
+    +'</div>';
+  var rows=opps.slice().sort(function(a,b){return new Date(b.createdAt||0)-new Date(a.createdAt||0);}).map(function(o){
+    var key=_capKey(o); var an=(DB.cap[key]||[]);
+    var badge=an.length
+      ?'<span style="font-size:10px;padding:3px 9px;border-radius:99px;background:rgba(29,158,117,0.14);color:var(--accent)">'+an.length+' analisis</span>'
+      :'<span style="font-size:10px;padding:3px 9px;border-radius:99px;background:var(--bg4);color:var(--text3)">sin analizar</span>';
+    return '<div onclick="openCapLead(&#39;'+o.id+'&#39;)" style="display:flex;align-items:center;gap:12px;padding:12px 6px;border-top:1px solid rgba(255,255,255,0.05);cursor:pointer">'
+      +'<div style="flex:1;min-width:0"><div style="font-size:14px;color:var(--strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(o.contactName||o.name||'-')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+esc(o.pipelineStage||o.status||'')+(o.monetaryValue?' &middot; '+money(o.monetaryValue):'')+'</div></div>'
+      +badge+'<span style="font-size:16px;color:var(--text3)">&rsaquo;</span></div>';
+  }).join('');
+  el.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div style="font-size:11px;color:var(--text3)">Pega la transcripcion de cada llamada y Claude te da feedback segun tu SOP</div></div>'
+    +sopHtml
+    +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Leads ('+opps.length+')</div>'
+    +(opps.length?('<div>'+rows+'</div>'):'<div class="empty"><div>No hay leads sincronizados. Anda a Conversion de ventas y sincroniza primero.</div></div>');
+}
+function openCapLead(oppId){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var opp=((c.ghl&&c.ghl.opportunities)||[]).find(function(o){return String(o.id)===String(oppId);}); if(!opp) return;
+  var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  DB.cap=DB.cap||{}; var key=_capKey(opp); var an=(DB.cap[key]||[]);
+  window._capCtx={oppId:oppId, key:key, name:opp.contactName||opp.name||'', stage:opp.pipelineStage||opp.status||'', value:opp.monetaryValue||0};
+  var histHtml=an.map(function(a){
+    return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:10px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+      +'<span style="font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;background:rgba(29,158,117,0.14);color:var(--accent)">Feedback</span>'
+      +'<span style="font-size:10px;color:var(--text3)">'+(a.createdAt?new Date(a.createdAt).toLocaleString('es-AR'):'')+' &middot; <span onclick="capDelete(&#39;'+key+'&#39;,&#39;'+a.id+'&#39;)" style="cursor:pointer;color:var(--redx)">borrar</span></span></div>'
+      +'<div style="font-size:12.5px;color:var(--text);line-height:1.7">'+_capFmt(a.feedback)+'</div>'
+      +(a.transcript?'<details style="margin-top:8px"><summary style="font-size:11px;color:var(--text3);cursor:pointer">ver transcripcion usada</summary><div style="font-size:11px;color:var(--text3);white-space:pre-wrap;margin-top:6px;max-height:180px;overflow:auto">'+esc(a.transcript)+'</div></details>':'')
+      +'</div>';
+  }).join('');
+  document.getElementById('modal-root').innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:640px">'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px">'
+    +'<div><div class="modal-title">'+esc(window._capCtx.name)+'</div><div style="font-size:11px;color:var(--text3);margin-top:4px">'+esc(window._capCtx.stage)+(window._capCtx.value?' &middot; '+money(window._capCtx.value):'')+' &middot; Capacitacion</div></div>'
+    +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div>'
+    +'<div style="font-size:11px;color:var(--text3);margin:10px 0 4px">Transcripcion de la llamada</div>'
+    +'<textarea id="cap-transcript" placeholder="Pega aca la transcripcion (Fathom: boton Copy Transcript). Para varias llamadas, separalas con una linea que diga R1 / R2 / etc." style="width:100%;min-height:150px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;padding:12px;line-height:1.5;resize:vertical;font-family:var(--font)"></textarea>'
+    +'<div id="cap-analyze-st" style="font-size:11px;color:var(--text3);margin-top:6px"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end"><button class="btn btn-sm btn-primary" onclick="capAnalyze()">Analizar con el SOP</button></div>'
+    +(an.length?('<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:18px 0 8px">Analisis previos</div>'+histHtml):'')
+    +'</div></div>';
+}
+async function capAnalyze(){
+  var ctx=window._capCtx; if(!ctx) return;
+  var transcript=((document.getElementById('cap-transcript')||{}).value||'').trim();
+  if(transcript.length<40){ if(typeof toast==='function') toast('Pega la transcripcion primero'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ if(typeof toast==='function') toast('Configura tu API key de Anthropic','red'); return; }
+  var st=document.getElementById('cap-analyze-st'); if(st) st.innerHTML='Claude esta analizando la llamada...';
+  var prompt=_capSop()+'\n\n=== DATOS DEL LEAD ===\nNombre: '+ctx.name+'\nEstado/etapa: '+ctx.stage+(ctx.value?'\nValor: '+ctx.value:'')+'\n\n=== TRANSCRIPCION ===\n'+transcript;
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2500,messages:[{role:'user',content:prompt}]})});
+    var data=await r.json();
+    if(data.error) throw new Error(data.error.message);
+    var fb=((data.content||[]).filter(function(b){return b&&b.type==='text';}).map(function(b){return b.text||'';}).join('')||'').trim();
+    if(!fb) throw new Error('La IA no devolvio texto. Revisa tu API key.');
+    DB.cap=DB.cap||{}; DB.cap[ctx.key]=DB.cap[ctx.key]||[];
+    DB.cap[ctx.key].unshift({id:String(Date.now()),transcript:transcript,feedback:fb,createdAt:new Date().toISOString()});
+    save();
+    openCapLead(ctx.oppId);
+    if(typeof toast==='function') toast('Feedback generado');
+  }catch(e){
+    if(st) st.innerHTML='<span style="color:var(--redx)">Error: '+String(e.message)+'</span>';
+  }
+}
+function capDelete(key,id){
+  DB.cap=DB.cap||{}; DB.cap[key]=(DB.cap[key]||[]).filter(function(a){return a.id!==id;}); save();
+  var oppId=window._capCtx&&window._capCtx.oppId; if(oppId) openCapLead(oppId); else renderTab();
+}
 function renderVentasTab(c, el){
   const esc=function(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
   const proxy=getGhlProxy();
