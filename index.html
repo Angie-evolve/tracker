@@ -7032,10 +7032,11 @@ async function capAnalyzeBatch(clientId){
   var prompt=_capSop()+'\n\nAnaliza el proceso comercial de estos '+leads.length+' lead(s). Cada uno puede tener varias llamadas (R1, R2, ...). Da feedback POR CADA lead siguiendo el formato indicado, y cerra con una "Sintesis transversal" con los patrones que se repiten entre todos.\n\n'+block;
   try{
     var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,messages:[{role:'user',content:prompt}]})});
-    var data=await r.json();
-    if(data.error) throw new Error(data.error.message);
+    var raw=await r.text();
+    var data; try{ data=JSON.parse(raw); }catch(_pe){ throw new Error('Respuesta no valida (HTTP '+r.status+'): '+String(raw).slice(0,200)); }
+    if(!r.ok || (data&&data.error)){ var em=(data&&data.error&&(data.error.message||data.error.type))||('HTTP '+r.status); if(/too long|max.*token|exceed|prompt is too/i.test(em)) em='Las transcripciones juntas son demasiado largas para un solo pedido. Proba con menos leads (o menos llamadas) por informe. Detalle: '+em; throw new Error(em); }
     var fb=((data.content||[]).filter(function(b){return b&&b.type==='text';}).map(function(b){return b.text||'';}).join('')||'').trim();
-    if(!fb) throw new Error('La IA no devolvio texto. Revisa tu API key.');
+    if(!fb) throw new Error('La IA no devolvio texto (stop_reason: '+((data&&data.stop_reason)||'?')+'). Si seleccionaste varios leads con llamadas largas, proba con menos por vez.');
     var id=String(Date.now());
     DB.capBatches=DB.capBatches||[];
     DB.capBatches.unshift({id:id,createdAt:new Date().toISOString(),leads:leads.map(function(L){return {key:L.key,name:L.name};}),feedback:fb});
