@@ -2138,6 +2138,15 @@ var _TK_ESTADOS={
   'finalizada':{label:'Finalizada',pill:'pill-green'}
 };
 // Registra cuando una tarea entra por primera vez en "en proceso" (para medir tiempo de trabajo).
+// Fin del dia de vencimiento en hora LOCAL (evita el bug de zona horaria con fechas "YYYY-MM-DD",
+// que JS parsea como UTC y en zonas negativas corre el dia hacia atras).
+function _dueEnd(due){
+  if(!due) return null;
+  var s=String(due);
+  var m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m){ return new Date(+m[1], +m[2]-1, +m[3], 23,59,59,999); }
+  var d=new Date(s); if(isNaN(d.getTime())) return null; d.setHours(23,59,59,999); return d;
+}
 function _tkMarcarProceso(t){ if(t && t.estado==='proceso' && !t.procesoAt) t.procesoAt=new Date().toISOString(); }
 // Texto del tiempo en proceso de una tarea: en horas si es corto, en dias si es largo.
 function _tkProcTexto(t){
@@ -2465,7 +2474,7 @@ async function convTestHilos(contactId){
 // al tablero y deja de ser confiable.
 function _tkOrdenados(resp){
   const now=new Date();
-  const endOfDue=function(t){ if(!t.due) return null; const d=new Date(t.due); d.setHours(23,59,59,999); return d; };
+  const endOfDue=function(t){ return _dueEnd(t.due); };
   const out=[];
   DB.clients.forEach(function(c){
     (c.tasks||[]).forEach(function(t){
@@ -3641,7 +3650,7 @@ function showTickets(){
   });
   const sinDelegar=all.filter(function(r){return !r.t.delegated&&!r.t.done;}).length;
   const now=new Date();
-  const endOfDue=function(t){ if(!t.due) return null; const d=new Date(t.due); d.setHours(23,59,59,999); return d; };
+  const endOfDue=function(t){ return _dueEnd(t.due); };
 
   const abiertos=tickets.filter(function(r){return !r.t.done;});
   const vencidos=abiertos.filter(function(r){const d=endOfDue(r.t);return d&&d<now;});
@@ -5317,8 +5326,8 @@ function renderTab(){
 
   else if(S.tab==='tareas'){
     var tasks=(c.tasks||[]).filter(function(t){return !t.deleted;});
-    var overdue=tasks.filter(function(t){return !t.done&&t.due&&new Date(t.due)<new Date();});
-    var pending=tasks.filter(function(t){return !t.done&&!(t.due&&new Date(t.due)<new Date());});
+    var overdue=tasks.filter(function(t){var de=_dueEnd(t.due);return !t.done&&de&&de<new Date();});
+    var pending=tasks.filter(function(t){var de=_dueEnd(t.due);return !t.done&&!(de&&de<new Date());});
     var done=tasks.filter(function(t){return t.done;});
     var lastCall=(c.fathomCalls||[])[0];
     el.innerHTML=
@@ -7386,7 +7395,7 @@ function statusPillStyle(s){
 }
 
 function renderTaskRow(t, clientId){
-  var isOverdue=!t.done&&t.due&&new Date(t.due)<new Date();
+  var isOverdue=(function(){var de=_dueEnd(t.due);return !t.done&&de&&de<new Date();})();
   var borderColor=isOverdue?'rgba(216,90,48,0.35)':'var(--border)';
   var pb='font-size:11px;padding:2px 8px;border-radius:20px;';
   var meta='';
