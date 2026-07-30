@@ -3763,11 +3763,13 @@ function showTickets(){
     const t=r.t, c=r.c;
     const d=endOfDue(t);
     const venc=!t.done&&d&&d<now;
+    const porVencer=!t.done&&d&&!venc&&(d-now)<=12*3600000;
     // texto de estado corto (va como meta gris, no como columna)
     let meta;
     const ST=_TK_ESTADOS[t.estado];
     if(t.done){ var _pt=_tkProcTexto(t); meta=(t.doneAt&&t.delegatedAt)?('hecha en '+_tkDias(new Date(t.delegatedAt),new Date(t.doneAt))+' d'):'hecha'; if(_pt) meta+=' &middot; <span style=\"color:var(--bluex,#378add)\">'+_pt+' en proceso</span>'; }
     else if(venc){ meta='<span style=\"color:var(--redx)\">vencida hace '+_tkDias(d,now)+' d</span>'; }
+    else if(porVencer){ meta='<span style=\"color:var(--amberx)\">por vencer</span>'; }
     else if(t.estado==='proceso'&&t.procesoAt){ meta='en proceso &middot; <span style=\"color:var(--bluex,#378add)\">'+_tkProcTexto(t)+'</span>'; }
     else if(t.estado&&ST){ meta=ST.label.toLowerCase()+(t.delegatedAt?(' &middot; '+_tkDias(new Date(t.delegatedAt),now)+' d'):''); }
     else { meta=(t.delegatedAt?('abierta '+_tkDias(new Date(t.delegatedAt),now)+' d'):'abierta'); }
@@ -8772,8 +8774,11 @@ function openNewTicketModal(){
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Nueva tarea</div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Pod&eacute;s <b>solo crearla</b> (queda en el tablero) o <b>crearla y delegarla</b>: Claude redacta el mail con el template, crea el borrador en Gmail de Angie y el evento del deadline en el calendario.</div>'
     +'<div style="display:flex;flex-direction:column;gap:10px">'
-    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Cliente</div>'
-    +'<select id="nt-client" class="btn btn-sm" style="width:100%;text-align:left;padding:8px 11px">'+opts+'</select></div>'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Destino</div>'
+    +'<select id="nt-client" class="btn btn-sm" style="width:100%;text-align:left;padding:8px 11px">'
+    +'<optgroup label="Grupos (crea la tarea en cada cliente)"><option value="grp:live">Todos con campana activa</option><option value="grp:noarch">Todos los no archivados</option></optgroup>'
+    +'<optgroup label="Un cliente">'+opts+'</optgroup>'
+    +'</select></div>'
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Tarea</div>'
     +'<textarea id="nt-text" placeholder="Que tiene que hacer Ashy, en una o dos lineas..." style="width:100%;min-height:70px;padding:9px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;resize:vertical"></textarea></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
@@ -8789,22 +8794,52 @@ function openNewTicketModal(){
     +'<button class="btn btn-sm btn-primary" onclick="createAndDelegateTicket()">Crear y delegar</button>'
     +'</div></div></div>';
 }
+// Resuelve el destino elegido en el modal: un cliente o un grupo (lista de clientes).
+function _ntTargets(){
+  var v=String((document.getElementById('nt-client')||{}).value||'');
+  if(v==='grp:noarch') return activeClients();
+  if(v==='grp:live') return activeClients().filter(function(c){return hasCurrentlyActiveLine(c.conversionLines||[]);});
+  var c=DB.clients.find(function(x){return x.id===+v;});
+  return c?[c]:[];
+}
+function _ntNewTask(text,resp,due){
+  return {id:Date.now()+Math.floor(Math.random()*100000),text:text,responsible:resp,due:due,done:false,source:'Manual',delegated:true,delegatedAt:new Date().toISOString(),ticket:'#'+nextTicketFromApp()};
+}
 function createTicketOnly(){
-  const cid=+((document.getElementById('nt-client')||{}).value||0);
+  const targets=_ntTargets();
   const text=((document.getElementById('nt-text')||{}).value||'').trim();
   const due=((document.getElementById('nt-due')||{}).value||'').trim();
   const resp=((document.getElementById('nt-resp')||{}).value||'Ashy').trim()||'Ashy';
   if(!text){ if(typeof toast==='function') toast('Escribi la tarea'); return; }
-  const c=DB.clients.find(function(x){return x.id===cid;});
-  if(!c){ if(typeof toast==='function') toast('Elegi un cliente'); return; }
-  c.tasks=c.tasks||[];
-  var taskId=Date.now()+Math.floor(Math.random()*1000);
-  c.tasks.unshift({id:taskId,text:text,responsible:resp,due:due,done:false,source:'Manual',delegated:true,delegatedAt:new Date().toISOString(),ticket:'#'+nextTicketFromApp()});
+  if(!targets.length){ if(typeof toast==='function') toast('Elegi un destino'); return; }
+  targets.forEach(function(c){ c.tasks=c.tasks||[]; c.tasks.unshift(_ntNewTask(text,resp,due)); });
   save(); closeModal();
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
-  if(typeof toast==='function') toast('Tarea creada en el tablero');
+  if(typeof toast==='function') toast(targets.length>1?('Tarea creada en '+targets.length+' clientes'):'Tarea creada en el tablero');
 }
 function createAndDelegateTicket(){
+  const targets=_ntTargets();
+  const text=((document.getElementById('nt-text')||{}).value||'').trim();
+  const due=((document.getElementById('nt-due')||{}).value||'').trim();
+  const resp=((document.getElementById('nt-resp')||{}).value||'Ashy').trim()||'Ashy';
+  if(!text){ if(typeof toast==='function') toast('Escribi la tarea'); return; }
+  if(!targets.length){ if(typeof toast==='function') toast('Elegi un destino'); return; }
+  if(targets.length>1){
+    // La delegacion por mail es de a un cliente. Para un grupo, la creamos en cada tablero.
+    targets.forEach(function(c){ c.tasks=c.tasks||[]; c.tasks.unshift(_ntNewTask(text,resp,due)); });
+    save(); closeModal();
+    if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+    if(typeof toast==='function') toast('Cree la tarea en '+targets.length+' clientes (la delegacion por mail es de a uno)');
+    return;
+  }
+  const c=targets[0];
+  c.tasks=c.tasks||[];
+  const taskId=Date.now();
+  c.tasks.unshift({id:taskId,text:text,responsible:resp,due:due,done:false,source:'Manual'});
+  save();
+  delegateTask(c.id,taskId);
+}
+function _createAndDelegateTicketOLD(){
   const cid=+((document.getElementById('nt-client')||{}).value||0);
   const text=((document.getElementById('nt-text')||{}).value||'').trim();
   const due=((document.getElementById('nt-due')||{}).value||'').trim();
