@@ -7002,7 +7002,8 @@ function renderVentasTab(c, el){
   // --- Vista (anuncio / embudo / pais) y segmento activo ---
   const view=S.ventasView||'anuncios';
   const adsetOf=function(o){ return _deriveAdset(c,o); };
-  const keyOf=view==='embudo'?campaignOf:(view==='pais'?paisOf:(view==='adset'?adsetOf:adOf));
+  const placementOf=function(o){ return _derivePlacement(c,o); };
+  const keyOf=view==='embudo'?campaignOf:(view==='pais'?paisOf:(view==='adset'?adsetOf:(view==='placement'?placementOf:adOf)));
   const segMap={};
   opsP.forEach(function(o){var k=keyOf(o)||'(sin dato)';segMap[k]=(segMap[k]||0)+1;});
   const segKeys=Object.keys(segMap).sort(function(a,b){return segMap[b]-segMap[a];}).slice(0,10);
@@ -7130,7 +7131,7 @@ function renderVentasTab(c, el){
   const pbtn=function(p,l){return '<button class="'+(period===p?'on':'')+'" onclick="setVentasPeriod(\''+p+'\')">'+l+'</button>';};
   const _fmtCustomLabel=function(){var cr=_customRange();if(!cr)return 'Personalizado';var f=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2);};return f(cr.from)+' - '+f(cr.to);};
   html+='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
-    +'<div class="vh-seg">'+vbtn('anuncios','Por anuncio')+vbtn('adset','Por conjunto')+vbtn('embudo','Por campaña')+vbtn('pais','Por pais')+'</div>'
+    +'<div class="vh-seg">'+vbtn('anuncios','Por anuncio')+vbtn('adset','Por conjunto')+vbtn('placement','Por placement')+vbtn('embudo','Por campaña')+vbtn('pais','Por pais')+'</div>'
     +'<div class="vh-seg">'+pbtn('todo','Todo')+pbtn('mes','Este mes')+pbtn('30d','Ultimos 30 dias')
       +'<button class="'+(period==='custom'?'on':'')+'" onclick="openCustomRangeModal()">'
       +(period==='custom'&&_customRange()?_fmtCustomLabel():'Personalizado')+'</button></div>'
@@ -9296,6 +9297,33 @@ function saveColSelector(){
 //  1) parametro explicito de adset en la URL (utm_adset / adset / conjunto)
 //  2) match del anuncio contra el arbol Meta por ID (exacto) o por nombre UNICO
 //  3) ultimo recurso: utm_medium (suele ser una etiqueta generica, no el adset real)
+// Placement del lead (Stories, Reels, Feed, etc.). Sale del parametro {{placement}} de Meta en la URL.
+function _prettyPlacement(v){
+  if(!v) return '';
+  var s=String(v).toLowerCase().trim();
+  var map={
+    'instagram_stories':'Instagram Stories','ig_stories':'Instagram Stories','instagram_story':'Instagram Stories',
+    'facebook_stories':'Facebook Stories','fb_stories':'Facebook Stories',
+    'instagram_reels':'Instagram Reels','ig_reels':'Instagram Reels','facebook_reels':'Facebook Reels','fb_reels':'Facebook Reels',
+    'instagram_reels_overlay':'IG Reels (overlay)','facebook_reels_overlay':'FB Reels (overlay)',
+    'instagram_feed':'Instagram Feed','ig_feed':'Instagram Feed','facebook_feed':'Facebook Feed','fb_feed':'Facebook Feed','feed':'Feed',
+    'instagram_explore':'Instagram Explore','instagram_explore_home':'IG Explore Home','biz_disco_feed':'IG Explore Home',
+    'instagram_profile_feed':'IG Perfil','instagram_search':'IG Búsqueda','search':'Búsqueda',
+    'messenger_inbox':'Messenger','messenger_stories':'Messenger Stories',
+    'marketplace':'Marketplace','video_feeds':'Video Feeds','instream_video':'In-stream Video',
+    'right_hand_column':'Columna derecha','an_classic':'Audience Network','rewarded_video':'Audience Network (video)'
+  };
+  if(map[s]) return map[s];
+  return s.replace(/[_\-]+/g,' ').replace(/\b\w/g,function(ch){return ch.toUpperCase();});
+}
+function _derivePlacement(c, opp){
+  var fa=opp.formAnswers||{}, s=opp.source||{};
+  var faOne=function(key){ for(var k in fa){ if(_n(k).replace(/[_\s-]/g,'')===key){ var v=String(fa[k]||'').trim(); if(v) return v; } } return ''; };
+  var _fromUrl=function(u){ var m=String(u||'').match(/[?&](?:utm_)?placement=([^&"'\s\\}]+)/i); return m?decodeURIComponent(m[1].replace(/\+/g,' ')).trim():''; };
+  var raw=(s.utmPlacement||'')||faOne('placement')||faOne('utmplacement')||faOne('hsaplacement')
+    ||_fromUrl(s.referrer)||_fromUrl(s.url)||_fromUrl(faOne('url'))||_fromUrl(faOne('documenturl'));
+  return _prettyPlacement(raw);
+}
 function _deriveAdset(c, opp){
   var fa=opp.formAnswers||{}, s=opp.source||{};
   var faOne=function(key){ for(var k in fa){ if(_n(k).replace(/[_\s-]/g,'')===key){ var v=String(fa[k]||'').trim(); if(v) return v; } } return ''; };
@@ -9380,6 +9408,8 @@ async function openOppDetail(oppId){
     if(opp.source&&opp.source.utmSource) _origenChips.push(opp.source.utmSource);
     if(_adsetU) _origenChips.push(_adsetU);
     if(opp.source&&opp.source.utmAd) _origenChips.push(opp.source.utmAd);
+    var _placeU=_derivePlacement(c,opp);
+    if(_placeU) _origenChips.push(_placeU);
     if(opp.source&&opp.source.utmCampaign) _origenChips.push(opp.source.utmCampaign);
     const utmHtml=_origenChips.length?('<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Origen</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px">'
