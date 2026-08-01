@@ -9912,7 +9912,16 @@ async function syncMetaAds(clientId){
       var actions=ins.actions||[];
       function getAction(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseInt(a.value||0):0; }
       function getActionF(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseFloat(a.value||0):0; }
-      var leads=getAction('lead')+getAction('onsite_conversion.lead_grouped')+getAction('onsite_conversion.messaging_first_reply')+getAction('onsite_web_lead');
+      // Meta reporta el MISMO lead bajo varios action_type a la vez ('lead', 'onsite_web_lead',
+      // 'offsite_conversion.fb_pixel_lead', 'offsite_lead_add_20_s_calls'...). Sumarlos multiplica
+      // el numero por la cantidad de alias. Se toma el maximo, que es el conteo real del evento.
+      function maxAction(){
+        var m=0;
+        for(var i=0;i<arguments.length;i++){ var v=getAction(arguments[i]); if(v>m) m=v; }
+        return m;
+      }
+      var leads=maxAction('lead','onsite_web_lead','onsite_conversion.lead_grouped',
+        'offsite_conversion.fb_pixel_lead','offsite_lead_add_20_s_calls','onsite_conversion.messaging_first_reply');
       var landingViews=getAction('landing_page_view');
       // ThruPlays no viene dentro de 'actions': es un campo propio de insights,
       // un array donde el valor util suele estar en el primer elemento.
@@ -9943,11 +9952,12 @@ async function syncMetaAds(clientId){
       var spend=parseFloat(ins.spend||0);
       // "Resultados" = evento de conversion real (como en Ads Manager), NUNCA las visitas.
       // Se prioriza el evento de conversion mas fuerte presente; si no hay ninguno, queda vacio.
-      var _reg=getAction('complete_registration')+getAction('offsite_conversion.fb_pixel_complete_registration')+getAction('onsite_conversion.complete_registration');
-      var _purch=getAction('purchase')+getAction('offsite_conversion.fb_pixel_purchase')+getAction('onsite_web_purchase');
-      var _pixelLead=getAction('offsite_conversion.fb_pixel_lead');
-      var _msgConv=getAction('onsite_conversion.messaging_conversation_started_7d')+getAction('onsite_conversion.total_messaging_connection');
-      var results=_purch||_reg||(leads+_pixelLead)||_msgConv||0;
+      // Mismo criterio que arriba: cada bloque son alias del mismo evento, se toma el maximo.
+      // Y 'leads' ya incluye el lead del pixel, asi que no se vuelve a sumar aparte.
+      var _reg=maxAction('complete_registration','offsite_conversion.fb_pixel_complete_registration','onsite_conversion.complete_registration');
+      var _purch=maxAction('purchase','offsite_conversion.fb_pixel_purchase','onsite_web_purchase');
+      var _msgConv=maxAction('onsite_conversion.messaging_conversation_started_7d','onsite_conversion.total_messaging_connection');
+      var results=_purch||_reg||leads||_msgConv||0;
       // Cost per result from API
       var cpr='';
       var cprArr=ins.cost_per_action_type||[];
