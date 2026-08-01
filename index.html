@@ -5701,7 +5701,7 @@ function renderTab(){
           :'<div class="empty" style="margin-top:0"><div class="empty-icon"></div><div>Conecta Meta o agrega ads a la linea activa.</div></div>')
         +'</div>';
       if(!_sinInformes){ el.innerHTML+=liveSectionHtml(c); kickLiveRefresh(c); }
-      else { el.innerHTML+=embudoVentasSlot(); montarEmbudoVentas(c); }
+      else { el.innerHTML=embudoHojasHtml(el.innerHTML); montarHojas(c); }
       if(metaTokenCheck&&metaAccountIdCheck){
         window._metaAutoSynced=window._metaAutoSynced||{};
         if(!window._metaAutoSynced[c.id]){
@@ -5841,7 +5841,7 @@ function renderTab(){
       </div>
     </div>`:''}`;
     if(!_sinInformes){ el.innerHTML+=liveSectionHtml(c); kickLiveRefresh(c); }
-    else { el.innerHTML+=embudoVentasSlot(); montarEmbudoVentas(c); }
+    else { el.innerHTML=embudoHojasHtml(el.innerHTML); montarHojas(c); }
   }
 
   else if(S.tab==='integraciones'){
@@ -7824,45 +7824,61 @@ function capDeleteBatch(id){
   closeModal(); if(typeof toast==='function') toast('Informe borrado'); if(S.tab==='ventas') renderTab();
 }
 
-// El funnel de ventas dentro de Embudo se dibuja recien cuando el scroll llega:
-// renderVentasTab cruza oportunidades por anuncio, campana y pais, y hacerlo junto
-// con la sincronizacion de Meta al abrir la pestana la vuelve muy pesada.
-function embudoVentasSlot(){
-  return '<div id="embudo-ventas-slot" style="margin-top:28px;border-top:1px solid var(--border);padding-top:22px">'
-    +'<div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Conversion de ventas</div>'
-    +'<div id="embudo-ventas-body" style="min-height:120px;display:flex;align-items:center;justify-content:center">'
-    +'<span style="font-size:12px;color:var(--text3)">Se carga al llegar aca...</span>'
-    +'</div></div>';
+// Embudo de Ventas se organiza en hojas colapsables. Las dos arrancan cerradas:
+// el contenido de Meta ya viene armado pero oculto, y el funnel de ventas se dibuja
+// recien al abrirlo, porque renderVentasTab cruza oportunidades por anuncio, campana y pais.
+function _hojaHead(k, titulo, bajada){
+  return '<div onclick="toggleHoja(\'' + k + '\')" '
+    +'style="display:flex;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--border);'
+    +'border-radius:10px;cursor:pointer;background:var(--bg2);user-select:none">'
+    +'<span id="hoja-'+k+'-chev" style="font-size:10px;color:var(--text3);transition:transform .18s ease;display:inline-block">\u25B6</span>'
+    +'<div style="flex:1;min-width:0">'
+    +'<div style="font-size:13.5px;font-weight:500;color:var(--strong)">'+titulo+'</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:1px">'+bajada+'</div>'
+    +'</div>'
+    +'<span id="hoja-'+k+'-estado" style="font-size:11px;color:var(--text3)">abrir</span>'
+    +'</div>';
 }
 
-function montarEmbudoVentas(c){
-  // requestAnimationFrame: el slot recien existe despues de que el navegador pinte el innerHTML
-  requestAnimationFrame(function(){
-    var slot=document.getElementById('embudo-ventas-slot');
-    var body=document.getElementById('embudo-ventas-body');
-    if(!slot||!body) return;
-    var montado=false;
-    var montar=function(){
-      if(montado) return;
-      montado=true;
-      body.style.display='block';
-      body.style.alignItems='';
-      body.style.justifyContent='';
-      body.style.minHeight='';
-      try{ renderVentasTab(c, body); }
+function embudoHojasHtml(topHtml){
+  return '<div style="margin-bottom:12px">'
+      +_hojaHead('top','Top of Funnel','Ads y guiones \u00b7 campanas, conjuntos y anuncios de Meta')
+      +'<div id="hoja-top-body" style="display:none;padding-top:16px">'+topHtml+'</div>'
+    +'</div>'
+    +'<div>'
+      +_hojaHead('bottom','Bottom of Funnel','Conversion de ventas \u00b7 agendas, llamadas y cierres')
+      +'<div id="hoja-bottom-body" style="display:none;padding-top:16px"></div>'
+    +'</div>';
+}
+
+function montarHojas(c){
+  S._hojaCliente=c;              // lo necesita toggleHoja para dibujar el funnel
+  S._hojaBottomMontada=false;    // el funnel se arma una sola vez por render
+}
+
+function toggleHoja(k){
+  var body=document.getElementById('hoja-'+k+'-body');
+  var chev=document.getElementById('hoja-'+k+'-chev');
+  var est=document.getElementById('hoja-'+k+'-estado');
+  if(!body) return;
+  var abierta=body.style.display!=='none';
+  body.style.display=abierta?'none':'block';
+  if(chev) chev.style.transform=abierta?'':'rotate(90deg)';
+  if(est) est.textContent=abierta?'abrir':'cerrar';
+  if(abierta) return;
+
+  // Al abrir Bottom por primera vez se dibuja el funnel de ventas.
+  if(k==='bottom' && !S._hojaBottomMontada){
+    S._hojaBottomMontada=true;
+    body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Cargando...</div>';
+    setTimeout(function(){
+      try{ renderVentasTab(S._hojaCliente, body); }
       catch(e){
-        console.warn('embudo ventas:',e);
-        body.innerHTML='<span style="font-size:12px;color:var(--redx)">No se pudo cargar el funnel de ventas.</span>';
+        console.warn('hoja bottom:',e);
+        body.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo cargar el funnel de ventas.</div>';
       }
-    };
-    if(!('IntersectionObserver' in window)){ montar(); return; }
-    var obs=new IntersectionObserver(function(entradas){
-      entradas.forEach(function(e){
-        if(e.isIntersecting){ obs.disconnect(); montar(); }
-      });
-    }, {rootMargin:'200px'}); // arranca 200px antes de entrar en pantalla
-    obs.observe(slot);
-  });
+    },0); // deja pintar el "Cargando..." antes de bloquear el hilo
+  }
 }
 
 function renderVentasTab(c, el){
