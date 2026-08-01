@@ -9290,6 +9290,74 @@ function borrarFx(clientId){
   toast('Conversion desactivada - vuelve a moneda original');
 }
 
+// ================= MOVIMIENTOS DE ANUNCIOS =================
+// Dos fuentes, porque Meta no informa lo mismo para cada caso:
+//  - Alta de un anuncio: viene con created_time, asi que se detecta sola desde el primer sync.
+//  - Pausa o reactivacion: Meta no dice cuando cambio el estado, solo cual es hoy. Se detecta
+//    comparando cada sincronizacion contra la foto de la anterior, igual que las novedades de GHL.
+function computeMetaChanges(c, camps){
+  c._metaSnapshot=c._metaSnapshot||null;
+  var prev=c._metaSnapshot;
+  var ahora=new Date().toISOString();
+  var foto={};
+  var cambios=[];
+  (camps||[]).forEach(function(cp){
+    (cp.adsets||[]).forEach(function(as){
+      (as.ads||[]).forEach(function(ad){
+        var st=String(ad.status||'').toUpperCase();
+        foto[ad.id]={st:st, name:ad.name||''};
+        if(!prev) return; // primer sync: solo tomamos la foto
+        var p=prev[ad.id];
+        if(!p){
+          // Anuncio que no estaba: si Meta no dio created_time, igual es nuevo para nosotros.
+          if(!ad.createdTime) cambios.push({ts:ahora, tipo:'alta', ad:ad.name||'Anuncio', donde:as.name||''});
+          return;
+        }
+        if(p.st!==st){
+          if(st==='ACTIVE') cambios.push({ts:ahora, tipo:'reactivado', ad:ad.name||'Anuncio', donde:as.name||''});
+          else if(p.st==='ACTIVE') cambios.push({ts:ahora, tipo:'pausado', ad:ad.name||'Anuncio', donde:as.name||''});
+        }
+      });
+    });
+  });
+  // Anuncios que estaban y ya no aparecen
+  if(prev){
+    Object.keys(prev).forEach(function(id){
+      if(!foto[id]) cambios.push({ts:ahora, tipo:'baja', ad:prev[id].name||'Anuncio', donde:''});
+    });
+  }
+  c._metaSnapshot=foto;
+  if(cambios.length) c.metaChanges=cambios.concat(c.metaChanges||[]).slice(0,200);
+  return cambios.length;
+}
+
+// Movimientos de los ultimos N dias, mezclando las altas que reporta Meta
+// con los cambios de estado que detectamos nosotros.
+function metaMovimientos(c, dias){
+  dias=dias||7;
+  var desde=Date.now()-dias*86400000;
+  var out=[];
+  var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+  ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+    (cp.adsets||[]).forEach(function(as){
+      (as.ads||[]).forEach(function(ad){
+        if(!ad.createdTime) return;
+        var t=new Date(ad.createdTime).getTime();
+        if(isNaN(t)||t<desde) return;
+        out.push({ts:t, tipo:'alta', ad:ad.name||'Anuncio', donde:as.name||''});
+      });
+    });
+  });
+  (c.metaChanges||[]).forEach(function(ch){
+    var t=new Date(ch.ts).getTime();
+    if(isNaN(t)||t<desde) return;
+    if(ch.tipo==='alta' && out.some(function(x){return x.tipo==='alta'&&x.ad===ch.ad;})) return;
+    out.push({ts:t, tipo:ch.tipo, ad:ch.ad, donde:ch.donde});
+  });
+  out.sort(function(a,b){return b.ts-a.ts;});
+  return out;
+}
+
 // Normaliza los avisos que devuelve Meta. issues_info trae mensajes tal cual
 // los muestra el Ads Manager ("Resultados bajos", "Publico saturado", etc.).
 // Junta todos los avisos de la linea activa y arma el cartel de arriba.
@@ -9318,6 +9386,15 @@ function metaAvisos(c){
       });
     });
   });
+  // Que se movio en la semana: altas, pausas y reactivaciones de anuncios.
+  var movs=metaMovimientos(c,7);
+  var etiqueta={alta:'Anuncio nuevo',pausado:'Anuncio pausado',reactivado:'Anuncio reactivado',baja:'Anuncio eliminado'};
+  movs.slice(0,8).forEach(function(mv){
+    var cuando=Math.max(0,Math.floor((Date.now()-mv.ts)/86400000));
+    push('mov',etiqueta[mv.tipo]||'Cambio en un anuncio',
+      esc(mv.ad)+(cuando===0?' \u00b7 hoy':' \u00b7 hace '+cuando+' dia'+(cuando>1?'s':'')),
+      mv.donde);
+  });
   // Sync viejo: no viene de Meta pero es igual de importante
   if(al.metaSyncAt){
     var dias=Math.floor((Date.now()-new Date(al.metaSyncAt).getTime())/86400000);
@@ -9335,16 +9412,16 @@ function metaAvisosHtml(c){
   return '<div style="background:'+bg+';border:1px solid '+bd+';border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:16px">'
     +'<div style="font-size:11px;color:'+col+';text-transform:uppercase;letter-spacing:0.06em;margin-bottom:9px">'
     +'Avisos de Meta &middot; '+av.length+'</div>'
-    +av.slice(0,6).map(function(a){
+    +av.slice(0,10).map(function(a){
       return '<div style="display:flex;gap:9px;align-items:flex-start;padding:6px 0">'
-        +'<span style="color:'+(a.tipo==='issue'?'var(--amberx)':'var(--text3)')+';font-size:13px;line-height:1.3">&bull;</span>'
+        +'<span style="color:'+(a.tipo==='issue'?'var(--amberx)':a.tipo==='mov'?'var(--bluex,#378add)':'var(--text3)')+';font-size:13px;line-height:1.3">&bull;</span>'
         +'<div style="flex:1;min-width:0">'
         +'<div style="font-size:12.5px;color:var(--strong)">'+esc(a.titulo)
         +(a.donde?' <span style="color:var(--text3);font-weight:400">&middot; '+esc(a.donde)+'</span>':'')+'</div>'
         +(a.detalle?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:2px">'+esc(a.detalle)+'</div>':'')
         +'</div></div>';
     }).join('')
-    +(av.length>6?'<div style="font-size:11px;color:var(--text3);margin-top:6px">y '+(av.length-6)+' mas</div>':'')
+    +(av.length>10?'<div style="font-size:11px;color:var(--text3);margin-top:6px">y '+(av.length-10)+' mas</div>':'')
     +'</div>';
 }
 
@@ -9443,7 +9520,7 @@ async function syncMetaAds(clientId){
         // Fetch ads for each adset
         for(var ai=0;ai<adsets.length;ai++){
           try{
-            var adsFieldsStr='id,name,status,effective_status,issues_info,creative{id,name,thumbnail_url},insights.time_range('+timeRange+'){'+insFields+'}';
+            var adsFieldsStr='id,name,status,effective_status,issues_info,created_time,updated_time,creative{id,name,thumbnail_url},insights.time_range('+timeRange+'){'+insFields+'}';
             var adsUrl='https://graph.facebook.com/v19.0/'+adsets[ai].id+'/ads'
               +'?fields='+encodeURIComponent(adsFieldsStr)
               +'&access_token='+token
@@ -9455,6 +9532,7 @@ async function syncMetaAds(clientId){
               var m=extractIns(ins);
               return {
                 id:ad.id,name:ad.name,status:ad.status,previewUrl:'',
+                createdTime:ad.created_time||null,updatedTime:ad.updated_time||null,
                 effectiveStatus:ad.effective_status||'', issues:_metaIssues(ad),
                 thumbnail:ad.creative&&ad.creative.thumbnail_url||'',
                 spend:m.spend,impressions:m.impressions,reach:m.reach,frequency:m.frequency,
@@ -9604,9 +9682,12 @@ async function syncMetaAds(clientId){
       };
     });
     activeLine.metaSyncAt=new Date().toISOString();
+    // Comparar contra la foto del sync anterior para saber que se pauso o se reactivo.
+    var _nMov=0;
+    try{ _nMov=computeMetaChanges(c, activeLine.metaCampaigns); }catch(e){ console.warn('diff Meta',e); }
     save();
     renderTab();
-    toast('Meta sincronizado - '+campaigns.length+' campanas');
+    toast('Meta sincronizado - '+campaigns.length+' campanas'+(_nMov?' \u00b7 '+_nMov+' movimiento'+(_nMov>1?'s':''):''));
   }catch(e){
     toast('Error Meta: '+e.message,'red');
   }
