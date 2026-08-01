@@ -97,6 +97,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   transition:max-height .24s cubic-bezier(.2,.8,.2,1),opacity .18s ease,margin-top .24s ease}
 .client-row:hover .client-peek,.client-row:focus-within .client-peek{max-height:32px;opacity:1;margin-top:3px}
 .sidebar.collapsed .client-peek{display:none}
+/* Comprimido no hay lugar para el resumen: sale al costado, fuera del sidebar,
+   asi no lo recorta el overflow de .client-row ni el scroll de .sidebar-nav. */
+#client-flyout{position:fixed;z-index:9999;pointer-events:none;background:var(--sb-bg);
+  border:1px solid var(--sb-border);border-radius:9px;padding:7px 12px;white-space:nowrap;
+  box-shadow:0 10px 30px rgba(0,0,0,0.55);opacity:0;
+  transform:translateY(-50%) translateX(-5px);
+  transition:opacity .14s ease,transform .16s cubic-bezier(.2,.8,.2,1)}
+#client-flyout.on{opacity:1;transform:translateY(-50%)}
+@media (prefers-reduced-motion:reduce){#client-flyout{transition:none}}
 @media (prefers-reduced-motion:reduce){
   .client-row .client-peek{transition:none}
 }
@@ -1303,6 +1312,7 @@ function toggleSidebar(){
   const sb=document.getElementById('sidebar');
   const collapsed=sb.classList.toggle('collapsed');
   localStorage.setItem('evold-sidebar-collapsed', collapsed?'1':'0');
+  hideClientFlyout();
 }
 function collapseSidebar(){
   const sb=document.getElementById('sidebar');
@@ -1406,11 +1416,34 @@ function clientPeekHtml(c){
   if(pend) bits.push(pend+' tarea'+(pend>1?'s':''));
   return bits.join(' \u00b7 ');
 }
+function _clientFlyoutEl(){
+  var el=document.getElementById('client-flyout');
+  if(!el){ el=document.createElement('div'); el.id='client-flyout'; document.body.appendChild(el); }
+  return el;
+}
+function showClientFlyout(row, clientId){
+  var sb=document.getElementById('sidebar');
+  if(!sb||!sb.classList.contains('collapsed')) return; // expandido manda el resumen inline
+  var c=(DB.clients||[]).find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var el=_clientFlyoutEl();
+  el.innerHTML='<div style="font-size:12.5px;color:var(--sb-text);line-height:1.3">'+esc(c.name)+'</div>'
+    +'<div style="font-size:10px;color:var(--sb-text-faint);margin-top:2px">'+clientPeekHtml(c)+'</div>';
+  var r=row.getBoundingClientRect();
+  el.style.left=(r.right+8)+'px';
+  el.style.top=Math.min(window.innerHeight-14, Math.max(14, r.top+r.height/2))+'px';
+  el.classList.add('on');
+}
+function hideClientFlyout(){
+  var el=document.getElementById('client-flyout');
+  if(el) el.classList.remove('on');
+}
 function renderSidebar(){
   document.getElementById('client-list').innerHTML=activeClients().map((c,idx)=>`
     <div class="nav-item client-row ${S.clientId===c.id&&S.view==='client'?'active':''}" id="client-item-${idx}"
       draggable="true" ondragstart="clientDragStart(${idx})" ondragover="clientDragOver(event,${idx})" ondrop="clientDrop(event,${idx})"
-      onclick="selectClient(${c.id})">
+      onclick="selectClient(${c.id})"
+      onmouseenter="showClientFlyout(this,${c.id})" onmouseleave="hideClientFlyout()">
       ${adsDot(c).live?'<div class="client-live-sweep"></div>':''}
       <div class="nav-item-icon client-av ${adsDot(c).live?'':'is-idle'}" style="font-size:11px">${c.avatar}</div>
       <div class="nav-item-info">
@@ -1424,6 +1457,8 @@ function renderSidebar(){
             ? '<span class="client-state" style="color:#BA7517">PAUSA</span>'
             : '<div class="health-dot" style="background:'+adsDot(c).color+'"></div>')}
     </div>`).join('');
+  var _nav=document.querySelector('.sidebar-nav');
+  if(_nav && !_nav._flyBound){ _nav._flyBound=true; _nav.addEventListener('scroll', hideClientFlyout, {passive:true}); }
   var _nt=document.getElementById('nav-tickets'); if(_nt) _nt.className='nav-item'+(S.view==='tickets'?' active':'');
 }
 
