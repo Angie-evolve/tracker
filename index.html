@@ -752,9 +752,10 @@ async function _computeLiveMetrics(c,line,startDate,endDate){
         line.metrics.cpc=clicks>0?Math.round(spend/clicks*100)/100:null;
         line.metrics.cpl=leads>0?Math.round(spend/leads*100)/100:null;
         line._metaOk=true;
-      } else { line._metaOk=false; line._metaError=data.error.message; }
-    }catch(e){ line._metaOk=false; line._metaError=String(e); }
-  } else { line._metaOk=false; line._metaError='Meta no conectado para este cliente.'; }
+        line._metaError=null; line._metaErrAt=null;
+      } else { line._metaOk=false; line._metaError=data.error.message; line._metaErrAt=Date.now(); }
+    }catch(e){ line._metaOk=false; line._metaError=String(e); line._metaErrAt=Date.now(); }
+  } else { line._metaOk=false; line._metaError='Meta no conectado para este cliente.'; line._metaErrAt=Date.now(); }
 
   const opps=(c.ghl&&c.ghl.opportunities)||[];
   const endIncl=new Date(endDate); endIncl.setHours(23,59,59,999);
@@ -766,6 +767,33 @@ async function _computeLiveMetrics(c,line,startDate,endDate){
   line.metrics.registros=inRange.length;
   line.metrics.sql=inRange.filter(function(o){return o._sql;}).length;
   line._lastRefresh=new Date().toISOString();
+}
+
+// Traduce el error crudo de Meta a algo accionable. El caso mas comun no es un bug
+// del tracker sino una credencial invalida: la app o el token dejaron de existir.
+function _metaErrCorto(msg){
+  var m=String(msg||'');
+  if(/Application has been deleted/i.test(m)) return 'Meta: la app del token fue eliminada \u2014 hay que cargar un token nuevo';
+  if(/Session has expired|access token/i.test(m)) return 'Meta: el token expiro \u2014 hay que renovarlo';
+  if(/permission|OAuth/i.test(m)) return 'Meta: al token le faltan permisos sobre esta cuenta';
+  if(/no conectado/i.test(m)) return 'Meta no conectado para este cliente';
+  if(/rate limit|too many/i.test(m)) return 'Meta: limite de pedidos alcanzado, reintenta en un rato';
+  return 'Meta: '+(m.length>60?m.slice(0,60)+'\u2026':m);
+}
+
+// Limpia los frenos y vuelve a pedir todas las semanas que quedaron con error.
+// Sirve despues de cargar un token nuevo.
+function reintentarSemanas(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var n=0;
+  (c.liveLines||[]).forEach(function(l){
+    if(l._metaOk===false){ l.archived=false; l._metaErrAt=null; n++; }
+  });
+  c._liveEmptyWeeks={}; // una semana pudo quedar marcada como vacia solo porque Meta fallo
+  save();
+  toast(n?('Reintentando '+n+' semana'+(n>1?'s':'')+'...'):'Recalculando el historico...');
+  refreshLiveLine(clientId).then(function(){ if(typeof renderTab==='function') renderTab(); });
 }
 
 async function refreshLiveLine(clientId){
@@ -813,7 +841,11 @@ async function refreshLiveLine(clientId){
       const wk=isoDate(monday);
       if(c._liveEmptyWeeks[wk]) continue;
       let arch=c.liveLines.find(function(l){return l.weekKey===wk;});
-      if(arch&&arch.archived) continue;
+      // Una semana archivada no se vuelve a pedir, salvo que haya quedado con error de
+      // Meta: en ese caso los numeros estan incompletos y hay que reintentar. Se espera
+      // 30 min entre intentos para no golpear la API con 20 semanas rotas en cada refresco.
+      if(arch&&arch.archived&&arch._metaOk!==false) continue;
+      if(arch&&arch._metaOk===false&&arch._metaErrAt&&(Date.now()-arch._metaErrAt)<1800000) continue;
       const sunday=new Date(monday); sunday.setDate(sunday.getDate()+6);
       const isNew=!arch;
       if(!arch){
@@ -823,7 +855,12 @@ async function refreshLiveLine(clientId){
       await _computeLiveMetrics(c,arch,monday,sunday);
       const m=arch.metrics;
       const empty=(!m.adSpent)&&(!m.pageViews)&&(!m.registros)&&(!m.sql);
-      if(empty&&isNew){
+      // Si Meta esta configurado pero la llamada fallo, la semana NO es concluyente:
+      // puede estar vacia solo porque no pudimos preguntar. No se archiva ni se descarta.
+      const metaFallo=(arch._metaOk===false)&&!!c.metaToken&&!!c.metaAccountId;
+      if(metaFallo){
+        arch.archived=false;
+      }else if(empty&&isNew){
         // semana sin ningun dato: no ensuciamos el historial ni la volvemos a consultar
         c.liveLines=c.liveLines.filter(function(l){return l!==arch;});
         c._liveEmptyWeeks[wk]=true;
@@ -2390,7 +2427,10 @@ function liveSectionHtml(c){
               <span style="font-size:13px;font-weight:500;color:${isCurrentWeek?'var(--accent)':'var(--text)'}">${esc(l.version)}</span>
               ${isCurrentWeek?'<span class="pill pill-green" style="font-size:9px;padding:1px 6px">en vivo &middot; 7 dias</span>':'<span class="pill" style="font-size:9px;padding:1px 6px;background:var(--bg3);color:var(--text3)">historico</span>'}
               <span style="font-size:11px;color:var(--text3)">${fmtDateRange(l.dateStart,l.dateEnd)}</span>
-              ${l._metaOk===false?'<span style="font-size:10px;color:var(--redx);margin-left:auto">Meta: '+esc(l._metaError||'error')+'</span>':''}
+              ${l._metaOk===false?'<span style="font-size:10px;color:var(--redx);margin-left:auto;display:flex;align-items:center;gap:8px">'
+                +'<span title="'+esc(l._metaError||'error')+'">'+esc(_metaErrCorto(l._metaError))+'</span>'
+                +'<button class="btn btn-sm" style="font-size:10px;padding:1px 7px;color:var(--text3)" onclick="event.stopPropagation();reintentarSemanas('+c.id+')">Reintentar</button>'
+              +'</span>':''}
             </div>
             ${collapsed?'':'<div>'+LIVE_ROWS.map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">${r.label}</span><span style="font-size:13px;font-weight:500;color:var(--text)">${r.get(l)}</span></div>`).join('')+'</div>'}
           </div>`;
