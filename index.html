@@ -413,6 +413,22 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .ft-siren{animation:ft-blink .5s steps(1) infinite}
 .ft-siren2{animation:ft-blink .5s steps(1) infinite;animation-delay:.25s}
 @keyframes ft-blink{0%,49%{opacity:1}50%,100%{opacity:.25}}
+
+.vh-conds{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.vh-conds .y{font-size:12px;color:var(--text3)}
+.vh-condwrap{position:relative;display:inline-block}
+.vh-cond{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;font-size:12px;cursor:pointer;transition:border-color .15s}
+.vh-cond:hover{border-color:var(--border2)}
+.vh-cond .k{padding:4px 9px;color:var(--text3);border-right:1px solid var(--border);white-space:nowrap}
+.vh-cond .v{padding:4px 9px;color:var(--text);white-space:nowrap;max-width:190px;overflow:hidden;text-overflow:ellipsis}
+.vh-cond .n{color:var(--text3);font-family:var(--mono);font-size:10px;margin-left:4px}
+.vh-cond i{font-size:13px;color:var(--text3);padding-right:7px}
+.vh-condmenu{display:none;position:absolute;top:calc(100% + 5px);left:0;z-index:60;min-width:190px;max-height:280px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:5px;box-shadow:0 10px 30px rgba(0,0,0,0.45)}
+.vh-condmenu.on{display:block}
+.vh-mi{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;font-size:12.5px;color:var(--text2);cursor:pointer;white-space:nowrap}
+.vh-mi:hover{background:var(--hover);color:var(--text)}
+.vh-mi.on{color:var(--accent)}
+.vh-mi .b{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text3)}
 </style>
 </head>
 <body>
@@ -2218,6 +2234,22 @@ function setVentasSpendSource(src){
   S.ventasSpendSource=src;
   try{ localStorage.setItem('evold-ventas-spend',src); }catch(e){}
   renderTab();
+}
+
+// Menus de las condiciones de filtro: uno abierto a la vez, se cierra al hacer click afuera.
+function toggleCondMenu(id){
+  var el=document.getElementById('cm-'+id);
+  var abierto=el&&el.classList.contains('on');
+  document.querySelectorAll('.vh-condmenu.on').forEach(function(m){m.classList.remove('on');});
+  if(el&&!abierto){
+    el.classList.add('on');
+    setTimeout(function(){
+      document.addEventListener('click', function _cerrar(){
+        document.querySelectorAll('.vh-condmenu.on').forEach(function(m){m.classList.remove('on');});
+        document.removeEventListener('click', _cerrar);
+      });
+    },0);
+  }
 }
 function setVentasView(v){ S.ventasView=v; S.ventasSeg=null; S.ventasPais=null; renderTab(); }
 
@@ -8218,57 +8250,84 @@ function renderVentasTab(c, el){
   const vbtn=function(v,l){return '<button class="'+(view===v?'on':'')+'" onclick="setVentasView(\''+v+'\')">'+l+'</button>';};
   const pbtn=function(p,l){return '<button class="'+(period===p?'on':'')+'" onclick="setVentasPeriod(\''+p+'\')">'+l+'</button>';};
   const _fmtCustomLabel=function(){var cr=_customRange();if(!cr)return 'Personalizado';var f=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2);};return f(cr.from)+' - '+f(cr.to);};
-  html+='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
-    +'<div class="vh-seg">'+vbtn('anuncios','Por anuncio')+vbtn('adset','Por conjunto')+vbtn('placement','Por placement')+vbtn('embudo','Por campaña')+vbtn('pais','Por pais')+'</div>'
-    +'<div class="vh-seg">'+pbtn('todo','Todo')+pbtn('mes','Este mes')+pbtn('30d','Ultimos 30 dias')
-      +'<button class="'+(period==='custom'?'on':'')+'" onclick="openCustomRangeModal()">'
-      +(period==='custom'&&_customRange()?_fmtCustomLabel():'Personalizado')+'</button></div>'
-    +'</div>';
-  html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px">'
-    +'<button class="vh-chip '+(seg==null?'on':'')+'" onclick="setVentasSeg(null)">Todos <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+opsP.length+'</span></button>'
-    +segKeys.map(function(k){
-      var enc=encodeURIComponent(k).replace(/'/g,'%27');
-      // En "Por anuncio", distinguir atribucion real de anuncio vs. fallback a campana/fuente.
-      // Sin esto, un nombre de campana parece un anuncio y se lee como atribucion que no existe.
-      var noEsAnuncio='';
-      if(view==='anuncios' && k!=='(sin dato)'){
-        var esReal=false;
-        Object.keys(_adIdx.ads).forEach(function(id){ if(_adIdx.ads[id]===k) esReal=true; });
-        if(!esReal) noEsAnuncio=' <span title="Sin atribucion de anuncio: esto es la campana o la fuente, no el anuncio" style="color:var(--amberx);font-size:10px">&#9679;</span>';
-      }
-      return '<button class="vh-chip '+(seg===k?'on':'')+'" onclick="setVentasSeg(\''+enc+'\')">'+esc(k)+' <span style="opacity:0.55;font-family:var(--mono);font-size:10px">'+segMap[k]+'</span>'+noEsAnuncio+'</button>';
-    }).join('')
-    +'</div>';
-  // Segundo eje: cruce x Pais (solo en Por campana con una campana seleccionada)
+  // === FILTROS: condiciones encadenadas ===
+  // Antes eran tres filas de pildoras (agrupacion, valores, periodo) mas la de cruce por pais.
+  // Ahora cada filtro es una condicion "clave: valor" y el "y" entre ellas deja explicito
+  // que se combinan, que era justo lo que las pildoras no comunicaban.
+  const _vLabels={anuncios:'anuncio',adset:'conjunto',placement:'placement',embudo:'campana',pais:'pais'};
+  const _pLabels={todo:'todo',mes:'este mes','30d':'ultimos 30 dias'};
+
+  const _cond=function(clave, valor, menuId, extra){
+    return '<span class="vh-cond" onclick="event.stopPropagation();toggleCondMenu(\'' + menuId + '\')">'
+      +'<span class="k">'+clave+'</span>'
+      +'<span class="v">'+esc(valor)+(extra||'')+'</span>'
+      +'<i class="ti ti-chevron-down"></i>'
+      +'</span>';
+  };
+  const _menu=function(menuId, items){
+    return '<div class="vh-condmenu" id="cm-'+menuId+'">'+items.join('')+'</div>';
+  };
+  const _mItem=function(label, onclick, activo, badge){
+    return '<div class="vh-mi'+(activo?' on':'')+'" onclick="'+onclick+'">'+esc(label)
+      +(badge!=null?'<span class="b">'+badge+'</span>':'')+'</div>';
+  };
+
+  var _conds=[];
+
+  // 1. agrupacion
+  _conds.push('<span class="vh-condwrap">'
+    +_cond('agrupar por', _vLabels[view]||view, 'view')
+    +_menu('view', Object.keys(_vLabels).map(function(v){
+        return _mItem(_vLabels[v], "setVentasView('"+v+"')", view===v);
+      }))
+    +'</span>');
+
+  // 2. valor del segmento
+  var _segLabel = seg==null ? 'todos' : seg;
+  _conds.push('<span class="vh-condwrap">'
+    +_cond(_vLabels[view]||'valor', _segLabel, 'seg', ' <span class="n">'+(seg==null?opsP.length:opsSeg.length)+'</span>')
+    +_menu('seg', [_mItem('todos', "setVentasSeg(null)", seg==null, opsP.length)].concat(
+        segKeys.map(function(k){
+          var enc=encodeURIComponent(k).replace(/'/g,'%27');
+          var n=opsP.filter(function(o){return (keyOf(o)||'(sin dato)')===k;}).length;
+          return _mItem(k, "setVentasSeg('"+enc+"')", seg===k, n);
+        })))
+    +'</span>');
+
+  // 3. cruce por pais: solo existe en Por campana con una campana elegida
   if(view==='embudo'&&segCampId){
-    // paises disponibles para esta campana (de Meta si esta cacheado, si no de los contactos)
     var _paisMap={};
     if(_msCache&&_msCache.countriesByCamp&&_msCache.countriesByCamp[segCampId]){
       Object.keys(_msCache.countriesByCamp[segCampId]).forEach(function(p){ _paisMap[p]=true; });
     }
-    opsSeg.forEach(function(o){
-      var pc=paisOf(o);
-      if(pc) _paisMap[pc]=true;
-    });
-    // contar contactos por pais dentro de la campana (para el badge)
+    opsSeg.forEach(function(o){ var pc=paisOf(o); if(pc) _paisMap[pc]=true; });
     var _paisCount={};
     (seg? opsP.filter(function(o){return (keyOf(o)||'(sin dato)')===seg;}):opsP).forEach(function(o){
-      var pc=paisOf(o);
-      if(pc) _paisCount[pc]=(_paisCount[pc]||0)+1;
+      var pc=paisOf(o); if(pc) _paisCount[pc]=(_paisCount[pc]||0)+1;
     });
     var _paises=Object.keys(_paisMap).sort(function(a,b){return (_paisCount[b]||0)-(_paisCount[a]||0);});
     if(_paises.length){
-      html+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-8px 0 22px">'
-        +'<span style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em">&times; Pais</span>'
-        +'<button class="vh-chip '+(!S.ventasPais?'on':'')+'" onclick="setVentasPais(null)" style="font-size:11px;padding:3px 9px">Todos</button>'
-        +_paises.map(function(p){
-          var encp=encodeURIComponent(p).replace(/'/g,'%27');
-          return '<button class="vh-chip '+(S.ventasPais===p?'on':'')+'" onclick="setVentasPais(\''+encp+'\')" style="font-size:11px;padding:3px 9px">'+esc(p)+(_paisCount[p]?' <span style="opacity:0.55;font-family:var(--mono);font-size:9.5px">'+_paisCount[p]+'</span>':'')+'</button>';
-        }).join('')
-        +(S.ventasPais?' <span style="font-size:10.5px;color:var(--accent)">'+esc(seg)+' &times; '+esc(S.ventasPais)+'</span>':'')
-        +'</div>';
+      _conds.push('<span class="vh-condwrap">'
+        +_cond('pais', S.ventasPais||'todos', 'pais')
+        +_menu('pais', [_mItem('todos', "setVentasPais(null)", !S.ventasPais)].concat(
+            _paises.map(function(pp){
+              var encp=encodeURIComponent(pp).replace(/'/g,'%27');
+              return _mItem(pp, "setVentasPais('"+encp+"')", S.ventasPais===pp, _paisCount[pp]||0);
+            })))
+        +'</span>');
     }
   }
+
+  // 4. periodo
+  _conds.push('<span class="vh-condwrap">'
+    +_cond('periodo', period==='custom'?_fmtCustomLabel():(_pLabels[period]||period), 'per')
+    +_menu('per', Object.keys(_pLabels).map(function(pk){
+        return _mItem(_pLabels[pk], "setVentasPeriod('"+pk+"')", period===pk);
+      }).concat([_mItem('personalizado...', "openCustomRangeModal()", period==='custom')]))
+    +'</span>');
+
+  html+='<div class="vh-conds">'+_conds.join('<span class="y">y</span>')+'</div>';
+
   // Si en Por campana domina (sin dato), disparar enriquecimiento y avisar
   if(view==='embudo'){
     const _sinDato=segMap['(sin dato)']||0;
