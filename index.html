@@ -2446,6 +2446,45 @@ function _metaNombres(l, clave){
     +esc(arr[0].nombre)+' <span style="color:var(--text3)">+'+(arr.length-1)+'</span></span>';
 }
 
+// Landings por las que entraron los registros de un rango. Sale de la URL de atribucion
+// que GHL guarda en cada contacto, agrupada por pagina (sin los parametros de tracking).
+function landingsDelRango(c, dateStart, dateEnd){
+  var ini=dateStart?new Date(dateStart):null;
+  var fin=dateEnd?new Date(dateEnd):new Date();
+  if(ini) ini.setHours(0,0,0,0);
+  fin.setHours(23,59,59,999);
+  var mapa={};
+  ((c.ghl&&c.ghl.opportunities)||[]).forEach(function(o){
+    var t=o.createdAt?new Date(o.createdAt):null;
+    if(!t||isNaN(t.getTime())) return;
+    if(ini && t<ini) return;
+    if(t>fin) return;
+    var u=(o.source&&o.source.landingUrl)||'';
+    if(!u) return;
+    var limpia=String(u).split('?')[0].split('#')[0].replace(/\/$/,'');
+    if(!limpia) return;
+    if(!mapa[limpia]) mapa[limpia]={url:limpia, n:0};
+    mapa[limpia].n++;
+  });
+  return Object.keys(mapa).map(function(k){return mapa[k];})
+    .sort(function(a,b){return b.n-a.n;});
+}
+
+function landingsRowHtml(c, l){
+  var arr=landingsDelRango(c, l.dateStart, l.dateEnd);
+  if(!arr.length) return null;
+  var total=arr.reduce(function(s,x){return s+x.n;},0);
+  return arr.slice(0,4).map(function(x){
+    var corta=x.url.replace(/^https?:\/\//,'');
+    if(corta.length>46) corta=corta.slice(0,46)+'\u2026';
+    var pct=total?Math.round(x.n/total*100):0;
+    return '<span style="display:inline-flex;align-items:center;gap:6px;margin:0 12px 3px 0">'
+      +'<a href="'+esc(x.url)+'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" '
+      +'onclick="event.stopPropagation()" title="'+esc(x.url)+'">'+esc(corta)+' \u2197</a>'
+      +'<span style="font-size:11px;color:var(--text3)">'+x.n+' ('+pct+'%)</span></span>';
+  }).join('')+(arr.length>4?'<span style="font-size:11px;color:var(--text3)">+'+(arr.length-4)+' mas</span>':'');
+}
+
 function buildMetricRows(c, opts){
   opts=opts||{};
   const live=!!opts.live;
@@ -2486,6 +2525,8 @@ function buildMetricRows(c, opts){
     }},
     {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
     {label:'Registros',get:l=>{const f=F(l);return f?'<span title="Contactos creados en GHL dentro del rango">'+f.registros+'</span>':fmtVal((l.metrics||{}).registros);}},
+    {label:'Landings de origen',soloSiHay:l=>!!landingsRowHtml(c,l),
+      get:l=>landingsRowHtml(c,l)||dash},
     {label:'Llamada calificada en vivo',get:l=>{const f=F(l);return (f&&f.sql!=null)?String(f.sql):fmtVal((l.metrics||{}).sql);}},
     {label:'Costo calificado',get:l=>{
       const f=F(l);const m=l.metrics||{};
@@ -7323,6 +7364,7 @@ function mergeGhlOpps(prevOps, freshOps, truncated){
     keep(o, old, 'source', 'utmAd');
     keep(o, old, 'source', 'utmCampaign');
     keep(o, old, 'source', 'utmSource');
+    keep(o, old, 'source', 'landingUrl');
     keep(o, old, 'geo', 'location');
     if((!o.tags || !o.tags.length) && old.tags && old.tags.length) o.tags=old.tags;
     if(old._sql) o._sql=true;              // calificacion manual: no se pierde nunca
@@ -7412,7 +7454,7 @@ async function enrichContactsBackground(c, proxy){
     // no a las 24h: si no, un problema temporal de conexion deja los UTM vacios todo el dia.
     var wait=(o._enrichOk && o.source.utmAdset)?24*3600000:15*60000;
     if(o._enrichTry && (_now-o._enrichTry)<wait) return false;
-    return (!o.source.utmAd || !o.source.utmCampaign || !o.source.utmAdset || !o.geo.location || !o.tags);
+    return (!o.source.utmAd || !o.source.utmCampaign || !o.source.utmAdset || !o.source.landingUrl || !o.geo.location || !o.tags);
   });
   if(!toEnrich.length) return;
   const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
@@ -7433,6 +7475,10 @@ async function enrichContactsBackground(c, proxy){
         if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
         if(data.utmSource && !opp.source.utmSource) opp.source.utmSource=data.utmSource;
         // Conjunto de anuncios: del campo utmAdset, o parseado de la URL de atribucion si viene.
+        // La URL de atribucion ya venia en la respuesta pero solo se usaba para sacarle
+        // el utm_adset y se tiraba. La guardamos: es la landing por la que entro el lead.
+        var _urlAtr=data.url||data.attributionUrl||data.documentUrl||data.pageUrl||'';
+        if(_urlAtr && !opp.source.landingUrl) opp.source.landingUrl=String(_urlAtr);
         var _adsetD=data.utmAdset||data.utm_adset||data.adSet||data.adset||'';
         if(!_adsetD){ var _u=data.url||data.attributionUrl||data.documentUrl||data.pageUrl||''; if(_u){ var _m=/[?&]utm_adset=([^&]+)/i.exec(String(_u)); if(_m) _adsetD=decodeURIComponent(_m[1].replace(/\+/g,' ')); } }
         if(_adsetD && !opp.source.utmAdset) opp.source.utmAdset=_adsetD;
