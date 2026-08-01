@@ -7824,61 +7824,63 @@ function capDeleteBatch(id){
   closeModal(); if(typeof toast==='function') toast('Informe borrado'); if(S.tab==='ventas') renderTab();
 }
 
-// Embudo de Ventas se organiza en hojas colapsables. Las dos arrancan cerradas:
-// el contenido de Meta ya viene armado pero oculto, y el funnel de ventas se dibuja
-// recien al abrirlo, porque renderVentasTab cruza oportunidades por anuncio, campana y pais.
-function _hojaHead(k, titulo, bajada){
-  return '<div onclick="toggleHoja(\'' + k + '\')" '
-    +'style="display:flex;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--border);'
-    +'border-radius:10px;cursor:pointer;background:var(--bg2);user-select:none">'
-    +'<span id="hoja-'+k+'-chev" style="font-size:10px;color:var(--text3);transition:transform .18s ease;display:inline-block">\u25B6</span>'
-    +'<div style="flex:1;min-width:0">'
-    +'<div style="font-size:13.5px;font-weight:500;color:var(--strong)">'+titulo+'</div>'
-    +'<div style="font-size:11px;color:var(--text3);margin-top:1px">'+bajada+'</div>'
-    +'</div>'
-    +'<span id="hoja-'+k+'-estado" style="font-size:11px;color:var(--text3)">abrir</span>'
-    +'</div>';
+// Embudo de Ventas se navega con pildoras, igual que Metricas/Guionizador en Ads.
+// Ninguna arranca activa: la pestana abre vacia y vos elegis que hoja mirar.
+// El contenido de Meta viene armado pero oculto; el funnel de ventas se dibuja
+// recien al elegirlo, porque cruza oportunidades por anuncio, campana y pais.
+function embudoSubNav(){
+  var sel=S._hoja||'';
+  var b=function(k,l){
+    var on=sel===k;
+    return '<button onclick="setHoja(\'' + k + '\')" style="font-size:12px;padding:6px 16px;border-radius:99px;border:1px solid '
+      +(on?'transparent':'var(--border2)')+';background:'+(on?'var(--accent)':'transparent')+';color:'
+      +(on?'var(--on-accent)':'var(--text2)')+';cursor:pointer;font-family:var(--font)">'+l+'</button>';
+  };
+  return '<div style="display:flex;gap:8px;margin-bottom:18px">'
+    +b('top','Top of Funnel')+b('bottom','Bottom of Funnel')+'</div>';
 }
 
 function embudoHojasHtml(topHtml){
-  return '<div style="margin-bottom:12px">'
-      +_hojaHead('top','Top of Funnel','Ads y guiones \u00b7 campanas, conjuntos y anuncios de Meta')
-      +'<div id="hoja-top-body" style="display:none;padding-top:16px">'+topHtml+'</div>'
-    +'</div>'
-    +'<div>'
-      +_hojaHead('bottom','Bottom of Funnel','Conversion de ventas \u00b7 agendas, llamadas y cierres')
-      +'<div id="hoja-bottom-body" style="display:none;padding-top:16px"></div>'
-    +'</div>';
+  var sel=S._hoja||'';
+  return embudoSubNav()
+    +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'</div>'
+    +'<div id="hoja-bottom-body" style="display:'+(sel==='bottom'?'block':'none')+'"></div>'
+    +'<div id="hoja-vacio" style="display:'+(sel?'none':'block')+';padding:34px 0;text-align:center;font-size:12.5px;color:var(--text3)">'
+    +'Elegi una hoja para ver la informacion.</div>';
 }
 
 function montarHojas(c){
-  S._hojaCliente=c;              // lo necesita toggleHoja para dibujar el funnel
-  S._hojaBottomMontada=false;    // el funnel se arma una sola vez por render
+  S._hojaCliente=c;           // lo necesita setHoja para dibujar el funnel
+  S._hojaBottomMontada=false; // el funnel se arma una sola vez por render
+  if(S._hoja==='bottom') _dibujarBottom(); // si volvias a la pestana con Bottom elegida
 }
 
-function toggleHoja(k){
-  var body=document.getElementById('hoja-'+k+'-body');
-  var chev=document.getElementById('hoja-'+k+'-chev');
-  var est=document.getElementById('hoja-'+k+'-estado');
-  if(!body) return;
-  var abierta=body.style.display!=='none';
-  body.style.display=abierta?'none':'block';
-  if(chev) chev.style.transform=abierta?'':'rotate(90deg)';
-  if(est) est.textContent=abierta?'abrir':'cerrar';
-  if(abierta) return;
+function _dibujarBottom(){
+  var body=document.getElementById('hoja-bottom-body');
+  if(!body || S._hojaBottomMontada) return;
+  S._hojaBottomMontada=true;
+  body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Cargando...</div>';
+  setTimeout(function(){ // deja pintar el "Cargando..." antes de bloquear el hilo
+    try{ renderVentasTab(S._hojaCliente, body); }
+    catch(e){
+      console.warn('hoja bottom:',e);
+      body.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo cargar el funnel de ventas.</div>';
+    }
+  },0);
+}
 
-  // Al abrir Bottom por primera vez se dibuja el funnel de ventas.
-  if(k==='bottom' && !S._hojaBottomMontada){
-    S._hojaBottomMontada=true;
-    body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Cargando...</div>';
-    setTimeout(function(){
-      try{ renderVentasTab(S._hojaCliente, body); }
-      catch(e){
-        console.warn('hoja bottom:',e);
-        body.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo cargar el funnel de ventas.</div>';
-      }
-    },0); // deja pintar el "Cargando..." antes de bloquear el hilo
-  }
+function setHoja(k){
+  S._hoja=(S._hoja===k)?'':k; // volver a tocar la activa la cierra
+  var top=document.getElementById('hoja-top-body');
+  var bot=document.getElementById('hoja-bottom-body');
+  var vac=document.getElementById('hoja-vacio');
+  if(top) top.style.display=(S._hoja==='top')?'block':'none';
+  if(bot) bot.style.display=(S._hoja==='bottom')?'block':'none';
+  if(vac) vac.style.display=S._hoja?'none':'block';
+  // repintar solo las pildoras, para no rearmar todo el contenido
+  var nav=document.querySelector('#tab-content > div');
+  if(nav) nav.outerHTML=embudoSubNav();
+  if(S._hoja==='bottom') _dibujarBottom();
 }
 
 function renderVentasTab(c, el){
