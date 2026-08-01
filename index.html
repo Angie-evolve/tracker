@@ -9290,6 +9290,40 @@ function borrarFx(clientId){
   toast('Conversion desactivada - vuelve a moneda original');
 }
 
+// Meta devuelve un objeto de targeting enorme y anidado. Guardar todo por cada conjunto
+// inflaria localStorage sin necesidad, asi que extraemos solo lo que un humano reconoceria
+// como "la segmentacion": donde, a quien, en que plataformas y con que exclusiones.
+function _resumenSegmentacion(t){
+  if(!t||typeof t!=='object') return null;
+  var g=t.geo_locations||{};
+  var lugares=[]
+    .concat(g.countries||[])
+    .concat((g.regions||[]).map(function(r){return r.name||r.key;}))
+    .concat((g.cities||[]).map(function(x){return x.name||x.key;}));
+  var intereses=[];
+  var juntar=function(spec){
+    (spec||[]).forEach(function(bloque){
+      ['interests','behaviors','demographics','industries','work_positions'].forEach(function(k){
+        (bloque[k]||[]).forEach(function(x){ if(x&&x.name) intereses.push(x.name); });
+      });
+    });
+  };
+  juntar(t.flexible_spec);
+  ['interests','behaviors'].forEach(function(k){
+    (t[k]||[]).forEach(function(x){ if(x&&x.name) intereses.push(x.name); });
+  });
+  var gen={1:'hombres',2:'mujeres'};
+  return {
+    lugares: lugares.sort(),
+    edad: (t.age_min||'')+'-'+(t.age_max||''),
+    generos: (t.genders&&t.genders.length)?t.genders.map(function(x){return gen[x]||x;}).join(', '):'todos',
+    intereses: intereses.sort(),
+    publicos: (t.custom_audiences||[]).length,
+    excluidos: (t.excluded_custom_audiences||[]).length,
+    plataformas: (t.publisher_platforms||[]).slice().sort()
+  };
+}
+
 // ================= MOVIMIENTOS DE ANUNCIOS =================
 // Dos fuentes, porque Meta no informa lo mismo para cada caso:
 //  - Alta de un anuncio: viene con created_time, asi que se detecta sola desde el primer sync.
@@ -9301,31 +9335,124 @@ function computeMetaChanges(c, camps){
   var ahora=new Date().toISOString();
   var foto={};
   var cambios=[];
+  var num=function(v){ var n=parseFloat(v); return isNaN(n)?0:n; };
+
+  // Recorremos los tres niveles con la misma logica: estado y presupuesto.
+  // Los anuncios no tienen presupuesto propio, se controlan desde el conjunto.
+  var registrar=function(nivel, obj, donde){
+    var st=String(obj.status||'').toUpperCase();
+    var bud=num(obj.budget);
+    foto[nivel+':'+obj.id]={st:st, bud:bud, name:obj.name||'', nivel:nivel, donde:donde,
+      seg:obj.seg||null, optGoal:obj.optGoal||'', creativeId:obj.creativeId||'',
+      eff:String(obj.effectiveStatus||'').toUpperCase(), urlTags:obj.urlTags||'',
+      destLink:obj.destLink||'', bid:obj.bidStrategy||'', objetivo:obj.objective||'',
+      learning:String(obj.learning||'').toUpperCase()};
+    if(!prev) return; // primer sync: solo tomamos la foto
+    var p=prev[nivel+':'+obj.id];
+    if(!p){
+      if(!obj.createdTime) cambios.push({ts:ahora,tipo:'alta',nivel:nivel,ad:obj.name||nivel,donde:donde});
+      return;
+    }
+    if(p.st!==st){
+      if(st==='ACTIVE') cambios.push({ts:ahora,tipo:'reactivado',nivel:nivel,ad:obj.name||nivel,donde:donde});
+      else if(p.st==='ACTIVE') cambios.push({ts:ahora,tipo:'pausado',nivel:nivel,ad:obj.name||nivel,donde:donde});
+    }
+    // Segmentacion: comparamos campo por campo para poder decir QUE cambio,
+    // no solo que algo cambio.
+    if(p.seg && obj.seg){
+      var difs=[];
+      var lista=function(a,b,etq){
+        var A=(a||[]).join(', '), B=(b||[]).join(', ');
+        if(A!==B) difs.push(etq+': '+(A||'ninguno')+' \u2192 '+(B||'ninguno'));
+      };
+      lista(p.seg.lugares, obj.seg.lugares, 'ubicacion');
+      lista(p.seg.plataformas, obj.seg.plataformas, 'plataformas');
+      if(p.seg.edad!==obj.seg.edad) difs.push('edad: '+p.seg.edad+' \u2192 '+obj.seg.edad);
+      if(p.seg.generos!==obj.seg.generos) difs.push('genero: '+p.seg.generos+' \u2192 '+obj.seg.generos);
+      if((p.seg.intereses||[]).join('|')!==(obj.seg.intereses||[]).join('|')){
+        var antes=(p.seg.intereses||[]).length, despues=(obj.seg.intereses||[]).length;
+        difs.push('intereses: '+antes+' \u2192 '+despues);
+      }
+      if(p.seg.publicos!==obj.seg.publicos) difs.push('publicos guardados: '+p.seg.publicos+' \u2192 '+obj.seg.publicos);
+      if(p.seg.excluidos!==obj.seg.excluidos) difs.push('exclusiones: '+p.seg.excluidos+' \u2192 '+obj.seg.excluidos);
+      if(difs.length){
+        cambios.push({ts:ahora,tipo:'segmentacion',nivel:nivel,ad:obj.name||nivel,donde:donde,
+          detalle:difs.slice(0,3).join(' \u00b7 ')+(difs.length>3?' \u00b7 +'+(difs.length-3):'')});
+      }
+    }
+    if(p.optGoal && obj.optGoal && p.optGoal!==obj.optGoal){
+      cambios.push({ts:ahora,tipo:'optimizacion',nivel:nivel,ad:obj.name||nivel,donde:donde,
+        detalle:p.optGoal+' \u2192 '+obj.optGoal});
+    }
+    // Rechazo o revision: el anuncio figura activo en la tabla pero no entrega.
+    var eff=String(obj.effectiveStatus||'').toUpperCase();
+    if(p.eff!==eff){
+      if(eff==='DISAPPROVED'||eff==='WITH_ISSUES'){
+        cambios.push({ts:ahora,tipo:'rechazado',nivel:nivel,ad:obj.name||nivel,donde:donde,detalle:''});
+      } else if(eff==='PENDING_REVIEW'||eff==='IN_PROCESS'){
+        cambios.push({ts:ahora,tipo:'revision',nivel:nivel,ad:obj.name||nivel,donde:donde,detalle:''});
+      } else if((p.eff==='DISAPPROVED'||p.eff==='PENDING_REVIEW')&&eff==='ACTIVE'){
+        cambios.push({ts:ahora,tipo:'aprobado',nivel:nivel,ad:obj.name||nivel,donde:donde,detalle:''});
+      }
+    }
+    // UTMs: si se rompen, los leads siguen entrando pero dejan de atribuirse al anuncio.
+    if(p.urlTags!==(obj.urlTags||'')){
+      cambios.push({ts:ahora,tipo:'utms',nivel:nivel,ad:obj.name||nivel,donde:donde,
+        detalle:(obj.urlTags?'ahora: '+String(obj.urlTags).slice(0,70):'quedaron vacios')});
+    }
+    if(p.destLink && obj.destLink && p.destLink!==obj.destLink){
+      cambios.push({ts:ahora,tipo:'destino',nivel:nivel,ad:obj.name||nivel,donde:donde,
+        detalle:String(obj.destLink).slice(0,70)});
+    }
+    // Fase de aprendizaje del conjunto
+    var lrn=String(obj.learning||'').toUpperCase();
+    if(p.learning!==lrn && lrn==='LEARNING_LIMITED'){
+      cambios.push({ts:ahora,tipo:'aprendizaje',nivel:nivel,ad:obj.name||nivel,donde:donde,detalle:''});
+    }
+    if(p.bid && obj.bidStrategy && p.bid!==obj.bidStrategy){
+      cambios.push({ts:ahora,tipo:'puja',nivel:nivel,ad:obj.name||nivel,donde:donde,
+        detalle:p.bid+' \u2192 '+obj.bidStrategy});
+    }
+    if(p.objetivo && obj.objective && p.objetivo!==obj.objective){
+      cambios.push({ts:ahora,tipo:'objetivo',nivel:nivel,ad:obj.name||nivel,donde:donde,
+        detalle:p.objetivo+' \u2192 '+obj.objective});
+    }
+    if(p.creativeId && obj.creativeId && p.creativeId!==obj.creativeId){
+      cambios.push({ts:ahora,tipo:'creativo',nivel:nivel,ad:obj.name||nivel,donde:donde,detalle:''});
+    }
+    if(p.name && obj.name && p.name!==obj.name){
+      cambios.push({ts:ahora,tipo:'renombrado',nivel:nivel,ad:obj.name,donde:donde,
+        detalle:'antes: '+p.name});
+    }
+    // Presupuesto: solo si habia uno antes y hay uno ahora. Pasar de 0 a X suele ser
+    // que Meta empezo a reportarlo, no que vos lo hayas cambiado.
+    if(p.bud>0 && bud>0 && p.bud!==bud){
+      var pct=Math.round((bud-p.bud)/p.bud*100);
+      cambios.push({ts:ahora, tipo:bud>p.bud?'subio_presupuesto':'bajo_presupuesto',
+        nivel:nivel, ad:obj.name||nivel, donde:donde,
+        detalle:'$'+p.bud+' \u2192 $'+bud+(pct?' ('+(pct>0?'+':'')+pct+'%)':'')});
+    }
+  };
+
   (camps||[]).forEach(function(cp){
+    registrar('campana', cp, '');
     (cp.adsets||[]).forEach(function(as){
+      registrar('conjunto', as, cp.name||'');
       (as.ads||[]).forEach(function(ad){
-        var st=String(ad.status||'').toUpperCase();
-        foto[ad.id]={st:st, name:ad.name||''};
-        if(!prev) return; // primer sync: solo tomamos la foto
-        var p=prev[ad.id];
-        if(!p){
-          // Anuncio que no estaba: si Meta no dio created_time, igual es nuevo para nosotros.
-          if(!ad.createdTime) cambios.push({ts:ahora, tipo:'alta', ad:ad.name||'Anuncio', donde:as.name||''});
-          return;
-        }
-        if(p.st!==st){
-          if(st==='ACTIVE') cambios.push({ts:ahora, tipo:'reactivado', ad:ad.name||'Anuncio', donde:as.name||''});
-          else if(p.st==='ACTIVE') cambios.push({ts:ahora, tipo:'pausado', ad:ad.name||'Anuncio', donde:as.name||''});
-        }
+        registrar('anuncio', ad, as.name||'');
       });
     });
   });
-  // Anuncios que estaban y ya no aparecen
+
+  // Lo que estaba en la foto anterior y ya no aparece
   if(prev){
-    Object.keys(prev).forEach(function(id){
-      if(!foto[id]) cambios.push({ts:ahora, tipo:'baja', ad:prev[id].name||'Anuncio', donde:''});
+    Object.keys(prev).forEach(function(k){
+      if(foto[k]) return;
+      var p=prev[k];
+      cambios.push({ts:ahora,tipo:'baja',nivel:p.nivel||'anuncio',ad:p.name||'Anuncio',donde:p.donde||''});
     });
   }
+
   c._metaSnapshot=foto;
   if(cambios.length) c.metaChanges=cambios.concat(c.metaChanges||[]).slice(0,200);
   return cambios.length;
@@ -9344,7 +9471,47 @@ function metaMovimientos(c, dias){
         if(!ad.createdTime) return;
         var t=new Date(ad.createdTime).getTime();
         if(isNaN(t)||t<desde) return;
-        out.push({ts:t, tipo:'alta', ad:ad.name||'Anuncio', donde:as.name||''});
+        out.push({ts:t, tipo:'alta', ad:ad.name||'Anuncio', donde:as.name||'', nivel:'anuncio', detalle:''});
+      });
+    });
+  });
+  // Pausas anteriores a la primera foto: no las tenemos registradas, pero Meta guarda
+  // updated_time. Si un anuncio esta pausado y se toco hace poco, casi seguro fue eso.
+  // Es una inferencia, no un hecho: updated_time tambien cambia al editar presupuesto,
+  // creativo o segmentacion. Por eso se marca aparte como "probable".
+  ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+    (cp.adsets||[]).forEach(function(as){
+      (as.ads||[]).forEach(function(ad){
+        if(String(ad.status||'').toUpperCase()==='ACTIVE') return;
+        if(!ad.updatedTime) return;
+        var t=new Date(ad.updatedTime).getTime();
+        if(isNaN(t)||t<desde) return;
+        // si ya lo detectamos con la foto, no lo repetimos
+        if((c.metaChanges||[]).some(function(ch){return ch.ad===ad.name&&new Date(ch.ts).getTime()>=desde;})) return;
+        out.push({ts:t, tipo:'pausado_probable', ad:ad.name||'Anuncio', donde:as.name||'', nivel:'anuncio', detalle:''});
+      });
+    });
+  });
+  // Estados que no son "cambios" sino condiciones vigentes: se evaluan cada vez.
+  ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+    (cp.adsets||[]).forEach(function(as){
+      if(String(as.learning||'').toUpperCase()==='LEARNING_LIMITED'){
+        out.push({ts:Date.now(),tipo:'aprendizaje_vigente',ad:as.name||'Conjunto',donde:cp.name||'',nivel:'conjunto',detalle:''});
+      }
+      (as.ads||[]).forEach(function(ad){
+        var eff=String(ad.effectiveStatus||'').toUpperCase();
+        if(eff==='DISAPPROVED'){
+          out.push({ts:Date.now(),tipo:'rechazado_vigente',ad:ad.name||'Anuncio',donde:as.name||'',nivel:'anuncio',detalle:''});
+          return;
+        }
+        // Activo, con el conjunto activo, creado hace mas de 2 dias y sin una sola impresion.
+        if(String(ad.status||'').toUpperCase()!=='ACTIVE') return;
+        if(String(as.status||'').toUpperCase()!=='ACTIVE') return;
+        if(Number(ad.impressions)>0) return;
+        if(!ad.createdTime) return;
+        var edad=Date.now()-new Date(ad.createdTime).getTime();
+        if(isNaN(edad)||edad<2*86400000) return;
+        out.push({ts:Date.now(),tipo:'sin_entrega',ad:ad.name||'Anuncio',donde:as.name||'',nivel:'anuncio',detalle:'activo y sin impresiones'});
       });
     });
   });
@@ -9352,9 +9519,14 @@ function metaMovimientos(c, dias){
     var t=new Date(ch.ts).getTime();
     if(isNaN(t)||t<desde) return;
     if(ch.tipo==='alta' && out.some(function(x){return x.tipo==='alta'&&x.ad===ch.ad;})) return;
-    out.push({ts:t, tipo:ch.tipo, ad:ch.ad, donde:ch.donde});
+    out.push({ts:t, tipo:ch.tipo, ad:ch.ad, donde:ch.donde, nivel:ch.nivel||'anuncio', detalle:ch.detalle||''});
   });
-  out.sort(function(a,b){return b.ts-a.ts;});
+  var peso={rechazado:0,rechazado_vigente:0,utms:1,destino:1,sin_entrega:2,aprendizaje_vigente:3,aprendizaje:3};
+  out.sort(function(a,b){
+    var pa=(peso[a.tipo]!==undefined)?peso[a.tipo]:9, pb=(peso[b.tipo]!==undefined)?peso[b.tipo]:9;
+    if(pa!==pb) return pa-pb;
+    return b.ts-a.ts;
+  });
   return out;
 }
 
@@ -9388,12 +9560,36 @@ function metaAvisos(c){
   });
   // Que se movio en la semana: altas, pausas y reactivaciones de anuncios.
   var movs=metaMovimientos(c,7);
-  var etiqueta={alta:'Anuncio nuevo',pausado:'Anuncio pausado',reactivado:'Anuncio reactivado',baja:'Anuncio eliminado'};
+  var _nv={campana:'Campana',conjunto:'Conjunto',anuncio:'Anuncio'};
+  var etiqueta=function(mv){
+    var n=_nv[mv.nivel||'anuncio']||'Anuncio';
+    if(mv.tipo==='alta') return n+' nuevo';
+    if(mv.tipo==='pausado') return n+' pausado';
+    if(mv.tipo==='pausado_probable') return n+' pausado (probable)';
+    if(mv.tipo==='reactivado') return n+' reactivado';
+    if(mv.tipo==='baja') return n+' eliminado';
+    if(mv.tipo==='subio_presupuesto') return 'Presupuesto aumentado';
+    if(mv.tipo==='bajo_presupuesto') return 'Presupuesto reducido';
+    if(mv.tipo==='segmentacion') return 'Segmentacion modificada';
+    if(mv.tipo==='optimizacion') return 'Objetivo de optimizacion cambiado';
+    if(mv.tipo==='creativo') return n+': creativo reemplazado';
+    if(mv.tipo==='renombrado') return n+' renombrado';
+    if(mv.tipo==='rechazado'||mv.tipo==='rechazado_vigente') return n+' RECHAZADO por Meta';
+    if(mv.tipo==='revision') return n+' en revision';
+    if(mv.tipo==='aprobado') return n+' aprobado';
+    if(mv.tipo==='utms') return 'UTMs modificados \u2014 revisa la atribucion';
+    if(mv.tipo==='destino') return 'URL de destino cambiada';
+    if(mv.tipo==='sin_entrega') return n+' activo sin entregar';
+    if(mv.tipo==='aprendizaje'||mv.tipo==='aprendizaje_vigente') return 'Conjunto en aprendizaje limitado';
+    if(mv.tipo==='puja') return 'Estrategia de puja cambiada';
+    if(mv.tipo==='objetivo') return 'Objetivo de campana cambiado';
+    return 'Cambio en '+n.toLowerCase();
+  };
   movs.slice(0,8).forEach(function(mv){
     var cuando=Math.max(0,Math.floor((Date.now()-mv.ts)/86400000));
-    push('mov',etiqueta[mv.tipo]||'Cambio en un anuncio',
-      esc(mv.ad)+(cuando===0?' \u00b7 hoy':' \u00b7 hace '+cuando+' dia'+(cuando>1?'s':'')),
-      mv.donde);
+    var det=esc(mv.ad)+(mv.detalle?' \u00b7 '+esc(mv.detalle):'')
+      +(cuando===0?' \u00b7 hoy':' \u00b7 hace '+cuando+' dia'+(cuando>1?'s':''));
+    push('mov',etiqueta(mv),det,mv.donde);
   });
   // Sync viejo: no viene de Meta pero es igual de importante
   if(al.metaSyncAt){
@@ -9492,7 +9688,7 @@ async function syncMetaAds(clientId){
     var insFields='spend,reach,impressions,frequency,clicks,cpc,ctr,cpm,actions,cost_per_action_type'
       +',video_thruplay_watched_actions,cost_per_thruplay,video_play_actions,video_avg_time_watched_actions'
       +',video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
-    var fieldsStr='id,name,status,effective_status,issues_info,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
+    var fieldsStr='id,name,status,effective_status,issues_info,objective,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
     var url='https://graph.facebook.com/v19.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
       +'&access_token='+token
@@ -9508,7 +9704,7 @@ async function syncMetaAds(clientId){
     // Fetch adsets + ads for each campaign
     for(var ci=0;ci<campaigns.length;ci++){
       try{
-        var adsetFieldsStr='id,name,status,effective_status,issues_info,learning_stage_info,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
+        var adsetFieldsStr='id,name,status,effective_status,issues_info,learning_stage_info,daily_budget,lifetime_budget,targeting,optimization_goal,bid_strategy,insights.time_range('+timeRange+'){'+insFields+'}';
         var adsetUrl='https://graph.facebook.com/v19.0/'+campaigns[ci].id+'/adsets'
           +'?fields='+encodeURIComponent(adsetFieldsStr)
           +'&access_token='+token
@@ -9520,7 +9716,7 @@ async function syncMetaAds(clientId){
         // Fetch ads for each adset
         for(var ai=0;ai<adsets.length;ai++){
           try{
-            var adsFieldsStr='id,name,status,effective_status,issues_info,created_time,updated_time,creative{id,name,thumbnail_url},insights.time_range('+timeRange+'){'+insFields+'}';
+            var adsFieldsStr='id,name,status,effective_status,issues_info,created_time,updated_time,creative{id,name,thumbnail_url,url_tags,object_story_spec{link_data{link}}},insights.time_range('+timeRange+'){'+insFields+'}';
             var adsUrl='https://graph.facebook.com/v19.0/'+adsets[ai].id+'/ads'
               +'?fields='+encodeURIComponent(adsFieldsStr)
               +'&access_token='+token
@@ -9535,6 +9731,9 @@ async function syncMetaAds(clientId){
                 createdTime:ad.created_time||null,updatedTime:ad.updated_time||null,
                 effectiveStatus:ad.effective_status||'', issues:_metaIssues(ad),
                 thumbnail:ad.creative&&ad.creative.thumbnail_url||'',
+                creativeId:(ad.creative&&ad.creative.id)||'',
+                urlTags:(ad.creative&&ad.creative.url_tags)||'',
+                destLink:(ad.creative&&ad.creative.object_story_spec&&ad.creative.object_story_spec.link_data&&ad.creative.object_story_spec.link_data.link)||'',
                 spend:m.spend,impressions:m.impressions,reach:m.reach,frequency:m.frequency,
                 clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
                 leads:m.leads,cpl:m.cpl,
@@ -9569,6 +9768,9 @@ async function syncMetaAds(clientId){
             id:as.id,name:as.name,status:as.status,
             effectiveStatus:as.effective_status||'', issues:_metaIssues(as),
             learning:(as.learning_stage_info&&as.learning_stage_info.status)||'',
+            seg:_resumenSegmentacion(as.targeting),
+            optGoal:as.optimization_goal||'', bidStrategy:as.bid_strategy||'',
+            endTime:as.end_time||null,
             spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
             impressions:m.impressions,reach:m.reach,frequency:m.frequency,
             clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
@@ -9670,6 +9872,7 @@ async function syncMetaAds(clientId){
       return {
         id:camp.id,name:camp.name,status:camp.status,
         effectiveStatus:camp.effective_status||'', issues:_metaIssues(camp),
+        objective:camp.objective||'',
         spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
         impressions:m.impressions,reach:m.reach,frequency:m.frequency,
         clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
