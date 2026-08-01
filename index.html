@@ -9434,7 +9434,12 @@ function computeMetaChanges(c, camps){
     }
   };
 
+  var excl=(function(){
+    var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+    return (al&&al.excludedCampaigns)||[];
+  })();
   (camps||[]).forEach(function(cp){
+    if(excl.indexOf(cp.id)!==-1) return; // campana destildada: no se vigila
     registrar('campana', cp, '');
     (cp.adsets||[]).forEach(function(as){
       registrar('conjunto', as, cp.name||'');
@@ -9493,18 +9498,25 @@ function metaMovimientos(c, dias){
     });
   });
   // Estados que no son "cambios" sino condiciones vigentes: se evaluan cada vez.
+  var _excl=(al&&al.excludedCampaigns)||[];
   ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+    // Solo las campanas tildadas en Ads & Guiones: las destildadas son historia que no se mira.
+    if(_excl.indexOf(cp.id)!==-1) return;
+    var _campActiva=String(cp.status||'').toUpperCase()==='ACTIVE';
     (cp.adsets||[]).forEach(function(as){
-      if(String(as.learning||'').toUpperCase()==='LEARNING_LIMITED'){
+      if(String(as.learning||'').toUpperCase()==='LEARNING_LIMITED' && _campActiva){
         out.push({ts:Date.now(),tipo:'aprendizaje_vigente',ad:as.name||'Conjunto',donde:cp.name||'',nivel:'conjunto',detalle:''});
       }
       (as.ads||[]).forEach(function(ad){
         var eff=String(ad.effectiveStatus||'').toUpperCase();
         if(eff==='DISAPPROVED'){
-          out.push({ts:Date.now(),tipo:'rechazado_vigente',ad:ad.name||'Anuncio',donde:as.name||'',nivel:'anuncio',detalle:''});
+          if(_campActiva) out.push({ts:Date.now(),tipo:'rechazado_vigente',ad:ad.name||'Anuncio',donde:as.name||'',nivel:'anuncio',detalle:''});
           return;
         }
         // Activo, con el conjunto activo, creado hace mas de 2 dias y sin una sola impresion.
+        // Un anuncio activo dentro de una campana o conjunto pausado no entrega,
+        // y eso no es una anomalia: es lo esperado. No hay nada que avisar.
+        if(!_campActiva) return;
         if(String(ad.status||'').toUpperCase()!=='ACTIVE') return;
         if(String(as.status||'').toUpperCase()!=='ACTIVE') return;
         if(Number(ad.impressions)>0) return;
