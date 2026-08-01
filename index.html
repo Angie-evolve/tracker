@@ -2477,6 +2477,13 @@ function landingsRowHtml(c, l){
   var arr=landingsDelRango(c, l.dateStart, l.dateEnd);
   if(!arr.length) return null;
   var total=arr.reduce(function(s,x){return s+x.n;},0);
+  // Registros del rango segun GHL: es el universo real contra el que hay que leer los %.
+  var universo=total;
+  try{ var f=ghlFunnelForRange(c,l.dateStart,l.dateEnd); if(f&&f.registros>0) universo=f.registros; }catch(e){}
+  var cobertura=(universo>total)
+    ? '<span style="font-size:10.5px;color:var(--text3);margin-left:2px" title="GHL solo guarda la pagina de origen de algunos contactos. Los porcentajes son sobre los atribuidos, no sobre el total de registros.">'
+      +'\u00b7 '+total+' de '+universo+' leads atribuidos</span>'
+    : '';
   return arr.slice(0,4).map(function(x){
     var corta=x.url.replace(/^https?:\/\//,'');
     if(corta.length>44) corta=corta.slice(0,44)+'\u2026';
@@ -2485,7 +2492,7 @@ function landingsRowHtml(c, l){
       +'<a href="'+esc(x.url)+'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" '
       +'onclick="event.stopPropagation()" title="'+esc(x.url)+'">'+esc(corta)+' \u2197</a>'
       +'<span style="font-size:11px;color:var(--text3)">'+x.n+' ('+pct+'%)</span></span>';
-  }).join('')+(arr.length>4?'<span style="font-size:11px;color:var(--text3)">+'+(arr.length-4)+' mas</span>':'');
+  }).join('')+(arr.length>4?'<span style="font-size:11px;color:var(--text3)">+'+(arr.length-4)+' mas</span>':'')+cobertura;
 }
 
 function buildMetricRows(c, opts){
@@ -7456,7 +7463,8 @@ async function enrichContactsBackground(c, proxy){
     // no a las 24h: si no, un problema temporal de conexion deja los UTM vacios todo el dia.
     var wait=(o._enrichOk && o.source.utmAdset)?24*3600000:15*60000;
     if(o._enrichTry && (_now-o._enrichTry)<wait) return false;
-    return (!o.source.utmAd || !o.source.utmCampaign || !o.source.utmAdset || !o.geo.location || !o.tags);
+    return (!o.source.utmAd || !o.source.utmCampaign || !o.source.utmAdset || !o.geo.location || !o.tags
+      || (!o.source.landingUrl && !o._urlTry));
   });
   if(!toEnrich.length) return;
   const base=proxy.url+(proxy.url.indexOf('?')>=0?'&':'?')
@@ -7474,7 +7482,10 @@ async function enrichContactsBackground(c, proxy){
         opp.source=opp.source||{}; opp.geo=opp.geo||{};
         if(data.utmAd) opp.source.utmAd=data.utmAd;
         // Pagina de origen: viene de attributionSource.url del contacto (Apps Script v8).
+        // Se marca el intento aunque venga vacia: hay contactos sin atribucion guardada
+        // y no tiene sentido volver a pedirlos en cada ciclo.
         if(data.url) opp.source.landingUrl=String(data.url);
+        opp._urlTry=Date.now();
         if(data.location) opp.geo.location=data.location;
         if(data.utmCampaign && !opp.source.utmCampaign) opp.source.utmCampaign=data.utmCampaign;
         if(data.utmSource && !opp.source.utmSource) opp.source.utmSource=data.utmSource;
