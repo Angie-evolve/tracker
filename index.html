@@ -2050,29 +2050,121 @@ function filterGhlTable(val, clientId){
   if(inp){ inp.focus(); const len=inp.value.length; inp.setSelectionRange(len,len); }
 }
 
+// ================= FILAS DE METRICAS: FUENTE UNICA =================
+// Un solo informe para "Lineas de conversion" y para el bloque en vivo de "Ads & Guiones".
+// Antes habia dos arrays casi identicos (ROWS y LIVE_ROWS) que se fueron desincronizando:
+// uno leia los registros de l.metrics y el otro de GHL, y el de Ads no mostraba
+// campana / adset / anuncio / filtro / destino / landings / cambio realizado.
+//
+// Las lineas en vivo (c.liveLines) no guardan esos campos descriptivos, asi que se heredan
+// de la linea de conversion que estaba corriendo en ese mismo rango de fechas.
+
+function _lineDescFor(c, l){
+  if(!l) return {};
+  if(!l.live) return l;
+  const s=l.dateStart?new Date(l.dateStart):null;
+  if(!s) return {};
+  const e=l.dateEnd?new Date(l.dateEnd):new Date();
+  const hit=(c.conversionLines||[])
+    .filter(function(x){
+      if(!x.dateStart) return false;
+      const xs=new Date(x.dateStart);
+      const xe=x.dateEnd?new Date(x.dateEnd):new Date();
+      return xs<=e && xe>=s;
+    })
+    .sort(function(a,b){return new Date(b.dateStart)-new Date(a.dateStart);})[0];
+  return hit||{};
+}
+
+// Marca visualmente los valores que no son propios de la fila sino heredados de la linea.
+function _mrHered(html, heredado){
+  if(!heredado) return html;
+  return '<span title="Heredado de la linea de conversion que corria en ese rango" style="border-bottom:1px dotted var(--border2)">'+html+'</span>';
+}
+
+function buildMetricRows(c, opts){
+  opts=opts||{};
+  const live=!!opts.live;
+  const dash='<span style="color:var(--text3)">-</span>';
+  const F=function(l){ return ghlFunnelForRange(c,l.dateStart,l.dateEnd); };
+  const D=function(l){ return _lineDescFor(c,l); };
+  const her=function(l){ return live && !!l && !!l.live; };
+
+  const rows=[
+    {label:'Rango fechas',get:l=>fmtDateRange(l.dateStart,l.dateEnd)},
+    {label:'Dias transcurridos',get:l=>{const d=days(l.dateStart,l.dateEnd);return d!==null?'<strong>'+d+'</strong> dias':dash;}},
+    {label:'Campana',get:l=>{const d=D(l);return d.campaign?_mrHered(esc(d.campaign),her(l)):dash;}},
+    {label:'Adset',get:l=>{const d=D(l);return d.adset?_mrHered(esc(d.adset),her(l)):dash;}},
+    {label:'Anuncio',get:l=>{const d=D(l);return d.ad?_mrHered(esc(d.ad),her(l)):dash;}},
+    {label:'Filtro',get:l=>{const d=D(l);if(!d.filtro)return dash;const cls=d.filtro==='ALTO'?'pill-red':d.filtro==='MEDIO'?'pill-amber':'pill-green';return _mrHered('<span class="pill '+cls+'" style="font-size:10px">'+d.filtro+'</span>',her(l));}},
+    {label:'Destino',get:l=>{const d=D(l);return d.destino?_mrHered('<span class="pill pill-blue" style="font-size:10px">'+esc(d.destino)+'</span>',her(l)):dash;}},
+    {label:'Landings',get:l=>{
+      const d=D(l);
+      if(!d.landings||!Object.keys(d.landings).length) return dash;
+      return Object.keys(d.landings).sort().map(function(letter){
+        var v=d.landings[letter];
+        var pct=(v.optIn!==undefined&&v.optIn!==null)?(v.optIn*100).toFixed(2)+'%':'-';
+        var linkHtml=v.link?'<a href="'+esc(v.link)+'" target="_blank" rel="noopener" style="color:var(--green);text-decoration:none" onclick="event.stopPropagation()">Ver landing \u2197</a>':'<span style="color:var(--text3)">sin link</span>';
+        return '<div style="display:inline-flex;align-items:center;gap:8px;margin:0 14px 4px 0"><span style="font-size:11px;font-weight:500;color:var(--text2)">Landing '+letter.toUpperCase()+'</span><span style="font-size:11px;color:var(--text)">'+pct+'</span><span style="font-size:11px">'+linkHtml+'</span></div>';
+      }).join('');
+    }},
+    {label:'Ad Spent',get:l=>fmtVal((l.metrics||{}).adSpent,'$')},
+    {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
+    {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
+    {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
+    {label:'Opt-in %',get:l=>{
+      const m=l.metrics||{};
+      if(m.optIn!==null&&m.optIn!==undefined&&m.optIn!=='') return fmtVal(m.optIn,'%');
+      const f=F(l);
+      const reg=f?f.registros:(Number(m.registros)||0);
+      const pv=Number(m.pageViews)||0;
+      return (pv>0&&reg>0)?(Math.round(reg/pv*1000)/10)+'%':'<span style="color:var(--text3)" title="Registros de GHL sobre vistas de landing de Meta">-</span>';
+    }},
+    {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
+    {label:'Registros',get:l=>{const f=F(l);return f?'<span title="Contactos creados en GHL dentro del rango">'+f.registros+'</span>':fmtVal((l.metrics||{}).registros);}},
+    {label:'Llamada calificada en vivo',get:l=>{const f=F(l);return (f&&f.sql!=null)?String(f.sql):fmtVal((l.metrics||{}).sql);}},
+    {label:'Costo calificado',get:l=>{
+      const f=F(l);const m=l.metrics||{};
+      const spent=Number(m.adSpent)||0;
+      const q=(f&&f.sql!=null)?f.sql:(Number(m.sql)||0);
+      return (q>0&&spent)?'USD '+(spent/q).toFixed(2):dash;
+    }},
+    {label:'Dias pausada antes de este bloque',get:l=>{const s=computeLineStats(c,l);return s.diasPausadaAntes?s.diasPausadaAntes+' dias':dash;}},
+    {label:'Agendas totales',get:l=>{const f=F(l);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
+    {label:'Costo por agenda',get:l=>{const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(spent/f.agendas).toFixed(2):dash;}},
+    {label:'Llamadas en vivo',get:l=>{const f=F(l);if(f&&f.enVivo!=null)return String(f.enVivo);const s=computeLineStats(c,l);return String(s.llamadasEnVivo);}},
+    {label:'Costo por llamada en vivo',get:l=>{
+      const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;
+      if(f&&f.enVivo!=null) return (f.enVivo>0&&spent)?'USD '+(spent/f.enVivo).toFixed(2):dash;
+      const s=computeLineStats(c,l);
+      return s.costoPorLlamada!==null?'USD '+s.costoPorLlamada.toFixed(2):dash;
+    }},
+    {label:'Llamadas calificadas en vivo',get:l=>{const f=F(l);if(f&&f.calif!=null)return String(f.calif);const s=computeLineStats(c,l);return String(s.llamadasCalificadas);}},
+    {label:'Costo por llamada calificada en vivo',get:l=>{
+      const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;
+      if(f&&f.calif!=null) return (f.calif>0&&spent)?'USD '+(spent/f.calif).toFixed(2):dash;
+      const s=computeLineStats(c,l);
+      return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):dash;
+    }},
+    {label:'Cambio realizado',get:l=>{
+      const d=D(l);
+      if(!d.notes) return dash;
+      const full=esc(d.notes);
+      const short=esc(d.notes.length>48?d.notes.slice(0,48)+'\u2026':d.notes);
+      return _mrHered('<span style="white-space:nowrap;display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;color:var(--text2);cursor:zoom-in;vertical-align:bottom" onmouseenter="showCambioZoom(this)" onmouseleave="hideCambioZoom()" data-full="'+full+'">'+short+'</span>',her(l));
+    }}
+  ];
+
+  if(live){
+    rows.push({label:'Ultima actualizacion',get:l=>l._lastRefresh?new Date(l._lastRefresh).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):dash});
+  }
+  return rows;
+}
+
 function liveSectionHtml(c){
 
     c.liveLines = c.liveLines || [];
-    const LIVE_ROWS=[
-      {label:'Rango fechas',get:l=>fmtDateRange(l.dateStart,l.dateEnd)},
-      {label:'Dias transcurridos',get:l=>{const d=days(l.dateStart,l.dateEnd);return d!==null?`<strong>${d}</strong> dias`:'-'}},
-      {label:'Ad Spent',get:l=>fmtVal((l.metrics||{}).adSpent,'$')},
-      {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
-      {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
-      {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
-      {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
-      {label:'Registros (GHL)',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return f?String(f.registros):fmtVal((l.metrics||{}).registros);}},
-      {label:'Opt-in landing',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const reg=f?f.registros:Number((l.metrics||{}).registros)||0;const pv=Number((l.metrics||{}).pageViews)||0;return (pv>0&&reg>0)?(Math.round(reg/pv*1000)/10)+'%':'<span style="color:var(--text3)" title="Registros de GHL sobre vistas de landing de Meta">-</span>';}},
-      {label:'Llamada calificada en vivo (GHL)',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return f?String(f.sql):fmtVal((l.metrics||{}).sql);}},
-      {label:'Costo calificado',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;const q=f?f.sql:(Number((l.metrics||{}).sql)||0);return (q>0&&spent)?'USD '+(spent/q).toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Agendas totales',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
-      {label:'Costo por agenda',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(spent/f.agendas).toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Llamadas en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);if(f&&f.enVivo!=null)return String(f.enVivo);const s=computeLineStats(c,l);return String(s.llamadasEnVivo);}},
-      {label:'Costo por llamada en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;if(f&&f.enVivo!=null)return (f.enVivo>0&&spent)?'USD '+(spent/f.enVivo).toFixed(2):'<span style="color:var(--text3)">-</span>';const s=computeLineStats(c,l);return s.costoPorLlamada!==null?'USD '+s.costoPorLlamada.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Llamadas calificadas en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);if(f&&f.calif!=null)return String(f.calif);const s=computeLineStats(c,l);return String(s.llamadasCalificadas);}},
-      {label:'Costo por llamada calificada en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;if(f&&f.calif!=null)return (f.calif>0&&spent)?'USD '+(spent/f.calif).toFixed(2):'<span style="color:var(--text3)">-</span>';const s=computeLineStats(c,l);return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Ultima actualizacion',get:l=>l._lastRefresh?new Date(l._lastRefresh).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'-'}
-    ];
+    const LIVE_ROWS=buildMetricRows(c,{live:true});
     const sortedLive=[...c.liveLines].sort(function(a,b){
       return ((b.rolling?1:0)-(a.rolling?1:0)) || String(b.dateStart||'').localeCompare(String(a.dateStart||''));
     });
@@ -4613,46 +4705,7 @@ function renderTab(){
   if(S.tab==='diagnostico') S.tab='lineas';
 
   if(S.tab==='lineas'){
-    const ROWS=[
-      {label:'Rango fechas',get:l=>fmtDateRange(l.dateStart,l.dateEnd)},
-      {label:'Dias transcurridos',get:l=>{const d=days(l.dateStart,l.dateEnd);return d!==null?`<strong>${d}</strong> dias`:'-'}},
-      {label:'Campana',get:l=>l.campaign||'-'},
-      {label:'Adset',get:l=>l.adset||'-'},
-      {label:'Anuncio',get:l=>l.ad||'-'},
-      {label:'Filtro',get:l=>l.filtro?`<span class="pill ${l.filtro==='ALTO'?'pill-red':l.filtro==='MEDIO'?'pill-amber':'pill-green'}" style="font-size:10px">${l.filtro}</span>`:'-'},
-      {label:'Destino',get:l=>l.destino?`<span class="pill pill-blue" style="font-size:10px">${l.destino}</span>`:'-'},
-      {label:'Landings',get:l=>{
-        if(!l.landings||!Object.keys(l.landings).length) return '<span style="color:var(--text3)">-</span>';
-        return Object.keys(l.landings).sort().map(function(letter){
-          var v=l.landings[letter];
-          var pct=(v.optIn!==undefined&&v.optIn!==null)?(v.optIn*100).toFixed(2)+'%':'-';
-          var linkHtml=v.link?'<a href="'+esc(v.link)+'" target="_blank" rel="noopener" style="color:var(--green);text-decoration:none" onclick="event.stopPropagation()">Ver landing ↗</a>':'<span style="color:var(--text3)">sin link</span>';
-          return '<div style="display:inline-flex;align-items:center;gap:8px;margin:0 14px 4px 0"><span style="font-size:11px;font-weight:500;color:var(--text2)">Landing '+letter.toUpperCase()+'</span><span style="font-size:11px;color:var(--text)">'+pct+'</span><span style="font-size:11px">'+linkHtml+'</span></div>';
-        }).join('');
-      }},
-      {label:'Ad Spent',get:l=>fmtVal((l.metrics||{}).adSpent,'$')},
-      {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
-      {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
-      {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
-      {label:'Opt-in %',get:l=>fmtVal((l.metrics||{}).optIn,'%')},
-      {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
-      {label:'Registros',get:l=>fmtVal((l.metrics||{}).registros)},
-      {label:'Llamada calificada en vivo',get:l=>fmtVal((l.metrics||{}).sql)},
-      {label:'Costo calificado',get:l=>{const s=computeLineStats(c,l);return s.costoCalificado!==null?'USD '+s.costoCalificado.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Dias pausada antes de este bloque',get:l=>{const s=computeLineStats(c,l);return s.diasPausadaAntes?s.diasPausadaAntes+' dias':'<span style="color:var(--text3)">-</span>';}},
-      {label:'Agendas totales',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
-      {label:'Costo por agenda',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(spent/f.agendas).toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Llamadas en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);if(f&&f.enVivo!=null)return String(f.enVivo);const s=computeLineStats(c,l);return String(s.llamadasEnVivo);}},
-      {label:'Costo por llamada en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;if(f&&f.enVivo!=null)return (f.enVivo>0&&spent)?'USD '+(spent/f.enVivo).toFixed(2):'<span style="color:var(--text3)">-</span>';const s=computeLineStats(c,l);return s.costoPorLlamada!==null?'USD '+s.costoPorLlamada.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Llamadas calificadas en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);if(f&&f.calif!=null)return String(f.calif);const s=computeLineStats(c,l);return String(s.llamadasCalificadas);}},
-      {label:'Costo por llamada calificada en vivo',get:l=>{const f=ghlFunnelForRange(c,l.dateStart,l.dateEnd);const spent=Number((l.metrics||{}).adSpent)||0;if(f&&f.calif!=null)return (f.calif>0&&spent)?'USD '+(spent/f.calif).toFixed(2):'<span style="color:var(--text3)">-</span>';const s=computeLineStats(c,l);return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):'<span style="color:var(--text3)">-</span>';}},
-      {label:'Cambio realizado',get:l=>{
-        if(!l.notes) return '<span style="color:var(--text3)">-</span>';
-        const full=esc(l.notes);
-        const short=esc(l.notes.length>48?l.notes.slice(0,48)+'…':l.notes);
-        return `<span style="white-space:nowrap;display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;color:var(--text2);cursor:zoom-in;vertical-align:bottom" onmouseenter="showCambioZoom(this)" onmouseleave="hideCambioZoom()" data-full="${full}">${short}</span>`;
-      }},
-    ];
+    const ROWS=buildMetricRows(c,{live:false});
     const renderLineAdsets=l=>(l.adsets||[]).map(adset=>`
           <div class="adset-block">
             <div class="adset-header">
