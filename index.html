@@ -2325,6 +2325,71 @@ function _mrHered(html, heredado){
   return '<span title="Heredado de la linea de conversion que corria en ese rango" style="border-bottom:1px dotted var(--border2)">'+html+'</span>';
 }
 
+// ================= BITACORA DE LA SEMANA =================
+// El histórico semanal se genera solo desde Meta y GHL, pero no sabe QUE hicimos nosotros.
+// Esto cruza el rango de cada bloque con las tareas y las lineas de conversion del cliente
+// para responder "esta semana, que se toco".
+function semanaBitacora(c, l){
+  if(!l||!l.dateStart) return [];
+  var ini=new Date(l.dateStart); ini.setHours(0,0,0,0);
+  var fin=l.dateEnd?new Date(l.dateEnd):new Date(); fin.setHours(23,59,59,999);
+  var dentro=function(v){
+    if(!v) return false;
+    var d=new Date(v);
+    return !isNaN(d.getTime()) && d>=ini && d<=fin;
+  };
+  var out=[];
+
+  // Cambios de campana anotados a mano: son el dato que ninguna API puede dar.
+  (c.conversionLines||[]).forEach(function(cl){
+    if(!dentro(cl.dateStart)) return;
+    var txt=cl.notes||('Arranco '+(cl.version||'un bloque nuevo'));
+    out.push({ts:new Date(cl.dateStart).getTime(), tipo:'cambio', texto:txt});
+  });
+
+  (c.tasks||[]).forEach(function(t){
+    if(t.deleted) return;
+    if(dentro(t.doneAt)) out.push({ts:new Date(t.doneAt).getTime(), tipo:'hecha', texto:(t.text||'sin titulo'), ref:t.ticket||''});
+    else if(dentro(t.delegatedAt)) out.push({ts:new Date(t.delegatedAt).getTime(), tipo:'pedida', texto:(t.text||'sin titulo'), ref:t.ticket||''});
+  });
+
+  (c.fathomCalls||[]).forEach(function(cl){
+    var d=(typeof parseDDMMYYYY==='function')?parseDDMMYYYY(cl.date):null;
+    if(!d||d<ini||d>fin) return;
+    out.push({ts:d.getTime(), tipo:'llamada', texto:(cl.title||'Llamada grabada')});
+  });
+
+  out.sort(function(a,b){return a.ts-b.ts;});
+  return out;
+}
+
+function semanaBitacoraHtml(c, l){
+  var items=semanaBitacora(c,l);
+  var estilo={
+    cambio:{lbl:'cambio', col:'var(--accent)'},
+    hecha:{lbl:'hecha', col:'var(--text2)'},
+    pedida:{lbl:'pedida', col:'var(--text3)'},
+    llamada:{lbl:'llamada', col:'var(--amberx)'}
+  };
+  var head='<div style="padding:12px 16px;border-top:1px solid var(--border);font-size:11px;'
+    +'color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Que se hizo esta semana'
+    +(items.length?' \u00b7 '+items.length:'')+'</div>';
+  if(!items.length){
+    return head+'<div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">'
+      +'Sin tareas, cambios de campana ni llamadas registradas en este rango.</div>';
+  }
+  return head+'<div style="padding:0 16px 14px">'+items.map(function(i){
+    var e=estilo[i.tipo]||estilo.pedida;
+    return '<div style="display:flex;align-items:baseline;gap:10px;padding:5px 0">'
+      +'<span style="font-size:10px;width:52px;flex-shrink:0;color:'+e.col+'">'+e.lbl+'</span>'
+      +'<span style="flex:1;font-size:12.5px;color:var(--text);min-width:0">'+esc(i.texto)
+      +(i.ref?' <span style="color:var(--text3)">'+esc(String(i.ref))+'</span>':'')+'</span>'
+      +'<span class="mono" style="font-size:10.5px;color:var(--text3);white-space:nowrap;flex-shrink:0">'
+      +new Date(i.ts).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})+'</span>'
+      +'</div>';
+  }).join('')+'</div>';
+}
+
 function buildMetricRows(c, opts){
   opts=opts||{};
   const live=!!opts.live;
@@ -2432,7 +2497,7 @@ function liveSectionHtml(c){
                 +'<button class="btn btn-sm" style="font-size:10px;padding:1px 7px;color:var(--text3)" onclick="event.stopPropagation();reintentarSemanas('+c.id+')">Reintentar</button>'
               +'</span>':''}
             </div>
-            ${collapsed?'':'<div>'+LIVE_ROWS.map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">${r.label}</span><span style="font-size:13px;font-weight:500;color:var(--text)">${r.get(l)}</span></div>`).join('')+'</div>'}
+            ${collapsed?'':'<div>'+LIVE_ROWS.map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">${r.label}</span><span style="font-size:13px;font-weight:500;color:var(--text)">${r.get(l)}</span></div>`).join('')+semanaBitacoraHtml(c,l)+'</div>'}
           </div>`;
         }).join(''):'<div style="font-size:13px;color:var(--text3)">Cargando la primera semana en vivo...</div>')
       +'</div>';
