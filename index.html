@@ -728,24 +728,43 @@ async function _computeLiveMetrics(c,line,startDate,endDate){
     try{
       const actId='act_'+c.metaAccountId;
       const timeRange='{"since":"'+isoDate(startDate)+'","until":"'+isoDate(untilDate)+'"}';
-      const fields='insights.time_range('+timeRange+'){spend,impressions,clicks,actions}';
-      const url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&access_token='+c.metaToken+'&limit=50';
+      // Pedimos los insights desglosados por anuncio: en la misma llamada vienen los nombres
+      // de campana, adset y anuncio, que antes se cargaban a mano en la linea de conversion.
+      const campos='spend,impressions,clicks,actions,campaign_name,adset_name,ad_name';
+      const url='https://graph.facebook.com/v19.0/'+actId+'/insights'
+        +'?level=ad&time_range='+encodeURIComponent(timeRange)
+        +'&fields='+encodeURIComponent(campos)
+        +'&access_token='+c.metaToken+'&limit=500';
       const res=await fetch(url);
       const data=await res.json();
       if(!data.error){
-        const camps=data.data||[];
+        const filas=data.data||[];
         let spend=0, impressions=0, clicks=0, landingViews=0, leads=0;
-        camps.forEach(function(camp){
-          const ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
-          if(!ins) return;
-          spend+=parseFloat(ins.spend||0);
-          impressions+=parseInt(ins.impressions||0);
-          clicks+=parseInt(ins.clicks||0);
-          const actions=ins.actions||[];
+        const porCamp={}, porAdset={}, porAd={};
+        const sumar=function(mapa,nombre,gasto){
+          if(!nombre) return;
+          mapa[nombre]=(mapa[nombre]||0)+gasto;
+        };
+        filas.forEach(function(r){
+          const g=parseFloat(r.spend||0);
+          spend+=g;
+          impressions+=parseInt(r.impressions||0);
+          clicks+=parseInt(r.clicks||0);
+          const actions=r.actions||[];
           const getA=function(t){const a=actions.find(function(x){return x.action_type===t;});return a?parseInt(a.value||0):0;};
           landingViews+=getA('landing_page_view');
           leads+=getA('lead')+getA('onsite_conversion.lead_grouped')+getA('onsite_web_lead');
+          sumar(porCamp, r.campaign_name, g);
+          sumar(porAdset, r.adset_name, g);
+          sumar(porAd, r.ad_name, g);
         });
+        const top=function(mapa){
+          return Object.keys(mapa)
+            .map(function(k){return {nombre:k, gasto:Math.round(mapa[k]*100)/100};})
+            .filter(function(x){return x.gasto>0;})
+            .sort(function(a,b){return b.gasto-a.gasto;});
+        };
+        line.meta={campaigns:top(porCamp), adsets:top(porAdset), ads:top(porAd)};
         line.metrics.adSpent=Math.round(spend*100)/100;
         line.metrics.pageViews=landingViews||null;
         line.metrics.cpm=impressions>0?Math.round(spend/impressions*1000*100)/100:null;
@@ -1436,7 +1455,15 @@ function adsDot(c){
   // Si todavia no sincronizamos el detalle de anuncios, caemos al status de campana.
   const anyActiveCamp=camps.some(function(cp){return String(cp.status||'').toUpperCase()==='ACTIVE';});
   const activo=hayArbol?entregando:anyActiveCamp;
-  const _sync=(al&&al.metaSyncAt)?(' - ultimo sync de Meta: '+new Date(al.metaSyncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):'';
+  var _syncAt=(al&&al.metaSyncAt)||(roll&&roll._lastRefresh)||null;
+  const _sync=_syncAt?(' - ultimo sync de Meta: '+new Date(_syncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):'';
+  // Sin lineas de conversion no hay arbol de campanas guardado. En ese caso el estado
+  // se decide por el dato mas directo que tenemos: si hubo gasto en los ultimos 7 dias.
+  if(!camps.length){
+    if(spending) return {color:hc('green'),state:'green',live:true,title:'Gastando en los ultimos 7 dias'+_sync};
+    if(c.metaToken) return {color:hc('amber'),state:'amber',live:false,title:'Sin gasto en los ultimos 7 dias'+_sync};
+    return {color:hc('gray'),state:'gray',live:false,title:'Sin datos de Meta'};
+  }
   if(activo) return {color:hc('green'),state:'green',live:true,title:'Anuncios entregando'+_sync};
   // Todo pausado pero con gasto dentro de la ventana de 7 dias: se apago hace poco.
   if(spending) return {color:hc('amber'),state:'amber',live:false,title:'Pausada hace poco - todavia hay gasto en la ventana de 7 dias'+_sync};
@@ -1553,8 +1580,10 @@ function clientPeekHtml(c){
   var d=adsDot(c);
   bits.push(d.live?'entregando':(d.state==='amber'?'pausada':'sin datos'));
   var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
-  if(al&&al.metaSyncAt){
-    var t=new Date(al.metaSyncAt);
+  var roll=(c.liveLines||[]).find(function(l){return l.rolling;});
+  var syncAt=(al&&al.metaSyncAt)||(roll&&roll._lastRefresh)||null;
+  if(syncAt){
+    var t=new Date(syncAt);
     if(!isNaN(t.getTime())) bits.push('sync '+t.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit',hour12:false}));
   }
   try{
@@ -2390,6 +2419,17 @@ function semanaBitacoraHtml(c, l){
   }).join('')+'</div>';
 }
 
+// Nombres de campana / adset / anuncio que vinieron de Meta para ese rango.
+// Si hay uno solo se muestra; si hay varios, el de mayor gasto y cuantos mas hubo.
+function _metaNombres(l, clave){
+  var arr=(l&&l.meta&&l.meta[clave])||[];
+  if(!arr.length) return null;
+  var det=arr.map(function(x){return x.nombre+' \u2014 $'+x.gasto;}).join('\n');
+  if(arr.length===1) return '<span title="'+esc(det)+'">'+esc(arr[0].nombre)+'</span>';
+  return '<span title="'+esc(det)+'" style="border-bottom:1px dotted var(--border2);cursor:help">'
+    +esc(arr[0].nombre)+' <span style="color:var(--text3)">+'+(arr.length-1)+'</span></span>';
+}
+
 function buildMetricRows(c, opts){
   opts=opts||{};
   const live=!!opts.live;
@@ -2401,12 +2441,12 @@ function buildMetricRows(c, opts){
   const rows=[
     {label:'Rango fechas',get:l=>fmtDateRange(l.dateStart,l.dateEnd)},
     {label:'Dias transcurridos',get:l=>{const d=days(l.dateStart,l.dateEnd);return d!==null?'<strong>'+d+'</strong> dias':dash;}},
-    {label:'Campana',get:l=>{const d=D(l);return d.campaign?_mrHered(esc(d.campaign),her(l)):dash;}},
-    {label:'Adset',get:l=>{const d=D(l);return d.adset?_mrHered(esc(d.adset),her(l)):dash;}},
-    {label:'Anuncio',get:l=>{const d=D(l);return d.ad?_mrHered(esc(d.ad),her(l)):dash;}},
-    {label:'Filtro',get:l=>{const d=D(l);if(!d.filtro)return dash;const cls=d.filtro==='ALTO'?'pill-red':d.filtro==='MEDIO'?'pill-amber':'pill-green';return _mrHered('<span class="pill '+cls+'" style="font-size:10px">'+d.filtro+'</span>',her(l));}},
-    {label:'Destino',get:l=>{const d=D(l);return d.destino?_mrHered('<span class="pill pill-blue" style="font-size:10px">'+esc(d.destino)+'</span>',her(l)):dash;}},
-    {label:'Landings',get:l=>{
+    {label:'Campana',get:l=>{const n=_metaNombres(l,'campaigns');if(n)return n;const d=D(l);return d.campaign?_mrHered(esc(d.campaign),her(l)):dash;}},
+    {label:'Adset',get:l=>{const n=_metaNombres(l,'adsets');if(n)return n;const d=D(l);return d.adset?_mrHered(esc(d.adset),her(l)):dash;}},
+    {label:'Anuncio',get:l=>{const n=_metaNombres(l,'ads');if(n)return n;const d=D(l);return d.ad?_mrHered(esc(d.ad),her(l)):dash;}},
+    {label:'Filtro',soloSiHay:l=>!!D(l).filtro,get:l=>{const d=D(l);if(!d.filtro)return dash;const cls=d.filtro==='ALTO'?'pill-red':d.filtro==='MEDIO'?'pill-amber':'pill-green';return _mrHered('<span class="pill '+cls+'" style="font-size:10px">'+d.filtro+'</span>',her(l));}},
+    {label:'Destino',soloSiHay:l=>!!D(l).destino,get:l=>{const d=D(l);return d.destino?_mrHered('<span class="pill pill-blue" style="font-size:10px">'+esc(d.destino)+'</span>',her(l)):dash;}},
+    {label:'Landings',soloSiHay:l=>{const d=D(l);return !!(d.landings&&Object.keys(d.landings).length);},get:l=>{
       const d=D(l);
       if(!d.landings||!Object.keys(d.landings).length) return dash;
       return Object.keys(d.landings).sort().map(function(letter){
@@ -2437,7 +2477,8 @@ function buildMetricRows(c, opts){
       const q=(f&&f.sql!=null)?f.sql:(Number(m.sql)||0);
       return (q>0&&spent)?'USD '+(spent/q).toFixed(2):dash;
     }},
-    {label:'Dias pausada antes de este bloque',get:l=>{const s=computeLineStats(c,l);return s.diasPausadaAntes?s.diasPausadaAntes+' dias':dash;}},
+    // Compara contra la linea de conversion anterior: en un bloque semanal no existe.
+    {label:'Dias pausada antes de este bloque',soloSiHay:l=>!l.live,get:l=>{const s=computeLineStats(c,l);return s.diasPausadaAntes?s.diasPausadaAntes+' dias':dash;}},
     {label:'Agendas totales',get:l=>{const f=F(l);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
     {label:'Costo por agenda',get:l=>{const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(spent/f.agendas).toFixed(2):dash;}},
     {label:'Llamadas en vivo',get:l=>{const f=F(l);if(f&&f.enVivo!=null)return String(f.enVivo);const s=computeLineStats(c,l);return String(s.llamadasEnVivo);}},
@@ -2454,7 +2495,8 @@ function buildMetricRows(c, opts){
       const s=computeLineStats(c,l);
       return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):dash;
     }},
-    {label:'Cambio realizado',get:l=>{
+    // El registro de cambios de un bloque semanal vive abajo, en la bitacora.
+    {label:'Cambio realizado',soloSiHay:l=>!!D(l).notes,get:l=>{
       const d=D(l);
       if(!d.notes) return dash;
       const full=esc(d.notes);
@@ -2466,13 +2508,20 @@ function buildMetricRows(c, opts){
   if(live){
     rows.push({label:'Ultima actualizacion',get:l=>l._lastRefresh?new Date(l._lastRefresh).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):dash});
   }
+  // Una fila con soloSiHay se dibuja unicamente si esa linea puede darle un valor:
+  // evita filas que en un bloque semanal siempre mostrarian un guion.
+  if(opts.linea){
+    return rows.filter(function(r){
+      if(!r.soloSiHay) return true;
+      try{ return !!r.soloSiHay(opts.linea); }catch(e){ return false; }
+    });
+  }
   return rows;
 }
 
 function liveSectionHtml(c){
 
     c.liveLines = c.liveLines || [];
-    const LIVE_ROWS=buildMetricRows(c,{live:true});
     const sortedLive=[...c.liveLines].sort(function(a,b){
       return ((b.rolling?1:0)-(a.rolling?1:0)) || String(b.dateStart||'').localeCompare(String(a.dateStart||''));
     });
@@ -2497,7 +2546,7 @@ function liveSectionHtml(c){
                 +'<button class="btn btn-sm" style="font-size:10px;padding:1px 7px;color:var(--text3)" onclick="event.stopPropagation();reintentarSemanas('+c.id+')">Reintentar</button>'
               +'</span>':''}
             </div>
-            ${collapsed?'':'<div>'+LIVE_ROWS.map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">${r.label}</span><span style="font-size:13px;font-weight:500;color:var(--text)">${r.get(l)}</span></div>`).join('')+semanaBitacoraHtml(c,l)+'</div>'}
+            ${collapsed?'':'<div>'+buildMetricRows(c,{live:true,linea:l}).map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)"><span style="font-size:13px;color:var(--text2)">${r.label}</span><span style="font-size:13px;font-weight:500;color:var(--text)">${r.get(l)}</span></div>`).join('')+semanaBitacoraHtml(c,l)+'</div>'}
           </div>`;
         }).join(''):'<div style="font-size:13px;color:var(--text3)">Cargando la primera semana en vivo...</div>')
       +'</div>';
