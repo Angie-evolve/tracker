@@ -90,6 +90,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .nav-item-info{flex:1;min-width:0}
 .nav-item-name{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nav-item-sub{font-size:10.5px;color:var(--sb-text-faint);margin-top:1px}
+/* Hover del cliente: la fila se agranda porque aparece un resumen, no por escalar el texto.
+   max-height animado en vez de height:auto (no es animable) y display:none (corta la transicion). */
+.client-row .client-peek{max-height:0;opacity:0;overflow:hidden;font-size:10px;line-height:1.4;
+  color:var(--sb-text-faint);white-space:nowrap;text-overflow:ellipsis;
+  transition:max-height .24s cubic-bezier(.2,.8,.2,1),opacity .18s ease,margin-top .24s ease}
+.client-row:hover .client-peek,.client-row:focus-within .client-peek{max-height:32px;opacity:1;margin-top:3px}
+.sidebar.collapsed .client-peek{display:none}
+@media (prefers-reduced-motion:reduce){
+  .client-row .client-peek{transition:none}
+}
 .health-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 /* Sidebar clientes: variante A abierto (sin avatar) + C colapsado (avatar gris) */
 .nav-item .nav-item-icon.client-av{display:none}
@@ -1377,16 +1387,36 @@ function toggleShowArchived(){ S.showArchived=!S.showArchived; showOverview(); }
 function activeClients(){ return DB.clients.filter(function(c){return !c.archived;}); }
 function archivedClients(){ return DB.clients.filter(function(c){return c.archived;}); }
 
+// Resumen que aparece bajo el nombre del cliente al pasar el cursor.
+// Reemplaza al tooltip nativo, que tapaba las filas de abajo justo al recorrer la lista.
+function clientPeekHtml(c){
+  var bits=[];
+  var d=adsDot(c);
+  bits.push(d.live?'entregando':(d.state==='amber'?'pausada':'sin datos'));
+  var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+  if(al&&al.metaSyncAt){
+    var t=new Date(al.metaSyncAt);
+    if(!isNaN(t.getTime())) bits.push('sync '+t.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit',hour12:false}));
+  }
+  try{
+    var st=(typeof alarmStatus==='function')?alarmStatus(c):null;
+    if(st&&st.breached>0) bits.push('<span style="color:#D85A30">'+st.breached+' alarma'+(st.breached>1?'s':'')+'</span>');
+  }catch(e){}
+  var pend=(c.tasks||[]).filter(function(t){return !t.done&&!t.deleted;}).length;
+  if(pend) bits.push(pend+' tarea'+(pend>1?'s':''));
+  return bits.join(' \u00b7 ');
+}
 function renderSidebar(){
   document.getElementById('client-list').innerHTML=activeClients().map((c,idx)=>`
     <div class="nav-item client-row ${S.clientId===c.id&&S.view==='client'?'active':''}" id="client-item-${idx}"
       draggable="true" ondragstart="clientDragStart(${idx})" ondragover="clientDragOver(event,${idx})" ondrop="clientDrop(event,${idx})"
-      onclick="selectClient(${c.id})" title="${adsDot(c).title}">
+      onclick="selectClient(${c.id})">
       ${adsDot(c).live?'<div class="client-live-sweep"></div>':''}
       <div class="nav-item-icon client-av ${adsDot(c).live?'':'is-idle'}" style="font-size:11px">${c.avatar}</div>
       <div class="nav-item-info">
         <div class="nav-item-name">${c.name}</div>
         <div class="nav-item-sub">${c.conversionLines?.length||0} lineas</div>
+        <div class="client-peek">${clientPeekHtml(c)}</div>
       </div>
       ${adsDot(c).live
         ? '<span class="client-state" style="color:#5DCAA5">LIVE</span>'
