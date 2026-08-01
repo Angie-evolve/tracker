@@ -7029,27 +7029,46 @@ async function capAnalyzeBatch(clientId){
   if(!leads.length){ if(typeof toast==='function') toast('Ninguno de los seleccionados tiene transcripcion cargada'); return; }
   var apiKey=localStorage.getItem('evold-anthropic-key');
   if(!apiKey){ if(typeof toast==='function') toast('Configura tu API key de Anthropic','red'); return; }
-  document.getElementById('modal-root').innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:520px;text-align:center;padding:40px"><div style="font-size:13px;color:var(--text2);margin-bottom:8px">Analizando '+leads.length+' lead'+(leads.length>1?'s':'')+'...</div><div style="font-size:11px;color:var(--text3)">Claude esta armando el informe segun tu SOP</div></div></div>';
-  var block=leads.map(function(L){ return '=== LEAD: '+L.name+(L.stage?' ('+L.stage+')':'')+' ===\n'+L.texts.map(function(tx,i){return 'Llamada R'+(i+1)+':\n'+tx;}).join('\n\n'); }).join('\n\n\n');
-  var prompt=_capSop()+'\n\nAnaliza el proceso comercial de estos '+leads.length+' lead(s). Cada uno puede tener varias llamadas (R1, R2, ...). Da feedback POR CADA lead siguiendo el formato indicado, y cerra con una "Sintesis transversal" con los patrones que se repiten entre todos.\n\n'+block;
-  try{
-    var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:prompt}]})});
-    var raw=await r.text();
-    var data; try{ data=JSON.parse(raw); }catch(_pe){ throw new Error('Respuesta no valida (HTTP '+r.status+'): '+String(raw).slice(0,200)); }
-    if(!r.ok || (data&&data.error)){ var em=(data&&data.error&&(data.error.message||data.error.type))||('HTTP '+r.status); if(/too long|max.*token|exceed|prompt is too/i.test(em)) em='Las transcripciones juntas son demasiado largas para un solo pedido. Proba con menos leads (o menos llamadas) por informe. Detalle: '+em; throw new Error(em); }
+  var modalEl=document.getElementById('modal-root');
+  var setLoad=function(msg,sub){ modalEl.innerHTML='<div class="modal-overlay"><div class="modal" style="max-width:520px;text-align:center;padding:40px"><div style="font-size:13px;color:var(--text2);margin-bottom:8px">'+msg+'</div><div style="font-size:11px;color:var(--text3)">'+(sub||'Claude esta analizando segun tu SOP')+'</div></div></div>'; };
+  var callAPI=async function(prompt, maxt){
+    var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:maxt,messages:[{role:'user',content:prompt}]})});
+    var raw=await r.text(); var data; try{ data=JSON.parse(raw); }catch(_pe){ throw new Error('Respuesta no valida (HTTP '+r.status+'): '+String(raw).slice(0,150)); }
+    if(!r.ok || (data&&data.error)){ var em=(data&&data.error&&(data.error.message||data.error.type))||('HTTP '+r.status); if(/too long|max.*token|exceed|prompt is too/i.test(em)) em='La transcripcion de un lead es demasiado larga para un pedido. Detalle: '+em; throw new Error(em); }
     var fb=((data.content||[]).filter(function(b){return b&&b.type==='text';}).map(function(b){return b.text||'';}).join('')||'').trim();
-    if(!fb) throw new Error('La IA no devolvio texto (stop_reason: '+((data&&data.stop_reason)||'?')+'). Si seleccionaste varios leads con llamadas largas, proba con menos por vez.');
-    var truncated=(data&&data.stop_reason==='max_tokens');
+    if(!fb) throw new Error('La IA no devolvio texto (stop: '+((data&&data.stop_reason)||'?')+').');
+    return {text:fb, truncated:(data&&data.stop_reason==='max_tokens')};
+  };
+  try{
+    var parts=[]; var anyTrunc=false;
+    for(var i=0;i<leads.length;i++){
+      var L=leads[i];
+      setLoad('Analizando lead '+(i+1)+' de '+leads.length,'"'+L.name+'"');
+      var pr=_capSop()+'\n\nAnaliza el proceso comercial de ESTE lead (puede tener varias llamadas R1, R2, ...). Segui el formato indicado. NO agregues sintesis transversal (es un solo lead).\n\n=== LEAD: '+L.name+(L.stage?' ('+L.stage+')':'')+' ===\n'+L.texts.map(function(tx,j){return 'Llamada R'+(j+1)+':\n'+tx;}).join('\n\n');
+      var one=await callAPI(pr, 5000);
+      if(one.truncated) anyTrunc=true;
+      parts.push('## '+L.name+'\n\n'+one.text);
+    }
+    var full=parts.join('\n\n---\n\n');
+    if(leads.length>1){
+      setLoad('Armando la sintesis transversal','Cruzando los '+leads.length+' leads');
+      try{
+        var prT=_capSop()+'\n\nA continuacion tenes los feedbacks individuales de '+leads.length+' leads. Escribi SOLO una "Sintesis transversal": los patrones que se repiten entre todos, fortalezas y desvios comunes, y 2-3 recomendaciones globales accionables. No repitas el detalle por lead.\n\n'+parts.join('\n\n');
+        var tr=await callAPI(prT, 2500);
+        full+='\n\n---\n\n## Sintesis transversal\n\n'+tr.text;
+      }catch(_te){ full+='\n\n---\n\n(No se pudo generar la sintesis transversal: '+String(_te.message)+')'; }
+    }
     var id=String(Date.now());
     DB.capBatches=DB.capBatches||[];
-    DB.capBatches.unshift({id:id,createdAt:new Date().toISOString(),leads:leads.map(function(L){return {key:L.key,name:L.name};}),feedback:fb,truncated:truncated});
+    DB.capBatches.unshift({id:id,createdAt:new Date().toISOString(),leads:leads.map(function(L){return {key:L.key,name:L.name};}),feedback:full,truncated:anyTrunc});
     S._capSel={}; save();
     capViewBatch(id);
     if(typeof toast==='function') toast('Informe generado ('+leads.length+' leads)');
   }catch(e){
-    document.getElementById('modal-root').innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:420px"><div class="modal-title" style="color:var(--redx)">No se pudo generar el informe</div><div style="font-size:12px;color:var(--text2);margin:12px 0">'+String(e.message)+'</div><button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div></div>';
+    modalEl.innerHTML='<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:420px"><div class="modal-title" style="color:var(--redx)">No se pudo generar el informe</div><div style="font-size:12px;color:var(--text2);margin:12px 0">'+String(e.message)+'</div><button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div></div>';
   }
 }
+
 function capViewBatch(id){
   var b=(DB.capBatches||[]).find(function(x){return x.id===id;}); if(!b) return;
   var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
