@@ -97,15 +97,22 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   transition:max-height .24s cubic-bezier(.2,.8,.2,1),opacity .18s ease,margin-top .24s ease}
 .client-row:hover .client-peek,.client-row:focus-within .client-peek{max-height:32px;opacity:1;margin-top:3px}
 .sidebar.collapsed .client-peek{display:none}
-/* Comprimido no hay lugar para el resumen: sale al costado, fuera del sidebar,
-   asi no lo recorta el overflow de .client-row ni el scroll de .sidebar-nav. */
-#client-flyout{position:fixed;z-index:9999;pointer-events:none;background:var(--sb-bg);
-  border:1px solid var(--sb-border);border-radius:9px;padding:7px 12px;white-space:nowrap;
-  box-shadow:0 10px 30px rgba(0,0,0,0.55);opacity:0;
-  transform:translateY(-50%) translateX(-5px);
-  transition:opacity .14s ease,transform .16s cubic-bezier(.2,.8,.2,1)}
-#client-flyout.on{opacity:1;transform:translateY(-50%)}
-@media (prefers-reduced-motion:reduce){#client-flyout{transition:none}}
+/* Comprimido: la inicial se agranda y se estira hacia la derecha hasta mostrar el nombre.
+   Es un elemento fijo montado en el body porque .sidebar-nav tiene overflow-y:auto,
+   que recorta cualquier cosa que se salga de los 60px del rail. */
+#client-flyout{position:fixed;z-index:9999;pointer-events:none;display:flex;align-items:center;
+  border-radius:999px;overflow:hidden;white-space:nowrap;transform:translateY(-50%);opacity:0;
+  box-shadow:0 8px 26px rgba(0,0,0,0.45);
+  transition:width .26s cubic-bezier(.2,.8,.2,1),opacity .15s ease}
+#client-flyout.on{opacity:1}
+#client-flyout .cf-ini{display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  font-size:11.5px;font-weight:500}
+#client-flyout .cf-nm{font-size:12.5px;color:var(--sb-text);padding:0 15px 0 3px;
+  overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .15s ease .08s}
+#client-flyout.on .cf-nm{opacity:1}
+@media (prefers-reduced-motion:reduce){
+  #client-flyout,#client-flyout .cf-nm{transition:none}
+}
 @media (prefers-reduced-motion:reduce){
   .client-row .client-peek{transition:none}
 }
@@ -1426,17 +1433,36 @@ function showClientFlyout(row, clientId){
   if(!sb||!sb.classList.contains('collapsed')) return; // expandido manda el resumen inline
   var c=(DB.clients||[]).find(function(x){return x.id===clientId;});
   if(!c) return;
+  var av=row.querySelector('.client-av');
+  if(!av) return;
+  var r=av.getBoundingClientRect();
+  if(!r.width) return;
+  var cs=window.getComputedStyle(av);
+  var h=Math.round(r.height*1.2); // el zoom: la capsula arranca un 20% mas grande que la inicial
   var el=_clientFlyoutEl();
-  el.innerHTML='<div style="font-size:12.5px;color:var(--sb-text);line-height:1.3">'+esc(c.name)+'</div>'
-    +'<div style="font-size:10px;color:var(--sb-text-faint);margin-top:2px">'+clientPeekHtml(c)+'</div>';
-  var r=row.getBoundingClientRect();
-  el.style.left=(r.right+8)+'px';
-  el.style.top=Math.min(window.innerHeight-14, Math.max(14, r.top+r.height/2))+'px';
+  el.innerHTML='<span class="cf-ini" style="width:'+h+'px;height:'+h+'px;color:'+cs.color+'">'+esc(c.avatar||'')+'</span>'
+    +'<span class="cf-nm">'+esc(c.name||'')+'</span>';
+  el.style.background=cs.backgroundColor;
+  el.style.height=h+'px';
+  el.style.left=Math.round(r.left+r.width/2-h/2)+'px';
+  el.style.top=Math.round(Math.min(window.innerHeight-14, Math.max(14, r.top+r.height/2)))+'px';
+  // Medimos el ancho real del nombre y lo topeamos: un nombre largo se corta con
+  // puntos suspensivos en vez de quedar partido al medio de una palabra.
+  el.style.transition='none';
+  el.style.width='auto';
+  var full=Math.min(Math.max(el.scrollWidth+2, h+56), 232);
+  el.style.width=h+'px';
+  void el.offsetWidth;
+  el.style.transition='';
+  el.dataset.min=String(h);
   el.classList.add('on');
+  requestAnimationFrame(function(){ el.style.width=full+'px'; });
 }
 function hideClientFlyout(){
   var el=document.getElementById('client-flyout');
-  if(el) el.classList.remove('on');
+  if(!el) return;
+  if(el.dataset.min) el.style.width=el.dataset.min+'px';
+  el.classList.remove('on');
 }
 function renderSidebar(){
   document.getElementById('client-list').innerHTML=activeClients().map((c,idx)=>`
