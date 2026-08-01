@@ -1458,8 +1458,10 @@ function _clientListHtml(){
   return header+'<div style="display:flex;flex-direction:column;gap:0">'+rows+nuevo+'</div>';
 }
 function _tkSubtabsHtml(){
-  var mk=function(k,l){ var act=(S.tkTab||'tareas')===k; return '<button class="btn btn-sm" onclick="S.tkTab=\''+k+'\';showTickets()" style="'+(act?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'+l+'</button>'; };
-  return '<div style="display:flex;gap:8px;margin-bottom:18px">'+mk('tareas','Tareas')+mk('clientes','Clientes')+'</div>';
+  var mk=function(k,l){ var act=(S.tkTab||'tareas')===k; return '<button class="btn btn-sm" onclick="S.tkTab=\''+k+'\';S._actSeenSession=null;showTickets()" style="'+(act?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'+l+'</button>'; };
+  var _un=(typeof actUnseenCount==='function')?actUnseenCount():0;
+  var _actLbl='Actividad'+(_un?' <span class="pill pill-green" style="font-size:9px;padding:0 5px;margin-left:3px">'+_un+'</span>':'');
+  return '<div style="display:flex;gap:8px;margin-bottom:18px">'+mk('tareas','Tareas')+mk('actividad',_actLbl)+mk('clientes','Clientes')+'</div>';
 }
 function showOverview(){
   S.tkTab='clientes'; return showTickets();
@@ -1545,7 +1547,7 @@ function toggleRecurrente(clientId){
   renderSidebar();
 }
 
-function selectClient(id){S.clientId=id;S.view='client';S.clientView='ficha';S.tab='lineas';renderSidebar();renderClient();collapseSidebar();}
+function selectClient(id){if(typeof stopActPoll==='function')stopActPoll();S.clientId=id;S.view='client';S.clientView='ficha';S.tab='lineas';renderSidebar();renderClient();collapseSidebar();}
 function openClientTab(tabKey){S.tab=tabKey;S.clientView='full';renderClient();}
 function backToFicha(){S.clientView='ficha';renderClient();}
 function setMetricsView(v){S.metricsView=v;renderClient();}
@@ -3737,8 +3739,203 @@ function applyTicketsCustomRange(){
   closeModal();
   showTickets();
 }
+// ================= ACTIVIDAD: feed global de movimientos de clientes =================
+// Junta en una sola linea de tiempo lo que ya vive disperso en la app:
+//   - novedades de GHL (c.ghl._changes): leads nuevos, agendas, cambios de stage, ganados/perdidos
+//   - llamadas grabadas (c.fathomCalls)
+//   - tareas delegadas y finalizadas (c.tasks)
+// Los dos ultimos NO se guardan como eventos: se derivan de los datos que ya estan,
+// asi no hay estado duplicado que se pueda desincronizar.
+
+var ACT_TIPOS=[
+  {k:'lead',   l:'Leads',    icon:'+',      color:'var(--strong)'},
+  {k:'agenda', l:'Agendas',  icon:'\u25CB', color:'var(--bluex,#378add)'},
+  {k:'venta',  l:'Ventas',   icon:'$',      color:'var(--accent)'},
+  {k:'llamada',l:'Llamadas', icon:'\u25B6', color:'var(--amberx)'},
+  {k:'stage',  l:'Stages',   icon:'\u2192', color:'var(--text3)'},
+  {k:'tarea',  l:'Tareas',   icon:'\u2713', color:'var(--text2)'}
+];
+function _actColor(k){ var t=ACT_TIPOS.find(function(x){return x.k===k;}); return t?t.color:'var(--text3)'; }
+function _actIcon(k){ var t=ACT_TIPOS.find(function(x){return x.k===k;}); return t?t.icon:'\u00B7'; }
+
+// Acepta ISO, timestamp o el formato dd/mm/aaaa que usan las llamadas de Fathom.
+function _actTs(v){
+  if(!v) return null;
+  var s=String(v);
+  var d;
+  if(/^\d{1,2}\/\d{1,2}\/\d{4}/.test(s) && typeof parseDDMMYYYY==='function') d=parseDDMMYYYY(s);
+  else d=new Date(v);
+  return (d && !isNaN(d.getTime())) ? d : null;
+}
+
+function buildActivityFeed(opts){
+  opts=opts||{};
+  var kinds=opts.kinds&&opts.kinds.length?opts.kinds:null;
+  var desde=opts.desde?new Date(opts.desde):null;
+  var items=[];
+  var push=function(c,kind,ts,text,extra){
+    if(!ts) return;
+    if(desde && ts<desde) return;
+    if(kinds && kinds.indexOf(kind)<0) return;
+    items.push({ts:ts.getTime(), kind:kind, clientId:c.id, cliente:c.name||'Cliente', text:text, extra:extra||''});
+  };
+
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+
+    ((c.ghl&&c.ghl._changes)||[]).forEach(function(ch){
+      var ts=_actTs(ch.at||ch.ts);
+      var kind=ch.kind==='nuevo'?'lead'
+             :ch.kind==='agenda'?'agenda'
+             :(ch.kind==='ganado'||ch.kind==='perdido')?'venta'
+             :'stage';
+      push(c,kind,ts,ch.text);
+    });
+
+    (c.fathomCalls||[]).forEach(function(cl){
+      var ts=_actTs(cl.date);
+      var det=[];
+      if(cl.duration) det.push(cl.duration);
+      if((cl.actionItems||[]).length) det.push((cl.actionItems||[]).length+' pendientes');
+      if((cl.riskFlags||[]).length) det.push((cl.riskFlags||[]).length+' riesgos');
+      push(c,'llamada',ts,'Grabacion cargada: '+(cl.title||'Llamada'),det.join(' \u00b7 '));
+    });
+
+    (c.tasks||[]).forEach(function(t){
+      if(t.deleted) return;
+      if(t.done&&t.doneAt) push(c,'tarea',_actTs(t.doneAt),'Tarea finalizada: '+(t.text||'sin titulo'),t.ticket?String(t.ticket):'');
+      else if(t.delegated&&t.delegatedAt) push(c,'tarea',_actTs(t.delegatedAt),'Tarea delegada: '+(t.text||'sin titulo'),t.ticket?String(t.ticket):'');
+    });
+  });
+
+  items.sort(function(a,b){return b.ts-a.ts;});
+  return items.slice(0, opts.limit||300);
+}
+
+function actUnseenCount(){
+  var seen=+(localStorage.getItem('evold-act-seen')||0);
+  if(!seen) return 0;
+  return buildActivityFeed({limit:300}).filter(function(i){return i.ts>seen;}).length;
+}
+
+function toggleActFiltro(k){
+  S.actFiltros=S.actFiltros||[];
+  var i=S.actFiltros.indexOf(k);
+  if(i>=0) S.actFiltros.splice(i,1); else S.actFiltros.push(k);
+  showTickets();
+}
+function limpiarActFiltros(){ S.actFiltros=[]; showTickets(); }
+
+function _actividadHtml(){
+  var filtros=S.actFiltros||[];
+  var items=buildActivityFeed({kinds:filtros, limit:300});
+  if(S._actSeenSession===undefined||S._actSeenSession===null){
+    S._actSeenSession=+(localStorage.getItem('evold-act-seen')||0);
+    localStorage.setItem('evold-act-seen',String(Date.now()));
+  }
+  var seen=S._actSeenSession;
+
+  var chips='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center">'
+    +'<button class="btn btn-sm" onclick="limpiarActFiltros()" style="'+(filtros.length?'color:var(--text3)':'border-color:var(--accent);color:var(--accent)')+'">Todo</button>'
+    +ACT_TIPOS.map(function(t){
+        var on=filtros.indexOf(t.k)>=0;
+        return '<button class="btn btn-sm" onclick="toggleActFiltro(\''+t.k+'\')" style="'+(on?'border-color:'+t.color+';color:'+t.color:'color:var(--text3)')+'">'+t.l+'</button>';
+      }).join('')
+    +'<span style="margin-left:auto;font-size:11px;color:var(--text3)">'+items.length+' movimiento'+(items.length===1?'':'s')+' \u00b7 '+_actPollEstado()+'</span>'
+    +'</div>';
+
+  if(!items.length){
+    return chips+'<div style="padding:40px 0;text-align:center;font-size:12.5px;color:var(--text3);line-height:1.7">'
+      +'Todavia no hay movimientos registrados.<br>'
+      +'Las novedades de GHL se detectan comparando cada sincronizacion con la anterior,<br>asi que vas a ver la primera tanda despues del segundo sync.</div>';
+  }
+
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var ayer=new Date(hoy); ayer.setDate(ayer.getDate()-1);
+  var grupoDe=function(ts){
+    var d=new Date(ts); d.setHours(0,0,0,0);
+    if(d.getTime()===hoy.getTime()) return 'Hoy';
+    if(d.getTime()===ayer.getTime()) return 'Ayer';
+    return new Date(ts).toLocaleDateString('es-AR',{weekday:'long',day:'2-digit',month:'long'});
+  };
+
+  var out='', grupo=null;
+  items.forEach(function(i){
+    var g=grupoDe(i.ts);
+    if(g!==grupo){
+      grupo=g;
+      out+='<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin:20px 0 8px">'+esc(g)+'</div>';
+    }
+    var nuevo=seen&&i.ts>seen;
+    var col=_actColor(i.kind);
+    out+='<div onclick="selectClient('+i.clientId+')" style="display:flex;align-items:baseline;gap:11px;padding:9px 10px;margin:0 -10px;border-bottom:1px solid var(--border);cursor:pointer;border-radius:6px">'
+      +'<span class="mono" style="font-size:11px;width:13px;text-align:center;flex-shrink:0;color:'+col+'">'+_actIcon(i.kind)+'</span>'
+      +'<span style="flex-shrink:0;font-size:12.5px;font-weight:500;color:var(--text2);min-width:96px">'+esc(i.cliente)+'</span>'
+      +'<span style="flex:1;font-size:12.5px;color:var(--text);min-width:0">'+esc(i.text)
+        +(i.extra?' <span style="color:var(--text3)">\u00b7 '+esc(i.extra)+'</span>':'')
+        +(nuevo?' <span class="pill pill-green" style="font-size:9px;padding:1px 6px;margin-left:4px">nuevo</span>':'')
+      +'</span>'
+      +'<span class="mono" style="font-size:10.5px;color:var(--text3);white-space:nowrap;flex-shrink:0">'
+        +new Date(i.ts).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})+'</span>'
+      +'</div>';
+  });
+
+  return chips+out;
+}
+
+// ================= REFRESCO ROTATIVO =================
+// La app es estatica: no hay backend que sincronice sola. Para no quemar la cuota del
+// Apps Script con 14 clientes a la vez, se sincroniza UNO cada 45 s, rotando. Una vuelta
+// completa toma ~10 min y el pico de red nunca supera un pedido.
+// Solo corre con la torre abierta y la pestana visible.
+var _ACT_POLL={timer:null, idx:0, lastAt:0, lastClient:''};
+
+function _actPollEstado(){
+  if(!_ACT_POLL.lastAt) return 'sin refrescar todavia';
+  var min=Math.floor((Date.now()-_ACT_POLL.lastAt)/60000);
+  var quien=_ACT_POLL.lastClient?' ('+_ACT_POLL.lastClient+')':'';
+  return min<1?('ultimo refresco: recien'+quien):('ultimo refresco: hace '+min+' min'+quien);
+}
+
+function _actPollables(){
+  return (DB.clients||[]).filter(function(c){
+    return !c.archived && c.ghl && c.ghl.token && c.ghl.locationId && !c.ghl._syncing;
+  });
+}
+
+async function actPollTick(){
+  if(S.view!=='tickets') return;
+  if(document.visibilityState==='hidden') return;
+  var px=(typeof getGhlProxy==='function')?getGhlProxy():null;
+  if(!px||!px.url||!px.secret) return;
+  var lista=_actPollables();
+  if(!lista.length) return;
+  if(_ACT_POLL.idx>=lista.length) _ACT_POLL.idx=0;
+  var c=lista[_ACT_POLL.idx];
+  _ACT_POLL.idx=(_ACT_POLL.idx+1)%lista.length;
+  try{
+    await syncGhl(c.id, true, true);
+    _ACT_POLL.lastAt=Date.now();
+    _ACT_POLL.lastClient=c.name||'';
+    if(S.view==='tickets' && (S.tkTab||'tareas')==='actividad') showTickets();
+  }catch(e){}
+}
+
+function startActPoll(){
+  if(_ACT_POLL.timer) return;
+  _ACT_POLL.timer=setInterval(actPollTick, 45000);
+  setTimeout(actPollTick, 2000);
+}
+function stopActPoll(){
+  if(_ACT_POLL.timer){ clearInterval(_ACT_POLL.timer); _ACT_POLL.timer=null; }
+}
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='visible' && S.view==='tickets') startActPoll(); else stopActPoll();
+});
+
 function showTickets(){
   S.view='tickets'; S.clientId=null; renderSidebar();
+  if(typeof startActPoll==='function') startActPoll();
   const _since=+(localStorage.getItem('evold-tickets-since')||0);
   const all=_ticketRows();
   const tickets=all.filter(function(r){
@@ -4006,7 +4203,7 @@ function showTickets(){
     +'</div>'
     +_overviewMetricsHtml()
     +_tkSubtabsHtml()
-    +(S.tkTab==='clientes'?_clientListHtml():(''
+    +(S.tkTab==='actividad'?_actividadHtml():S.tkTab==='clientes'?_clientListHtml():(''
     +progresoHtml
     +_tkAlarmasHtml()
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
@@ -4241,6 +4438,17 @@ function computeGhlChanges(c, freshOps){
   const snap=c.ghl._snapshot;
   const now=new Date().toISOString();
   const changes=[];
+  // Stages que el cliente definio como "agenda": sirven para distinguir un agendamiento
+  // de un cambio de stage cualquiera.
+  const rules=(typeof getGhlRules==='function')?getGhlRules(c):{};
+  const AG=(rules.agendas||[]);
+  const esAgenda=function(st){ return AG.length && AG.indexOf(_n(st||''))>=0; };
+  // Fecha real del movimiento si el proxy la devuelve; si no, la del sync.
+  const cuando=function(o,fallback){
+    const v=o.updatedAt||o.dateUpdated||o.lastStatusChangeAt||o.lastStageChangeAt||fallback;
+    const d=v?new Date(v):null;
+    return (d&&!isNaN(d.getTime()))?d.toISOString():now;
+  };
   if(snap&&snap.length){
     const prev={};
     snap.forEach(function(s){ prev[s.id]=s; });
@@ -4248,23 +4456,27 @@ function computeGhlChanges(c, freshOps){
       const p=prev[String(o.id)];
       const name=o.contactName||o.name||'Lead';
       if(!p){
-        changes.push({ts:now,icon:'+',kind:'nuevo',text:'Nuevo registro: '+name+(o.pipelineStage?' — entro en "'+o.pipelineStage+'"':'')});
+        changes.push({ts:cuando(o,o.createdAt),icon:'+',kind:'nuevo',text:'Nuevo registro: '+name+(o.pipelineStage?' \u2014 entro en "'+o.pipelineStage+'"':'')});
         return;
       }
       const st=(o.pipelineStage||'');
       if(p.stage!==st&&(p.stage||st)){
-        changes.push({ts:now,icon:'\u2192',kind:'stage',text:name+': "'+(p.stage||'sin stage')+'" \u2192 "'+(st||'sin stage')+'"'});
+        if(esAgenda(st)&&!esAgenda(p.stage)){
+          changes.push({ts:cuando(o),icon:'\u25CB',kind:'agenda',text:name+' agendo \u2014 "'+st+'"'});
+        } else {
+          changes.push({ts:cuando(o),icon:'\u2192',kind:'stage',text:name+': "'+(p.stage||'sin stage')+'" \u2192 "'+(st||'sin stage')+'"'});
+        }
       }
       const status=(o.status||'');
       if(p.status!==status){
-        if(status==='won') changes.push({ts:now,icon:'$',kind:'ganado',text:name+' \u2014 GANADO'+(Number(o.monetaryValue)?' \u00b7 $'+Number(o.monetaryValue).toLocaleString('en-US'):'')});
-        else if(status==='lost') changes.push({ts:now,icon:'x',kind:'perdido',text:name+' \u2014 perdido'});
-        else if(status==='abandoned') changes.push({ts:now,icon:'x',kind:'perdido',text:name+' \u2014 abandonado'});
+        if(status==='won') changes.push({ts:cuando(o),icon:'$',kind:'ganado',text:name+' \u2014 GANADO'+(Number(o.monetaryValue)?' \u00b7 $'+Number(o.monetaryValue).toLocaleString('en-US'):'')});
+        else if(status==='lost') changes.push({ts:cuando(o),icon:'x',kind:'perdido',text:name+' \u2014 perdido'});
+        else if(status==='abandoned') changes.push({ts:cuando(o),icon:'x',kind:'perdido',text:name+' \u2014 abandonado'});
       }
     });
   }
   c.ghl._snapshot=freshOps.map(function(o){return {id:String(o.id),stage:o.pipelineStage||'',status:o.status||''};});
-  if(changes.length) c.ghl._changes=changes.concat(c.ghl._changes||[]).slice(0,150);
+  if(changes.length) c.ghl._changes=changes.concat(c.ghl._changes||[]).slice(0,300);
   return changes.length;
 }
 function vtaUnseenCount(c){
@@ -6750,7 +6962,7 @@ function mergeGhlOpps(prevOps, freshOps, truncated){
   return merged;
 }
 
-async function syncGhl(clientId, silent){
+async function syncGhl(clientId, silent, skipEnrich){
   const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
   const proxy=getGhlProxy();
   c.ghl=c.ghl||{};
@@ -6801,7 +7013,7 @@ async function syncGhl(clientId, silent){
     c.ghl._syncing=false; save();
     if(!silent||nChanges) toast(allOpps.length+' oportunidades sincronizadas'+(nChanges?' \u00b7 '+nChanges+' novedades':''));
     renderTab();
-    enrichContactsBackground(c, proxy);
+    if(!skipEnrich) enrichContactsBackground(c, proxy);
   }catch(e){
     clearTimeout(timer);
     c.ghl._syncing=false;
