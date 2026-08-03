@@ -4824,14 +4824,27 @@ function testWeeklyReportNow(){
 }
 
 // ================= RECORDS DE EFICIENCIA (libro de mejores marcas por cliente) =================
+// dir: 'min' = mejora bajando (costos, tiempos) | 'max' = mejora subiendo (tasas)
+// fmt: como se escribe el valor
 var _REC_DEFS=[
-  {key:'cac',label:'CAC (costo por cliente)'},
-  {key:'reg',label:'Costo por registro'},
-  {key:'sql',label:'Costo por calificada / SQL'},
-  {key:'agenda',label:'Costo por agenda'},
-  {key:'asist',label:'Costo por asistencia'},
-  {key:'viva',label:'Costo por llamada en vivo'}
+  {key:'cac',label:'CAC (costo por cliente)',dir:'min',fmt:'money'},
+  {key:'reg',label:'Costo por registro',dir:'min',fmt:'money'},
+  {key:'sql',label:'Costo por calificada / SQL',dir:'min',fmt:'money'},
+  {key:'agenda',label:'Costo por agenda',dir:'min',fmt:'money'},
+  {key:'asist',label:'Costo por asistencia',dir:'min',fmt:'money'},
+  {key:'viva',label:'Costo por llamada en vivo',dir:'min',fmt:'money'},
+  {key:'pres',label:'Costo por presentacion',dir:'min',fmt:'money'},
+  // Tasas: un tablero que solo celebra bajar costos empuja a recortar inversion.
+  // Estas muestran si el embudo mejoro de verdad.
+  {key:'tCalif',label:'% calificado en vivo',dir:'max',fmt:'pct'},
+  {key:'tCloseCalif',label:'Close rate de calificadas',dir:'max',fmt:'pct'},
+  {key:'tCloseAsist',label:'Close rate de asistencias',dir:'max',fmt:'pct'},
+  {key:'tShows',label:'% de shows',dir:'max',fmt:'pct'},
+  {key:'revShow',label:'Revenue por show',dir:'max',fmt:'money'},
+  {key:'ticket',label:'Ticket promedio',dir:'max',fmt:'money'},
+  {key:'ttc',label:'Time to cierre',dir:'min',fmt:'dias'}
 ];
+function _recDef(k){ for(var i=0;i<_REC_DEFS.length;i++){ if(_REC_DEFS[i].key===k) return _REC_DEFS[i]; } return null; }
 // Guarda el primer valor y el mejor (minimo) valor historico por metrica.
 function captureRecords(c,vals){
   c.records=c.records||{};
@@ -4844,7 +4857,7 @@ function captureRecords(c,vals){
     if(!r){
       c.records[k]={first:v,firstAt:now,best:v,bestAt:now};
       changed=true;
-    } else if(v<r.best-1e-9){
+    } else if((_recDef(k)&&_recDef(k).dir==='max') ? (v>r.best+1e-9) : (v<r.best-1e-9)){
       r.prevBest=r.best; r.prevBestAt=r.bestAt;
       r.best=v; r.bestAt=now;
       r.justBeaten=Date.now(); // para el destello "nuevo record"
@@ -4867,20 +4880,31 @@ function recordsSectionHtml(c,asTab){
       +'</div></div>';
   }
   var fmtD=function(iso){return iso?new Date(iso).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',yy:'2-digit',year:'2-digit'}):'-';};
+  var fmtV=function(d,v){
+    if(d.fmt==='pct') return v.toFixed(1)+'%';
+    if(d.fmt==='dias') return v.toFixed(1)+' d';
+    return '$'+v.toFixed(2);
+  };
   var cards=have.map(function(d){
     var r=recs[d.key];
-    var mejora=(r.first>0&&r.best<r.first)?Math.round((1-r.best/r.first)*100):0;
+    var esMax=(d.dir==='max');
+    var mejora=0;
+    if(r.first>0){
+      mejora=esMax
+        ? (r.best>r.first?Math.round((r.best/r.first-1)*100):0)
+        : (r.best<r.first?Math.round((1-r.best/r.first)*100):0);
+    }
     var fresh=r.justBeaten&&(Date.now()-r.justBeaten<1000*60*60*24*3);
     return '<div style="background:var(--bg2);border:1px solid '+(fresh?'rgba(29,158,117,0.4)':'var(--border)')+';border-radius:var(--radius-lg);padding:14px 16px;position:relative">'
       +(fresh?'<span class="pill pill-green" style="position:absolute;top:12px;right:12px;font-size:9px">nuevo record</span>':'')
       +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">'+d.label+'</div>'
       +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">'
-        +'<span style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--mono)">$'+r.best.toFixed(2)+'</span>'
-        +(mejora>0?'<span style="font-size:11px;color:var(--accent)">&darr; '+mejora+'%</span>':'')
+        +'<span style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--mono)">'+fmtV(d,r.best)+'</span>'
+        +(mejora>0?'<span style="font-size:11px;color:var(--accent)">'+(esMax?'&uarr;':'&darr;')+' '+mejora+'%</span>':'')
       +'</div>'
       +'<div style="font-size:10.5px;color:var(--text3)">mejor marca &middot; '+fmtD(r.bestAt)+'</div>'
       +'<div style="margin-top:9px;padding-top:9px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:10.5px;color:var(--text3)">'
-        +'<span>arranque: <span class="mono" style="color:var(--text2)">$'+r.first.toFixed(2)+'</span></span>'
+        +'<span>arranque: <span class="mono" style="color:var(--text2)">'+fmtV(d,r.first)+'</span></span>'
         +'<span>'+fmtD(r.firstAt)+'</span>'
       +'</div></div>';
   }).join('');
@@ -8428,10 +8452,21 @@ function renderVentasTab(c, el){
     +'</div>';
   // Capturar records de eficiencia (solo cuando NO hay segmento activo: el record es del cliente completo)
   if(!segCampId&&!segPais&&period!=='custom'){
-    captureRecords(c,{
+    var _asistN=cntStages(opsCost,_rules.asistencias);
+    var _vals={
       cac:costoNum(cWon), reg:costoNum(opsCost.length), sql:costoNum(cCalif),
-      agenda:costoNum(cAg), asist:costoNum(cntStages(opsCost,_rules.asistencias)), viva:costoNum(cViva)
-    });
+      agenda:costoNum(cAg), asist:costoNum(_asistN), viva:costoNum(cViva),
+      pres:costoNum(cPres)
+    };
+    // Tasas: solo se registran con volumen minimo, si no un 1 de 1 marca 100% para siempre.
+    if(cViva>=5) _vals.tCalif=cCalif/cViva*100;
+    if(cCalif>=5) _vals.tCloseCalif=cWon/cCalif*100;
+    if(_asistN>=5) _vals.tCloseAsist=cWon/_asistN*100;
+    if(cAg>=5) _vals.tShows=_asistN/cAg*100;
+    if(_asistN>=3&&m_revenue>0) _vals.revShow=m_revenue/_asistN;
+    if(cWon>=2&&m_revenue>0) _vals.ticket=m_revenue/cWon;
+    if(typeof avgTimeToClose==='number'&&avgTimeToClose>0) _vals.ttc=avgTimeToClose;
+    captureRecords(c,_vals);
   }
   _costosHtml+='<div class="vh-costs">'
     +vhCost('Inversion',accSpentAll!=null?money(accSpentAll):null)
