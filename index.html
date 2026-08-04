@@ -2605,6 +2605,16 @@ function buildMetricRows(c, opts){
       const s=computeLineStats(c,l);
       return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):dash;
     }},
+    {label:'Cierres nuevos',get:l=>{
+      const f=F(l);
+      if(!f||f.ganados==null) return dash;
+      const nombres=(f.ganadosListado||[]).map(function(g){return g.contacto+(g.valor?' ($'+g.valor.toLocaleString('en-US')+')':'');}).join(', ');
+      return '<span'+(nombres?' title="'+esc(nombres)+'"':'')+'>'+f.ganados+'</span>';
+    }},
+    {label:'Revenue generado',get:l=>{
+      const f=F(l);
+      return (f&&f.ganados!=null)?('USD '+(f.revenueGanados||0).toFixed(2)):dash;
+    }},
     // El registro de cambios de un bloque semanal vive abajo, en la bitacora.
     {label:'Cambio realizado',soloSiHay:l=>!!D(l).notes,get:l=>{
       const d=D(l);
@@ -7119,6 +7129,34 @@ function buildReportContext(c){
   const estadoRitmo=(ocsEsperadasAHoy!==null)?(ocsAcumuladas>=ocsEsperadasAHoy?'en_ritmo':'atrasado'):'sin_datos';
   const presupuestoSubejecutado=(dailySpendReal!==null&&minDaily!==null)?(dailySpendReal < minDaily*0.8):null;
 
+  // ---- Cierres (oportunidades ganadas en GHL) ----
+  const opsAll=(c.ghl&&c.ghl.opportunities)||[];
+  const ganadosArr=opsAll.filter(function(o){return deriveEstado(o).label==='Ganado';});
+  const perdidosArr=opsAll.filter(function(o){return deriveEstado(o).label==='Perdido';});
+  const sqlTotalArr=opsAll.filter(function(o){return o._sql;});
+  ganadosArr.sort(function(a,b){return new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0);});
+  const cierresListado=ganadosArr.slice(0,15).map(function(o){
+    return {
+      contacto: o.contactName||o.name||'Lead',
+      valor: Number(o.monetaryValue)||0,
+      fecha: o.updatedAt||o.createdAt||null,
+      stageAnterior: o.pipelineStage||null
+    };
+  });
+  const revenueTotal=ganadosArr.reduce(function(s,o){return s+(Number(o.monetaryValue)||0);},0);
+  const pipelineAbierto=opsAll.reduce(function(s,o){
+    var lbl=deriveEstado(o).label;
+    return (lbl!=='Ganado'&&lbl!=='Perdido')?s+(Number(o.monetaryValue)||0):s;
+  },0);
+  const cierres={
+    total: ganadosArr.length,
+    perdidos: perdidosArr.length,
+    revenueTotal: r2(revenueTotal),
+    pipelineAbierto: r2(pipelineAbierto),
+    closeRatePct: sqlTotalArr.length?r2(ganadosArr.length/sqlTotalArr.length*100):null,
+    listado: cierresListado
+  };
+
   return {
     cliente: c.name,
     tipo: c.subtitle||'',
@@ -7148,7 +7186,8 @@ function buildReportContext(c){
     },
     lineasDeConversion: lines,
     hitosYCambios: hitos,
-    llamadas: llamadas
+    llamadas: llamadas,
+    cierres: cierres
   };
 }
 
@@ -7198,9 +7237,11 @@ async function generateCallReport(clientId){
     +'6. "Que vamos a implementar": roadmap; cada proxima accion atada a una hipotesis y a la meta.\n'
     +'7. "Brecha y plan de cierre": INCLUIR ESTA SECCION SOLO si hay desvio real: estadoCosto="sobre_idoneo", o estadoRitmo="atrasado", o presupuestoSubejecutado=true, o hay una demora identificable en las notas/hitos tipo alerta/riesgos de llamadas (presupuesto no gastado, listas no calificadas, cambio de mercado, etc.). Si NO hay desvio, OMITI esta seccion por completo. Cuando va, en tres golpes: (a) causa de la demora; (b) que fue externo/fuera de nuestro control vs que ya estamos ajustando nosotros; (c) plan concreto con numeros: cuanta inversion extra (inversionExtraParaCumplir) o cuantos dias de extension (diasExtensionParaCumplir) para cumplir la garantia.\n\n'
 
+    +'8. "Cierres y resultados de negocio": usa el objeto cierres del contexto. INCLUIR ESTA SECCION SIEMPRE que cierres.total>0. Anuncia cada cierre nuevo listado en cierres.listado (nombre del contacto/cliente, monto si viene en valor y es mayor a 0, fecha) como una venta concreta lograda gracias al trabajo de generacion de SQLs, no lo mezcles con las metricas de marketing. Suma el revenue total generado (cierres.revenueTotal) y, si cierres.closeRatePct no es null, menciona que porcentaje de las llamadas calificadas se estan convirtiendo en cierres. Si ademas cierres.pipelineAbierto>0, cerra la seccion recordando cuanto valor sigue en pipeline sin resolver, como proyeccion de lo que falta cerrar. Si cierres.total=0 pero ya hay SQLs o llamadas calificadas, OMITI esta seccion (no generes ansiedad por falta de cierres si el trabajo de la agencia es de generacion de leads, no de venta). No inventes montos ni nombres que no esten en cierres.listado.\n\n'
+
     +'Responde SOLO con un JSON valido, sin markdown ni texto extra, con esta forma EXACTA:\n'
     +'{ "titulo": "string", "periodo": "string corto del rango analizado", "secciones": [ { "titulo": "string", "items": ["string"] } ] }\n'
-    +'Inclui las secciones en el orden de arriba, omitiendo la 7 si no aplica. No inventes numeros que no esten en el contexto.\n\nCONTEXTO:\n'
+    +'Inclui las secciones en el orden de arriba, omitiendo la 7 si no aplica y la 8 si cierres.total=0. No inventes numeros que no esten en el contexto.\n\nCONTEXTO:\n'
     + JSON.stringify(ctx, null, 1);
 
   try {
@@ -7485,12 +7526,34 @@ function ghlFunnelForRange(c,dateStart,dateEnd){
   const cnt=function(arr){ return (arr&&arr.length)? ops.filter(function(o){return arr.indexOf(_n(o.pipelineStage))>=0;}).length : null; };
   const SQLS=(rules.sql&&rules.sql.length)?rules.sql:['tomando decision','nda','segunda llamada'];
   const isSql=function(o){ return o._sql || SQLS.indexOf(_n(o.pipelineStage))>=0; };
+  // Cierres (ganados): se miran por fecha de CIERRE (updatedAt), no de creacion del lead,
+  // porque una oportunidad puede haberse creado semanas antes y cerrarse recien esta semana.
+  const isGanado=function(o){
+    const stageN=_n(o.pipelineStage);
+    if(rules.ganado&&rules.ganado.length){
+      if(rules.ganado.indexOf(stageN)>=0) return true;
+    } else if(stageN.indexOf('compr')>=0 && !/(^|\s)no\s+compr/.test(stageN)){
+      return true;
+    }
+    return (o.status||'').toLowerCase()==='won';
+  };
+  const ganadosEnRango=opps.filter(function(o){
+    if(!isGanado(o)) return false;
+    const d=o.updatedAt||o.createdAt;
+    if(!d) return false;
+    const dd=new Date(d);
+    return dd>=s && dd<=e;
+  });
+  const revenueGanados=ganadosEnRango.reduce(function(s2,o){return s2+(Number(o.monetaryValue)||0);},0);
   return {
     registros: ops.length,
     sql: ops.filter(isSql).length,
     agendas: cnt(rules.agendas),
     enVivo: cnt(rules.llamadaEnVivo),
-    calif: (rules.llamadaEnVivo&&rules.llamadaEnVivo.length)? ops.filter(function(o){return rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0 && isSql(o);}).length : null
+    calif: (rules.llamadaEnVivo&&rules.llamadaEnVivo.length)? ops.filter(function(o){return rules.llamadaEnVivo.indexOf(_n(o.pipelineStage))>=0 && isSql(o);}).length : null,
+    ganados: ganadosEnRango.length,
+    revenueGanados: revenueGanados,
+    ganadosListado: ganadosEnRango.map(function(o){return {contacto:o.contactName||o.name||'Lead', valor:Number(o.monetaryValue)||0};})
   };
 }
 
