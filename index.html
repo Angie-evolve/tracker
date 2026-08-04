@@ -8104,7 +8104,7 @@ function embudoSubNav(){
       +(on?'var(--on-accent)':'var(--text2)')+';cursor:pointer;font-family:var(--font)">'+l+'</button>';
   };
   return '<div style="display:flex;gap:8px;margin-bottom:18px">'
-    +b('top','Top of Funnel')+b('bottom','Bottom of Funnel')+b('records','Records')+'</div>';
+    +b('top','Top of Funnel')+b('middle','Middle of Funnel')+b('bottom','Bottom of Funnel')+b('records','Records')+'</div>';
 }
 
 function embudoHojasHtml(topHtml, c){
@@ -8112,6 +8112,7 @@ function embudoHojasHtml(topHtml, c){
   return embudoSubNav()
     +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'</div>'
     +'<div id="hoja-ventas-body" style="display:'+((sel==='bottom'||sel==='records')?'block':'none')+'"></div>'
+    +'<div id="hoja-middle-body" style="display:'+(sel==='middle'?'block':'none')+'"></div>'
     // Sin hoja elegida se muestra el historico semanal: es la vista de entrada.
     +'<div id="hoja-vacio" style="display:'+(sel?'none':'block')+'">'+liveSectionHtml(c)+'</div>';
 }
@@ -8145,16 +8146,169 @@ function setHoja(k){
   S._hoja=(S._hoja===k)?'':k; // volver a tocar la activa la cierra
   var top=document.getElementById('hoja-top-body');
   var ven=document.getElementById('hoja-ventas-body');
+  var mid=document.getElementById('hoja-middle-body');
   var vac=document.getElementById('hoja-vacio');
   var esVentas=(S._hoja==='bottom'||S._hoja==='records');
   if(top) top.style.display=(S._hoja==='top')?'block':'none';
   if(ven) ven.style.display=esVentas?'block':'none';
+  if(mid) mid.style.display=(S._hoja==='middle')?'block':'none';
+  if(S._hoja==='middle') dibujarMiddle(S._hojaCliente);
   if(vac) vac.style.display=S._hoja?'none':'block';
   if(!S._hoja && S._hojaCliente) kickLiveRefresh(S._hojaCliente);
   // repintar solo las pildoras, para no rearmar todo el contenido
   var nav=document.querySelector('#tab-content > div');
   if(nav) nav.outerHTML=embudoSubNav();
   if(esVentas) _dibujarVentas(S._hoja==='records'?'records':'funnel');
+}
+
+// ================= MIDDLE OF FUNNEL: A/B de promesas =================
+// La landing guarda visitas y clics por variante en UN campo de texto de un contacto
+// "SISTEMA" de GHL, como JSON. Aca se lee ese campo y se compara contra el control.
+// Se consulta GHL directo desde el navegador: la API permite CORS (la landing hace lo mismo).
+
+function abCfg(c){
+  if(!c.ab) c.ab={contactId:'',fieldId:'',promesas:''};
+  return c.ab;
+}
+
+function dibujarMiddle(c){
+  var body=document.getElementById('hoja-middle-body');
+  if(!body||!c) return;
+  var a=abCfg(c);
+  if(!a.contactId||!a.fieldId||!c.ghl||!c.ghl.token){
+    body.innerHTML=middleConfigHtml(c);
+    return;
+  }
+  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=S._middleHtml; return; }
+  body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>';
+  cargarAB(c).then(function(html){
+    S._middleCargado=c.id; S._middleHtml=html;
+    var b=document.getElementById('hoja-middle-body');
+    if(b) b.innerHTML=html;
+  }).catch(function(e){
+    var b=document.getElementById('hoja-middle-body');
+    if(b) b.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo leer: '+esc(e.message)+'</div>'
+      +middleConfigHtml(c);
+  });
+}
+
+function middleConfigHtml(c){
+  var a=abCfg(c);
+  var falta=!c.ghl||!c.ghl.token;
+  var campo=function(id,label,val,ph,ayuda){
+    return '<div style="margin-bottom:14px">'
+      +'<label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">'+label+'</label>'
+      +'<input id="'+id+'" value="'+esc(val||'')+'" placeholder="'+esc(ph||'')+'" style="width:100%;max-width:480px" oninput="guardarAbCfg('+c.id+')">'
+      +(ayuda?'<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">'+ayuda+'</div>':'')
+      +'</div>';
+  };
+  return '<div style="padding:6px 0;max-width:620px">'
+    +'<div style="font-size:12.5px;color:var(--text2);line-height:1.7;margin-bottom:20px">'
+      +'Esta hoja lee el test A/B de promesas de la landing. La landing guarda visitas y clics '
+      +'en un campo de texto de un contacto de GHL, y aca se comparan las variantes.</div>'
+    +(falta?'<div style="font-size:12px;color:var(--amberx);margin-bottom:16px">Primero configura el token de GHL de este cliente en Integraciones.</div>':'')
+    +campo('ab-contact','ID del contacto SISTEMA',a.contactId,'3YuAIidzcuCvqEgfgNNW',
+        'El contacto donde la landing guarda las metricas.')
+    +campo('ab-field','ID del campo de metricas',a.fieldId,'zRFPT5ySdubXWYqWCeFR',
+        'El custom field de texto largo, por ejemplo "LM AB Data".')
+    +'<div style="margin-bottom:14px">'
+      +'<label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Promesas (una por linea, opcional)</label>'
+      +'<textarea id="ab-promesas" rows="4" style="width:100%;max-width:480px;font-family:var(--font);font-size:12px" '
+      +'placeholder="Se usan solo para poner nombre a cada variante" oninput="guardarAbCfg('+c.id+')">'+esc(a.promesas||'')+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">En el mismo orden que en el codigo de la landing. La primera es el control.</div>'
+    +'</div>'
+    +'<button class="btn btn-sm btn-primary" onclick="S._middleCargado=null;dibujarMiddle(DB.clients.find(function(x){return x.id==='+c.id+';}))">Leer metricas</button>'
+  +'</div>';
+}
+
+function guardarAbCfg(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var a=abCfg(c);
+  var v=function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
+  a.contactId=v('ab-contact'); a.fieldId=v('ab-field');
+  var t=document.getElementById('ab-promesas');
+  a.promesas=t?t.value:'';
+  save();
+}
+
+async function cargarAB(c){
+  var a=abCfg(c);
+  var r=await fetch('https://services.leadconnectorhq.com/contacts/'+encodeURIComponent(a.contactId),
+    {headers:{Authorization:'Bearer '+c.ghl.token, Version:'2021-07-28'}});
+  if(!r.ok) throw new Error('GHL '+r.status);
+  var d=await r.json();
+  var campos=(d.contact&&d.contact.customFields)||[];
+  var f=campos.find(function(x){return x.id===a.fieldId;});
+  if(!f||!f.value) throw new Error('el campo esta vacio: la landing todavia no registro nada');
+  var blob;
+  try{ blob=JSON.parse(f.value); }catch(e){ throw new Error('el contenido del campo no es JSON valido'); }
+  return abTablaHtml(c, blob);
+}
+
+function abTablaHtml(c, blob){
+  var vs=Array.isArray(blob.v)?blob.v:[];
+  var nombres=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  var totalN=vs.reduce(function(s,x){return s+(parseInt(x.n)||0);},0);
+  var totalC=vs.reduce(function(s,x){return s+(parseInt(x.c)||0);},0);
+  var ctrl=vs[0]||{n:0,c:0};
+  var ctrlTasa=(ctrl.n>0)?(ctrl.c/ctrl.n):0;
+
+  var filas=vs.map(function(x,i){
+    var n=parseInt(x.n)||0, cl=parseInt(x.c)||0;
+    var tasa=n>0?(cl/n):0;
+    var esCtrl=(i===0);
+    // Diferencia contra el control, en puntos porcentuales relativos
+    var dif=(!esCtrl&&ctrlTasa>0&&n>0)?((tasa/ctrlTasa-1)*100):null;
+    // Con menos de 100 visitas cualquier diferencia es ruido: se avisa en vez de ocultarla
+    var pocas=(n<100);
+    var nombre=nombres[i]||('Promesa '+(i+1));
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      +'<td style="padding:11px 12px;vertical-align:top">'
+        +'<div style="font-size:13px;color:var(--strong);line-height:1.5">'+esc(nombre)+'</div>'
+        +(esCtrl?'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">control</div>':'')
+      +'</td>'
+      +'<td style="padding:11px 12px;text-align:right;font-family:var(--mono)">'+n+'</td>'
+      +'<td style="padding:11px 12px;text-align:right;font-family:var(--mono)">'+cl+'</td>'
+      +'<td style="padding:11px 12px;text-align:right;font-family:var(--mono);color:var(--strong)">'+(n>0?(tasa*100).toFixed(1)+'%':'-')+'</td>'
+      +'<td style="padding:11px 12px;text-align:right;font-family:var(--mono);font-size:12px;color:'
+        +(dif==null?'var(--text3)':(dif>0?'var(--accent)':'var(--redx)'))+'">'
+        +(dif==null?(esCtrl?'-':'sin datos'):(dif>0?'+':'')+dif.toFixed(0)+'%')
+      +'</td>'
+      +'<td style="padding:11px 12px;text-align:right;font-size:11px;color:var(--text3)">'+(pocas?'muestra chica':'')+'</td>'
+    +'</tr>';
+  }).join('');
+
+  var desde=blob.inicio?new Date(blob.inicio).toLocaleDateString('es-AR'):'-';
+  return '<div style="padding:4px 0">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">'
+      +'<div style="font-size:12px;color:var(--text3)">Test '+esc(blob.test_id||'T1')+' &middot; desde el '+desde
+      +' &middot; '+totalN+' visitas, '+totalC+' clics al CTA</div>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="S._middleCargado=null;dibujarMiddle(DB.clients.find(function(x){return x.id==='+c.id+';}))">Actualizar</button>'
+    +'</div>'
+    +'<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+    +'<thead><tr style="color:var(--text3);text-align:left">'
+      +'<th style="padding:10px 12px;font-weight:500;border-bottom:1px solid var(--border)">Promesa</th>'
+      +'<th style="padding:10px 12px;font-weight:500;text-align:right;border-bottom:1px solid var(--border)">Visitas</th>'
+      +'<th style="padding:10px 12px;font-weight:500;text-align:right;border-bottom:1px solid var(--border)">Clics</th>'
+      +'<th style="padding:10px 12px;font-weight:500;text-align:right;border-bottom:1px solid var(--border)">Tasa</th>'
+      +'<th style="padding:10px 12px;font-weight:500;text-align:right;border-bottom:1px solid var(--border)">vs control</th>'
+      +'<th style="padding:10px 12px;border-bottom:1px solid var(--border)"></th>'
+    +'</tr></thead><tbody>'+filas+'</tbody></table></div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-top:12px;line-height:1.6">'
+      +'La tasa es el porcentaje de sesiones que clickearon el boton de agendar. '
+      +'Con menos de 100 visitas por variante las diferencias todavia son ruido: conviene esperar.</div>'
+    +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button></div>'
+  +'</div>';
+}
+
+function editarAbCfg(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  S._middleCargado=null; S._middleHtml=null;
+  var b=document.getElementById('hoja-middle-body');
+  if(b) b.innerHTML=middleConfigHtml(c);
 }
 
 function renderVentasTab(c, el){
