@@ -3969,6 +3969,119 @@ function convAbrirDesdeBell(){
   openConvTestModal();
 }
 
+// ================= CONFIGURACION DE AGENCIA =================
+// Credenciales del proxy de agencia (script aparte del de lectura) y creacion de
+// subcuentas desde un snapshot. El ID del snapshot se carga a mano: el endpoint que
+// los lista devuelve 403 con Private Integration, aunque crear si funciona.
+function cfgAg(){
+  if(!DB.agencia) DB.agencia={proxyUrl:'',secret:'',token:'',companyId:'',snapshotId:'',snapshotNombre:'',pais:'AR',timezone:'America/Argentina/Buenos_Aires'};
+  return DB.agencia;
+}
+
+function abrirConfigAgencia(){
+  S.view='cfgAgencia';
+  S.clientId=null;
+  renderSidebar();
+  var el=document.getElementById('main-content');
+  if(!el) return;
+  el.innerHTML=configAgenciaHtml();
+}
+
+function _cfgCampo(id,label,valor,ph,ayuda,tipo){
+  return '<div style="margin-bottom:14px">'
+    +'<label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">'+label+'</label>'
+    +'<input id="'+id+'" type="'+(tipo||'text')+'" value="'+esc(valor||'')+'" placeholder="'+esc(ph||'')+'" '
+    +'style="width:100%;max-width:520px" oninput="guardarCfgAgencia()">'
+    +(ayuda?'<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">'+ayuda+'</div>':'')
+    +'</div>';
+}
+
+function configAgenciaHtml(){
+  var a=cfgAg();
+  return '<div style="padding:26px 30px;max-width:760px">'
+    +'<div style="display:flex;align-items:center;gap:9px;margin-bottom:4px">'
+      +'<button onclick="showTickets()" title="Volver a la torre" style="background:none;border:none;padding:0;cursor:pointer;color:var(--text3);display:flex;align-items:center">'
+      +'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/><path d="M9.5 21v-6h5v6"/></svg></button>'
+      +'<span style="font-size:15px;font-weight:500;color:var(--text)">Configuracion de agencia</span>'
+    +'</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:24px;line-height:1.6">'
+      +'Credenciales del proxy de agencia. Van separadas del proxy de lectura porque este token '
+      +'puede crear y borrar subcuentas de todos los clientes.</div>'
+
+    +'<div class="vh-label" style="border:0;padding:0;margin-bottom:12px">Conexion</div>'
+    +_cfgCampo('ag-proxy','URL de la Web App',a.proxyUrl,'https://script.google.com/macros/s/.../exec',
+        'La del proyecto de agencia, no la del proxy de lectura.')
+    +_cfgCampo('ag-secret','Secreto',a.secret,'ag-...',
+        'El valor de AGENCY_SECRET que pusiste en el script.')
+    +_cfgCampo('ag-token','Token de agencia',a.token,'pit-...',
+        'Private Integration a nivel agencia con los scopes locations.write y locations.readonly.')
+    +_cfgCampo('ag-company','Company ID',a.companyId,'x68Qba09z9AfaiCAco0Y',
+        'Identifica a tu agencia. Es uno solo, distinto del locationId de cada cliente.')
+
+    +'<div style="display:flex;gap:8px;align-items:center;margin:18px 0 26px">'
+      +'<button class="btn btn-sm btn-primary" onclick="probarConexionAgencia()">Probar conexion</button>'
+      +'<span id="ag-estado" style="font-size:12px;color:var(--text3)"></span>'
+    +'</div>'
+
+    +'<div class="vh-label" style="border:0;padding:0;margin-bottom:12px">Snapshot por defecto</div>'
+    +_cfgCampo('ag-snapname','Nombre (solo para reconocerlo)',a.snapshotNombre,'Plantilla clientes B2B','')
+    +_cfgCampo('ag-snapid','ID del snapshot',a.snapshotId,'',
+        'GHL no permite listar snapshots por API con este tipo de token, asi que se carga a mano. '
+        +'Lo sacas de la URL cuando abris el snapshot en GHL.')
+
+    +'<div class="vh-label" style="border:0;padding:0;margin:26px 0 12px">Valores por defecto de la subcuenta</div>'
+    +_cfgCampo('ag-pais','Pais (codigo de 2 letras)',a.pais,'AR','')
+    +_cfgCampo('ag-tz','Zona horaria',a.timezone,'America/Argentina/Buenos_Aires','')
+
+    +'<div style="border-top:1px solid var(--border);margin-top:26px;padding-top:20px">'
+      +'<div class="vh-label" style="border:0;padding:0;margin-bottom:10px">Crear subcuenta</div>'
+      +'<div style="font-size:12px;color:var(--text3);margin-bottom:14px;line-height:1.6">'
+      +'Crear una subcuenta consume cupo de tu agencia y se factura. '
+      +'El proxy ignora una segunda peticion identica dentro de los 5 minutos, para que un doble click no cree dos.</div>'
+      +'<button class="btn btn-sm" onclick="abrirCrearSubcuenta()">Crear subcuenta nueva</button>'
+    +'</div>'
+  +'</div>';
+}
+
+function guardarCfgAgencia(){
+  var a=cfgAg();
+  var v=function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
+  a.proxyUrl=v('ag-proxy'); a.secret=v('ag-secret'); a.token=v('ag-token');
+  a.companyId=v('ag-company'); a.snapshotId=v('ag-snapid'); a.snapshotNombre=v('ag-snapname');
+  a.pais=v('ag-pais')||'AR'; a.timezone=v('ag-tz')||'America/Argentina/Buenos_Aires';
+  save();
+}
+
+function _agUrl(accion, extra){
+  var a=cfgAg();
+  var u=a.proxyUrl+'?secret='+encodeURIComponent(a.secret)
+    +'&token='+encodeURIComponent(a.token)
+    +'&companyId='+encodeURIComponent(a.companyId)
+    +'&action='+encodeURIComponent(accion);
+  Object.keys(extra||{}).forEach(function(k){
+    if(extra[k]!=='' && extra[k]!=null) u+='&'+k+'='+encodeURIComponent(extra[k]);
+  });
+  return u;
+}
+
+async function probarConexionAgencia(){
+  var est=document.getElementById('ag-estado');
+  var a=cfgAg();
+  if(!a.proxyUrl||!a.secret||!a.token||!a.companyId){
+    if(est){ est.textContent='Faltan datos de conexion.'; est.style.color='var(--amberx)'; }
+    return;
+  }
+  if(est){ est.textContent='Probando...'; est.style.color='var(--text3)'; }
+  try{
+    // 'locations' en vez de 'ping': el endpoint de snapshots devuelve 403 con este token.
+    var r=await (await fetch(_agUrl('locations'))).json();
+    if(!r.ok) throw new Error(r.error||'respuesta invalida');
+    if(est){ est.textContent='Conectado \u00b7 '+(r.locations||[]).length+' subcuentas visibles'; est.style.color='var(--accent)'; }
+  }catch(e){
+    if(est){ est.textContent='Error: '+e.message; est.style.color='var(--redx)'; }
+  }
+}
+
 function toggleTicketsMenu(btn){
   var prev=document.getElementById('tk-actions-menu');
   if(prev){ prev.remove(); return; }
@@ -3984,6 +4097,8 @@ function toggleTicketsMenu(btn){
     +it('openEntregaModal()','ti-package','Registrar entrega')
     +it('scanTicketReplies()','ti-mail-check','Revisar respuestas')
     +it('scanFathomRecaps()','ti-phone','Tareas de llamadas')
+    +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    +it('abrirConfigAgencia()','ti-building','Configuracion de agencia')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
     +it('openTicketsProxyModal()','ti-settings','Config Fathom',true)
     +it('openConvTestModal()','ti-message','Conversaciones',true)
