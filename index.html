@@ -4278,8 +4278,11 @@ function integracionesAppHtml(){
         if(pushed) det+=' &middot; enviado al script '+new Date(Number(pushed)).toLocaleDateString('es-AR');
         else det+=' &middot; falta sincronizar';
       }
-      return card({name:'Informe semanal', st:st,
-        desc:'Cada lunes a las 10 el Apps Script arma el informe de cada cliente y lo manda por mail. No hace falta tener el tracker abierto.',
+      var _sch=(typeof getReportSchedule==='function')?getReportSchedule():null;
+      var _schTxt=_sch?describeReportSchedule(_sch):'Cada lunes a las 10:00';
+      if(mail) det=_schTxt+' &middot; '+det.replace(/^&rarr; /,'&rarr; ');
+      return card({name:'Informe automatico', st:st,
+        desc:_schTxt+' (Argentina) el Apps Script arma el informe de cada cliente y lo manda por mail. No hace falta tener el tracker abierto.',
         detail:det,
         action:'openWeeklyReportModal()', actionLabel:st==='no'?'Configurar':'Editar informe'});
     })(),
@@ -5109,18 +5112,118 @@ function showTickets(){
   if(typeof convChequearNuevas==='function') convChequearNuevas();
 }
 
-// ================= INFORME SEMANAL AUTOMATICO (lunes 10hs via Apps Script) =================
+// ================= INFORME AUTOMATICO POR MAIL (frecuencia configurable via Apps Script) =================
+// El horario vive en el Apps Script (es quien tiene el disparador). Aca se guarda una copia
+// local para dibujar la UI sin esperar la red, pero la fuente de verdad es report_status.
+var WR_DAYS=['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
+function getReportSchedule(){
+  var def={freq:'weekly',day:1,hour:10,monthDay:1};
+  try{
+    var s=JSON.parse(localStorage.getItem('evold-report-sched')||'null');
+    if(s&&s.freq) return {freq:s.freq,day:+s.day||1,hour:(s.hour===0?0:(+s.hour||10)),monthDay:+s.monthDay||1};
+  }catch(e){}
+  return def;
+}
+function setReportSchedule(s){ localStorage.setItem('evold-report-sched',JSON.stringify(s)); }
+// Que periodo cubre el informe segun cada frecuencia (lo tiene que respetar el Apps Script)
+function reportPeriodLabel(freq){
+  if(freq==='daily') return 'los ultimos 7 dias (moviles)';
+  if(freq==='monthly') return 'el mes pasado completo';
+  if(freq==='biweekly') return 'los ultimos 14 dias';
+  return 'la semana pasada (lunes a domingo)';
+}
+function describeReportSchedule(s){
+  var h=(s.hour<10?'0':'')+s.hour+':00';
+  if(s.freq==='daily')    return 'Todos los dias a las '+h;
+  if(s.freq==='biweekly') return 'Cada 15 dias, los '+WR_DAYS[(s.day||1)-1].toLowerCase()+' a las '+h;
+  if(s.freq==='monthly')  return 'El dia '+(s.monthDay||1)+' de cada mes a las '+h;
+  return 'Todos los '+WR_DAYS[(s.day||1)-1].toLowerCase()+' a las '+h;
+}
+function wrReadScheduleForm(){
+  var g=function(id){var e=document.getElementById(id);return e?e.value:null;};
+  var cur=getReportSchedule();
+  return {freq:g('wr-freq')||cur.freq,
+          day:parseInt(g('wr-day')||cur.day,10),
+          hour:parseInt(g('wr-hour')!==null?g('wr-hour'):cur.hour,10),
+          monthDay:parseInt(g('wr-monthday')||cur.monthDay,10)};
+}
+// Muestra/oculta el selector de dia segun la frecuencia y refresca el resumen
+function wrScheduleChanged(){
+  var s=wrReadScheduleForm();
+  var dw=document.getElementById('wr-day-wrap'), dm=document.getElementById('wr-monthday-wrap');
+  if(dw) dw.style.display=(s.freq==='weekly'||s.freq==='biweekly')?'block':'none';
+  if(dm) dm.style.display=(s.freq==='monthly')?'block':'none';
+  var r=document.getElementById('wr-sched-resume');
+  if(r) r.innerHTML=describeReportSchedule(s)+' (hora de Argentina) &middot; cubre '+reportPeriodLabel(s.freq)+'.';
+  setReportSchedule(s); // copia local optimista; se confirma al guardar
+}
+// Manda el horario al Apps Script y le pide que recree el disparador
+async function wrPushSchedule(showToast){
+  const proxy=getGhlProxy();
+  if(!proxy.url) return {ok:false,error:'Falta la conexion (proxy)'};
+  const s=wrReadScheduleForm();
+  setReportSchedule(s);
+  const enc=encodeURIComponent;
+  const st=document.getElementById('wr-status');
+  if(st) st.innerHTML='Guardando horario en el Apps Script...';
+  try{
+    const r=await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_schedule'
+      +'&freq='+enc(s.freq)+'&day='+enc(s.day)+'&hour='+enc(s.hour)+'&monthDay='+enc(s.monthDay))
+      .then(function(x){return x.json();});
+    if(!r||!r.ok){
+      const err=String((r&&r.error)||'sin respuesta');
+      const viejo=err.indexOf('Accion desconocida')>=0||err.indexOf('desconocida')>=0;
+      if(st) st.innerHTML='<span style="color:var(--redx)">'+(viejo
+        ? 'Tu Apps Script todavia no soporta horarios configurables. Actualizalo (bloque "PROGRAMACION DEL INFORME") y volve a publicar la implementacion.'
+        : 'No se pudo guardar el horario: '+esc(err))+'</span>';
+      return {ok:false,error:err};
+    }
+    if(st) st.innerHTML='<span style="color:var(--accent)">Horario guardado: '+describeReportSchedule(s)+'.</span>';
+    if(showToast&&typeof toast==='function') toast('Horario actualizado');
+    weeklyReportDiag();
+    if(S.tab==='integraciones') renderTab();
+    return {ok:true};
+  }catch(e){
+    if(st) st.innerHTML='<span style="color:var(--redx)">Error de red guardando el horario: '+esc(e.message)+'</span>';
+    return {ok:false,error:e.message};
+  }
+}
 function openWeeklyReportModal(){
   const email=localStorage.getItem('evold-report-email')||'';
   const pushed=localStorage.getItem('evold-report-pushed');
+  const sched=getReportSchedule();
   const clientsOk=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+  const selStyle='width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font);outline:none;cursor:pointer';
+  const lblStyle='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
+  const opt=function(v,txt,cur){ return '<option value="'+v+'"'+(String(v)===String(cur)?' selected':'')+'>'+txt+'</option>'; };
+  const horas=(function(){ var o=''; for(var h=0;h<24;h++){ o+=opt(h,(h<10?'0':'')+h+':00',sched.hour); } return o; })();
+  const dias=WR_DAYS.map(function(d,i){ return opt(i+1,d,sched.day); }).join('');
+  const diasMes=(function(){ var o=''; for(var d=1;d<=28;d++){ o+=opt(d,String(d),sched.monthDay); } return o; })();
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:560px;width:92%">'
-    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Informe semanal automatico</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">Cada lunes ~10hs (Argentina), el Apps Script arma el informe de la semana pasada de cada cliente (Meta + GHL) y lo manda por mail. Corre solo, sin abrir el tracker.</div>'
-    +'<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Enviar a</div>'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Informe automatico por mail</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">El Apps Script arma el informe de cada cliente (Meta + GHL) y lo manda por mail en el horario que elijas. Corre solo, sin abrir el tracker.</div>'
+    +'<div style="margin-bottom:14px"><div style="'+lblStyle+'">Enviar a</div>'
     +'<input type="email" id="wr-email" value="'+esc(email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
+    // --- Cuando se envia ---
+    +'<div style="margin-bottom:8px"><div style="'+lblStyle+'">Cuando</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<div style="flex:1"><select id="wr-freq" onchange="wrScheduleChanged()" style="'+selStyle+'">'
+      +opt('daily','Todos los dias',sched.freq)
+      +opt('weekly','Cada semana',sched.freq)
+      +opt('biweekly','Cada 15 dias',sched.freq)
+      +opt('monthly','Cada mes',sched.freq)
+    +'</select></div>'
+    +'<div id="wr-day-wrap" style="flex:1;display:'+((sched.freq==='weekly'||sched.freq==='biweekly')?'block':'none')+'"><select id="wr-day" onchange="wrScheduleChanged()" style="'+selStyle+'">'+dias+'</select></div>'
+    +'<div id="wr-monthday-wrap" style="flex:1;display:'+(sched.freq==='monthly'?'block':'none')+'"><select id="wr-monthday" onchange="wrScheduleChanged()" style="'+selStyle+'">'+diasMes+'</select></div>'
+    +'<div style="flex:0 0 110px"><select id="wr-hour" onchange="wrScheduleChanged()" style="'+selStyle+'">'+horas+'</select></div>'
+    +'</div>'
+    +'<div id="wr-sched-resume" style="font-size:11px;color:var(--text3);margin-top:7px;line-height:1.6">'+describeReportSchedule(sched)+' (hora de Argentina) &middot; cubre '+reportPeriodLabel(sched.freq)+'.</div>'
+    +'<div style="margin-top:8px"><button class="btn btn-sm" onclick="wrPushSchedule(true)">Guardar solo el horario</button>'
+    +'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">no re-sincroniza los clientes</span></div>'
+    +'</div>'
+    +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
     +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
     +(pushed?'<br>Ultima sincronizacion: '+new Date(+pushed).toLocaleString('es-AR'):'')
@@ -5130,7 +5233,8 @@ function openWeeklyReportModal(){
     +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:16px;border-top:1px solid var(--border);padding-top:10px">'
     +'Setup unico en el Apps Script (una sola vez):<br>'
     +'1. Configuracion del proyecto &rarr; zona horaria: America/Argentina/Buenos_Aires.<br>'
-    +'2. Ejecutar la funcion <span class="mono">setupWeeklyTrigger</span> desde el editor (crea el disparador de los lunes).'
+    +'2. Pegar el bloque <span class="mono">PROGRAMACION DEL INFORME</span> y volver a publicar la implementacion.<br>'
+    +'Despues de eso el disparador se crea y se re-arma solo cada vez que guardas el horario aca. Google dispara dentro de la hora elegida (ej. 10:00 puede salir 10:20).'
     +'</div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px">'
     +'<button class="btn btn-sm" onclick="testWeeklyReportNow()" style="color:var(--text3)">Enviar prueba ahora</button>'
@@ -5162,10 +5266,18 @@ function weeklyReportDiag(){
       return;
     }
     const li=function(ok,okTxt,badTxt){ return '<div>'+(ok?'<span style="color:var(--accent)">&#10003;</span> '+okTxt:'<span style="color:var(--redx)">&#10007;</span> '+badTxt)+'</div>'; };
+    // Si el script ya soporta horarios, la fuente de verdad es el, no el localStorage
+    if(d.sched&&d.sched.freq){
+      const sv={freq:d.sched.freq,day:+d.sched.day||1,hour:(d.sched.hour===0?0:(+d.sched.hour||10)),monthDay:+d.sched.monthDay||1};
+      setReportSchedule(sv);
+      const set=function(id,v){var e=document.getElementById(id);if(e)e.value=String(v);};
+      set('wr-freq',sv.freq); set('wr-day',sv.day); set('wr-hour',sv.hour); set('wr-monthday',sv.monthDay);
+      if(typeof wrScheduleChanged==='function') wrScheduleChanged();
+    }
     el.innerHTML=''
       +li(!!d.email,'Email destino en el script: '+esc(d.email),'Falta el email destino - toca "Guardar y sincronizar"')
       +li((d.clients||[]).length>0,(d.clients||[]).length+' clientes con config en el script','Sin clientes en el script - toca "Guardar y sincronizar"')
-      +li(!!d.trigger,'Disparador de los lunes ACTIVO','Disparador de los lunes NO creado - abri el editor del Apps Script y ejecuta setupWeeklyTrigger una vez');
+      +li(!!d.trigger,'Disparador ACTIVO'+(d.sched&&d.sched.freq?': '+esc(describeReportSchedule(d.sched)):''),'Disparador NO creado - elegi el horario arriba y toca "Guardar solo el horario"');
   }).catch(function(e){
     el.innerHTML='<span style="color:var(--redx)">Error consultando el script: '+esc(e.message)+'</span>';
   });
@@ -5183,6 +5295,8 @@ async function pushWeeklyReportConfig(){
   try{
     setSt('Guardando email destino...');
     await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_settings&email='+enc(email)).then(function(r){return r.json();});
+    setSt('Guardando horario y disparador...');
+    const schedRes=await wrPushSchedule(false);
     const clients=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
     let ok=0;
     for(let i=0;i<clients.length;i++){
@@ -5202,7 +5316,10 @@ async function pushWeeklyReportConfig(){
       await new Promise(function(r2){setTimeout(r2,150);});
     }
     localStorage.setItem('evold-report-pushed',String(Date.now()));
-    setSt('<span style="color:var(--accent)">Listo: '+ok+'/'+clients.length+' clientes sincronizados. Recorda re-sincronizar si cambias tokens, reglas o campanas excluidas.</span>');
+    setSt('<span style="color:var(--accent)">Listo: '+ok+'/'+clients.length+' clientes sincronizados. Recorda re-sincronizar si cambias tokens, reglas o campanas excluidas.</span>'
+      +(schedRes&&schedRes.ok
+        ?'<br><span style="color:var(--accent)">Envio programado: '+describeReportSchedule(getReportSchedule())+'.</span>'
+        :'<br><span style="color:var(--redx)">El horario NO se pudo guardar (el Apps Script todavia no tiene el bloque de programacion).</span>'));
     weeklyReportDiag(); // refrescar el diagnostico con el estado nuevo
     if(typeof toast==='function') toast('Informe semanal configurado ('+ok+' clientes)');
     if(S.tab==='integraciones') renderTab();
@@ -6385,8 +6502,8 @@ function renderTab(){
         desc:'Genera reportes de estado del cliente y emails de delegacion de tareas con IA.',
         detail:iaOk?'API key cargada':'',
         action:'openAnthropicKeyModal()',actionLabel:iaOk?'Cambiar key':'Conectar'}),
-      card({name:'Informe semanal automatico',st:(localStorage.getItem('evold-report-pushed')&&localStorage.getItem('evold-report-email'))?'ok':'no',
-        desc:'Cada lunes ~10hs el Apps Script manda por mail el informe de la semana pasada de cada cliente (inversion Meta + funnel GHL), sin abrir el tracker.',
+      card({name:'Informe automatico por mail',st:(localStorage.getItem('evold-report-pushed')&&localStorage.getItem('evold-report-email'))?'ok':'no',
+        desc:((typeof getReportSchedule==='function')?describeReportSchedule(getReportSchedule()):'Cada lunes ~10hs')+' (Argentina) el Apps Script manda por mail el informe de cada cliente (inversion Meta + funnel GHL), sin abrir el tracker.',
         detail:localStorage.getItem('evold-report-email')?('&rarr; '+esc(localStorage.getItem('evold-report-email'))+' &middot; sync '+new Date(+localStorage.getItem('evold-report-pushed')||Date.now()).toLocaleDateString('es-AR')):'',
         action:'openWeeklyReportModal()',actionLabel:localStorage.getItem('evold-report-pushed')?'Configurar':'Activar'}),
       card({name:'Alarmas por email',st:alarmOk?'ok':'no',
