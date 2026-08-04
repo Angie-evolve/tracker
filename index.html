@@ -5117,10 +5117,11 @@ function showTickets(){
 // local para dibujar la UI sin esperar la red, pero la fuente de verdad es report_status.
 var WR_DAYS=['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
 function getReportSchedule(){
-  var def={freq:'weekly',day:1,hour:10,monthDay:1};
+  var def={freq:'weekly',day:1,hour:10,monthDay:1,perClient:{}};
   try{
     var s=JSON.parse(localStorage.getItem('evold-report-sched')||'null');
-    if(s&&s.freq) return {freq:s.freq,day:+s.day||1,hour:(s.hour===0?0:(+s.hour||10)),monthDay:+s.monthDay||1};
+    if(s&&s.freq) return {freq:s.freq,day:+s.day||1,hour:(s.hour===0?0:(+s.hour||10)),monthDay:+s.monthDay||1,
+                          perClient:(s.perClient&&typeof s.perClient==='object')?s.perClient:{}};
   }catch(e){}
   return def;
 }
@@ -5139,13 +5140,40 @@ function describeReportSchedule(s){
   if(s.freq==='monthly')  return 'El dia '+(s.monthDay||1)+' de cada mes a las '+h;
   return 'Todos los '+WR_DAYS[(s.day||1)-1].toLowerCase()+' a las '+h;
 }
+// Texto corto de la rutina de UN cliente (sin repetir la hora, que es unica para todos)
+function describeClientRoutine(cs){
+  if(!cs||cs.freq==='default') return 'Sigue el general';
+  if(cs.freq==='off')      return 'No recibe informe';
+  if(cs.freq==='daily')    return 'Todos los dias';
+  if(cs.freq==='biweekly') return 'Cada 15 dias, '+WR_DAYS[(cs.day||1)-1].toLowerCase();
+  if(cs.freq==='monthly')  return 'Dia '+(cs.monthDay||1)+' de cada mes';
+  return 'Cada '+WR_DAYS[(cs.day||1)-1].toLowerCase();
+}
+// La rutina efectiva de un cliente: la suya o, si esta en "por defecto", la general
+function effectiveClientRoutine(sched,id){
+  var cs=(sched.perClient||{})[String(id)];
+  if(!cs||cs.freq==='default') return {freq:sched.freq,day:sched.day,monthDay:sched.monthDay,inherited:true};
+  return {freq:cs.freq,day:+cs.day||sched.day,monthDay:+cs.monthDay||sched.monthDay,inherited:false};
+}
 function wrReadScheduleForm(){
   var g=function(id){var e=document.getElementById(id);return e?e.value:null;};
   var cur=getReportSchedule();
+  var per={};
+  (DB.clients||[]).forEach(function(c){
+    var f=g('wrc-freq-'+c.id);
+    if(!f) { // fila no dibujada: conservar lo que ya estaba guardado
+      var prev=(cur.perClient||{})[String(c.id)];
+      if(prev) per[String(c.id)]=prev;
+      return;
+    }
+    if(f==='default') return; // por defecto no se guarda: hereda siempre
+    per[String(c.id)]={freq:f,day:parseInt(g('wrc-day-'+c.id)||cur.day,10),monthDay:parseInt(g('wrc-md-'+c.id)||cur.monthDay,10)};
+  });
   return {freq:g('wr-freq')||cur.freq,
           day:parseInt(g('wr-day')||cur.day,10),
           hour:parseInt(g('wr-hour')!==null?g('wr-hour'):cur.hour,10),
-          monthDay:parseInt(g('wr-monthday')||cur.monthDay,10)};
+          monthDay:parseInt(g('wr-monthday')||cur.monthDay,10),
+          perClient:per};
 }
 // Muestra/oculta el selector de dia segun la frecuencia y refresca el resumen
 function wrScheduleChanged(){
@@ -5156,7 +5184,36 @@ function wrScheduleChanged(){
   var r=document.getElementById('wr-sched-resume');
   if(r) r.innerHTML=describeReportSchedule(s)+' (hora de Argentina) &middot; cubre '+reportPeriodLabel(s.freq)+'.';
   setReportSchedule(s); // copia local optimista; se confirma al guardar
+  wrRefreshClientRows(s);
 }
+// Redibuja los textos de cada fila de cliente + el resumen de arriba
+function wrRefreshClientRows(s){
+  s=s||wrReadScheduleForm();
+  (DB.clients||[]).forEach(function(c){
+    var sel=document.getElementById('wrc-freq-'+c.id); if(!sel) return;
+    var f=sel.value;
+    var dw=document.getElementById('wrc-day-wrap-'+c.id), dm=document.getElementById('wrc-md-wrap-'+c.id);
+    if(dw) dw.style.display=(f==='weekly'||f==='biweekly')?'block':'none';
+    if(dm) dm.style.display=(f==='monthly')?'block':'none';
+    var row=document.getElementById('wrc-row-'+c.id);
+    if(row) row.style.opacity=(f==='off')?'0.45':'1';
+  });
+  var cnt=document.getElementById('wr-perclient-resume');
+  if(cnt){
+    var ok=(DB.clients||[]).filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+    var groups={};
+    ok.forEach(function(c){
+      var r=effectiveClientRoutine(s,c.id);
+      var cs=(s.perClient||{})[String(c.id)];
+      var k=(cs&&cs.freq==='off')?'off':r.freq;
+      groups[k]=(groups[k]||0)+1;
+    });
+    var names={daily:'diario',weekly:'semanal',biweekly:'cada 15 dias',monthly:'mensual',off:'sin informe'};
+    var parts=Object.keys(groups).map(function(k){ return groups[k]+' '+names[k]; });
+    cnt.innerHTML=parts.length?parts.join(' &middot; '):'';
+  }
+}
+function wrClientChanged(){ var s=wrReadScheduleForm(); setReportSchedule(s); wrRefreshClientRows(s); }
 // Manda el horario al Apps Script y le pide que recree el disparador
 async function wrPushSchedule(showToast){
   const proxy=getGhlProxy();
@@ -5168,7 +5225,8 @@ async function wrPushSchedule(showToast){
   if(st) st.innerHTML='Guardando horario en el Apps Script...';
   try{
     const r=await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_schedule'
-      +'&freq='+enc(s.freq)+'&day='+enc(s.day)+'&hour='+enc(s.hour)+'&monthDay='+enc(s.monthDay))
+      +'&freq='+enc(s.freq)+'&day='+enc(s.day)+'&hour='+enc(s.hour)+'&monthDay='+enc(s.monthDay)
+      +'&perClient='+enc(JSON.stringify(s.perClient||{})))
       .then(function(x){return x.json();});
     if(!r||!r.ok){
       const err=String((r&&r.error)||'sin respuesta');
@@ -5199,6 +5257,28 @@ function openWeeklyReportModal(){
   const horas=(function(){ var o=''; for(var h=0;h<24;h++){ o+=opt(h,(h<10?'0':'')+h+':00',sched.hour); } return o; })();
   const dias=WR_DAYS.map(function(d,i){ return opt(i+1,d,sched.day); }).join('');
   const diasMes=(function(){ var o=''; for(var d=1;d<=28;d++){ o+=opt(d,String(d),sched.monthDay); } return o; })();
+  // --- Filas por cliente: cada uno puede tener su propia rutina o heredar la general ---
+  const miniSel='padding:5px 7px;border-radius:6px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:11.5px;font-family:var(--font);outline:none;cursor:pointer';
+  const clientRows=clientsOk.map(function(c){
+    const cs=(sched.perClient||{})[String(c.id)]||{freq:'default'};
+    const f=cs.freq||'default';
+    const cDay=+cs.day||sched.day, cMd=+cs.monthDay||sched.monthDay;
+    return '<div id="wrc-row-'+c.id+'" style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);opacity:'+(f==='off'?'0.45':'1')+'">'
+      +'<div style="flex:1;min-width:0;font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.name)+'</div>'
+      +'<select id="wrc-freq-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
+        +opt('default','Por defecto',f)
+        +opt('daily','Todos los dias',f)
+        +opt('weekly','Cada semana',f)
+        +opt('biweekly','Cada 15 dias',f)
+        +opt('monthly','Cada mes',f)
+        +opt('off','No enviar',f)
+      +'</select>'
+      +'<div id="wrc-day-wrap-'+c.id+'" style="display:'+((f==='weekly'||f==='biweekly')?'block':'none')+'"><select id="wrc-day-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
+        +WR_DAYS.map(function(d,i){return opt(i+1,d,cDay);}).join('')+'</select></div>'
+      +'<div id="wrc-md-wrap-'+c.id+'" style="display:'+(f==='monthly'?'block':'none')+'"><select id="wrc-md-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
+        +(function(){var o='';for(var d=1;d<=28;d++){o+=opt(d,'Dia '+d,cMd);}return o;})()+'</select></div>'
+      +'</div>';
+  }).join('');
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:560px;width:92%">'
@@ -5207,7 +5287,7 @@ function openWeeklyReportModal(){
     +'<div style="margin-bottom:14px"><div style="'+lblStyle+'">Enviar a</div>'
     +'<input type="email" id="wr-email" value="'+esc(email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
     // --- Cuando se envia ---
-    +'<div style="margin-bottom:8px"><div style="'+lblStyle+'">Cuando</div>'
+    +'<div style="margin-bottom:8px"><div style="'+lblStyle+'">Horario general (por defecto)</div>'
     +'<div style="display:flex;gap:8px">'
     +'<div style="flex:1"><select id="wr-freq" onchange="wrScheduleChanged()" style="'+selStyle+'">'
       +opt('daily','Todos los dias',sched.freq)
@@ -5220,9 +5300,19 @@ function openWeeklyReportModal(){
     +'<div style="flex:0 0 110px"><select id="wr-hour" onchange="wrScheduleChanged()" style="'+selStyle+'">'+horas+'</select></div>'
     +'</div>'
     +'<div id="wr-sched-resume" style="font-size:11px;color:var(--text3);margin-top:7px;line-height:1.6">'+describeReportSchedule(sched)+' (hora de Argentina) &middot; cubre '+reportPeriodLabel(sched.freq)+'.</div>'
-    +'<div style="margin-top:8px"><button class="btn btn-sm" onclick="wrPushSchedule(true)">Guardar solo el horario</button>'
-    +'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">no re-sincroniza los clientes</span></div>'
     +'</div>'
+    // --- Rutina por cliente ---
+    +'<div style="margin-bottom:10px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:4px">'
+    +'<div style="'+lblStyle+';margin:0">Rutina por cliente</div>'
+    +'<div id="wr-perclient-resume" style="font-size:10.5px;color:var(--text3)"></div></div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-bottom:6px">Los que quedan en "Por defecto" siguen el horario de arriba. La hora es la misma para todos; lo que cambia por cliente es cada cuanto y que dia.</div>'
+    +(clientRows
+      ?'<div style="max-height:210px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:2px 12px">'+clientRows+'</div>'
+      :'<div style="font-size:11.5px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:10px 12px">Todavia no hay clientes con GHL conectado.</div>')
+    +'</div>'
+    +'<div style="margin-top:8px;margin-bottom:8px"><button class="btn btn-sm" onclick="wrPushSchedule(true)">Guardar solo el horario</button>'
+    +'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">no re-sincroniza los clientes</span></div>'
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
     +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
@@ -5242,6 +5332,7 @@ function openWeeklyReportModal(){
     +'<button class="btn btn-sm btn-primary" onclick="pushWeeklyReportConfig()">Guardar y sincronizar</button></div>'
     +'</div></div></div>';
   weeklyReportDiag();
+  wrRefreshClientRows();
 }
 // Consulta al Apps Script que le falta para que el informe salga solo
 function weeklyReportDiag(){
@@ -5268,16 +5359,23 @@ function weeklyReportDiag(){
     const li=function(ok,okTxt,badTxt){ return '<div>'+(ok?'<span style="color:var(--accent)">&#10003;</span> '+okTxt:'<span style="color:var(--redx)">&#10007;</span> '+badTxt)+'</div>'; };
     // Si el script ya soporta horarios, la fuente de verdad es el, no el localStorage
     if(d.sched&&d.sched.freq){
-      const sv={freq:d.sched.freq,day:+d.sched.day||1,hour:(d.sched.hour===0?0:(+d.sched.hour||10)),monthDay:+d.sched.monthDay||1};
+      const sv={freq:d.sched.freq,day:+d.sched.day||1,hour:(d.sched.hour===0?0:(+d.sched.hour||10)),monthDay:+d.sched.monthDay||1,
+                perClient:(d.sched.perClient&&typeof d.sched.perClient==='object')?d.sched.perClient:{}};
       setReportSchedule(sv);
       const set=function(id,v){var e=document.getElementById(id);if(e)e.value=String(v);};
       set('wr-freq',sv.freq); set('wr-day',sv.day); set('wr-hour',sv.hour); set('wr-monthday',sv.monthDay);
+      (DB.clients||[]).forEach(function(c){
+        const cs=sv.perClient[String(c.id)];
+        set('wrc-freq-'+c.id,(cs&&cs.freq)||'default');
+        if(cs&&cs.day) set('wrc-day-'+c.id,cs.day);
+        if(cs&&cs.monthDay) set('wrc-md-'+c.id,cs.monthDay);
+      });
       if(typeof wrScheduleChanged==='function') wrScheduleChanged();
     }
     el.innerHTML=''
       +li(!!d.email,'Email destino en el script: '+esc(d.email),'Falta el email destino - toca "Guardar y sincronizar"')
       +li((d.clients||[]).length>0,(d.clients||[]).length+' clientes con config en el script','Sin clientes en el script - toca "Guardar y sincronizar"')
-      +li(!!d.trigger,'Disparador ACTIVO'+(d.sched&&d.sched.freq?': '+esc(describeReportSchedule(d.sched)):''),'Disparador NO creado - elegi el horario arriba y toca "Guardar solo el horario"');
+      +li(!!d.trigger,'Disparador ACTIVO'+(d.sched&&d.sched.hour!=null?': revisa todos los dias a las '+((+d.sched.hour<10?'0':'')+d.sched.hour)+':00 y manda los que tocan':''),'Disparador NO creado - elegi el horario arriba y toca "Guardar solo el horario"');
   }).catch(function(e){
     el.innerHTML='<span style="color:var(--redx)">Error consultando el script: '+esc(e.message)+'</span>';
   });
@@ -6502,10 +6600,17 @@ function renderTab(){
         desc:'Genera reportes de estado del cliente y emails de delegacion de tareas con IA.',
         detail:iaOk?'API key cargada':'',
         action:'openAnthropicKeyModal()',actionLabel:iaOk?'Cambiar key':'Conectar'}),
-      card({name:'Informe automatico por mail',st:(localStorage.getItem('evold-report-pushed')&&localStorage.getItem('evold-report-email'))?'ok':'no',
-        desc:((typeof getReportSchedule==='function')?describeReportSchedule(getReportSchedule()):'Cada lunes ~10hs')+' (Argentina) el Apps Script manda por mail el informe de cada cliente (inversion Meta + funnel GHL), sin abrir el tracker.',
+      (function(){
+        var _s=(typeof getReportSchedule==='function')?getReportSchedule():null;
+        var _r=_s?effectiveClientRoutine(_s,c.id):null;
+        var _cs=_s?((_s.perClient||{})[String(c.id)]||null):null;
+        var _h=_s?((_s.hour<10?'0':'')+_s.hour+':00'):'10:00';
+        var _txt=_r?(describeClientRoutine(_cs&&_cs.freq!=='default'?_cs:{freq:_r.freq,day:_r.day,monthDay:_r.monthDay})+' a las '+_h+(_r.inherited?' (horario general)':' (rutina propia)')):'Cada lunes ~10hs';
+        return card({name:'Informe automatico por mail',st:(_cs&&_cs.freq==='off')?'no':((localStorage.getItem('evold-report-pushed')&&localStorage.getItem('evold-report-email'))?'ok':'no'),
+        desc:_txt+' el Apps Script manda por mail el informe de este cliente (inversion Meta + funnel GHL), sin abrir el tracker.',
         detail:localStorage.getItem('evold-report-email')?('&rarr; '+esc(localStorage.getItem('evold-report-email'))+' &middot; sync '+new Date(+localStorage.getItem('evold-report-pushed')||Date.now()).toLocaleDateString('es-AR')):'',
-        action:'openWeeklyReportModal()',actionLabel:localStorage.getItem('evold-report-pushed')?'Configurar':'Activar'}),
+        action:'openWeeklyReportModal()',actionLabel:localStorage.getItem('evold-report-pushed')?'Configurar':'Activar'});
+      })(),
       card({name:'Alarmas por email',st:alarmOk?'ok':'no',
         desc:'Benchmarks sobre los ultimos 7 dias (CPL, costo por agenda, registros...). Si algo se sale, manda un mail via el Apps Script.',
         detail:alarmOk?(alarmN+' regla'+(alarmN>1?'s':'')+' activa'+(alarmN>1?'s':'')+' &rarr; '+esc(alarmEmailFor(c))):'',
