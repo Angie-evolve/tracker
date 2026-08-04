@@ -4034,11 +4034,9 @@ function configAgenciaHtml(){
     +_cfgCampo('ag-tz','Zona horaria',a.timezone,'America/Argentina/Buenos_Aires','')
 
     +'<div style="border-top:1px solid var(--border);margin-top:26px;padding-top:20px">'
-      +'<div class="vh-label" style="border:0;padding:0;margin-bottom:10px">Crear subcuenta</div>'
-      +'<div style="font-size:12px;color:var(--text3);margin-bottom:14px;line-height:1.6">'
-      +'Crear una subcuenta consume cupo de tu agencia y se factura. '
-      +'El proxy ignora una segunda peticion identica dentro de los 5 minutos, para que un doble click no cree dos.</div>'
-      +'<button class="btn btn-sm" onclick="abrirCrearSubcuenta()">Crear subcuenta nueva</button>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6">'
+      +'Con esto configurado, al dar de alta un cliente vas a poder crearle la subcuenta en GHL '
+      +'desde el mismo formulario, con este snapshot aplicado.</div>'
     +'</div>'
   +'</div>';
 }
@@ -6259,6 +6257,56 @@ function renderTab(){
 }
 
 // Modals
+// Bloque opcional del alta de cliente: crear tambien la subcuenta en GHL.
+// Solo aparece si la configuracion de agencia esta completa.
+function _ncSubcuentaHtml(){
+  var a=(typeof cfgAg==='function')?cfgAg():null;
+  if(!a||!a.proxyUrl||!a.secret||!a.token||!a.companyId){
+    return '<div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.6">'
+      +'Para crear tambien la subcuenta en GHL, configura la agencia en la torre de control '
+      +'(tres puntos &rarr; Configuracion de agencia).</div>';
+  }
+  var snap=a.snapshotNombre||a.snapshotId||'';
+  return '<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">'
+    +'<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">'
+      +'<input type="checkbox" id="nc-ghl" style="margin-top:2px" onchange="_ncToggleGhl()">'
+      +'<span>'
+        +'<span style="font-size:13px;color:var(--text)">Crear tambien la subcuenta en GHL</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.5">'
+        +(snap?'Con el snapshot <b style="color:var(--text2)">'+esc(snap)+'</b>. ':'Sin snapshot: no hay uno configurado. ')
+        +'Consume cupo de tu agencia y se factura.</span>'
+      +'</span>'
+    +'</label>'
+    +'<div id="nc-ghl-campos" style="display:none;margin-top:12px">'
+      +'<div class="form-2col">'
+        +'<div class="form-row"><label class="form-label">Email del contacto</label><input id="nc-email" placeholder="opcional"></div>'
+        +'<div class="form-row"><label class="form-label">Telefono</label><input id="nc-phone" placeholder="opcional"></div>'
+      +'</div>'
+      +'<div id="nc-ghl-estado" style="font-size:12px;color:var(--text3);margin-top:8px;line-height:1.5"></div>'
+    +'</div>'
+  +'</div>';
+}
+
+function _ncToggleGhl(){
+  var chk=document.getElementById('nc-ghl');
+  var campos=document.getElementById('nc-ghl-campos');
+  if(campos) campos.style.display=(chk&&chk.checked)?'block':'none';
+}
+
+// Crea la subcuenta en GHL y devuelve {id,name} o lanza el error de la API.
+async function crearSubcuentaGHL(nombre, email, phone){
+  var a=cfgAg();
+  var extra={name:nombre};
+  if(a.snapshotId) extra.snapshotId=a.snapshotId;
+  if(email) extra.email=email;
+  if(phone) extra.phone=phone;
+  if(a.pais) extra.country=a.pais;
+  if(a.timezone) extra.timezone=a.timezone;
+  var r=await (await fetch(_agUrl('create_location', extra))).json();
+  if(!r.ok) throw new Error(r.error||'La API no devolvio ok');
+  return { loc:r.location||{}, duplicado:!!r.duplicado, aviso:r.aviso||'' };
+}
+
 function openNewClientModal(){
   document.getElementById('modal-root').innerHTML=`
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -6269,27 +6317,56 @@ function openNewClientModal(){
           <div class="form-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
           <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria"></div>
         </div>
+        ${_ncSubcuentaHtml()}
         <div class="modal-footer">
           <button class="btn" onclick="closeModal()">Cancelar</button>
-          <button class="btn btn-primary" onclick="createClient()">Crear cliente</button>
+          <button class="btn btn-primary" id="nc-btn" onclick="createClient()">Crear cliente</button>
         </div>
       </div>
     </div>`;
 }
 
-function createClient(){
+async function createClient(){
   const name=document.getElementById('nc-name').value.trim();
   const industry=document.getElementById('nc-industry').value.trim();
   if(!name)return;
+
+  // Opcional: crear tambien la subcuenta en GHL antes de dar de alta al cliente.
+  // Si falla, no se crea nada: es preferible a dejar un cliente huerfano en el tracker.
+  var ghlLoc=null;
+  var _chk=document.getElementById('nc-ghl');
+  if(_chk&&_chk.checked){
+    var _btn=document.getElementById('nc-btn');
+    var _est=document.getElementById('nc-ghl-estado');
+    if(_btn){ _btn.disabled=true; _btn.textContent='Creando en GHL...'; } // bloqueo anti doble click
+    if(_est){ _est.textContent='Creando la subcuenta...'; _est.style.color='var(--text3)'; }
+    try{
+      var _r=await crearSubcuentaGHL(name,
+        (document.getElementById('nc-email')||{}).value,
+        (document.getElementById('nc-phone')||{}).value);
+      ghlLoc=_r.loc;
+      if(_est){
+        _est.textContent=(_r.duplicado?_r.aviso+' ':'')+'Subcuenta lista: '+(ghlLoc.id||'');
+        _est.style.color='var(--accent)';
+      }
+    }catch(e){
+      if(_est){ _est.textContent='No se pudo crear en GHL: '+e.message+'. El cliente no se dio de alta.'; _est.style.color='var(--redx)'; }
+      if(_btn){ _btn.disabled=false; _btn.textContent='Crear cliente'; }
+      return;
+    }
+  }
   const ci=DB.clients.length%COLORS.length;
   DB.clients.push({
     id:Date.now(),name,industry,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
     monthlyLeads:0,monthlyBudget:0,avgCPL:0,conversionLines:[],
-    diagnosis:[{type:'info',title:'Cliente nuevo',body:'Registra la primera linea de conversion para activar el diagnostico.',icon:'',color:'blue'}]
+    diagnosis:[{type:'info',title:'Cliente nuevo',body:'Registra la primera linea de conversion para activar el diagnostico.',icon:'',color:'blue'}],
+    // Si se creo la subcuenta, el locationId ya queda cargado: solo falta el token del cliente.
+    ghl: (ghlLoc&&ghlLoc.id) ? {locationId:ghlLoc.id, token:''} : undefined
   });
-  save();closeModal();renderSidebar();showOverview();toast('Cliente creado OK');
+  save();closeModal();renderSidebar();showOverview();
+  toast((ghlLoc&&ghlLoc.id) ? 'Cliente y subcuenta creados OK' : 'Cliente creado OK');
 }
 
 function openNewLineModal(clientId){
