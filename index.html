@@ -542,9 +542,164 @@ function setColCollapse(lineId,val){
 let DB = {clients:[]};
 
 // Storage
+// ═══════════════════════════════════════════════════════════════════════
+//  SUPABASE
+//  localStorage sigue siendo la fuente inmediata: la app tiene que funcionar
+//  aunque Supabase no responda (proyecto pausado, sin internet). Supabase es
+//  la copia compartida entre las dos personas que usan el tracker.
+// ═══════════════════════════════════════════════════════════════════════
+const SB_URL='https://onnysveksgxtmspxgbow.supabase.co';
+const SB_KEY='sb_publishable_2gpOBfyUspnqRSKH0egoZA_4A6TqMKv';
+
+var SB={ token:'', email:'', listo:false };
+
+function sbCargarSesion(){
+  try{
+    var s=JSON.parse(localStorage.getItem('evold-sb-sesion')||'null');
+    if(s&&s.token){ SB.token=s.token; SB.email=s.email||''; SB.exp=s.exp||0; SB.refresh=s.refresh||''; }
+  }catch(e){}
+}
+function sbGuardarSesion(){
+  try{ localStorage.setItem('evold-sb-sesion', JSON.stringify({token:SB.token,email:SB.email,exp:SB.exp,refresh:SB.refresh})); }catch(e){}
+}
+function sbCerrarSesion(){
+  SB.token=''; SB.email=''; SB.listo=false;
+  try{ localStorage.removeItem('evold-sb-sesion'); }catch(e){}
+  location.reload();
+}
+
+async function sbLogin(email, pass){
+  var r=await fetch(SB_URL+'/auth/v1/token?grant_type=password',{
+    method:'POST',
+    headers:{'apikey':SB_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({email:email,password:pass})
+  });
+  var d=await r.json();
+  if(!r.ok) throw new Error(d.error_description||d.msg||d.message||('error '+r.status));
+  SB.token=d.access_token; SB.refresh=d.refresh_token||'';
+  SB.exp=Date.now()+((d.expires_in||3600)*1000);
+  SB.email=(d.user&&d.user.email)||email;
+  sbGuardarSesion();
+  return true;
+}
+
+// El token dura una hora. Se renueva solo antes de que venza.
+async function sbRenovar(){
+  if(!SB.refresh) return false;
+  try{
+    var r=await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token',{
+      method:'POST', headers:{'apikey':SB_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({refresh_token:SB.refresh})
+    });
+    var d=await r.json();
+    if(!r.ok) return false;
+    SB.token=d.access_token; SB.refresh=d.refresh_token||SB.refresh;
+    SB.exp=Date.now()+((d.expires_in||3600)*1000);
+    sbGuardarSesion();
+    return true;
+  }catch(e){ return false; }
+}
+
+async function sbFetch(ruta, opts){
+  if(SB.exp && Date.now()>SB.exp-60000) await sbRenovar();
+  opts=opts||{};
+  opts.headers=Object.assign({
+    'apikey':SB_KEY,
+    'Authorization':'Bearer '+SB.token,
+    'Content-Type':'application/json'
+  }, opts.headers||{});
+  var r=await fetch(SB_URL+'/rest/v1/'+ruta, opts);
+  var txt=await r.text();
+  var d=null; try{ d=txt?JSON.parse(txt):null; }catch(e){}
+  if(!r.ok) throw new Error((d&&(d.message||d.hint))||('HTTP '+r.status));
+  return d;
+}
+
+// ── Bajar todo de Supabase ──────────────────────────────────────────────
+async function sbBajar(){
+  var filas=await sbFetch('clientes?select=id,datos,actualizado&order=id');
+  var cfg=await sbFetch('config?select=clave,valor');
+  if(!filas||!filas.length) return false;   // base vacia: se queda con lo local
+  var nuevo={clients:filas.map(function(f){ return f.datos; })};
+  (cfg||[]).forEach(function(row){ nuevo[row.clave]=row.valor; });
+  DB=Object.assign({}, DB, nuevo);
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(DB)); }catch(e){}
+  return true;
+}
+
+// ── Subir lo que cambio ─────────────────────────────────────────────────
+// Se manda solo lo que cambio desde la ultima subida: con 14 clientes de
+// varios cientos de KB, mandar todo en cada save() satura la conexion.
+var _sbHuellas={};
+var _sbPendiente=null;
+
+function _huella(o){
+  var s=JSON.stringify(o);
+  var h=0;
+  for(var i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; }
+  return s.length+':'+h;
+}
+
+async function sbSubir(){
+  if(!SB.listo) return;
+  var pend=[];
+  (DB.clients||[]).forEach(function(c){
+    var hh=_huella(c);
+    if(_sbHuellas[c.id]!==hh){ pend.push(c); }
+  });
+  // Claves globales (todo lo que no sea la lista de clientes)
+  var globales=[];
+  Object.keys(DB).forEach(function(k){
+    if(k==='clients'||k==='savedAt') return;
+    var hh=_huella(DB[k]);
+    if(_sbHuellas['cfg:'+k]!==hh) globales.push({clave:k, valor:DB[k]});
+  });
+  if(!pend.length && !globales.length) return;
+
+  try{
+    if(pend.length){
+      await sbFetch('clientes', {
+        method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify(pend.map(function(c){
+          return {id:c.id, nombre:c.name||'', datos:c, actualizado_por:SB.email};
+        }))
+      });
+      pend.forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
+    }
+    if(globales.length){
+      await sbFetch('config', {
+        method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify(globales)
+      });
+      globales.forEach(function(g){ _sbHuellas['cfg:'+g.clave]=_huella(g.valor); });
+    }
+    _sbMarcar('ok');
+  }catch(e){
+    console.warn('[SB] no se pudo subir:', e.message);
+    _sbMarcar('error', e.message);
+  }
+}
+
+function _sbMarcar(estado, msg){
+  var el=document.getElementById('sb-estado');
+  if(!el) return;
+  if(estado==='ok'){ el.textContent='guardado'; el.style.color='var(--text3)'; }
+  else if(estado==='subiendo'){ el.textContent='guardando...'; el.style.color='var(--text3)'; }
+  else { el.textContent='sin sincronizar'; el.style.color='var(--amberx)'; el.title=msg||''; }
+}
+
 function save(){
+  // 1. Local primero: es instantaneo y es lo que hace que la app no dependa de la red.
   try{localStorage.setItem(LS_KEY,JSON.stringify({...DB,savedAt:new Date().toISOString()}));}
   catch(e){toast('Error al guardar','red');}
+  // 2. Supabase despues, agrupando los cambios de los ultimos 2 segundos.
+  if(SB.listo){
+    _sbMarcar('subiendo');
+    clearTimeout(_sbPendiente);
+    _sbPendiente=setTimeout(function(){ sbSubir(); }, 2000);
+  }
 }
 function load(){
   try{
@@ -5271,9 +5426,18 @@ function getDefaultAlarms(){
   return DB.defaultAlarms;
 }
 // Mail al que avisar: el del cliente si lo configuro, si no el global.
+function normalizarEmails(txt){
+  return String(txt||'')
+    .split(/[,;\n]/)
+    .map(function(s){return s.trim();})
+    .filter(function(s){return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);})
+    .filter(function(s,i,arr){return arr.indexOf(s)===i;}) // sin repetidos
+    .join(',');
+}
 function alarmEmailFor(c){
   const a=c.alarms||{};
-  return a.email||getDefaultAlarms().email||'';
+  // El cliente pisa al global. Si el cliente no tiene, van los destinatarios por defecto.
+  return normalizarEmails(a.email) || normalizarEmails(getDefaultAlarms().email) || '';
 }
 // Motivo por el que un cliente no evalua (o evalua parcialmente) sus alarmas.
 // Archivado = no corre nada. Sin pauta activa = solo se pausan las de tiempo real:
@@ -5352,7 +5516,8 @@ function renderDefaultAlarmsModal(){
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">Reglas por defecto de la agencia</div>'
     +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Se aplican a todos los clientes automaticamente. Cada cliente puede apagarlas desde su propia pestana de Alarmas.</div>'
     +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Mail por defecto (si el cliente no tiene uno propio)</label>'
-    +'<input id="def-alarm-email" type="email" value="'+esc(d.email||'')+'" placeholder="vos@agencia.com" style="'+inp+';width:100%;box-sizing:border-box;margin-bottom:18px">'
+        +'<textarea id="def-alarm-email" rows="2" placeholder="vos@agencia.com, socio@agencia.com" style="'+inp+';width:100%;box-sizing:border-box;font-family:var(--font);resize:vertical">'+esc(d.email||'')+'</textarea>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Podes poner varios separados por coma. Cada cliente puede tener los suyos y pisar estos.</div>'
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Reglas</div>'
     +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Sin reglas por defecto.</div>')
     +'<button class="btn btn-sm" onclick="_defAlarmDraft.rules.push({id:\'def-\'+Date.now(),metric:\'frecuencia\',op:\'gt\',value:2,enabled:true});renderDefaultAlarmsModal()">+ Agregar regla</button>'
@@ -5364,7 +5529,7 @@ function renderDefaultAlarmsModal(){
 function saveDefaultAlarms(){
   const d=window._defAlarmDraft; if(!d) return;
   const g=getDefaultAlarms();
-  g.email=(document.getElementById('def-alarm-email').value||'').trim();
+  g.email=normalizarEmails(document.getElementById('def-alarm-email').value);
   g.rules=d.rules.filter(function(r){return r.metric&&r.value!==''&&r.value!=null;});
   save(); closeModal(); renderTab();
   toast('Reglas por defecto guardadas - se aplican a todos los clientes');
@@ -5426,7 +5591,7 @@ function checkAlarms(c){
     if(res&&res.ok){
       triggered.forEach(function(t){ a.lastSent[t.r.id]=Date.now(); });
       save();
-      if(typeof toast==='function') toast('Alarma enviada a '+_email);
+      if(typeof toast==='function'){ var _n=_email.split(',').length; toast('Alarma enviada a '+(_n>1?_n+' destinatarios':_email)); }
     }
   }).catch(function(){});
 }
@@ -5470,7 +5635,7 @@ function renderAlarmsModal(){
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Alarmas de benchmark</div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Se evaluan sobre los ultimos 7 dias cada vez que el tracker refresca los datos en vivo (al abrir Ads & Guiones). Si una regla se dispara, manda un mail (maximo 1 por regla cada 24 h).</div>'
     +'<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px">Enviar a</div>'
-    +'<input type="email" id="alarm-email" value="'+esc(d.email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
+        +'<textarea id="alarm-email" rows="2" placeholder="dejalo vacio para usar los de la agencia" style="width:100%;padding:8px 11px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-family:var(--font);font-size:13px;resize:vertical">'+esc(d.email)+'</textarea>'
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Reglas</div>'
     +(rows||'<div style="font-size:12px;color:var(--text3);padding:10px 0">Sin reglas todavia.</div>')
     +'<button class="btn btn-sm" style="margin-top:10px" onclick="window._alarmDraft.rules.push({id:\'al-\'+Date.now()+Math.floor(Math.random()*999),metric:\'cpl\',op:\'gt\',value:\'\',enabled:true});renderAlarmsModal()">+ Agregar regla</button>'
@@ -5485,7 +5650,7 @@ function saveAlarms(){
   const c=DB.clients.find(function(x){return x.id===d.clientId;});
   if(!c) return;
   const emailEl=document.getElementById('alarm-email');
-  d.email=emailEl?emailEl.value.trim():d.email;
+  d.email=emailEl?normalizarEmails(emailEl.value):d.email;
   c.alarms=c.alarms||{};
   c.alarms.email=d.email;
   c.alarms.rules=d.rules.filter(function(r){return r.metric&&r.value!==''&&r.value!=null;});
@@ -5498,7 +5663,7 @@ function saveAlarms(){
 function testAlarmEmail(){
   const d=window._alarmDraft;
   const emailEl=document.getElementById('alarm-email');
-  const to=(emailEl?emailEl.value.trim():'')||d.email;
+  const to=(emailEl?normalizarEmails(emailEl.value):'')||normalizarEmails(d.email);
   if(!to){ if(typeof toast==='function') toast('Ingresa un email primero'); return; }
   const proxy=getGhlProxy();
   if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion (proxy) primero'); return; }
@@ -11729,8 +11894,82 @@ load();
 if(localStorage.getItem('evold-sidebar-collapsed')==='1'){
   document.getElementById('sidebar').classList.add('collapsed');
 }
-renderSidebar();showTickets();
-try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
+
+// ── Pantalla de entrada ─────────────────────────────────────────────────
+function pantallaLogin(msg){
+  var d=document.createElement('div');
+  d.id='sb-login';
+  d.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML='<div style="width:100%;max-width:330px">'
+    +'<div style="font-size:19px;font-weight:600;color:var(--strong);margin-bottom:4px">EVOLVE</div>'
+    +'<div style="font-size:12.5px;color:var(--text3);margin-bottom:22px">Agency Dashboard</div>'
+    +'<input id="sb-mail" type="email" placeholder="Email" autocomplete="username" style="width:100%;margin-bottom:9px">'
+    +'<input id="sb-pass" type="password" placeholder="Contrasena" autocomplete="current-password" style="width:100%;margin-bottom:14px">'
+    +'<button id="sb-btn" class="btn btn-primary" style="width:100%">Entrar</button>'
+    +'<div id="sb-msg" style="font-size:12px;color:var(--redx);margin-top:11px;min-height:16px;line-height:1.5">'+(msg||'')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-top:18px;line-height:1.6">'
+      +'Si no podes entrar, el tracker sigue funcionando con los datos guardados en esta computadora. '
+      +'<a href="#" id="sb-offline" style="color:var(--accent)">Entrar sin sincronizar</a></div>'
+  +'</div>';
+  document.body.appendChild(d);
+
+  var entrar=async function(){
+    var b=document.getElementById('sb-btn');
+    var m=document.getElementById('sb-msg');
+    var mail=(document.getElementById('sb-mail').value||'').trim();
+    var pass=document.getElementById('sb-pass').value||'';
+    if(!mail||!pass){ m.textContent='Faltan datos.'; return; }
+    b.disabled=true; b.textContent='Entrando...';
+    m.textContent='';
+    try{
+      await sbLogin(mail,pass);
+      await arrancarConSesion();
+      d.remove();
+    }catch(e){
+      m.textContent=/invalid/i.test(e.message)?'Email o contrasena incorrectos.':e.message;
+      b.disabled=false; b.textContent='Entrar';
+    }
+  };
+  document.getElementById('sb-btn').onclick=entrar;
+  document.getElementById('sb-pass').addEventListener('keydown',function(ev){ if(ev.key==='Enter') entrar(); });
+  document.getElementById('sb-offline').onclick=function(ev){
+    ev.preventDefault();
+    // Modo local: se ve y se edita, pero nada se sube hasta iniciar sesion.
+    SB.listo=false;
+    d.remove();
+    renderSidebar(); showTickets();
+  };
+  setTimeout(function(){ var e=document.getElementById('sb-mail'); if(e) e.focus(); },50);
+}
+
+async function arrancarConSesion(){
+  SB.listo=true;
+  try{
+    var hubo=await sbBajar();
+    if(!hubo){
+      // Primera vez: la base esta vacia y subimos lo que ya hay en esta maquina.
+      _sbHuellas={};
+      await sbSubir();
+    }
+  }catch(e){
+    console.warn('[SB] no se pudo bajar:', e.message);
+    SB.listo=false;   // seguimos en local para no pisar datos con una copia parcial
+    if(typeof toast==='function') toast('Sin sincronizar: '+e.message,'amber');
+  }
+  // Huellas de partida, asi el primer save() no reenvia todo de nuevo
+  (DB.clients||[]).forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
+  renderSidebar(); showTickets();
+  try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
+}
+
+(function iniciar(){
+  sbCargarSesion();
+  if(SB.token){
+    arrancarConSesion().catch(function(){ pantallaLogin('La sesion vencio.'); });
+  }else{
+    pantallaLogin('');
+  }
+})();
 </script>
 </body>
 </html>
