@@ -8802,6 +8802,7 @@ function middleConfigHtml(c){
       +'<button class="btn btn-sm" id="ab-gen-btn" onclick="abGenerarPromesas('+c.id+')">Generar promesas</button>'
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
       +'<button class="btn btn-sm btn-primary" onclick="abConfirmarPublicar('+c.id+')">Guardar promesas en GHL</button>'
+      +'<button class="btn btn-sm" onclick="abVerBloque('+c.id+')">Codigo para la landing</button>'
     +'</div>'
     +'<div id="ab-gen-out" style="margin-top:14px"></div>'
     +'<div id="ab-crear-estado" style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.6"></div>'
@@ -9000,7 +9001,8 @@ function abTablaHtml(c, blob){
     +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button>'
     +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button>'
     +'<button class="btn btn-sm" style="margin-left:8px;color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
-    +'<button class="btn btn-sm btn-primary" style="margin-left:8px" onclick="abConfirmarPublicar('+c.id+')">Guardar promesas en GHL</button></div>'
+    +'<button class="btn btn-sm btn-primary" style="margin-left:8px" onclick="abConfirmarPublicar('+c.id+')">Guardar promesas en GHL</button>'
+    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abVerBloque('+c.id+')">Codigo para la landing</button></div>'
     +'<div id="ab-gen-out" style="margin-top:14px;max-width:620px"></div>'
   +'</div>';
 }
@@ -9370,6 +9372,341 @@ function abVerPlan(clientId){
   if(!out) return;
   var blob=S._middleBlob||null;
   out.innerHTML=abPlanHtml(c, blob);
+}
+
+var AB_TRACKING_TPL=`<!-- ══════════════════════════════════════════════════════════════════════════
+     BLOQUE DE TRACKING — Roids Funnel Rotativo
+     ──────────────────────────────────────────────────────────────────────────
+     Pegar completo justo antes de </body> en la landing del cliente.
+     Las promesas NO se editan acá: se administran desde la Torre de Control y
+     viajan por GHL. Esta lista es solo el respaldo si GHL no responde.
+
+     ANTES DE PEGARLO, en el markup de la landing:
+       1. Poner id="lm-headline" en el H1 que va a rotar, y QUITARLE la clase
+          "active" si la tenía — el titular aparece cuando llegó su texto
+       2. Marcar cada CTA que lleve al calendario con data-lm-cta="header|hero|cierre"
+       3. Excluir el titular del scroll-reveal genérico de la landing:
+          querySelectorAll('.reveal:not(#lm-headline)')
+       4. Reservar alto en el H1 para que no salte el layout:
+          #lm-headline { min-height: 2.4em; }
+       5. Reemplazar todos los {{...}} de abajo
+     ══════════════════════════════════════════════════════════════════════════ -->
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+//  1. PROMESAS DE RESPALDO
+//     Las promesas reales se administran desde la Torre de Control y viajan
+//     por GHL. Esta lista es solo la red de seguridad: se usa la primera vez
+//     que alguien entra, o si GHL no responde. Conviene mantenerla parecida
+//     a la real, pero no hace falta actualizarla en cada cambio.
+// ════════════════════════════════════════════════════════════════════════════
+const PROMESAS_FALLBACK = [
+  // Respaldo. Las promesas reales se administran desde la Torre de Control.
+  '{{PROMESA_0}}',
+  '{{PROMESA_1}}',
+  '{{PROMESA_2}}',
+  '{{PROMESA_3}}'
+];
+
+// ════════════════════════════════════════════════════════════════════════════
+//  2. CONEXIÓN A GHL — ya configurado
+// ════════════════════════════════════════════════════════════════════════════
+const GHL_KEY   = '{{TOKEN}}';
+const GHL_LOC   = '{{LOCATION_ID}}';
+const SISTEMA_ID = '{{SISTEMA_ID}}';   // contacto "SISTEMA — Metricas Landing"
+const FIELD_AB   = '{{FIELD_AB}}';   // campo "LM AB Data"
+
+const AGENDA_URL = '{{URL_CALENDARIO}}';
+
+// ════════════════════════════════════════════════════════════════════════════
+//  A partir de acá no hace falta tocar nada.
+// ════════════════════════════════════════════════════════════════════════════
+
+const LM_LISTO = !/^PEGAR_/.test(SISTEMA_ID) && !/^PEGAR_/.test(FIELD_AB);
+const CACHE_PROMESAS = 'lm_promesas_cache';
+
+// Las promesas vivas. Arrancan del caché del navegador (o del respaldo) para
+// pintar el titular al instante, y se reemplazan por las de GHL apenas llegan.
+let PROMESAS = (function () {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_PROMESAS));
+    if (Array.isArray(c) && c.length) return c;
+  } catch (e) {}
+  return PROMESAS_FALLBACK;
+})();
+
+function guardarCache(lista) {
+  try { localStorage.setItem(CACHE_PROMESAS, JSON.stringify(lista)); } catch (e) {}
+}
+
+// ─── Variante fija por sesión ────────────────────────────────────────────────
+// Un F5 no puede cambiar el headline: si cambiara, la visita quedaría contada
+// en una variante y el clic en otra.
+let variante = 0;
+(function elegirVariante() {
+  try {
+    let v = sessionStorage.getItem('lm_var');
+    const n = parseInt(v);
+    if (v === null || isNaN(n) || n < 0 || n >= PROMESAS.length) {
+      v = String(Math.floor(Math.random() * PROMESAS.length));
+      sessionStorage.setItem('lm_var', v);
+    }
+    variante = parseInt(v);
+  } catch (e) {
+    variante = Math.floor(Math.random() * PROMESAS.length);
+  }
+})();
+
+// Identificador de visitante, para poder cruzar el clic con la reunión agendada
+let visitorId = '';
+(function idVisitante() {
+  try {
+    visitorId = sessionStorage.getItem('lm_vid') || '';
+    if (!visitorId) {
+      visitorId = (crypto.randomUUID && crypto.randomUUID()) ||
+        'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+          const r = Math.random() * 16 | 0;
+          return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+      sessionStorage.setItem('lm_vid', visitorId);
+    }
+  } catch (e) { visitorId = String(Date.now()) + Math.random().toString(16).slice(2); }
+})();
+
+// ─── Pintar la promesa elegida ───────────────────────────────────────────────
+let tituloRevelado = false;
+
+function pintarPromesa() {
+  const h1 = document.getElementById('lm-headline');
+  if (!h1 || !PROMESAS[variante]) return;
+  const escapar = s => String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  h1.innerHTML = escapar(PROMESAS[variante])
+    .replace(/\\*\\*(.+?)\\*\\*/g, '<span class="{{CLASE_ACENTO}}">$1</span>');
+}
+
+// Muestra el titular. Se llama una sola vez, cuando el texto ya es el definitivo,
+// para que nadie vea una promesa y después otra.
+function revelarTitulo() {
+  if (tituloRevelado) return;
+  tituloRevelado = true;
+  pintarPromesa();
+  const h1 = document.getElementById('lm-headline');
+  if (h1) h1.classList.add('active');
+}
+
+// Red de seguridad: si GHL tarda o no responde, mostramos el respaldo igual.
+// Sin esto, una caída de la API dejaría la landing sin titular.
+setTimeout(revelarTitulo, 1200);
+
+// ─── Lectura y escritura del blob de métricas ────────────────────────────────
+// Todos los contadores viven en UN solo campo de texto, como JSON. Un campo en
+// vez de diez: menos setup, menos requests y el reset del test es una escritura.
+function blobVacio() {
+  return {
+    test_id: 'T1',
+    inicio: new Date().toISOString(),
+    promesas: PROMESAS.slice(),
+    v: PROMESAS.map(() => ({ n: 0, c: 0 })),
+    historial: []
+  };
+}
+
+function normalizar(b) {
+  if (!b || typeof b !== 'object') b = blobVacio();
+  if (!Array.isArray(b.promesas) || !b.promesas.length) b.promesas = PROMESAS.slice();
+  // La cantidad de contadores la manda el blob, no la copia local
+  const cuantas = b.promesas.length;
+  if (!Array.isArray(b.v)) b.v = [];
+  while (b.v.length < cuantas) b.v.push({ n: 0, c: 0 });
+  b.v = b.v.slice(0, cuantas).map(x => ({
+    n: parseInt(x && x.n) || 0,
+    c: parseInt(x && x.c) || 0
+  }));
+  if (!Array.isArray(b.historial)) b.historial = [];
+  if (!b.test_id) b.test_id = 'T1';
+  if (!b.inicio) b.inicio = new Date().toISOString();
+  return b;
+}
+
+async function leerBlob() {
+  const r = await fetch(\`https://services.leadconnectorhq.com/contacts/\${SISTEMA_ID}\`, {
+    headers: { 'Authorization': 'Bearer ' + GHL_KEY, 'Version': '2021-07-28' }
+  });
+  if (!r.ok) throw new Error('GET contacto sistema: ' + r.status);
+  const d = await r.json();
+  const f = (d.contact?.customFields || []).find(x => x.id === FIELD_AB);
+  let parsed = null;
+  try { parsed = f && f.value ? JSON.parse(f.value) : null; } catch (e) { parsed = null; }
+  return normalizar(parsed);
+}
+
+async function escribirBlob(b, keepalive) {
+  const r = await fetch(\`https://services.leadconnectorhq.com/contacts/\${SISTEMA_ID}\`, {
+    method: 'PUT',
+    keepalive: !!keepalive,
+    headers: {
+      'Authorization': 'Bearer ' + GHL_KEY,
+      'Content-Type': 'application/json',
+      'Version': '2021-07-28'
+    },
+    body: JSON.stringify({ customFields: [{ id: FIELD_AB, value: JSON.stringify(b) }] })
+  });
+  if (!r.ok) throw new Error('PUT contacto sistema: ' + r.status);
+}
+
+// ─── Contar la visita (una sola vez por sesión) ──────────────────────────────
+(async function arrancar() {
+  if (!LM_LISTO) {
+    revelarTitulo();
+    console.warn('[LM] Falta completar SISTEMA_ID y FIELD_AB — no se registran métricas.');
+    return;
+  }
+  try {
+    const b = await leerBlob();
+
+    // 1. Las promesas de GHL mandan sobre el caché y sobre el respaldo
+    PROMESAS = b.promesas;
+    guardarCache(PROMESAS);
+
+    // 2. Si se achicó la lista, la variante guardada puede haber quedado fuera
+    let reasignada = false;
+    if (variante >= PROMESAS.length) {
+      variante = Math.floor(Math.random() * PROMESAS.length);
+      try { sessionStorage.setItem('lm_var', String(variante)); } catch (e) {}
+      reasignada = true;
+    }
+
+    revelarTitulo();   // ya tenemos el texto definitivo
+
+    // 3. Recién ahora contamos: la visita queda atada al texto que se está viendo
+    if (!sessionStorage.getItem('lm_visita')) {
+      b.v[variante].n++;
+      await escribirBlob(b);
+      sessionStorage.setItem('lm_visita', '1');
+    }
+  } catch (e) {
+    revelarTitulo();   // si GHL falla, va el respaldo
+    console.warn('[LM] visita no registrada:', e.message);
+  }
+})();
+
+// ─── Destino con la variante y el visitante pegados ──────────────────────────
+function urlAgenda() {
+  const u = new URL(AGENDA_URL);
+  // Arrastramos los parámetros originales (utm_*, fbclid, etc.) hacia el calendario
+  new URLSearchParams(location.search).forEach((val, key) => u.searchParams.set(key, val));
+  u.searchParams.set('v', String(variante));
+  u.searchParams.set('vid', visitorId);
+  return u.toString();
+}
+
+// ─── Contar el clic y navegar ────────────────────────────────────────────────
+async function registrarClic() {
+  const b = await leerBlob();
+  b.v[variante].c++;
+  await escribirBlob(b, true);   // keepalive: la escritura sobrevive a la navegación
+}
+
+async function irAAgendar(ev) {
+  ev.preventDefault();
+  const destino = urlAgenda();
+
+  // Un clic por sesión: la métrica es "% de sesiones que clickearon", no clics totales
+  let yaContado = false;
+  try { yaContado = !!sessionStorage.getItem('lm_clic'); } catch (e) {}
+
+  if (LM_LISTO && !yaContado) {
+    try { sessionStorage.setItem('lm_clic', '1'); } catch (e) {}
+    // No hacemos esperar al visitante más de 600ms por el registro
+    await Promise.race([
+      registrarClic().catch(e => console.warn('[LM] clic no registrado:', e.message)),
+      new Promise(r => setTimeout(r, 600))
+    ]);
+  }
+
+  location.href = destino;
+}
+
+document.querySelectorAll('[data-lm-cta]').forEach(el => {
+  el.setAttribute('href', AGENDA_URL);   // fallback si el JS falla
+  el.addEventListener('click', irAAgendar);
+});
+<\/script>`;
+
+// ---------- PASO 2: bloque de tracking para pegar en la landing ----------
+// La plantilla es la del sistema; aca solo se reemplazan los datos de este cliente.
+// El respaldo de promesas se llena con las que estan publicadas: si GHL no contesta,
+// la landing igual muestra algo parecido a lo real.
+function abBloqueTracking(c){
+  var a=abCfg(c);
+  var ps=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  var out=AB_TRACKING_TPL;
+  // Respaldo: hasta 4 promesas. Si hay menos, se sacan las lineas sobrantes.
+  for(var i=0;i<4;i++){
+    var val=ps[i];
+    if(val!==undefined){
+      out=out.replace('{{PROMESA_'+i+'}}', val.replace(/'/g,"\\'"));
+    }else{
+      out=out.replace(new RegExp("\\s*'\\{\\{PROMESA_"+i+"\\}\\}',?",'m'), '');
+    }
+  }
+  out=out.replace(/'\{\{PROMESA_\d\}\}',?\s*/g,'');
+  out=out.replace('{{TOKEN}}', (c.ghl&&c.ghl.token)||'PEGAR_TOKEN');
+  out=out.replace('{{LOCATION_ID}}', (c.ghl&&c.ghl.locationId)||'PEGAR_LOCATION');
+  out=out.replace('{{SISTEMA_ID}}', a.contactId||'PEGAR_CONTACTO');
+  out=out.replace('{{FIELD_AB}}', a.fieldId||'PEGAR_CAMPO');
+  out=out.replace('{{URL_CALENDARIO}}', a.calendario||'PEGAR_URL_DEL_CALENDARIO');
+  out=out.replace('{{CLASE_ACENTO}}', a.claseAcento||'acento');
+  return out;
+}
+
+function abVerBloque(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var out=document.getElementById('ab-gen-out');
+  if(!out) return;
+  var a=abCfg(c);
+  var faltan=[];
+  if(!a.contactId||!a.fieldId) faltan.push('el contenedor de GHL');
+  if(!c.ghl||!c.ghl.token) faltan.push('el token de GHL');
+  if(!a.calendario) faltan.push('la URL del calendario');
+  var codigo=abBloqueTracking(c);
+  out.innerHTML='<div style="max-width:720px">'
+    +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:4px">Bloque de tracking para la landing</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Va pegado justo antes de <span class="mono">&lt;/body&gt;</span> en la landing de este cliente, '
+      +'en el editor de funnels de GHL. Ademas hay que hacer cinco cambios en el markup, listados arriba del codigo.</div>'
+    +'<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">URL del calendario</div>'
+      +'<input id="ab-cal" value="'+esc(a.calendario||'')+'" placeholder="https://api.leadconnectorhq.com/widget/booking/..." '
+      +'style="width:100%;max-width:480px" oninput="abGuardarCal('+c.id+')">'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">A donde llevan los botones de agendar. La landing le pega ?v= y ?vid= para poder atribuir la reunion.</div></div>'
+    +(faltan.length?'<div style="font-size:12px;color:var(--amberx);margin-bottom:10px">Falta '+faltan.join(', ')+'. El codigo se genera igual, pero con marcadores que hay que completar a mano.</div>':'')
+    +'<textarea id="ab-bloque" readonly style="width:100%;height:220px;font-family:var(--mono);font-size:10.5px;line-height:1.45">'+esc(codigo)+'</textarea>'
+    +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm btn-primary" onclick="abCopiarBloque()">Copiar el bloque</button>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abVerBloque('+c.id+')">Regenerar</button>'
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.6;margin-top:12px">'
+      +'El token de GHL queda a la vista de cualquiera que mire el codigo fuente de la landing, con permisos de '
+      +'lectura y escritura sobre los contactos de esta subcuenta. Es inherente a un sistema sin backend.</div>'
+  +'</div>';
+}
+
+function abGuardarCal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var e=document.getElementById('ab-cal');
+  if(!c||!e) return;
+  abCfg(c).calendario=e.value.trim();
+  save();
+  var t=document.getElementById('ab-bloque');
+  if(t) t.value=abBloqueTracking(c);
+}
+
+function abCopiarBloque(){
+  var t=document.getElementById('ab-bloque');
+  if(!t) return;
+  t.select(); t.setSelectionRange(0,999999);
+  try{ document.execCommand('copy'); toast('Bloque copiado'); }catch(e){ toast('Copialo a mano','amber'); }
 }
 
 // ---------- Escribir las promesas al blob: archiva el test actual y arranca uno nuevo ----------
