@@ -9030,6 +9030,7 @@ function abPrompt(c, ctx){
     +(ctx.metricas?('Performance: '+ctx.metricas+'\n'):'')
     +(ctx.guion?('\nGUION DEL ANUNCIO:\n"""'+ctx.guion+'"""\n'):'')
     +(ctx.notas?('\nNOTAS: '+ctx.notas+'\n'):'')
+    +(abCfg(c).landing?('\nOFERTA / COPY DE LA LANDING:\n"""'+abCfg(c).landing+'"""\n'):'')
     +(control?('\nHEADLINE ACTUAL DE LA LANDING (es el control, no lo repitas):\n"'+control+'"\n'):'')
     +'\nEscribi 4 promesas nuevas. Cada una tira de una palanca distinta:\n'
     +'1. Oferta completa: todo lo que se lleva, apilado.\n'
@@ -9046,7 +9047,75 @@ function abPrompt(c, ctx){
     +'Devolve SOLO un JSON array de 4 strings, sin markdown ni explicaciones.';
 }
 
-async function abGenerarPromesas(clientId){
+// Que contexto le falta para escribir bien. Sin esto el modelo inventa, y el copy
+// generico no se nota hasta que ya lo pusiste en la landing.
+function abFaltantes(c, ctx){
+  var a=abCfg(c);
+  var control=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean)[0]||'';
+  var f=[];
+  if(!ctx.guion) f.push({k:'guion',t:'El guion del anuncio ganador',
+    d:'Es lo mas util de todo: de ahi salen el angulo y las palabras que ya le funcionan a este cliente.'});
+  if(!control) f.push({k:'control',t:'El headline actual de la landing',
+    d:'Es el control contra el que se compara todo. Sin el, el test no tiene contra que medir.'});
+  if(!a.landing) f.push({k:'landing',t:'La oferta o el copy de la landing',
+    d:'Que se lleva exactamente la persona al agendar. Pegá unas lineas o la URL.'});
+  return f;
+}
+
+function abPanelContexto(c, ctx, faltantes){
+  var a=abCfg(c);
+  var control=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean)[0]||'';
+  var campo=function(k,val,ph,rows){
+    return '<textarea id="ab-ctx-'+k+'" rows="'+(rows||3)+'" placeholder="'+esc(ph)+'" '
+      +'style="width:100%;font-size:12px;font-family:var(--font);margin-top:6px">'+esc(val||'')+'</textarea>';
+  };
+  var bloques=faltantes.map(function(f){
+    var val=(f.k==='guion')?'':(f.k==='control'?control:(a.landing||''));
+    var ph=(f.k==='guion')?'Pega el guion o el copy del anuncio'
+      :(f.k==='control'?'El H1 que hoy tiene la landing'
+      :'Que recibe la persona al agendar, o la URL de la landing');
+    return '<div style="margin-bottom:14px">'
+      +'<div style="font-size:12.5px;color:var(--strong)">'+esc(f.t)+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'+esc(f.d)+'</div>'
+      +campo(f.k,val,ph,f.k==='control'?2:3)
+    +'</div>';
+  }).join('');
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;background:var(--bg3)">'
+    +'<div style="font-size:12.5px;color:var(--amberx);line-height:1.6;margin-bottom:14px">'
+      +'Antes de generar: falta contexto y sin el las promesas van a salir genericas.<br>'
+      +'<span style="color:var(--text3)">Lo que si tengo: el anuncio <b>'+esc(ctx.ad.name)+'</b>'
+      +(ctx.metricas?(' ('+esc(ctx.metricas)+')'):'')+(ctx.esGanadorReal?'':' — todavia sin cierres')+'.</span></div>'
+    +bloques
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm btn-primary" onclick="abGuardarContexto('+c.id+')">Guardar y generar</button>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abGenerarPromesas('+c.id+',true)">Generar igual</button>'
+    +'</div></div>';
+}
+
+function abGuardarContexto(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var g=function(k){ var e=document.getElementById('ab-ctx-'+k); return e?e.value.trim():''; };
+  var a=abCfg(c);
+  var ctx=abContextoGanador(c);
+  var guion=g('guion');
+  if(guion&&ctx&&ctx.ad){
+    c.adScriptsByAd=c.adScriptsByAd||{};
+    c.adScriptsByAd[ctx.ad.id]=c.adScriptsByAd[ctx.ad.id]||{};
+    c.adScriptsByAd[ctx.ad.id].guion=guion;
+  }
+  var control=g('control');
+  if(control){
+    var resto=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean).slice(1);
+    a.promesas=[control].concat(resto).join('\n');
+  }
+  var landing=g('landing');
+  if(landing) a.landing=landing;
+  save();
+  abGenerarPromesas(clientId, true);
+}
+
+async function abGenerarPromesas(clientId, forzar){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var out=document.getElementById('ab-gen-out');
@@ -9055,6 +9124,10 @@ async function abGenerarPromesas(clientId){
   if(!ctx){
     if(out) out.innerHTML='<div style="font-size:12px;color:var(--amberx);padding:10px 0">No encontre anuncios de este cliente. Sincroniza Meta primero desde Top of Funnel.</div>';
     return;
+  }
+  if(!forzar){
+    var f=abFaltantes(c, ctx);
+    if(f.length){ if(out) out.innerHTML=abPanelContexto(c, ctx, f); return; }
   }
   var prompt=abPrompt(c, ctx);
   var apiKey=localStorage.getItem('evold-anthropic-key');
