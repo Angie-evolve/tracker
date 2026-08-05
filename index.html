@@ -9785,18 +9785,33 @@ function abAnalizarLanding(html){
   var h=String(html||'');
   var h1s=h.match(/<h1[^>]*>[\s\S]*?<\/h1>/gi)||[];
   var texto=function(t){ return t.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim(); };
+  // Detalle de cada H1: sirve para elegir cual rota cuando hay mas de uno.
+  // GHL suele duplicar el titular (version escritorio y version movil).
+  var h1det=h1s.map(function(t){
+    var attrs=(t.match(/<h1([^>]*)>/i)||[,''])[1];
+    var id=(attrs.match(/\bid=["']([^"']+)["']/i)||[,''])[1];
+    var cls=(attrs.match(/\bclass=["']([^"']+)["']/i)||[,''])[1];
+    return { id:id, clase:cls, texto:texto(t) };
+  });
   var iframes=h.match(/<iframe[^>]*>/gi)||[];
   var formsIframe=iframes.filter(function(t){ return /form|survey|widget/i.test(t); });
   var calIframe=iframes.filter(function(t){ return /booking|calendar/i.test(t); });
   var forms=(h.match(/<form[^>]*>/gi)||[]).length;
   var linksCal=(h.match(/href=["'][^"']*(booking|calendar)[^"']*["']/gi)||[]).length;
+  // Si la pagina se arma con JS, el HTML servido no muestra el formulario pero si
+  // deja rastros: el loader de GHL o el id del embed.
+  var pistas=[];
+  if(/form_embed\.js/i.test(h)) pistas.push('script form_embed.js');
+  if(/leadconnectorhq\.com\/widget\/form/i.test(h)) pistas.push('widget de formulario');
+  if(/leadconnectorhq\.com\/widget\/booking/i.test(h)) pistas.push('widget de calendario');
+  if(/hl_page-preview|hl_main/i.test(h)) pistas.push('page builder de GHL');
   return {
     largo:h.length,
-    h1:h1s.map(texto),
+    h1:h1s.map(texto), h1det:h1det,
     h1Crudo:h1s[0]||'',
     forms:forms, iframes:iframes.length,
     formsIframe:formsIframe.length, calIframe:calIframe.length,
-    linksCal:linksCal,
+    linksCal:linksCal, pistas:pistas,
     tieneEmbedScript:/form_embed\.js|leadconnectorhq\.com\/loader/i.test(h),
     modo: (formsIframe.length||forms)?'formulario':(calIframe.length||linksCal)?'calendario':'?'
   };
@@ -9810,20 +9825,33 @@ function abAnalisisHtml(r){
       +'<div style="flex:1;color:'+(col||'var(--text2)')+'">'+v+'</div></div>';
   };
   var h1txt=a.h1.length?esc(a.h1[0]):'ninguno';
+  var listaH1=a.h1det.map(function(x,i){
+    return '<div style="font-size:11.5px;color:var(--text2);padding:3px 0;line-height:1.5">'
+      +'<span style="color:var(--text3)">H1 '+(i+1)+'</span> '
+      +(x.id?('<span class="mono" style="color:var(--accent)">#'+esc(x.id)+'</span> '):'')
+      +(x.clase?('<span class="mono" style="color:var(--text3)">.'+esc(x.clase.split(/\s+/).join(' .'))+'</span><br>'):'')
+      +esc(x.texto.slice(0,110))+(x.texto.length>110?'...':'')+'</div>';
+  }).join('');
   return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;max-width:720px">'
     +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:8px">Que encontre en la landing</div>'
     +fila('Peso', Math.round(r.largo/1024)+' KB'+(r.cortado?' (cortado, la pagina es mas grande)':''), r.cortado?'var(--amberx)':null)
-    +fila('Titulares H1', a.h1.length?(a.h1.length+' &middot; "'+h1txt+'"'):'ninguno', a.h1.length===1?'var(--accent)':'var(--amberx)')
+    +fila('Titulares H1', a.h1.length?(a.h1.length+' encontrados'):'ninguno', a.h1.length===1?'var(--accent)':'var(--amberx)')
+    +(listaH1?'<div style="padding:6px 0 6px 190px;border-bottom:1px solid var(--border)">'+listaH1+'</div>':'')
     +fila('Formularios', a.forms+' en la pagina, '+a.formsIframe+' embebidos en iframe')
     +fila('Calendario', a.calIframe+' iframe, '+a.linksCal+' enlaces')
+    +(a.pistas.length?fila('Pistas', a.pistas.join(', ')):'')
     +fila('Como convierte', a.modo==='formulario'?'Formulario embebido':(a.modo==='calendario'?'Boton al calendario':'No lo pude determinar'),
           a.modo==='?'?'var(--amberx)':'var(--accent)')
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:10px">'
       +(a.h1.length===1
         ? 'Hay un solo H1, asi que la promesa va a rotar ahi sin ambiguedad.'
         : (a.h1.length>1
-          ? 'Hay mas de un H1: hay que elegir cual rota, porque el sistema espera uno solo.'
+          ? 'Hay mas de un H1. En el page builder de GHL suele ser el mismo titular duplicado para escritorio y movil: si es asi, hay que rotar los dos.'
           : 'No encontre H1. Sin titular no hay nada que rotar.'))
+      +(a.modo==='?'&&a.pistas.length
+        ? '<br>No hay formularios ni iframes en el HTML servido, pero si rastros del page builder: la pagina se termina de armar con JavaScript en el navegador. '
+          +'Eso quiere decir que el formulario no se puede detectar desde aca, hay que mirarlo en la pagina viva.'
+        : '')
       +(a.modo==='formulario'
         ? '<br>Con formulario embebido, el evento a contar es el envio, no un clic. Si el formulario esta dentro de un iframe, la pagina de afuera no puede ver el submit directamente: hay que engancharlo por el mensaje que GHL manda al enviar.'
         : '')
