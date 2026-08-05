@@ -8799,7 +8799,9 @@ function middleConfigHtml(c){
     +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
       +'<button class="btn btn-sm btn-primary" onclick="S._middleCargado=null;dibujarMiddle(DB.clients.find(function(x){return x.id==='+c.id+';}))">Leer metricas</button>'
       +(falta?'':'<button class="btn btn-sm" onclick="crearContenedorAB('+c.id+')">Crear el contenedor en GHL</button>')
+      +'<button class="btn btn-sm" id="ab-gen-btn" onclick="abGenerarPromesas('+c.id+')">Generar promesas</button>'
     +'</div>'
+    +'<div id="ab-gen-out" style="margin-top:14px"></div>'
     +'<div id="ab-crear-estado" style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.6"></div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-top:10px;line-height:1.6">'
       +'Si el cliente todavia no tiene el contenedor, el boton crea el campo y el contacto en su subcuenta '
@@ -8927,7 +8929,12 @@ async function cargarAB(c){
 
 function abTablaHtml(c, blob){
   var vs=Array.isArray(blob.v)?blob.v:[];
-  var nombres=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  // Formato rotativo: las promesas viven en el blob, escritas por la torre.
+  // El textarea local queda solo como respaldo para blobs del formato viejo.
+  var delBlob=Array.isArray(blob.promesas)?blob.promesas.filter(function(s){return String(s||'').trim();}):[];
+  var locales=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  var nombres=delBlob.length?delBlob:locales;
+  var fuente=delBlob.length?'blob':(locales.length?'local':'ninguna');
   var totalN=vs.reduce(function(s,x){return s+(parseInt(x.n)||0);},0);
   var totalC=vs.reduce(function(s,x){return s+(parseInt(x.c)||0);},0);
   var ctrl=vs[0]||{n:0,c:0};
@@ -8942,6 +8949,8 @@ function abTablaHtml(c, blob){
     // Con menos de 100 visitas cualquier diferencia es ruido: se avisa en vez de ocultarla
     var pocas=(n<100);
     var nombre=nombres[i]||('Promesa '+(i+1));
+    // En el blob las promesas traen **negrita** para el color de acento: se limpia para la tabla
+    nombre=String(nombre).replace(/\*\*/g,'');
     return '<tr style="border-bottom:1px solid var(--border)">'
       +'<td style="padding:11px 12px;vertical-align:top">'
         +'<div style="font-size:13px;color:var(--strong);line-height:1.5">'+esc(nombre)+'</div>'
@@ -8959,10 +8968,12 @@ function abTablaHtml(c, blob){
   }).join('');
 
   var desde=blob.inicio?new Date(blob.inicio).toLocaleDateString('es-AR'):'-';
+  var hist=Array.isArray(blob.historial)?blob.historial.length:0;
   return '<div style="padding:4px 0">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">'
       +'<div style="font-size:12px;color:var(--text3)">Test '+esc(blob.test_id||'T1')+' &middot; desde el '+desde
-      +' &middot; '+totalN+' visitas, '+totalC+' clics al CTA</div>'
+      +' &middot; '+totalN+' visitas, '+totalC+' clics al CTA'
+      +(hist?' &middot; '+hist+' test'+(hist>1?'s':'')+' archivado'+(hist>1?'s':''):'')+'</div>'
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="S._middleCargado=null;dibujarMiddle(DB.clients.find(function(x){return x.id==='+c.id+';}))">Actualizar</button>'
     +'</div>'
     +'<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
@@ -8977,9 +8988,173 @@ function abTablaHtml(c, blob){
     +'</tr></thead><tbody>'+filas+'</tbody></table></div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-top:12px;line-height:1.6">'
       +'La tasa es el porcentaje de sesiones que clickearon el boton de agendar. '
-      +'Con menos de 100 visitas por variante las diferencias todavia son ruido: conviene esperar.</div>'
-    +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button></div>'
+      +'Con menos de 100 visitas por variante las diferencias todavia son ruido: conviene esperar.'
+      +(fuente==='local'?'<br><span style="color:var(--amberx)">Los textos salen de la lista local, no del blob. Si la torre edito las promesas, estos nombres pueden estar desactualizados.</span>':'')
+      +(fuente==='ninguna'?'<br><span style="color:var(--amberx)">El blob no trae los textos de las promesas. Cargalos en Configuracion para ver de que promesa habla cada fila.</span>':'')
+      +'</div>'
+    +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button>'
+    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button></div>'
+    +'<div id="ab-gen-out" style="margin-top:14px;max-width:620px"></div>'
   +'</div>';
+}
+
+// ---------- PASO 1: generar promesas desde el anuncio ganador ----------
+// Usa la key de Anthropic que ya esta en el tracker. Si no hay key o la API contesta
+// 401/429 (sin creditos), no se rompe: muestra el prompt listo para copiar y un campo
+// para pegar la respuesta a mano. El resultado es el mismo, el camino es mas largo.
+
+// Arma el contexto: anuncio ganador de este cliente + su guion si esta cargado en el Lab.
+function abContextoGanador(c){
+  var ads=(typeof labAdsDisponibles==='function')?labAdsDisponibles(c):[];
+  var ganador=null;
+  for(var i=0;i<ads.length;i++){ if(ads[i].win&&ads[i].win.winner){ ganador=ads[i]; break; } }
+  if(!ganador&&ads.length) ganador=ads[0];   // sin cierres todavia: el de mejor performance
+  if(!ganador) return null;
+  var g=(c.adScriptsByAd&&c.adScriptsByAd[ganador.id])||{};
+  var m=ganador.m||{};
+  return {
+    ad:ganador, esGanadorReal:!!(ganador.win&&ganador.win.winner),
+    guion:g.guion||'', notas:g.notas||'',
+    resumen:[ganador.name, ganador.adset&&('conjunto: '+ganador.adset), ganador.camp&&('campana: '+ganador.camp)].filter(Boolean).join(' | '),
+    metricas:[m.ctr?('CTR '+m.ctr+'%'):'', m.leads?(m.leads+' leads'):'',
+              (ganador.win&&ganador.win.cierres)?(ganador.win.cierres+' cierres'):'',
+              (ganador.win&&ganador.win.calif)?(ganador.win.calif+' calificados'):''].filter(Boolean).join(', ')
+  };
+}
+
+function abPrompt(c, ctx){
+  var control=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean)[0]||'';
+  return 'Sos un copywriter de respuesta directa. Escribi promesas (headlines H1) para la landing de "'
+    +(c.name||'el cliente')+'"'+(c.industry?(', del rubro '+c.industry):'')+'.\n\n'
+    +'ANUNCIO QUE MEJOR FUNCIONA:\n'+ctx.resumen+'\n'
+    +(ctx.metricas?('Performance: '+ctx.metricas+'\n'):'')
+    +(ctx.guion?('\nGUION DEL ANUNCIO:\n"""'+ctx.guion+'"""\n'):'')
+    +(ctx.notas?('\nNOTAS: '+ctx.notas+'\n'):'')
+    +(control?('\nHEADLINE ACTUAL DE LA LANDING (es el control, no lo repitas):\n"'+control+'"\n'):'')
+    +'\nEscribi 4 promesas nuevas. Cada una tira de una palanca distinta:\n'
+    +'1. Oferta completa: todo lo que se lleva, apilado.\n'
+    +'2. Prueba tangible: el artefacto concreto que recibe (demo, informe, plan, diagnostico).\n'
+    +'3. Cuantificar el dolor: el numero que va a descubrir.\n'
+    +'4. Reversion de riesgo: sin compromiso, lo use o no.\n\n'
+    +'Reglas:\n'
+    +'- Venden la ACCION DEL CTA (agendar la llamada), no el servicio.\n'
+    +'- Castellano rioplatense, sin voseo forzado ni signos de admiracion.\n'
+    +'- Largo parejo entre las 4: todas entre 12 y 20 palabras. Si una es mucho mas corta que otra, '
+    +'el largo se vuelve una variable oculta y arruina el test.\n'
+    +'- Marca con **dobles asteriscos** el fragmento que va en el color de acento de la marca.\n'
+    +'- Sin comillas alrededor de cada promesa.\n\n'
+    +'Devolve SOLO un JSON array de 4 strings, sin markdown ni explicaciones.';
+}
+
+async function abGenerarPromesas(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var out=document.getElementById('ab-gen-out');
+  var btn=document.getElementById('ab-gen-btn');
+  var ctx=abContextoGanador(c);
+  if(!ctx){
+    if(out) out.innerHTML='<div style="font-size:12px;color:var(--amberx);padding:10px 0">No encontre anuncios de este cliente. Sincroniza Meta primero desde Top of Funnel.</div>';
+    return;
+  }
+  var prompt=abPrompt(c, ctx);
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ abModoManual(c, prompt, 'No hay API key de Anthropic cargada.'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Escribiendo...'; }
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1200,messages:[{role:'user',content:prompt}]})
+    });
+    var d=await r.json();
+    if(d.error){
+      var msg=String(d.error.message||'');
+      var sinCredito=/credit|balance|quota|rate limit|429/i.test(msg)||r.status===429||r.status===401;
+      abModoManual(c, prompt, sinCredito?('La API no respondio: '+msg):('Error de la API: '+msg));
+      if(btn){ btn.disabled=false; btn.textContent='Generar promesas'; }
+      return;
+    }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    abMostrarPromesas(c, abParsearPromesas(txt), ctx);
+  }catch(e){
+    abModoManual(c, prompt, 'No se pudo llamar a la API: '+e.message);
+  }
+  if(btn){ btn.disabled=false; btn.textContent='Generar promesas'; }
+}
+
+// Acepta el JSON array o, si el modelo se fue de formato, una lista de lineas.
+function abParsearPromesas(txt){
+  var ini=txt.indexOf('['), fin=txt.lastIndexOf(']');
+  if(ini>=0&&fin>ini){
+    try{
+      var arr=JSON.parse(txt.slice(ini,fin+1));
+      if(Array.isArray(arr)) return arr.map(function(s){return String(s).trim();}).filter(Boolean);
+    }catch(e){}
+  }
+  return txt.split('\n').map(function(s){return s.replace(/^\s*(\d+[.)]|[-*])\s*/,'').replace(/^"|"$/g,'').trim();})
+            .filter(function(s){return s.length>25;});
+}
+
+function abModoManual(c, prompt, motivo){
+  var out=document.getElementById('ab-gen-out');
+  if(!out) return;
+  out.innerHTML='<div style="font-size:12px;color:var(--amberx);margin-bottom:10px;line-height:1.6">'+esc(motivo)
+      +'<br>Copia este prompt, pegalo en Claude o ChatGPT, y traeme la respuesta de vuelta abajo.</div>'
+    +'<textarea id="ab-prompt" readonly style="width:100%;height:150px;font-family:var(--mono);font-size:11px">'+esc(prompt)+'</textarea>'
+    +'<div style="margin:8px 0 16px"><button class="btn btn-sm" onclick="abCopiarPrompt()">Copiar prompt</button></div>'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Pega aca la respuesta</div>'
+    +'<textarea id="ab-pegado" placeholder="El JSON o las 4 promesas, una por linea" style="width:100%;height:110px;font-size:12px"></textarea>'
+    +'<div style="margin-top:8px"><button class="btn btn-sm" onclick="abUsarPegado('+c.id+')">Usar estas promesas</button></div>';
+}
+
+function abCopiarPrompt(){
+  var t=document.getElementById('ab-prompt');
+  if(!t) return;
+  t.select(); t.setSelectionRange(0,999999);
+  try{ document.execCommand('copy'); toast('Prompt copiado'); }catch(e){ toast('Copialo a mano','amber'); }
+}
+
+function abUsarPegado(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var t=document.getElementById('ab-pegado');
+  if(!c||!t) return;
+  var ps=abParsearPromesas(t.value||'');
+  if(!ps.length){ toast('No pude leer ninguna promesa de ahi','red'); return; }
+  abMostrarPromesas(c, ps, null);
+}
+
+function abMostrarPromesas(c, ps, ctx){
+  var out=document.getElementById('ab-gen-out');
+  if(!out) return;
+  if(!ps.length){ out.innerHTML='<div style="font-size:12px;color:var(--redx)">La respuesta no traia promesas legibles.</div>'; return; }
+  var control=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean)[0]||'';
+  var lista=(control?[control]:[]).concat(ps);
+  var largos=lista.map(function(p){return p.replace(/\*\*/g,'').split(/\s+/).length;});
+  var dispar=(Math.max.apply(null,largos)-Math.min.apply(null,largos))>8;
+  out.innerHTML='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">'
+      +ps.length+' promesas nuevas'+(ctx?(' &middot; a partir de '+esc(ctx.ad.name)+(ctx.esGanadorReal?'':' (todavia sin cierres, es el de mejor performance)')):'')+'</div>'
+    +'<textarea id="ab-gen-lista" style="width:100%;height:150px;font-size:12.5px;line-height:1.6">'+esc(lista.join('\n'))+'</textarea>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.6">'
+      +'La primera es el control. Editalas libremente antes de guardar.'
+      +(dispar?'<br><span style="color:var(--amberx)">Los largos son muy dispares ('+Math.min.apply(null,largos)+' a '+Math.max.apply(null,largos)+' palabras). No vas a poder saber si una gano por el mensaje o por ser mas facil de leer.</span>':'')
+    +'</div>'
+    +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm" onclick="abGuardarLista('+c.id+')">Guardar lista</button>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abGenerarPromesas('+c.id+')">Generar otras</button>'
+    +'</div>';
+}
+
+function abGuardarLista(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var t=document.getElementById('ab-gen-lista');
+  if(!c||!t) return;
+  abCfg(c).promesas=t.value.split('\n').map(function(s){return s.trim();}).filter(Boolean).join('\n');
+  save();
+  toast('Promesas guardadas');
+  var out=document.getElementById('ab-gen-out');
+  if(out) out.innerHTML='<div style="font-size:12px;color:var(--accent);padding:8px 0;line-height:1.6">'
+    +'Guardadas en el tracker. Todavia no estan en la landing: para eso hay que escribirlas en el blob de GHL, '
+    +'lo que archiva el test actual y arranca uno nuevo.</div>';
 }
 
 function editarAbCfg(clientId){
