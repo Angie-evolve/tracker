@@ -8803,6 +8803,7 @@ function middleConfigHtml(c){
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
       +'<button class="btn btn-sm btn-primary" onclick="abConfirmarPublicar('+c.id+')">Guardar promesas en GHL</button>'
       +'<button class="btn btn-sm" onclick="abVerBloque('+c.id+')">Codigo para la landing</button>'
+      +'<button class="btn btn-sm" onclick="abListarEmbudos('+c.id+')">Elegir landing</button>'
     +'</div>'
     +'<div id="ab-gen-out" style="margin-top:14px"></div>'
     +'<div id="ab-crear-estado" style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.6"></div>'
@@ -9002,7 +9003,8 @@ function abTablaHtml(c, blob){
     +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button>'
     +'<button class="btn btn-sm" style="margin-left:8px;color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
     +'<button class="btn btn-sm btn-primary" style="margin-left:8px" onclick="abConfirmarPublicar('+c.id+')">Guardar promesas en GHL</button>'
-    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abVerBloque('+c.id+')">Codigo para la landing</button></div>'
+    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abVerBloque('+c.id+')">Codigo para la landing</button>'
+    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abListarEmbudos('+c.id+')">Elegir landing</button></div>'
     +'<div id="ab-gen-out" style="margin-top:14px;max-width:620px"></div>'
   +'</div>';
 }
@@ -9632,6 +9634,187 @@ document.querySelectorAll('[data-lm-cta]').forEach(el => {
   el.addEventListener('click', irAAgendar);
 });
 <\/script>`;
+
+// ---------- Elegir la landing de referencia desde los embudos del cliente ----------
+// Los endpoints de funnels devuelven metadatos, no el HTML. Para el diseno hay que
+// bajar la pagina publica, y eso lo hace el Apps Script: el navegador no puede por CORS.
+
+async function abListarEmbudos(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var out=document.getElementById('ab-gen-out');
+  if(!c||!out) return;
+  if(!c.ghl||!c.ghl.token||!c.ghl.locationId){
+    out.innerHTML='<div style="font-size:12px;color:var(--amberx)">Falta el token o el locationId de este cliente en Integraciones.</div>';
+    return;
+  }
+  out.innerHTML='<div style="font-size:12px;color:var(--text3)">Buscando embudos...</div>';
+  try{
+    var d=await _ghlJson(c,'GET','https://services.leadconnectorhq.com/funnels/funnel/list?locationId='
+      +encodeURIComponent(c.ghl.locationId)+'&limit=100');
+    var fs=d.funnels||d.data||[];
+    if(!fs.length){ out.innerHTML='<div style="font-size:12px;color:var(--amberx)">No aparecen embudos en esta subcuenta.</div>'; return; }
+    S._abFunnels=fs;
+    var a=abCfg(c);
+    var opts=fs.map(function(f){
+      return '<option value="'+esc(f._id||f.id)+'"'+(((f._id||f.id)===a.funnelId)?' selected':'')+'>'+esc(f.name||f._id)+'</option>';
+    }).join('');
+    out.innerHTML='<div style="max-width:620px">'
+      +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:8px">Landing de referencia</div>'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Embudo</div>'
+      +'<select id="ab-funnel" onchange="abListarPaginas('+c.id+')" style="width:100%;max-width:420px;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px">'
+        +'<option value="">Elegi un embudo...</option>'+opts+'</select>'
+      +'<div id="ab-paginas" style="margin-top:12px"></div>'
+    +'</div>';
+    if(a.funnelId) abListarPaginas(clientId);
+  }catch(e){
+    out.innerHTML='<div style="font-size:12px;color:var(--redx)">No se pudieron listar los embudos: '+esc(e.message)+'<br>'
+      +'<span style="color:var(--text3)">Si dice que falta un scope, agregale a la integracion privada '
+      +'<span class="mono">funnels/funnel.readonly</span> y <span class="mono">funnels/page.readonly</span>.</span></div>';
+  }
+}
+
+async function abListarPaginas(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var cont=document.getElementById('ab-paginas');
+  var sel=document.getElementById('ab-funnel');
+  if(!c||!cont||!sel) return;
+  var funnelId=sel.value;
+  if(!funnelId){ cont.innerHTML=''; return; }
+  abCfg(c).funnelId=funnelId; save();
+  cont.innerHTML='<div style="font-size:12px;color:var(--text3)">Buscando paginas...</div>';
+  try{
+    var d=await _ghlJson(c,'GET','https://services.leadconnectorhq.com/funnels/page?locationId='
+      +encodeURIComponent(c.ghl.locationId)+'&funnelId='+encodeURIComponent(funnelId)+'&limit=100');
+    var ps=d.pages||d.data||[];
+    if(!ps.length){ cont.innerHTML='<div style="font-size:12px;color:var(--amberx)">Ese embudo no tiene paginas.</div>'; return; }
+    var a=abCfg(c);
+    var opts=ps.map(function(pg){
+      var id=pg._id||pg.id;
+      return '<option value="'+esc(id)+'"'+((id===a.pageId)?' selected':'')+'>'+esc(pg.name||id)+(pg.url?(' - /'+esc(pg.url)):'')+'</option>';
+    }).join('');
+    S._abPages=ps;
+    cont.innerHTML='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Pagina</div>'
+      +'<select id="ab-page" onchange="abElegirPagina('+c.id+')" style="width:100%;max-width:420px;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px">'
+        +'<option value="">Elegi la landing...</option>'+opts+'</select>'
+      +'<div style="margin-top:10px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">URL publica</div>'
+        +'<input id="ab-landing-url" value="'+esc(a.landingUrl||'')+'" placeholder="https://info.cliente.com/la-pagina" style="width:100%;max-width:420px" oninput="abGuardarLandingUrl('+c.id+')">'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:4px">La API no siempre devuelve el dominio completo. Si queda a medias, pegala entera.</div></div>'
+      +'<div style="margin-top:10px"><button class="btn btn-sm btn-primary" onclick="abBajarLanding('+c.id+')">Bajar y analizar la landing</button></div>'
+      +'<div id="ab-analisis" style="margin-top:12px"></div>';
+  }catch(e){
+    cont.innerHTML='<div style="font-size:12px;color:var(--redx)">No se pudieron listar las paginas: '+esc(e.message)+'</div>';
+  }
+}
+
+function abElegirPagina(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var sel=document.getElementById('ab-page');
+  if(!c||!sel) return;
+  var a=abCfg(c);
+  a.pageId=sel.value;
+  var pg=(S._abPages||[]).find(function(x){return (x._id||x.id)===sel.value;});
+  if(pg&&!a.landingUrl){
+    var u=pg.fullUrl||pg.url||'';
+    if(u&&!/^https?:\/\//i.test(u)) u='';   // la API a veces da solo el slug
+    if(u){ a.landingUrl=u; var e=document.getElementById('ab-landing-url'); if(e) e.value=u; }
+  }
+  save();
+}
+
+function abGuardarLandingUrl(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var e=document.getElementById('ab-landing-url');
+  if(!c||!e) return;
+  abCfg(c).landingUrl=e.value.trim(); save();
+}
+
+// Baja el HTML por el proxy y lo deja en memoria. NO se guarda en el cliente a proposito:
+// una landing pesa cientos de KB y localStorage ya viene justo de espacio.
+async function abBajarLanding(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var cont=document.getElementById('ab-analisis');
+  if(!c||!cont) return;
+  var url=abCfg(c).landingUrl;
+  if(!url){ cont.innerHTML='<div style="font-size:12px;color:var(--amberx)">Falta la URL publica de la landing.</div>'; return; }
+  var proxy=getGhlProxy();
+  if(!proxy.url){ cont.innerHTML='<div style="font-size:12px;color:var(--amberx)">Falta la conexion al Apps Script (boton "Conexion (proxy)").</div>'; return; }
+  cont.innerHTML='<div style="font-size:12px;color:var(--text3)">Bajando la landing...</div>';
+  try{
+    var r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)+'&action=fetch_page&url='+encodeURIComponent(url))
+      .then(function(x){return x.json();});
+    if(!r||!r.ok){
+      var err=String((r&&r.error)||'sin respuesta');
+      cont.innerHTML='<div style="font-size:12px;color:var(--redx)">No se pudo bajar: '+esc(err)
+        +(/desconocida/i.test(err)?'<br><span style="color:var(--text3)">El Apps Script todavia no tiene la accion fetch_page. Actualizalo a la v10.</span>':'')+'</div>';
+      return;
+    }
+    S._abLandingHtml=r.html;
+    cont.innerHTML=abAnalisisHtml(r);
+  }catch(e){
+    cont.innerHTML='<div style="font-size:12px;color:var(--redx)">Error de red: '+esc(e.message)+'</div>';
+  }
+}
+
+// Que encontro en la landing. Sirve para saber si el sistema puede engancharse
+// y, sobre todo, como convierte: boton al calendario o formulario embebido.
+function abAnalizarLanding(html){
+  var h=String(html||'');
+  var h1s=h.match(/<h1[^>]*>[\s\S]*?<\/h1>/gi)||[];
+  var texto=function(t){ return t.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim(); };
+  var iframes=h.match(/<iframe[^>]*>/gi)||[];
+  var formsIframe=iframes.filter(function(t){ return /form|survey|widget/i.test(t); });
+  var calIframe=iframes.filter(function(t){ return /booking|calendar/i.test(t); });
+  var forms=(h.match(/<form[^>]*>/gi)||[]).length;
+  var linksCal=(h.match(/href=["'][^"']*(booking|calendar)[^"']*["']/gi)||[]).length;
+  return {
+    largo:h.length,
+    h1:h1s.map(texto),
+    h1Crudo:h1s[0]||'',
+    forms:forms, iframes:iframes.length,
+    formsIframe:formsIframe.length, calIframe:calIframe.length,
+    linksCal:linksCal,
+    tieneEmbedScript:/form_embed\.js|leadconnectorhq\.com\/loader/i.test(h),
+    modo: (formsIframe.length||forms)?'formulario':(calIframe.length||linksCal)?'calendario':'?'
+  };
+}
+
+function abAnalisisHtml(r){
+  var a=abAnalizarLanding(r.html);
+  var fila=function(l,v,col){
+    return '<div style="display:flex;gap:10px;padding:5px 0;font-size:12px;border-bottom:1px solid var(--border)">'
+      +'<div style="width:190px;color:var(--text3)">'+l+'</div>'
+      +'<div style="flex:1;color:'+(col||'var(--text2)')+'">'+v+'</div></div>';
+  };
+  var h1txt=a.h1.length?esc(a.h1[0]):'ninguno';
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;max-width:720px">'
+    +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:8px">Que encontre en la landing</div>'
+    +fila('Peso', Math.round(r.largo/1024)+' KB'+(r.cortado?' (cortado, la pagina es mas grande)':''), r.cortado?'var(--amberx)':null)
+    +fila('Titulares H1', a.h1.length?(a.h1.length+' &middot; "'+h1txt+'"'):'ninguno', a.h1.length===1?'var(--accent)':'var(--amberx)')
+    +fila('Formularios', a.forms+' en la pagina, '+a.formsIframe+' embebidos en iframe')
+    +fila('Calendario', a.calIframe+' iframe, '+a.linksCal+' enlaces')
+    +fila('Como convierte', a.modo==='formulario'?'Formulario embebido':(a.modo==='calendario'?'Boton al calendario':'No lo pude determinar'),
+          a.modo==='?'?'var(--amberx)':'var(--accent)')
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:10px">'
+      +(a.h1.length===1
+        ? 'Hay un solo H1, asi que la promesa va a rotar ahi sin ambiguedad.'
+        : (a.h1.length>1
+          ? 'Hay mas de un H1: hay que elegir cual rota, porque el sistema espera uno solo.'
+          : 'No encontre H1. Sin titular no hay nada que rotar.'))
+      +(a.modo==='formulario'
+        ? '<br>Con formulario embebido, el evento a contar es el envio, no un clic. Si el formulario esta dentro de un iframe, la pagina de afuera no puede ver el submit directamente: hay que engancharlo por el mensaje que GHL manda al enviar.'
+        : '')
+    +'</div>'
+    +'<div style="margin-top:10px"><button class="btn btn-sm" onclick="abVerFuente()">Ver el HTML</button></div>'
+  +'</div>';
+}
+
+function abVerFuente(){
+  var h=S._abLandingHtml||'';
+  var cont=document.getElementById('ab-analisis');
+  if(!cont||!h) return;
+  cont.innerHTML+='<div style="margin-top:10px;max-width:720px">'
+    +'<textarea readonly style="width:100%;height:240px;font-family:var(--mono);font-size:10px;line-height:1.4">'+esc(h)+'</textarea></div>';
+}
 
 // ---------- PASO 2: bloque de tracking para pegar en la landing ----------
 // La plantilla es la del sistema; aca solo se reemplazan los datos de este cliente.
