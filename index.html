@@ -8801,6 +8801,7 @@ function middleConfigHtml(c){
       +(falta?'':'<button class="btn btn-sm" onclick="crearContenedorAB('+c.id+')">Crear el contenedor en GHL</button>')
       +'<button class="btn btn-sm" id="ab-gen-btn" onclick="abGenerarPromesas('+c.id+')">Generar promesas</button>'
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="abConfirmarPublicar('+c.id+')">Publicar a la landing</button>'
     +'</div>'
     +'<div id="ab-gen-out" style="margin-top:14px"></div>'
     +'<div id="ab-crear-estado" style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.6"></div>'
@@ -8998,7 +8999,8 @@ function abTablaHtml(c, blob){
       +'</div>'
     +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button>'
     +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button>'
-    +'<button class="btn btn-sm" style="margin-left:8px;color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button></div>'
+    +'<button class="btn btn-sm" style="margin-left:8px;color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
+    +'<button class="btn btn-sm btn-primary" style="margin-left:8px" onclick="abConfirmarPublicar('+c.id+')">Publicar a la landing</button></div>'
     +'<div id="ab-gen-out" style="margin-top:14px;max-width:620px"></div>'
   +'</div>';
 }
@@ -9368,6 +9370,112 @@ function abVerPlan(clientId){
   if(!out) return;
   var blob=S._middleBlob||null;
   out.innerHTML=abPlanHtml(c, blob);
+}
+
+// ---------- Escribir las promesas al blob: archiva el test actual y arranca uno nuevo ----------
+// Es la accion mas destructiva del sistema. Cambiar el texto de una variante sin resetear
+// sus contadores mezclaria datos de dos textos distintos, y el resultado dejaria de significar
+// nada. Por eso guardar promesas y empezar test nuevo son la misma operacion, no dos botones.
+
+function _abSiguienteId(id){
+  var m=String(id||'T0').match(/^T(\d+)$/);
+  return m?('T'+(parseInt(m[1],10)+1)):('T'+Date.now().toString().slice(-4));
+}
+
+async function abLeerBlob(c){
+  var a=abCfg(c);
+  var d=await _ghlJson(c,'GET','https://services.leadconnectorhq.com/contacts/'+encodeURIComponent(a.contactId));
+  var campos=(d.contact&&d.contact.customFields)||[];
+  var f=campos.find(function(x){return x.id===a.fieldId;});
+  if(!f||!f.value) return null;
+  try{ return JSON.parse(f.value); }catch(e){ return null; }
+}
+
+// Paso 1: leer lo que hay y mostrar que se va a archivar antes de tocar nada
+async function abConfirmarPublicar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var out=document.getElementById('ab-gen-out');
+  var a=abCfg(c);
+  var promesas=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  if(!out) return;
+  if(promesas.length<2){
+    out.innerHTML='<div style="font-size:12px;color:var(--amberx)">Necesitas al menos dos promesas: el control y una retadora.</div>';
+    return;
+  }
+  if(!a.contactId||!a.fieldId||!c.ghl||!c.ghl.token){
+    out.innerHTML='<div style="font-size:12px;color:var(--amberx)">Falta el contenedor. Toca "Crear el contenedor en GHL" primero.</div>';
+    return;
+  }
+  out.innerHTML='<div style="font-size:12px;color:var(--text3)">Leyendo el test actual...</div>';
+  var actual=null;
+  try{ actual=await abLeerBlob(c); }
+  catch(e){ out.innerHTML='<div style="font-size:12px;color:var(--redx)">No se pudo leer el blob: '+esc(e.message)+'</div>'; return; }
+
+  var vs=(actual&&Array.isArray(actual.v))?actual.v:[];
+  var n=vs.reduce(function(s,x){return s+(parseInt(x.n)||0);},0);
+  var cl=vs.reduce(function(s,x){return s+(parseInt(x.c)||0);},0);
+  var nuevoId=_abSiguienteId(actual&&actual.test_id);
+  var lista=promesas.map(function(p,i){
+    return '<div style="font-size:12px;color:var(--text2);line-height:1.6;padding:4px 0">'
+      +'<span style="color:var(--text3)">'+(i===0?'control':('v'+i))+'</span> &middot; '+esc(p.replace(/\*\*/g,''))+'</div>';
+  }).join('');
+
+  out.innerHTML='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
+    +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:8px">Publicar '+promesas.length+' promesas como test '+esc(nuevoId)+'</div>'
+    +lista
+    +'<div style="height:1px;background:var(--border);margin:12px 0"></div>'
+    +(n>0
+      ?'<div style="font-size:12px;color:var(--amberx);line-height:1.6">Se archiva el test '+esc((actual&&actual.test_id)||'actual')
+        +' con '+n.toLocaleString()+' visitas y '+cl.toLocaleString()+' clics. Los contadores arrancan de cero.<br>'
+        +'<span style="color:var(--text3)">Queda guardado en el historial y lo vas a poder seguir viendo.</span></div>'
+      :'<div style="font-size:12px;color:var(--text3);line-height:1.6">El test actual no tiene visitas registradas, asi que no se pierde nada.</div>')
+    +'<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm btn-primary" id="ab-pub-btn" onclick="abPublicar('+c.id+')">Guardar y empezar test nuevo</button>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="document.getElementById(\'ab-gen-out\').innerHTML=\'\'">Cancelar</button>'
+    +'</div></div>';
+}
+
+// Paso 2: escribir. Conserva el historial (ultimos 10) y resetea los contadores.
+async function abPublicar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var out=document.getElementById('ab-gen-out');
+  var btn=document.getElementById('ab-pub-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Publicando...'; }
+  var a=abCfg(c);
+  var promesas=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  try{
+    var actual=await abLeerBlob(c);
+    var historial=(actual&&Array.isArray(actual.historial))?actual.historial.slice():[];
+    var vsPrev=(actual&&Array.isArray(actual.v))?actual.v:[];
+    var tuvoDatos=vsPrev.reduce(function(s,x){return s+(parseInt(x.n)||0);},0)>0;
+    if(actual&&tuvoDatos){
+      historial.unshift({
+        test_id:actual.test_id||'?', inicio:actual.inicio||'', fin:new Date().toISOString(),
+        promesas:actual.promesas||[], v:vsPrev
+      });
+      historial=historial.slice(0,10);   // mas de 10 y el campo de texto empieza a pesar
+    }
+    var blob={
+      test_id:_abSiguienteId(actual&&actual.test_id),
+      inicio:new Date().toISOString(),
+      promesas:promesas,
+      v:promesas.map(function(){ return {n:0,c:0}; }),
+      historial:historial
+    };
+    await _ghlJson(c,'PUT','https://services.leadconnectorhq.com/contacts/'+encodeURIComponent(a.contactId),
+      { customFields:[{id:a.fieldId, value:JSON.stringify(blob)}] });
+    S._middleCargado=null; S._middleHtml=null; S._middleBlob=blob;
+    if(out) out.innerHTML='<div style="font-size:12px;color:var(--accent);line-height:1.6">'
+      +'Test '+esc(blob.test_id)+' publicado con '+promesas.length+' promesas. Los contadores arrancan de cero.<br>'
+      +'<span style="color:var(--text3)">La landing las va a tomar en la proxima carga, sin republicarla. '
+      +'Si todavia no tiene el bloque de tracking puesto, no va a registrar nada.</span></div>';
+    toast('Test '+blob.test_id+' publicado');
+  }catch(e){
+    if(out) out.innerHTML='<div style="font-size:12px;color:var(--redx)">No se pudo publicar: '+esc(e.message)+'</div>';
+    if(btn){ btn.disabled=false; btn.textContent='Guardar y empezar test nuevo'; }
+  }
 }
 
 function editarAbCfg(clientId){
