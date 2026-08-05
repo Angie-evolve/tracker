@@ -8800,6 +8800,7 @@ function middleConfigHtml(c){
       +'<button class="btn btn-sm btn-primary" onclick="S._middleCargado=null;dibujarMiddle(DB.clients.find(function(x){return x.id==='+c.id+';}))">Leer metricas</button>'
       +(falta?'':'<button class="btn btn-sm" onclick="crearContenedorAB('+c.id+')">Crear el contenedor en GHL</button>')
       +'<button class="btn btn-sm" id="ab-gen-btn" onclick="abGenerarPromesas('+c.id+')">Generar promesas</button>'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button>'
     +'</div>'
     +'<div id="ab-gen-out" style="margin-top:14px"></div>'
     +'<div id="ab-crear-estado" style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.6"></div>'
@@ -8926,6 +8927,7 @@ async function cargarAB(c){
   if(!f||!f.value) throw new Error('el campo esta vacio: la landing todavia no registro nada');
   var blob;
   try{ blob=JSON.parse(f.value); }catch(e){ throw new Error('el contenido del campo no es JSON valido'); }
+  S._middleBlob=blob;   // el planificador lo usa para la tasa de clic real
   return abTablaHtml(c, blob);
 }
 
@@ -8995,7 +8997,8 @@ function abTablaHtml(c, blob){
       +(fuente==='ninguna'?'<br><span style="color:var(--amberx)">El blob no trae los textos de las promesas. Cargalos en Configuracion para ver de que promesa habla cada fila.</span>':'')
       +'</div>'
     +'<div style="margin-top:14px"><button class="btn btn-sm" style="color:var(--text3)" onclick="editarAbCfg('+c.id+')">Configuracion</button>'
-    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button></div>'
+    +'<button class="btn btn-sm" style="margin-left:8px" onclick="abGenerarPromesas('+c.id+')" id="ab-gen-btn">Generar promesas</button>'
+    +'<button class="btn btn-sm" style="margin-left:8px;color:var(--text3)" onclick="abVerPlan('+c.id+')">Cuanto tarda el test</button></div>'
     +'<div id="ab-gen-out" style="margin-top:14px;max-width:620px"></div>'
   +'</div>';
 }
@@ -9242,6 +9245,124 @@ function abGuardarLista(clientId){
   if(out) out.innerHTML='<div style="font-size:12px;color:var(--accent);padding:8px 0;line-height:1.6">'
     +lista.length+' promesas guardadas en el tracker. Todavia no estan en la landing: para eso hay que escribirlas '
     +'en el blob de GHL, lo que archiva el test actual y arranca uno nuevo.</div>';
+}
+
+// ---------- PLANIFICADOR: cuanto tarda este test con el trafico real del cliente ----------
+// Toma gasto y vistas de landing de la linea activa, y la tasa de clic al CTA del propio
+// blob si ya hay datos. Sin eso, el "cuantas promesas pruebo" se decide a ojo.
+
+function _normCdf(z){
+  var t=1/(1+0.2316419*Math.abs(z));
+  var d=0.3989422804014327*Math.exp(-z*z/2);
+  var p=d*t*(0.319381530+t*(-0.356563782+t*(1.781477937+t*(-1.821255978+t*1.330274429))));
+  return z>0?1-p:p;
+}
+// Visitas totales necesarias para detectar una mejora relativa 'mde' sobre p1,
+// con 80% de potencia y Bonferroni por la cantidad de comparaciones contra el control.
+function _nNecesario(p1, mde, comparaciones){
+  var p2=Math.min(0.999, p1*(1+mde));
+  var alpha=0.05/Math.max(1,comparaciones);
+  var lo=0, hi=6;
+  for(var i=0;i<60;i++){ var m=(lo+hi)/2; if(1-_normCdf(m)>alpha/2) lo=m; else hi=m; }
+  var zA=(lo+hi)/2, zB=0.8416;
+  var porVariante=Math.ceil(Math.pow(zA+zB,2)*(p1*(1-p1)+p2*(1-p2))/Math.pow(p2-p1,2));
+  return porVariante*(comparaciones+1);   // el control tambien necesita su muestra
+}
+
+// Trafico real del cliente: gasto y vistas de landing de la linea activa, normalizados a 30 dias
+function abTrafico(c){
+  var lineas=(c.conversionLines||[]);
+  var l=(typeof getActiveLine==='function')?getActiveLine(lineas):(lineas[0]||null);
+  if(!l||!(l.metaCampaigns||[]).length) return null;
+  var dias=l.metaDays;
+  if(dias==='max'||dias==='custom'||!dias){
+    if(l.metaSince&&l.metaUntil){
+      dias=Math.max(1,Math.round((new Date(l.metaUntil)-new Date(l.metaSince))/864e5));
+    } else dias=(dias==='max')?1095:30;
+  }
+  dias=parseInt(dias,10)||30;
+  var gasto=0, vistas=0;
+  (l.metaCampaigns||[]).forEach(function(camp){
+    if(l.excluded&&l.excluded.indexOf(camp.id)>=0) return;
+    gasto+=Number(camp.spend)||0;
+    vistas+=Number(camp.landingViews)||0;
+  });
+  if(!vistas) return null;
+  return { dias:dias, gasto:gasto, vistas:vistas,
+           visitasMes:Math.round(vistas/dias*30), gastoMes:Math.round(gasto/dias*30),
+           costoVisita:vistas?(gasto/vistas):0 };
+}
+
+// Tasa base de clic al CTA. La real del blob si hay datos suficientes; si no, el 8% de referencia.
+function abTasaBase(blob){
+  var vs=(blob&&Array.isArray(blob.v))?blob.v:[];
+  var n=vs.reduce(function(s,x){return s+(parseInt(x.n)||0);},0);
+  var cl=vs.reduce(function(s,x){return s+(parseInt(x.c)||0);},0);
+  if(n>=200&&cl>0) return { p:cl/n, real:true, n:n };
+  return { p:0.08, real:false, n:n };
+}
+
+function abPlanHtml(c, blob){
+  var t=abTrafico(c);
+  if(!t) return '<div style="font-size:12px;color:var(--text3);line-height:1.6">'
+    +'Para calcular cuanto tarda el test necesito el trafico de este cliente. Sincroniza Meta desde Top of Funnel.</div>';
+  var base=abTasaBase(blob);
+  var promesas=(abCfg(c).promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  var actuales=Math.max(2, promesas.length);
+  var mdes=[0.2,0.3,0.5];
+  var opciones=[2,3,5].filter(function(k,i,a){ return true; });
+  if(opciones.indexOf(actuales)<0) opciones.push(actuales);
+  opciones.sort(function(a,b){return a-b;});
+
+  var fila=function(k){
+    var esActual=(k===actuales);
+    var celdas=mdes.map(function(m){
+      var n=_nNecesario(base.p, m, k-1);
+      var meses=t.visitasMes?(n/t.visitasMes):0;
+      var txt=meses?(meses<1.5?(Math.round(meses*4.3)+' sem'):(meses<24?(meses.toFixed(1)+' meses'):'+2 anos')):'-';
+      var col=meses<=2?'var(--accent)':(meses<=4?'var(--text2)':'var(--redx)');
+      return '<td style="padding:9px 12px;text-align:right;font-family:var(--mono);font-size:12px;color:'+col+'">'+txt+'</td>';
+    }).join('');
+    return '<tr style="border-top:1px solid var(--border)'+(esActual?';background:var(--bg3)':'')+'">'
+      +'<td style="padding:9px 12px;font-size:12.5px;color:var(--strong)">Control + '+(k-1)
+      +(esActual?' <span style="font-size:10.5px;color:var(--text3)">&larr; tu lista</span>':'')+'</td>'
+      +celdas+'</tr>';
+  };
+
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;max-width:620px">'
+    +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:4px">Cuanto va a tardar este test</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +'Con '+t.visitasMes.toLocaleString()+' visitas por mes ('+_fmtUsd(t.gastoMes)+' de pauta, '
+      +_fmtUsd(t.costoVisita)+' por visita) y una tasa de clic al CTA del '+(base.p*100).toFixed(1)+'%'
+      +(base.real?(' medida sobre '+base.n.toLocaleString()+' visitas'):' (valor de referencia: todavia no hay datos propios)')+'.'
+    +'</div>'
+    +'<table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr style="color:var(--text3);font-size:11px">'
+      +'<th style="text-align:left;font-weight:500;padding:0 12px 8px">Variantes</th>'
+      +'<th style="text-align:right;font-weight:500;padding:0 12px 8px">Mejora 20%</th>'
+      +'<th style="text-align:right;font-weight:500;padding:0 12px 8px">Mejora 30%</th>'
+      +'<th style="text-align:right;font-weight:500;padding:0 12px 8px">Mejora 50%</th>'
+    +'</tr></thead><tbody>'+opciones.map(fila).join('')+'</tbody></table>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:12px;line-height:1.6">'
+      +'Sumar variantes cuesta dos veces: el trafico se reparte, y comparar mas promesas contra el control '
+      +'obliga a exigir mas evidencia a cada una para no dar por ganadora una casualidad.<br>'
+      +'Una mejora del 20% es poco probable de detectar con presupuestos chicos, y tampoco cambia el negocio. '
+      +'Conviene apuntar a diferencias grandes y elegir promesas bien distintas entre si.'
+    +'</div></div>';
+}
+
+function _fmtUsd(n){
+  n=Number(n)||0;
+  return '$'+(n<10?n.toFixed(2):Math.round(n).toLocaleString());
+}
+
+function abVerPlan(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var out=document.getElementById('ab-gen-out');
+  if(!out) return;
+  var blob=S._middleBlob||null;
+  out.innerHTML=abPlanHtml(c, blob);
 }
 
 function editarAbCfg(clientId){
