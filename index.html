@@ -9868,14 +9868,194 @@ function abVerFuente(){
     +'<textarea readonly style="width:100%;height:240px;font-family:var(--mono);font-size:10px;line-height:1.4">'+esc(h)+'</textarea></div>';
 }
 
+var AB_TRACKING_FORM_TPL=`<!--
+  ============================================================
+  BLOQUE DE TRACKING - landing de GHL con formulario nativo
+  ============================================================
+  Pegar completo en un elemento "Codigo personalizado" al final de la landing.
+  Las promesas NO se editan aca: se administran desde el tracker y viajan por GHL.
+  La lista de abajo es solo el respaldo si GHL no responde.
+
+  Este modo asume:
+   - El titular a rotar es el PRIMER <h1> de la pagina (las landings del page
+     builder de GHL no tienen id propio).
+   - La conversion es el envio del formulario nativo, no un clic al calendario.
+   - Hay un campo oculto donde se escribe que promesa vio la persona.
+  ============================================================
+-->
+<script>
+(function(){
+  var TOKEN    = '{{TOKEN}}';
+  var SISTEMA  = '{{SISTEMA_ID}}';
+  var FIELD_AB = '{{FIELD_AB}}';
+  var FIELD_VAR= '{{FIELD_VARIANTE}}';
+  var RESPALDO = [
+    '{{PROMESA_0}}',
+    '{{PROMESA_1}}',
+    '{{PROMESA_2}}',
+    '{{PROMESA_3}}'
+  ];
+  var API='https://services.leadconnectorhq.com';
+  var H = {Authorization:'Bearer '+TOKEN, Version:'2021-07-28', 'Content-Type':'application/json'};
+
+  // Para mirar la pagina sin ensuciar el test: agregar ?notrack=true a la URL
+  if (location.search.indexOf('notrack=true') >= 0) return;
+
+  var blob=null, idx=0, LISTO=false;
+
+  function leer(){
+    return fetch(API+'/contacts/'+SISTEMA, {headers:H})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var cf=(d.contact&&d.contact.customFields)||[];
+        var f=cf.filter(function(x){ return x.id===FIELD_AB; })[0];
+        if(!f||!f.value) throw new Error('sin blob');
+        return JSON.parse(f.value);
+      });
+  }
+  function escribir(b){
+    return fetch(API+'/contacts/'+SISTEMA, {
+      method:'PUT', headers:H,
+      body: JSON.stringify({ customFields:[{ id:FIELD_AB, value: JSON.stringify(b) }] })
+    });
+  }
+
+  // Se elige la variante con menos visitas para que el reparto quede parejo aunque
+  // el trafico llegue de a rachas. La sesion se queda con la suya: si la persona
+  // recarga, ve el mismo titular y no se cuenta dos veces.
+  function elegir(v){
+    var min=Infinity, cand=[];
+    for(var i=0;i<v.length;i++){
+      var n=parseInt(v[i].n)||0;
+      if(n<min){ min=n; cand=[i]; } else if(n===min){ cand.push(i); }
+    }
+    return cand[Math.floor(Math.random()*cand.length)];
+  }
+
+  function pintar(texto){
+    var h1=document.querySelector('h1');
+    if(!h1||!texto) return;
+    // Los ** marcan el fragmento que va en el color de acento. Se respeta el
+    // markup que ya tiene el titular: se reemplaza solo el texto.
+    var partes=String(texto).split('**');
+    var html='';
+    for(var i=0;i<partes.length;i++){
+      var t=partes[i].replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      html += (i%2===1) ? '<span style="color:var(--primary,#188bf6)">'+t+'</span>' : t;
+    }
+    h1.innerHTML=html;
+  }
+
+  // El formulario de GHL se dibuja despues, asi que se insiste un rato.
+  function conCampoVariante(fn){
+    var intentos=0;
+    var t=setInterval(function(){
+      var el=FIELD_VAR ? document.querySelector('input[name="'+FIELD_VAR+'"]') : null;
+      if(el){ clearInterval(t); fn(el); }
+      else if(++intentos>40){ clearInterval(t); }   // ~20 segundos y se deja
+    }, 500);
+  }
+
+  // Solo cuenta si el formulario esta realmente completo. Un clic en "Enviar"
+  // con campos vacios no es una conversion, y contarlo inflaria la tasa.
+  function formularioCompleto(){
+    var req=document.querySelectorAll('input[required], select[required], textarea[required]');
+    if(!req.length) return true;          // si GHL no marca required, se cuenta el clic
+    for(var i=0;i<req.length;i++){
+      var e=req[i];
+      if(e.offsetParent===null) continue; // los ocultos no cuentan
+      if(e.type==='checkbox'||e.type==='radio'){
+        var g=document.querySelectorAll('[name="'+e.name+'"]:checked');
+        if(!g.length) return false;
+      } else if(!String(e.value||'').trim()){ return false; }
+    }
+    return true;
+  }
+
+  function contarConversion(){
+    if(!LISTO) return;
+    try{ if(sessionStorage.getItem('lm_conv')) return; sessionStorage.setItem('lm_conv','1'); }catch(e){}
+    leer().then(function(b){
+      if(!b.v||!b.v[idx]) return;
+      b.v[idx].c=(parseInt(b.v[idx].c)||0)+1;
+      return escribir(b);
+    }).catch(function(e){ console.warn('[LM] conversion no registrada:', e.message); });
+  }
+
+  function engancharEnvio(){
+    document.addEventListener('click', function(ev){
+      var b=ev.target.closest('button, input[type=submit], .ghl-btn, [type=submit]');
+      if(!b) return;
+      var txt=(b.textContent||b.value||'').trim().toLowerCase();
+      if(txt.indexOf('enviar')<0 && txt.indexOf('submit')<0 && b.type!=='submit') return;
+      if(!formularioCompleto()) return;
+      contarConversion();
+    }, true);
+  }
+
+  function arrancar(b){
+    blob=b;
+    var promesas=(b.promesas&&b.promesas.length)?b.promesas:RESPALDO.filter(Boolean);
+    if(!b.v||!b.v.length) b.v=promesas.map(function(){ return {n:0,c:0}; });
+
+    var guardada=null;
+    try{ guardada=sessionStorage.getItem('lm_v'); }catch(e){}
+    if(guardada!==null && b.v[+guardada]){ idx=+guardada; }
+    else{
+      idx=elegir(b.v);
+      try{ sessionStorage.setItem('lm_v', String(idx)); }catch(e){}
+      b.v[idx].n=(parseInt(b.v[idx].n)||0)+1;
+      escribir(b);
+    }
+    pintar(promesas[idx]);
+    LISTO=true;
+    if(FIELD_VAR) conCampoVariante(function(el){ el.value=String(idx); });
+    engancharEnvio();
+  }
+
+  // Si GHL no responde, la landing igual muestra una promesa del respaldo.
+  // Lo que no pasa es contar: sin blob no hay donde escribir.
+  leer().then(arrancar).catch(function(e){
+    console.warn('[LM] sin datos de GHL, se usa el respaldo:', e.message);
+    var r=RESPALDO.filter(Boolean);
+    if(r.length) pintar(r[0]);
+  });
+})();
+<\/script>
+`;
+
 // ---------- PASO 2: bloque de tracking para pegar en la landing ----------
 // La plantilla es la del sistema; aca solo se reemplazan los datos de este cliente.
 // El respaldo de promesas se llena con las que estan publicadas: si GHL no contesta,
 // la landing igual muestra algo parecido a lo real.
+// Busca el custom field "Variante" en la subcuenta. GHL no usa la clave de consulta
+// como name del input: usa el id interno del campo. Por eso se resuelve por API en vez
+// de hardcodearlo, asi sigue andando si algun dia se recrea el campo.
+async function abResolverVariante(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var est=document.getElementById('ab-var-estado');
+  if(!c) return;
+  var decir=function(t,col){ if(est){ est.innerHTML=t; est.style.color=col||'var(--text3)'; } };
+  if(!c.ghl||!c.ghl.token||!c.ghl.locationId){ decir('Falta el token del cliente.','var(--amberx)'); return; }
+  decir('Buscando el campo...');
+  try{
+    var d=await _ghlJson(c,'GET','https://services.leadconnectorhq.com/locations/'
+      +encodeURIComponent(c.ghl.locationId)+'/customFields');
+    var lista=d.customFields||d.customField||[];
+    var f=lista.filter(function(x){ return /^variante$/i.test(String(x.name||'').trim()); })[0];
+    if(!f){ decir('No hay ningun campo llamado "Variante" en esta subcuenta.','var(--amberx)'); return; }
+    abCfg(c).fieldVariante=f.id; save();
+    decir('Campo encontrado: <span class="mono">'+esc(f.id)+'</span>','var(--accent)');
+    var t=document.getElementById('ab-bloque');
+    if(t) t.value=abBloqueTracking(c);
+  }catch(e){ decir('No se pudo consultar: '+esc(e.message),'var(--redx)'); }
+}
+
 function abBloqueTracking(c){
   var a=abCfg(c);
   var ps=(a.promesas||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
-  var out=AB_TRACKING_TPL;
+  var esForm=(a.modoLanding==='formulario');
+  var out=esForm?AB_TRACKING_FORM_TPL:AB_TRACKING_TPL;
   // Respaldo: hasta 4 promesas. Si hay menos, se sacan las lineas sobrantes.
   for(var i=0;i<4;i++){
     var val=ps[i];
@@ -9890,9 +10070,18 @@ function abBloqueTracking(c){
   out=out.replace('{{LOCATION_ID}}', (c.ghl&&c.ghl.locationId)||'PEGAR_LOCATION');
   out=out.replace('{{SISTEMA_ID}}', a.contactId||'PEGAR_CONTACTO');
   out=out.replace('{{FIELD_AB}}', a.fieldId||'PEGAR_CAMPO');
+  out=out.replace('{{FIELD_VARIANTE}}', a.fieldVariante||'');
   out=out.replace('{{URL_CALENDARIO}}', a.calendario||'PEGAR_URL_DEL_CALENDARIO');
   out=out.replace('{{CLASE_ACENTO}}', a.claseAcento||'acento');
   return out;
+}
+
+function abCambiarModo(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var sel=document.getElementById('ab-modo');
+  if(!c||!sel) return;
+  abCfg(c).modoLanding=sel.value; save();
+  abVerBloque(clientId);
 }
 
 function abVerBloque(clientId){
@@ -9901,20 +10090,34 @@ function abVerBloque(clientId){
   var out=document.getElementById('ab-gen-out');
   if(!out) return;
   var a=abCfg(c);
+  var esForm=(a.modoLanding==='formulario');
   var faltan=[];
   if(!a.contactId||!a.fieldId) faltan.push('el contenedor de GHL');
   if(!c.ghl||!c.ghl.token) faltan.push('el token de GHL');
-  if(!a.calendario) faltan.push('la URL del calendario');
+  if(!esForm&&!a.calendario) faltan.push('la URL del calendario');
   var codigo=abBloqueTracking(c);
+  var selStyle='padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;width:100%;max-width:420px';
   out.innerHTML='<div style="max-width:720px">'
     +'<div style="font-size:12.5px;color:var(--strong);margin-bottom:4px">Bloque de tracking para la landing</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-      +'Va pegado justo antes de <span class="mono">&lt;/body&gt;</span> en la landing de este cliente, '
-      +'en el editor de funnels de GHL. Ademas hay que hacer cinco cambios en el markup, listados arriba del codigo.</div>'
-    +'<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">URL del calendario</div>'
-      +'<input id="ab-cal" value="'+esc(a.calendario||'')+'" placeholder="https://api.leadconnectorhq.com/widget/booking/..." '
-      +'style="width:100%;max-width:480px" oninput="abGuardarCal('+c.id+')">'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">A donde llevan los botones de agendar. La landing le pega ?v= y ?vid= para poder atribuir la reunion.</div></div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +'Va pegado al final de la landing de este cliente, en un elemento de codigo personalizado.</div>'
+    +'<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Como convierte la landing</div>'
+      +'<select id="ab-modo" onchange="abCambiarModo('+c.id+')" style="'+selStyle+'">'
+        +'<option value="calendario"'+(esForm?'':' selected')+'>Boton que lleva al calendario</option>'
+        +'<option value="formulario"'+(esForm?' selected':'')+'>Formulario nativo de GHL en la misma pagina</option>'
+      +'</select>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Define que se cuenta como conversion: el clic al CTA o el envio del formulario.</div></div>'
+    +(esForm
+      ? '<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Campo donde viaja la variante</div>'
+        +'<button class="btn btn-sm" onclick="abResolverVariante('+c.id+')">Buscar el campo "Variante"</button>'
+        +'<div id="ab-var-estado" style="font-size:11.5px;margin-top:6px;color:var(--text3)">'
+          +(a.fieldVariante?('Campo guardado: <span class="mono">'+esc(a.fieldVariante)+'</span>')
+            :'Sin resolver. El test mide igual, pero los leads no van a quedar atribuidos a su promesa.')
+        +'</div></div>'
+      : '<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">URL del calendario</div>'
+        +'<input id="ab-cal" value="'+esc(a.calendario||'')+'" placeholder="https://api.leadconnectorhq.com/widget/booking/..." '
+        +'style="width:100%;max-width:480px" oninput="abGuardarCal('+c.id+')">'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:4px">A donde llevan los botones de agendar. La landing le pega ?v= y ?vid= para poder atribuir la reunion.</div></div>')
     +(faltan.length?'<div style="font-size:12px;color:var(--amberx);margin-bottom:10px">Falta '+faltan.join(', ')+'. El codigo se genera igual, pero con marcadores que hay que completar a mano.</div>':'')
     +'<textarea id="ab-bloque" readonly style="width:100%;height:220px;font-family:var(--mono);font-size:10.5px;line-height:1.45">'+esc(codigo)+'</textarea>'
     +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
