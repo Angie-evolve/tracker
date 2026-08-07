@@ -4299,6 +4299,17 @@ function integracionesAppHtml(){
         action:'openDefaultAlarmsModal(null)', actionLabel:st==='no'?'Configurar':'Editar reglas'});
     })(),
 
+    (function(){
+      // Las credenciales viven en las mismas claves que ya usa Conversaciones,
+      // asi ese modulo sigue funcionando sin tocarlo y hay una sola fuente de verdad.
+      var iTok=localStorage.getItem('evold-conv-token')||'';
+      var iLoc=localStorage.getItem('evold-conv-loc')||'';
+      var listo=!!(iTok&&iLoc);
+      return card({name:'Subcuenta interna', st:listo?'ok':'no',
+        desc:'La subcuenta de la agencia. Desde aca se leen las conversaciones del equipo y salen los avisos por WhatsApp de los informes. No es un cliente y no entra en ninguna metrica.',
+        detail:listo?('Location '+esc(iLoc)):'Sin configurar',
+        action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
+    })(),
     card({name:'Agencia de GHL', st:agOk?'ok':(agPartial?'partial':'no'),
       desc:'Crear subcuentas desde un snapshot al dar de alta un cliente. Token aparte del de lectura: puede crear y borrar subcuentas.',
       detail:agOk?('Snapshot: '+esc(a.snapshotNombre||a.snapshotId||'sin definir')):(agPartial?'Faltan datos de conexion':'Sin configurar'),
@@ -4309,6 +4320,63 @@ function integracionesAppHtml(){
     +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px;line-height:1.6">'
       +'Valen para todos los clientes. Las credenciales de cada cliente van en su pestana de Integraciones.</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">'+tarjetas+'</div>';
+}
+
+// Una sola pantalla para las credenciales de la subcuenta interna. Escribe en las
+// mismas claves que usa Conversaciones: cambiar el token aca lo cambia en todos lados.
+function abrirSubcuentaInterna(){
+  var tok=localStorage.getItem('evold-conv-token')||'';
+  var loc=localStorage.getItem('evold-conv-loc')||'';
+  var inp='padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font)';
+  var lbl='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Subcuenta interna</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+      +'La subcuenta de la agencia en GHL. Se usa para leer el hilo del equipo en Conversaciones '
+      +'y para avisarte por WhatsApp cuando salen los informes. No es un cliente: no aparece en ninguna metrica.</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Location ID</div>'
+      +'<input id="si-loc" value="'+esc(loc)+'" placeholder="UvEY3TDazLCLrRsu3RSC" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Token de la subcuenta (pit-...)</div>'
+      +'<input id="si-tok" value="'+esc(tok)+'" placeholder="pit-..." style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.7;background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px">'
+      +'Scopes que necesita el token:<br>'
+      +'<span class="mono">contacts.readonly</span>, <span class="mono">contacts.write</span>,<br>'
+      +'<span class="mono">conversations.readonly</span>, <span class="mono">conversations/message.readonly</span>,<br>'
+      +'<span class="mono">conversations/message.write</span><br>'
+      +'<span style="color:var(--amberx)">Los tres primeros son para leer el hilo; los de escritura, para mandar los avisos.</span></div>'
+    +'<div id="si-estado" style="font-size:11.5px;color:var(--text3);margin-bottom:12px"></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarSubcuentaInterna()">Guardar</button></div>'
+    +'</div></div>';
+}
+
+async function guardarSubcuentaInterna(){
+  var loc=(document.getElementById('si-loc')||{}).value||'';
+  var tok=(document.getElementById('si-tok')||{}).value||'';
+  loc=loc.trim(); tok=tok.trim();
+  var est=document.getElementById('si-estado');
+  var decir=function(t,c){ if(est){ est.innerHTML=t; est.style.color=c||'var(--text3)'; } };
+  if(!loc||!tok){ decir('Faltan el Location ID o el token.','var(--amberx)'); return; }
+  localStorage.setItem('evold-conv-loc',loc);
+  localStorage.setItem('evold-conv-token',tok);
+  // Los avisos del informe viven en el Apps Script, asi que hay que empujarlos ahi
+  decir('Guardado. Avisando al Apps Script...');
+  var proxy=getGhlProxy();
+  if(proxy.url){
+    try{
+      var envios=getEnvios();
+      await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+        +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios))
+        +'&waLocation='+encodeURIComponent(loc)+'&waToken='+encodeURIComponent(tok))
+        .then(function(r){return r.json();});
+    }catch(e){ decir('Guardado en el tracker, pero no se pudo avisar al Apps Script: '+esc(e.message),'var(--amberx)'); return; }
+  }
+  if(typeof toast==='function') toast('Subcuenta interna guardada');
+  closeModal();
+  if(typeof abrirConfigAgencia==='function') abrirConfigAgencia();
 }
 
 function toggleAgenciaDetalle(){
@@ -5197,11 +5265,8 @@ function wrEnviosChanged(){
 // Subcuenta desde la que salen los avisos por WhatsApp. GHL solo manda mensajes a
 // contactos de una subcuenta, asi que se elige una sola y desde ahi se avisa a todos.
 function getWaCfg(){
-  try{ return JSON.parse(localStorage.getItem('evold-report-wa')||'{}')||{}; }catch(e){ return {}; }
-}
-function wrGuardarWa(){
-  var g=function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
-  localStorage.setItem('evold-report-wa', JSON.stringify({ location:g('wa-loc'), token:g('wa-tok') }));
+  return { location: localStorage.getItem('evold-conv-loc')||'',
+           token:    localStorage.getItem('evold-conv-token')||'' };
 }
 
 function wrAgregarEnvio(){
@@ -5232,7 +5297,6 @@ async function wrPushEnvios(showToast){
   }
   if(st) st.innerHTML='Guardando los envios en el Apps Script...';
   try{
-    wrGuardarWa();
     const wa=getWaCfg();
     const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
       +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios))
@@ -5391,6 +5455,7 @@ function openWeeklyReportModal(){
   const pushed=localStorage.getItem('evold-report-pushed');
   const envios=getEnvios();
   const wa=getWaCfg();
+  const algunoConWa=envios.some(function(e){ return !!e.whatsapp; });
   const clientsOk=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
   const selStyle='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);outline:none;cursor:pointer';
   const lblStyle='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
@@ -5450,19 +5515,14 @@ function openWeeklyReportModal(){
       +'<span style="font-size:10.5px;color:var(--text3)">no re-sincroniza los clientes</span>'
     +'</div>'
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
-    +'<div style="margin-bottom:14px">'
-      +'<div style="'+lblStyle+'">Subcuenta desde la que salen los avisos</div>'
-      +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-bottom:7px">'
-        +'GHL solo manda WhatsApp a contactos de una subcuenta. Elegi una que tenga WhatsApp habilitado: '
-        +'los numeros de arriba se dan de alta ahi como contacto la primera vez.</div>'
-      +'<div style="display:flex;gap:8px">'
-        +'<input id="wa-loc" value="'+esc(wa.location||'')+'" placeholder="locationId" oninput="wrGuardarWa()" '
-        +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
-        +'<input id="wa-tok" value="'+esc(wa.token||'')+'" placeholder="token pit-..." oninput="wrGuardarWa()" '
-        +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
-      +'</div>'
-      +'<div style="font-size:10.5px;color:var(--amberx);margin-top:5px">El token necesita permisos de contactos y de conversaciones.</div>'
-    +'</div>'
+    +(algunoConWa
+      ?('<div style="font-size:11.5px;background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6;color:'
+        +(wa.location&&wa.token?'var(--text2)':'var(--amberx)')+'">'
+        +(wa.location&&wa.token
+          ? 'Los avisos por WhatsApp salen desde la subcuenta interna (<span class="mono">'+esc(wa.location)+'</span>).'
+          : 'Cargaste numeros de aviso pero falta configurar la <b>Subcuenta interna</b> en Integraciones: sin eso el WhatsApp no sale. Los informes por mail no se ven afectados.')
+        +'</div>')
+      :'')
     +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
     +(pushed?'<br>Ultima sincronizacion: '+new Date(+pushed).toLocaleString('es-AR'):'')
