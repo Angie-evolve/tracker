@@ -5116,6 +5116,131 @@ function showTickets(){
 // El horario vive en el Apps Script (es quien tiene el disparador). Aca se guarda una copia
 // local para dibujar la UI sin esperar la red, pero la fuente de verdad es report_status.
 var WR_DAYS=['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
+// ---------- ENVIOS: varios informes independientes ----------
+// Antes habia un solo destinatario con rutinas por cliente. Ahora hay una lista de
+// envios, y cada uno tiene su mail, su propia seleccion de clientes y su horario.
+// Asi se puede mandarle 3 clientes diarios a una persona y todos los clientes a otra.
+
+function getEnvios(){
+  try{
+    var e=JSON.parse(localStorage.getItem('evold-report-envios')||'null');
+    if(Array.isArray(e)&&e.length) return e;
+  }catch(err){}
+  // Migracion: lo que habia configurado antes se convierte en el primer envio
+  var vieja=getReportSchedule();
+  var mail=localStorage.getItem('evold-report-email')||'';
+  var per=vieja.perClient||{};
+  var fuera=Object.keys(per).filter(function(k){ return per[k]&&per[k].freq==='off'; });
+  var clientes=[];
+  if(fuera.length){
+    clientes=(DB.clients||[]).filter(function(c){ return c.ghl&&c.ghl.token&&fuera.indexOf(String(c.id))<0; })
+      .map(function(c){ return String(c.id); });
+  }
+  return [{ id:'e1', email:mail, freq:vieja.freq, day:vieja.day,
+            monthDay:vieja.monthDay, hour:vieja.hour, clientes:clientes }];
+}
+function setEnvios(e){ localStorage.setItem('evold-report-envios', JSON.stringify(e)); }
+
+function describeEnvio(e){
+  var h=(e.hour<10?'0':'')+e.hour+':00';
+  if(e.freq==='daily')    return 'Todos los dias a las '+h;
+  if(e.freq==='biweekly') return 'Cada 15 dias, los '+WR_DAYS[(e.day||1)-1].toLowerCase()+' a las '+h;
+  if(e.freq==='monthly')  return 'El dia '+(e.monthDay||1)+' de cada mes a las '+h;
+  return 'Todos los '+WR_DAYS[(e.day||1)-1].toLowerCase()+' a las '+h;
+}
+
+// Lee del DOM todos los envios dibujados
+function wrLeerEnvios(){
+  var out=[];
+  var cajas=document.querySelectorAll('[data-envio]');
+  for(var i=0;i<cajas.length;i++){
+    var id=cajas[i].getAttribute('data-envio');
+    var g=function(pre){ var el=document.getElementById(pre+'-'+id); return el?el.value:null; };
+    var clientes=[];
+    var chks=cajas[i].querySelectorAll('input[type=checkbox][data-cli]');
+    var todos=document.getElementById('env-todos-'+id);
+    if(!(todos&&todos.checked)){
+      for(var j=0;j<chks.length;j++){ if(chks[j].checked) clientes.push(chks[j].getAttribute('data-cli')); }
+    }
+    out.push({
+      id:id, email:(g('env-mail')||'').trim(),
+      freq:g('env-freq')||'weekly',
+      day:parseInt(g('env-day')||'1',10),
+      monthDay:parseInt(g('env-md')||'1',10),
+      hour:parseInt(g('env-hour')!==null?g('env-hour'):'10',10),
+      clientes:clientes   // vacio = todos
+    });
+  }
+  return out;
+}
+
+function wrEnviosChanged(){
+  var envios=wrLeerEnvios();
+  setEnvios(envios);
+  envios.forEach(function(e){
+    var dw=document.getElementById('env-day-wrap-'+e.id), dm=document.getElementById('env-md-wrap-'+e.id);
+    if(dw) dw.style.display=(e.freq==='weekly'||e.freq==='biweekly')?'block':'none';
+    if(dm) dm.style.display=(e.freq==='monthly')?'block':'none';
+    var todos=document.getElementById('env-todos-'+e.id);
+    var lista=document.getElementById('env-lista-'+e.id);
+    if(lista) lista.style.display=(todos&&todos.checked)?'none':'block';
+    var r=document.getElementById('env-resumen-'+e.id);
+    if(r){
+      var cuantos=(todos&&todos.checked)?'todos los clientes':(e.clientes.length+' cliente'+(e.clientes.length===1?'':'s'));
+      r.innerHTML=describeEnvio(e)+' &middot; '+cuantos+' &middot; cubre '+reportPeriodLabel(e.freq)+'.';
+    }
+  });
+}
+
+function wrAgregarEnvio(){
+  var envios=wrLeerEnvios();
+  envios.push({ id:'e'+Date.now().toString().slice(-6), email:'', freq:'weekly',
+                day:1, monthDay:1, hour:10, clientes:[] });
+  setEnvios(envios);
+  openWeeklyReportModal();
+}
+function wrBorrarEnvio(id){
+  var envios=wrLeerEnvios().filter(function(e){ return e.id!==id; });
+  if(!envios.length){ toast('Tiene que quedar al menos un envio','amber'); return; }
+  setEnvios(envios);
+  openWeeklyReportModal();
+}
+
+// Manda la lista completa al Apps Script y le pide que re-arme el disparador
+async function wrPushEnvios(showToast){
+  const proxy=getGhlProxy();
+  if(!proxy.url) return {ok:false,error:'Falta la conexion (proxy)'};
+  const envios=wrLeerEnvios();
+  setEnvios(envios);
+  const sinMail=envios.filter(function(e){ return !e.email; });
+  const st=document.getElementById('wr-status');
+  if(sinMail.length){
+    if(st) st.innerHTML='<span style="color:var(--amberx)">Hay '+sinMail.length+' envio(s) sin mail destino.</span>';
+    return {ok:false,error:'falta email'};
+  }
+  if(st) st.innerHTML='Guardando los envios en el Apps Script...';
+  try{
+    const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios)))
+      .then(function(x){return x.json();});
+    if(!r||!r.ok){
+      const err=String((r&&r.error)||'sin respuesta');
+      const viejo=/desconocida/i.test(err);
+      if(st) st.innerHTML='<span style="color:var(--redx)">'+(viejo
+        ? 'Tu Apps Script todavia no soporta varios envios. Actualizalo a la v11 y volve a publicar.'
+        : 'No se pudo guardar: '+esc(err))+'</span>';
+      return {ok:false,error:err};
+    }
+    if(st) st.innerHTML='<span style="color:var(--accent)">'+envios.length+' envio(s) guardados.</span>';
+    if(showToast) toast('Envios guardados');
+    weeklyReportDiag();
+    return {ok:true};
+  }catch(e){
+    if(st) st.innerHTML='<span style="color:var(--redx)">Error de red: '+esc(e.message)+'</span>';
+    return {ok:false,error:e.message};
+  }
+}
+
 function getReportSchedule(){
   var def={freq:'weekly',day:1,hour:10,monthDay:1,perClient:{}};
   try{
@@ -5247,72 +5372,62 @@ async function wrPushSchedule(showToast){
   }
 }
 function openWeeklyReportModal(){
-  const email=localStorage.getItem('evold-report-email')||'';
   const pushed=localStorage.getItem('evold-report-pushed');
-  const sched=getReportSchedule();
+  const envios=getEnvios();
   const clientsOk=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
-  const selStyle='width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font);outline:none;cursor:pointer';
+  const selStyle='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);outline:none;cursor:pointer';
   const lblStyle='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
   const opt=function(v,txt,cur){ return '<option value="'+v+'"'+(String(v)===String(cur)?' selected':'')+'>'+txt+'</option>'; };
-  const horas=(function(){ var o=''; for(var h=0;h<24;h++){ o+=opt(h,(h<10?'0':'')+h+':00',sched.hour); } return o; })();
-  const dias=WR_DAYS.map(function(d,i){ return opt(i+1,d,sched.day); }).join('');
-  const diasMes=(function(){ var o=''; for(var d=1;d<=28;d++){ o+=opt(d,String(d),sched.monthDay); } return o; })();
-  // --- Filas por cliente: cada uno puede tener su propia rutina o heredar la general ---
-  const miniSel='padding:5px 7px;border-radius:6px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:11.5px;font-family:var(--font);outline:none;cursor:pointer';
-  const clientRows=clientsOk.map(function(c){
-    const cs=(sched.perClient||{})[String(c.id)]||{freq:'default'};
-    const f=cs.freq||'default';
-    const cDay=+cs.day||sched.day, cMd=+cs.monthDay||sched.monthDay;
-    return '<div id="wrc-row-'+c.id+'" style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);opacity:'+(f==='off'?'0.45':'1')+'">'
-      +'<div style="flex:1;min-width:0;font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.name)+'</div>'
-      +'<select id="wrc-freq-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
-        +opt('default','Por defecto',f)
-        +opt('daily','Todos los dias',f)
-        +opt('weekly','Cada semana',f)
-        +opt('biweekly','Cada 15 dias',f)
-        +opt('monthly','Cada mes',f)
-        +opt('off','No enviar',f)
-      +'</select>'
-      +'<div id="wrc-day-wrap-'+c.id+'" style="display:'+((f==='weekly'||f==='biweekly')?'block':'none')+'"><select id="wrc-day-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
-        +WR_DAYS.map(function(d,i){return opt(i+1,d,cDay);}).join('')+'</select></div>'
-      +'<div id="wrc-md-wrap-'+c.id+'" style="display:'+(f==='monthly'?'block':'none')+'"><select id="wrc-md-'+c.id+'" onchange="wrClientChanged()" style="'+miniSel+'">'
-        +(function(){var o='';for(var d=1;d<=28;d++){o+=opt(d,'Dia '+d,cMd);}return o;})()+'</select></div>'
-      +'</div>';
-  }).join('');
+
+  const tarjeta=function(e,idx){
+    const horas=(function(){ var o=''; for(var h=0;h<24;h++){ o+=opt(h,(h<10?'0':'')+h+':00',e.hour); } return o; })();
+    const dias=WR_DAYS.map(function(d,i){ return opt(i+1,d,e.day); }).join('');
+    const diasMes=(function(){ var o=''; for(var d=1;d<=28;d++){ o+=opt(d,String(d),e.monthDay); } return o; })();
+    const todos=!e.clientes||!e.clientes.length;
+    const filas=clientsOk.map(function(c){
+      const marcado=todos||e.clientes.indexOf(String(c.id))>=0;
+      return '<label style="display:flex;align-items:center;gap:7px;padding:4px 0;font-size:12px;color:var(--text2);cursor:pointer">'
+        +'<input type="checkbox" data-cli="'+c.id+'"'+(marcado?' checked':'')+' onchange="wrEnviosChanged()">'
+        +esc(c.name)+'</label>';
+    }).join('');
+    return '<div data-envio="'+e.id+'" style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:12px;background:var(--bg3)">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+        +'<input type="email" id="env-mail-'+e.id+'" value="'+esc(e.email||'')+'" placeholder="destinatario@email.com" oninput="wrEnviosChanged()" '
+        +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:12.5px">'
+        +(envios.length>1?'<button class="btn btn-sm" style="color:var(--redx)" onclick="wrBorrarEnvio(\''+e.id+'\')">Quitar</button>':'')
+      +'</div>'
+      +'<div style="display:flex;gap:7px;margin-bottom:8px">'
+        +'<div style="flex:1"><select id="env-freq-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'
+          +opt('daily','Todos los dias',e.freq)+opt('weekly','Cada semana',e.freq)
+          +opt('biweekly','Cada 15 dias',e.freq)+opt('monthly','Cada mes',e.freq)
+        +'</select></div>'
+        +'<div id="env-day-wrap-'+e.id+'" style="flex:1;display:'+((e.freq==='weekly'||e.freq==='biweekly')?'block':'none')+'"><select id="env-day-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+dias+'</select></div>'
+        +'<div id="env-md-wrap-'+e.id+'" style="flex:1;display:'+(e.freq==='monthly'?'block':'none')+'"><select id="env-md-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+diasMes+'</select></div>'
+        +'<div style="flex:0 0 100px"><select id="env-hour-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+horas+'</select></div>'
+      +'</div>'
+      +'<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:6px">'
+        +'<input type="checkbox" id="env-todos-'+e.id+'"'+(todos?' checked':'')+' onchange="wrEnviosChanged()">'
+        +'Todos los clientes con GHL conectado</label>'
+      +'<div id="env-lista-'+e.id+'" style="display:'+(todos?'none':'block')+';max-height:150px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px">'
+        +(filas||'<div style="font-size:11.5px;color:var(--text3);padding:6px 0">No hay clientes con GHL conectado.</div>')
+      +'</div>'
+      +'<div id="env-resumen-'+e.id+'" style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.6"></div>'
+    +'</div>';
+  };
+
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:560px;width:92%">'
-    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Informe automatico por mail</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">El Apps Script arma el informe de cada cliente (Meta + GHL) y lo manda por mail en el horario que elijas. Corre solo, sin abrir el tracker.</div>'
-    +'<div style="margin-bottom:14px"><div style="'+lblStyle+'">Enviar a</div>'
-    +'<input type="email" id="wr-email" value="'+esc(email)+'" placeholder="tu@email.com" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px"></div>'
-    // --- Cuando se envia ---
-    +'<div style="margin-bottom:8px"><div style="'+lblStyle+'">Horario general (por defecto)</div>'
-    +'<div style="display:flex;gap:8px">'
-    +'<div style="flex:1"><select id="wr-freq" onchange="wrScheduleChanged()" style="'+selStyle+'">'
-      +opt('daily','Todos los dias',sched.freq)
-      +opt('weekly','Cada semana',sched.freq)
-      +opt('biweekly','Cada 15 dias',sched.freq)
-      +opt('monthly','Cada mes',sched.freq)
-    +'</select></div>'
-    +'<div id="wr-day-wrap" style="flex:1;display:'+((sched.freq==='weekly'||sched.freq==='biweekly')?'block':'none')+'"><select id="wr-day" onchange="wrScheduleChanged()" style="'+selStyle+'">'+dias+'</select></div>'
-    +'<div id="wr-monthday-wrap" style="flex:1;display:'+(sched.freq==='monthly'?'block':'none')+'"><select id="wr-monthday" onchange="wrScheduleChanged()" style="'+selStyle+'">'+diasMes+'</select></div>'
-    +'<div style="flex:0 0 110px"><select id="wr-hour" onchange="wrScheduleChanged()" style="'+selStyle+'">'+horas+'</select></div>'
+    +'<div class="modal" style="max-width:620px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Informes automaticos por mail</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'Cada envio tiene su destinatario, sus clientes y su horario. El Apps Script arma el informe '
+      +'de cada cliente (Meta + GHL) y lo manda solo, sin abrir el tracker.</div>'
+    +'<div id="wr-envios">'+envios.map(tarjeta).join('')+'</div>'
+    +'<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +'<button class="btn btn-sm" onclick="wrAgregarEnvio()">Agregar envio</button>'
+      +'<button class="btn btn-sm" onclick="wrPushEnvios(true)">Guardar solo los envios</button>'
+      +'<span style="font-size:10.5px;color:var(--text3)">no re-sincroniza los clientes</span>'
     +'</div>'
-    +'<div id="wr-sched-resume" style="font-size:11px;color:var(--text3);margin-top:7px;line-height:1.6">'+describeReportSchedule(sched)+' (hora de Argentina) &middot; cubre '+reportPeriodLabel(sched.freq)+'.</div>'
-    +'</div>'
-    // --- Rutina por cliente ---
-    +'<div style="margin-bottom:10px">'
-    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:4px">'
-    +'<div style="'+lblStyle+';margin:0">Rutina por cliente</div>'
-    +'<div id="wr-perclient-resume" style="font-size:10.5px;color:var(--text3)"></div></div>'
-    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-bottom:6px">Los que quedan en "Por defecto" siguen el horario de arriba. La hora es la misma para todos; lo que cambia por cliente es cada cuanto y que dia.</div>'
-    +(clientRows
-      ?'<div style="max-height:210px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:2px 12px">'+clientRows+'</div>'
-      :'<div style="font-size:11.5px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:10px 12px">Todavia no hay clientes con GHL conectado.</div>')
-    +'</div>'
-    +'<div style="margin-top:8px;margin-bottom:8px"><button class="btn btn-sm" onclick="wrPushSchedule(true)">Guardar solo el horario</button>'
-    +'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">no re-sincroniza los clientes</span></div>'
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
     +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
@@ -5321,10 +5436,8 @@ function openWeeklyReportModal(){
     +'<div id="wr-diag" style="font-size:11px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:9px 11px;margin-bottom:12px;line-height:1.7">Diagnosticando el Apps Script...</div>'
     +'<div id="wr-status" style="font-size:11.5px;color:var(--text3);margin-bottom:12px"></div>'
     +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:16px;border-top:1px solid var(--border);padding-top:10px">'
-    +'Setup unico en el Apps Script (una sola vez):<br>'
-    +'1. Configuracion del proyecto &rarr; zona horaria: America/Argentina/Buenos_Aires.<br>'
-    +'2. Pegar el bloque <span class="mono">PROGRAMACION DEL INFORME</span> y volver a publicar la implementacion.<br>'
-    +'Despues de eso el disparador se crea y se re-arma solo cada vez que guardas el horario aca. Google dispara dentro de la hora elegida (ej. 10:00 puede salir 10:20).'
+    +'El disparador revisa cada hora y manda los envios que corresponden a esa hora. '
+    +'Google no dispara al minuto exacto: si elegis 08:00, puede salir 08:25.'
     +'</div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px">'
     +'<button class="btn btn-sm" onclick="testWeeklyReportNow()" style="color:var(--text3)">Enviar prueba ahora</button>'
@@ -5332,7 +5445,7 @@ function openWeeklyReportModal(){
     +'<button class="btn btn-sm btn-primary" onclick="pushWeeklyReportConfig()">Guardar y sincronizar</button></div>'
     +'</div></div></div>';
   weeklyReportDiag();
-  wrRefreshClientRows();
+  wrEnviosChanged();
 }
 // Consulta al Apps Script que le falta para que el informe salga solo
 function weeklyReportDiag(){
@@ -5358,24 +5471,13 @@ function weeklyReportDiag(){
     }
     const li=function(ok,okTxt,badTxt){ return '<div>'+(ok?'<span style="color:var(--accent)">&#10003;</span> '+okTxt:'<span style="color:var(--redx)">&#10007;</span> '+badTxt)+'</div>'; };
     // Si el script ya soporta horarios, la fuente de verdad es el, no el localStorage
-    if(d.sched&&d.sched.freq){
-      const sv={freq:d.sched.freq,day:+d.sched.day||1,hour:(d.sched.hour===0?0:(+d.sched.hour||10)),monthDay:+d.sched.monthDay||1,
-                perClient:(d.sched.perClient&&typeof d.sched.perClient==='object')?d.sched.perClient:{}};
-      setReportSchedule(sv);
-      const set=function(id,v){var e=document.getElementById(id);if(e)e.value=String(v);};
-      set('wr-freq',sv.freq); set('wr-day',sv.day); set('wr-hour',sv.hour); set('wr-monthday',sv.monthDay);
-      (DB.clients||[]).forEach(function(c){
-        const cs=sv.perClient[String(c.id)];
-        set('wrc-freq-'+c.id,(cs&&cs.freq)||'default');
-        if(cs&&cs.day) set('wrc-day-'+c.id,cs.day);
-        if(cs&&cs.monthDay) set('wrc-md-'+c.id,cs.monthDay);
-      });
-      if(typeof wrScheduleChanged==='function') wrScheduleChanged();
+    if(Array.isArray(d.envios)&&d.envios.length){
+      setEnvios(d.envios);   // el script es la fuente de verdad
     }
     el.innerHTML=''
-      +li(!!d.email,'Email destino en el script: '+esc(d.email),'Falta el email destino - toca "Guardar y sincronizar"')
+      +li(Array.isArray(d.envios)&&d.envios.length, (d.envios||[]).length+' envio(s) configurados: '+esc((d.envios||[]).map(function(e){return e.email;}).join(', ')),'Sin envios configurados - toca "Guardar y sincronizar"')
       +li((d.clients||[]).length>0,(d.clients||[]).length+' clientes con config en el script','Sin clientes en el script - toca "Guardar y sincronizar"')
-      +li(!!d.trigger,'Disparador ACTIVO'+(d.sched&&d.sched.hour!=null?': revisa todos los dias a las '+((+d.sched.hour<10?'0':'')+d.sched.hour)+':00 y manda los que tocan':''),'Disparador NO creado - elegi el horario arriba y toca "Guardar solo el horario"');
+      +li(!!d.trigger,'Disparador ACTIVO: revisa cada hora y manda los envios que tocan','Disparador NO creado - toca "Guardar solo los envios"');
   }).catch(function(e){
     el.innerHTML='<span style="color:var(--redx)">Error consultando el script: '+esc(e.message)+'</span>';
   });
@@ -5383,18 +5485,15 @@ function weeklyReportDiag(){
 async function pushWeeklyReportConfig(){
   const proxy=getGhlProxy();
   if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion (proxy) primero'); return; }
-  const emailEl=document.getElementById('wr-email');
-  const email=(emailEl?emailEl.value.trim():'');
-  if(!email){ if(typeof toast==='function') toast('Ingresa un email'); return; }
+  const emails=wrLeerEnvios().map(function(e){return e.email;}).filter(Boolean);
+  if(!emails.length){ if(typeof toast==='function') toast('Cargá al menos un destinatario'); return; }
   const st=document.getElementById('wr-status');
   const setSt=function(t){ if(st) st.innerHTML=t; };
-  localStorage.setItem('evold-report-email',email);
+  localStorage.setItem('evold-report-email',emails[0]);   // solo para el resumen de la tarjeta
   const enc=encodeURIComponent;
   try{
-    setSt('Guardando email destino...');
-    await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_settings&email='+enc(email)).then(function(r){return r.json();});
-    setSt('Guardando horario y disparador...');
-    const schedRes=await wrPushSchedule(false);
+    setSt('Guardando los envios y el disparador...');
+    const schedRes=await wrPushEnvios(false);
     const clients=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
     let ok=0;
     for(let i=0;i<clients.length;i++){
@@ -5416,8 +5515,8 @@ async function pushWeeklyReportConfig(){
     localStorage.setItem('evold-report-pushed',String(Date.now()));
     setSt('<span style="color:var(--accent)">Listo: '+ok+'/'+clients.length+' clientes sincronizados. Recorda re-sincronizar si cambias tokens, reglas o campanas excluidas.</span>'
       +(schedRes&&schedRes.ok
-        ?'<br><span style="color:var(--accent)">Envio programado: '+describeReportSchedule(getReportSchedule())+'.</span>'
-        :'<br><span style="color:var(--redx)">El horario NO se pudo guardar (el Apps Script todavia no tiene el bloque de programacion).</span>'));
+        ?'<br><span style="color:var(--accent)">'+getEnvios().length+' envio(s) programados.</span>'
+        :'<br><span style="color:var(--redx)">Los envios NO se pudieron guardar (revisa que el Apps Script este en la v11).</span>'));
     weeklyReportDiag(); // refrescar el diagnostico con el estado nuevo
     if(typeof toast==='function') toast('Informe semanal configurado ('+ok+' clientes)');
     if(S.tab==='integraciones') renderTab();
