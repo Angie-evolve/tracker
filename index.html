@@ -1827,7 +1827,7 @@ function clientPeekHtml(c){
     var st=(typeof alarmStatus==='function')?alarmStatus(c):null;
     if(st&&st.breached>0) bits.push('<span style="color:#D85A30">'+st.breached+' alarma'+(st.breached>1?'s':'')+'</span>');
   }catch(e){}
-  var pend=(c.tasks||[]).filter(function(t){return !t.done&&!t.deleted;}).length;
+  var pend=(c.tasks||[]).filter(function(t){return !t.done&&!t.deleted&&!t.archivada;}).length;
   if(pend) bits.push(pend+' tarea'+(pend>1?'s':''));
   return bits.join(' \u00b7 ');
 }
@@ -3498,7 +3498,7 @@ async function convEscanearTodo(){
 
     // Contexto compartido para el analisis
     const abiertos=[];
-    DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(t.delegated&&!t.done&&!t.deleted) abiertos.push((t.ticket||'#?')+' | '+c.name+' | '+t.text); }); });
+    DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(t.delegated&&!t.done&&!t.deleted&&!t.archivada) abiertos.push((t.ticket||'#?')+' | '+c.name+' | '+t.text); }); });
     const nombres=DB.clients.map(function(c){return c.name;}).join(', ');
 
     const todas={tareas:[],cierres:[],estados:[],entregas:[]};
@@ -4808,6 +4808,8 @@ function toggleTicketMenu(cid,tid,btn){
   var m=document.createElement('div'); m.className='tk-menu'; m.dataset.tid=tid;
   m.innerHTML=''
     +'<div class="tk-menu-item" onclick="ticketEditarModal('+cid+','+tid+')"><i class="ti ti-edit"></i>Editar tarea</div>'
+    +'<div class="tk-menu-item" onclick="ticketArchivar('+cid+','+tid+')"><i class="ti ti-archive"></i>'
+      +(t.archivada?'Desarchivar':'Archivar &mdash; no la vamos a hacer')+'</div>'
     +'<div class="tk-menu-item" style="color:var(--redx)" onclick="ticketEliminar('+cid+','+tid+')"><i class="ti ti-trash"></i>Eliminar</div>';
   btn.parentElement.appendChild(m);
   setTimeout(function(){
@@ -4816,6 +4818,24 @@ function toggleTicketMenu(cid,tid,btn){
     });
   },0);
 }
+// Archivar no es borrar ni completar: la tarea se guarda con su historial pero
+// sale de los pendientes y de las metricas. Sirve para lo que se decidio no hacer.
+function ticketArchivar(cid,tid){
+  var c=DB.clients.find(function(x){return x.id===cid;});
+  var t=c&&c.tasks&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
+  document.querySelectorAll('.tk-menu').forEach(function(m){m.remove();});
+  if(t.archivada){
+    delete t.archivada; delete t.archivadaAt;
+    if(typeof toast==='function') toast('Tarea de vuelta en la lista');
+  }else{
+    t.archivada=true; t.archivadaAt=new Date().toISOString();
+    if(typeof toast==='function') toast('Archivada. Queda guardada, fuera de los pendientes.');
+  }
+  save();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+}
+
 function ticketEditarModal(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
@@ -5164,13 +5184,17 @@ function showTickets(){
     if(!_since) return true;
     return r.t.delegatedAt && new Date(r.t.delegatedAt).getTime()>=_since;
   });
-  const sinDelegar=all.filter(function(r){return !r.t.delegated&&!r.t.done;}).length;
+  const sinDelegar=all.filter(function(r){return !r.t.delegated&&!r.t.done&&!r.t.archivada;}).length;
   const now=new Date();
   const endOfDue=function(t){ return _dueEnd(t.due); };
 
-  const abiertos=tickets.filter(function(r){return !r.t.done;});
+  // Archivadas: ni hechas ni pendientes. Se decidio no hacerlas, pero el texto
+  // queda por si vuelve el tema. No cuentan en ninguna metrica.
+  const archivadas=tickets.filter(function(r){return r.t.archivada;});
+  const vivos=tickets.filter(function(r){return !r.t.archivada;});
+  const abiertos=vivos.filter(function(r){return !r.t.done;});
   const vencidos=abiertos.filter(function(r){const d=endOfDue(r.t);return d&&d<now;});
-  const hechos=tickets.filter(function(r){return r.t.done;});
+  const hechos=vivos.filter(function(r){return r.t.done;});
   const hechos30=hechos.filter(function(r){return r.t.doneAt&&(now-new Date(r.t.doneAt))<30*86400000;});
   const conTiempos=hechos.filter(function(r){return r.t.doneAt&&r.t.delegatedAt;});
   const avgDias=conTiempos.length?(conTiempos.reduce(function(s,r){return s+_tkDias(new Date(r.t.delegatedAt),new Date(r.t.doneAt));},0)/conTiempos.length):null;
@@ -5238,10 +5262,11 @@ function showTickets(){
 
   // Filtro
   const filter=S.ticketsFilter||'abiertos';
-  let list=tickets;
+  let list=vivos;
   if(filter==='abiertos') list=abiertos;
   else if(filter==='vencidos') list=vencidos;
   else if(filter==='hechos') list=hechos;
+  else if(filter==='archivadas') list=archivadas;
   // orden: vencidos primero, luego abiertos mas viejos, luego hechos recientes
   list=[...list].sort(function(a,b){
     const doneA=a.t.done?1:0, doneB=b.t.done?1:0;
@@ -5450,7 +5475,8 @@ function showTickets(){
     +fbtn('abiertos','Abiertos',abiertos.length)
     +fbtn('vencidos','Vencidos',vencidos.length)
     +fbtn('hechos','Hechos',hechos.length)
-    +fbtn('todos','Todos',tickets.length)
+    +fbtn('todos','Todos',vivos.length)
+    +(archivadas.length?fbtn('archivadas','Archivadas',archivadas.length):'')
     +'</div>'
     +(list.length
       ?'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px 16px 16px">'+rowsHtml+elimHtml+'</div>'
@@ -5879,7 +5905,7 @@ async function pushWeeklyReportConfig(){
       const al=getActiveLine(c.conversionLines||[]);
       // conteo de tickets abiertos y vencidos de este cliente (tareas delegadas no hechas)
       const _now=new Date();
-      const _tks=(c.tasks||[]).filter(function(t){return t.delegated&&t.ticket&&!t.done;});
+      const _tks=(c.tasks||[]).filter(function(t){return t.delegated&&t.ticket&&!t.done&&!t.archivada;});
       const _venc=_tks.filter(function(t){var d=t.due?new Date(t.due):null;return d&&d<_now;}).length;
       const payload={name:c.name,ghlToken:c.ghl.token,ghlLocation:c.ghl.locationId,
         metaToken:c.metaToken||'',metaAccountId:c.metaAccountId||'',
@@ -7482,7 +7508,7 @@ function renderTab(){
   }
 
   else if(S.tab==='tareas'){
-    var tasks=(c.tasks||[]).filter(function(t){return !t.deleted;});
+    var tasks=(c.tasks||[]).filter(function(t){return !t.deleted&&!t.archivada;});
     var overdue=tasks.filter(function(t){var de=_dueEnd(t.due);return !t.done&&de&&de<new Date();});
     var pending=tasks.filter(function(t){var de=_dueEnd(t.due);return !t.done&&!(de&&de<new Date());});
     var done=tasks.filter(function(t){return t.done;});
