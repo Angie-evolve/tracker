@@ -6047,6 +6047,80 @@ function filaRegla(r,i,draft,repintar,optsFor,inp){
   return h+'</div>';
 }
 
+// ---------- Alarmas por ANUNCIO ----------
+// Las de arriba miran el total de la cuenta. Estas miran anuncio por anuncio y
+// saltan si CUALQUIERA cumple: sirve para pescar el que gasta y no trae nada,
+// que en el promedio de la cuenta queda tapado por los que si funcionan.
+const ALARM_AD_METRICS=[
+  {id:'adGasto',     label:'Inversion del anuncio', fmt:'money'},
+  {id:'adRegistros', label:'Registros del anuncio', fmt:'num'},
+  {id:'adAgendas',   label:'Agendas del anuncio',   fmt:'num'},
+  {id:'adVistas',    label:'Vistas de landing del anuncio', fmt:'num'},
+  {id:'adCostoReg',  label:'Costo por registro del anuncio', fmt:'money'}
+];
+function _metAd(id){ return ALARM_AD_METRICS.find(function(m){return m.id===id;})||{label:id,fmt:'num'}; }
+
+// Un renglon por anuncio, cruzando el gasto de Meta con lo que trajo en GHL.
+function computeAdMetrics(c){
+  var out=[];
+  var linea=(c.liveLines||[]).find(function(x){return x.rolling;});
+  if(!linea) return out;
+  var cache=null;
+  try{
+    var sk=_metaSpendKey(c,{start:linea.dateStart,end:linea.dateEnd});
+    cache=(c._metaSpend||{})[sk.key];
+  }catch(e){ cache=null; }
+  if(!cache||!cache.byAd) return out;
+
+  // Registros y agendas por anuncio: salen de la atribucion de cada oportunidad
+  var reglas=(typeof getGhlRules==='function')?getGhlRules(c):{};
+  var agStages=(reglas.agendas||[]);
+  var desde=linea.dateStart?new Date(linea.dateStart):null;
+  var hasta=linea.dateEnd?new Date(linea.dateEnd):null;
+  var regPorAd={}, agPorAd={};
+  ((c.ghl&&c.ghl.opportunities)||[]).forEach(function(o){
+    if(!o.createdAt) return;
+    var d=new Date(o.createdAt);
+    if(desde&&d<desde) return;
+    if(hasta&&d>hasta) return;
+    var nm=_n((o.source&&o.source.utmAd)||'');
+    if(!nm) return;
+    regPorAd[nm]=(regPorAd[nm]||0)+1;
+    if(agStages.length&&agStages.indexOf(_n(o.pipelineStage))>=0) agPorAd[nm]=(agPorAd[nm]||0)+1;
+  });
+
+  Object.keys(cache.byAd).forEach(function(nm){
+    var gasto=Number(cache.byAd[nm])||0;
+    var regs=regPorAd[nm]||0;
+    out.push({
+      nombre:nm,
+      adGasto:gasto,
+      adRegistros:regs,
+      adAgendas:agPorAd[nm]||0,
+      adVistas:(cache.vByAd&&cache.vByAd[nm]!=null)?Number(cache.vByAd[nm]):null,
+      adCostoReg:regs?gasto/regs:null
+    });
+  });
+  return out;
+}
+
+// Devuelve los anuncios que cumplen la regla. Vacio = no salta.
+function anunciosQueCumplen(r, ads){
+  if(!ads||!ads.length) return [];
+  return ads.filter(function(a){
+    var uno=_condCumple(a[r.metric], r.op, r.value);
+    if(uno===null||!uno) return false;
+    if(!r.metric2) return true;
+    var dos=_condCumple(a[r.metric2], r.op2||'lt', r.value2);
+    return dos===true;
+  });
+}
+function textoAlarmaAd(r){
+  var t=_metAd(r.metric).label+' '+_opTexto(r.op)+' '+fmtAlarmVal(_metAd(r.metric).fmt,Number(r.value));
+  if(r.metric2) t+=' y '+_metAd(r.metric2).label+' '+_opTexto(r.op2||'lt')+' '+fmtAlarmVal(_metAd(r.metric2).fmt,Number(r.value2));
+  return t;
+}
+
 function fmtAlarmVal(fmt,v){
   if(v==null||!isFinite(v)) return '-';
   if(fmt==='money') return '$'+(Math.round(v*100)/100).toLocaleString('en-US');
@@ -6271,7 +6345,22 @@ function alarmStatus(c){
   if(!rules.length) return {active:0,breached:0,detalle:[]};
   const M=computeAlarmMetrics(c);
   let breached=0; const detalle=[];
+  var _ads=null;
   if(M) rules.forEach(function(r){
+    if(r.scope==='ad'){
+      if(_ads===null) _ads=computeAdMetrics(c);
+      var hits=anunciosQueCumplen(r,_ads);
+      if(!hits.length) return;
+      breached++;
+      detalle.push({
+        label:hits.length===1?('Anuncio: '+hits[0].nombre):(hits.length+' anuncios'),
+        valor:fmtAlarmVal(_metAd(r.metric).fmt,hits[0][r.metric]),
+        limite:fmtAlarmVal(_metAd(r.metric).fmt,Number(r.value)),
+        op:r.op,
+        texto:textoAlarmaAd(r)
+      });
+      return;
+    }
     if(!alarmaCumple(r,M)) return;
     breached++;
     const met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||{label:r.metric,fmt:'num'};
@@ -6298,12 +6387,29 @@ function checkAlarms(c){
   if(!proxy.url) return;
   a.lastSent=a.lastSent||{};
   const triggered=[];
+  var _ads=null;
   _rules.forEach(function(r){
     if(!r.enabled) return;
-    if(alarmaCumple(r,M) && (Date.now()-(a.lastSent[r.id]||0))>24*3600000) triggered.push({r:r,v:M[r.metric]});
+    if((Date.now()-(a.lastSent[r.id]||0))<=24*3600000) return;   // ya avisada hoy
+    if(r.scope==='ad'){
+      if(_ads===null) _ads=computeAdMetrics(c);
+      var hits=anunciosQueCumplen(r,_ads);
+      if(hits.length) triggered.push({r:r,ads:hits});
+      return;
+    }
+    if(alarmaCumple(r,M)) triggered.push({r:r,v:M[r.metric]});
   });
   if(!triggered.length) return;
   const lines=triggered.map(function(t){
+    if(t.r.scope==='ad'){
+      // Nombrar el anuncio es todo el punto de esta alarma: sin eso hay que ir a
+      // buscarlo a mano en Ads Manager.
+      var enc='- '+t.ads.length+' anuncio'+(t.ads.length>1?'s':'')+' ('+textoAlarmaAd(t.r)+'):';
+      return enc+'\n'+t.ads.slice(0,10).map(function(a){
+        return '  * '+a.nombre+': '+fmtAlarmVal('money',a.adGasto)+' gastados, '
+          +(a.adRegistros||0)+' registros, '+(a.adAgendas||0)+' agendas';
+      }).join('\n')+(t.ads.length>10?('\n  ... y '+(t.ads.length-10)+' mas'):'');
+    }
     const met=ALARM_METRICS.find(function(x){return x.id===t.r.metric;})||{label:t.r.metric,fmt:'num'};
     var linea='- '+met.label+': '+fmtAlarmVal(met.fmt,t.v)+' ('+textoAlarma(t.r)+')';
     if(t.r.metric2){
@@ -6356,26 +6462,48 @@ function renderAlarmsModal(){
     return '<span class="mono" style="font-size:11px;color:'+(cur==null?'var(--text3)':(hit?'var(--redx)':'var(--accent)'))+'">'
       +(cur==null?'sin dato':('ahora: '+fmtAlarmVal(met.fmt,cur)+(hit?' !':'')))+'</span>';
   };
+  // Las opciones cambian segun el alcance: metricas de la cuenta o del anuncio
+  const optAd=function(sel){
+    return ALARM_AD_METRICS.map(function(m){
+      return '<option value="'+m.id+'"'+(m.id===sel?' selected':'')+'>'+m.label+'</option>';
+    }).join('');
+  };
+  const _adsAhora=c?computeAdMetrics(c):[];
+  const _valorAd=function(id,op,val){
+    if(!_adsAhora.length) return '<span class="mono" style="font-size:11px;color:var(--text3)">sin datos de anuncios</span>';
+    var n=_adsAhora.filter(function(a){ return _condCumple(a[id],op,val)===true; }).length;
+    return '<span class="mono" style="font-size:11px;color:'+(n?'var(--redx)':'var(--accent)')+'">'
+      +n+' de '+_adsAhora.length+' anuncios</span>';
+  };
   const _fila=function(r,i,seg){
+    var esAd=(r.scope==='ad');
     var id=seg?r.metric2:r.metric, op=seg?(r.op2||'lt'):r.op, val=seg?r.value2:r.value;
     var campoM=seg?'metric2':'metric', campoO=seg?'op2':'op', campoV=seg?'value2':'value';
     return '<div style="display:grid;grid-template-columns:22px 1fr 84px 90px 110px 26px;gap:8px;align-items:center;padding:'+(seg?'4px 0 8px':'8px 0 4px')+'">'
       +(seg?'<span style="font-size:12px;color:var(--text3);text-align:center">y</span>'
            :'<input type="checkbox" '+(r.enabled?'checked':'')+' onchange="window._alarmDraft.rules['+i+'].enabled=this.checked">')
-      +'<select class="btn btn-sm" style="width:100%;text-align:left" onchange="window._alarmDraft.rules['+i+'].'+campoM+'=this.value;renderAlarmsModal()">'+optHtml(id)+'</select>'
+      +'<select class="btn btn-sm" style="width:100%;text-align:left" onchange="window._alarmDraft.rules['+i+'].'+campoM+'=this.value;renderAlarmsModal()">'+(esAd?optAd(id):optHtml(id))+'</select>'
       +'<select class="btn btn-sm" onchange="window._alarmDraft.rules['+i+'].'+campoO+'=this.value;renderAlarmsModal()">'
         +'<option value="gt"'+(op==='gt'?' selected':'')+'>mayor a</option>'
         +'<option value="lt"'+(op==='lt'?' selected':'')+'>menor a</option>'
         +'<option value="eq"'+(op==='eq'?' selected':'')+'>igual a</option></select>'
       +'<input type="number" step="any" value="'+(val!=null?val:'')+'" placeholder="umbral" onchange="window._alarmDraft.rules['+i+'].'+campoV+'=this.value;renderAlarmsModal()" style="padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--mono);font-size:12px;width:100%">'
-      +_valor(id,r,op,val)
+      +(esAd?_valorAd(id,op,val):_valor(id,r,op,val))
       +(seg?'<button class="btn btn-sm" style="padding:4px 8px;color:var(--text3);border-color:transparent" title="Quitar la segunda condicion" onclick="delete window._alarmDraft.rules['+i+'].metric2;renderAlarmsModal()">x</button>'
            :'<button class="btn btn-sm" style="padding:4px 8px;color:var(--redx);border-color:transparent" onclick="window._alarmDraft.rules.splice('+i+',1);renderAlarmsModal()">x</button>')
       +'</div>';
   };
   const rows=d.rules.map(function(r,i){
-    var salta=M&&alarmaCumple(r,M);
+    var salta=(r.scope==='ad')
+      ? anunciosQueCumplen(r,_adsAhora).length>0
+      : (M&&alarmaCumple(r,M));
     return '<div style="border-bottom:1px solid var(--border);'+(salta?'background:rgba(216,90,48,0.06);border-radius:8px;padding:0 6px':'')+'">'
+      +'<div style="padding:8px 0 0 30px">'
+        +'<select class="btn btn-sm" style="font-size:11px;padding:3px 8px" onchange="_cambiarAlcance('+i+',this.value)">'
+        +'<option value="cuenta"'+(r.scope==='ad'?'':' selected')+'>En la cuenta</option>'
+        +'<option value="ad"'+(r.scope==='ad'?' selected':'')+'>En algun anuncio</option></select>'
+        +(r.scope==='ad'?'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">salta si al menos un anuncio cumple</span>':'')
+      +'</div>'
       +_fila(r,i,false)
       +(r.metric2
         ? _fila(r,i,true)
@@ -6399,6 +6527,20 @@ function renderAlarmsModal(){
     +'<button class="btn btn-sm btn-primary" onclick="saveAlarms()">Guardar</button></div>'
     +'</div></div></div>';
 }
+// Las metricas de cuenta y de anuncio no son intercambiables, asi que al cambiar
+// el alcance se reinicia la regla con valores por defecto de ese mundo.
+function _cambiarAlcance(i,v){
+  var r=window._alarmDraft.rules[i]; if(!r) return;
+  if(v==='ad'){
+    r.scope='ad'; r.metric='adGasto'; r.op='gt'; r.value=r.value||50;
+    if(r.metric2){ r.metric2='adRegistros'; r.op2='lt'; r.value2=1; }
+  }else{
+    delete r.scope; r.metric='adSpent'; r.op='gt'; r.value=r.value||50;
+    if(r.metric2){ r.metric2='agendas'; r.op2='lt'; r.value2=1; }
+  }
+  renderAlarmsModal();
+}
+
 function saveAlarms(){
   const d=window._alarmDraft;
   const c=DB.clients.find(function(x){return x.id===d.clientId;});
