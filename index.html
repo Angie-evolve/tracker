@@ -4085,6 +4085,42 @@ function openConvReviewModal(){
 
 // Ultima actividad del tablero: la fecha mas reciente entre delegadas y completadas.
 // Junta las alarmas de benchmark disparadas de TODOS los clientes, para verlas
+// Alarmas revisadas. No se "apagan": se tapan mientras siguen saltando. Si la
+// metrica vuelve a entrar en rango, la marca se borra sola, asi la proxima vez
+// que se salga aparece de nuevo. Es la diferencia entre "ya lo vi" y "ignorar".
+function alarmaRevisada(c, rid){
+  return !!(c._alarmVistas && c._alarmVistas[rid]);
+}
+function revisarAlarma(clienteId, rid){
+  var c=DB.clients.find(function(x){return x.id===clienteId;});
+  if(!c) return;
+  c._alarmVistas=c._alarmVistas||{};
+  c._alarmVistas[rid]=Date.now();
+  save();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof toast==='function') toast('Marcada como revisada. Vuelve a avisar si se sale otra vez.');
+}
+function reverAlarmas(clienteId){
+  var c=DB.clients.find(function(x){return x.id===clienteId;});
+  if(!c) return;
+  delete c._alarmVistas;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+// Se llama con las reglas que HOY estan saltando: las demas se destildan.
+function _limpiarRevisadas(c, idsQueSaltan){
+  if(!c._alarmVistas) return;
+  var quedan={}, cambio=false;
+  Object.keys(c._alarmVistas).forEach(function(rid){
+    if(idsQueSaltan.indexOf(rid)>=0) quedan[rid]=c._alarmVistas[rid];
+    else cambio=true;
+  });
+  if(cambio){
+    if(Object.keys(quedan).length) c._alarmVistas=quedan; else delete c._alarmVistas;
+    save();
+  }
+}
+
 // en el tablero sin entrar cliente por cliente. Reusa alarmStatus(c).
 function _tkAlarmasHtml(){
   if(typeof alarmStatus!=='function') return '';
@@ -4092,7 +4128,11 @@ function _tkAlarmasHtml(){
   DB.clients.forEach(function(c){
     try{
       var st=alarmStatus(c);
-      if(st && st.breached>0) disparadas.push({c:c, n:st.breached, detalle:st.detalle||[]});
+      if(!st || !st.breached) { _limpiarRevisadas(c, []); return; }
+      var det=st.detalle||[];
+      _limpiarRevisadas(c, det.map(function(d){return d.rid;}).filter(Boolean));
+      var visibles=det.filter(function(d){ return !alarmaRevisada(c, d.rid); });
+      if(visibles.length) disparadas.push({c:c, n:visibles.length, detalle:visibles, ocultas:det.length-visibles.length});
     }catch(e){ /* si un cliente no tiene datos, se saltea */ }
   });
   if(!disparadas.length) return '';
@@ -4106,10 +4146,17 @@ function _tkAlarmasHtml(){
     +'</div>'
     +disparadas.map(function(x){
       var metricas=x.detalle.map(function(d){
-        return '<div style="font-size:11px;color:var(--text3);padding-left:16px;margin-top:2px">'
-          +esc(d.label)+': <span style="color:var(--redx)">'+esc(d.valor)+'</span> '
-          +'<span style="color:var(--text3)">('+(d.op==='gt'?'max ':'min ')+esc(d.limite)+')</span></div>';
-      }).join('');
+        return '<div style="font-size:11px;color:var(--text3);padding-left:16px;margin-top:2px;display:flex;align-items:center;gap:8px">'
+          +'<span style="flex:1">'+esc(d.label)+': <span style="color:var(--redx)">'+esc(d.valor)+'</span> '
+          +'<span style="color:var(--text3)">('+(d.op==='gt'?'max ':'min ')+esc(d.limite)+')</span></span>'
+          +(d.rid?'<button class="btn btn-sm" style="font-size:10px;padding:2px 8px;color:var(--text3)" '
+            +'title="Se oculta mientras siga fuera de rango. Si vuelve a entrar y se sale de nuevo, reaparece." '
+            +'onclick="event.stopPropagation();revisarAlarma('+x.c.id+',\''+d.rid+'\')">revisada</button>':'')
+        +'</div>';
+      }).join('')
+      +(x.ocultas?'<div style="font-size:10.5px;color:var(--text3);padding-left:16px;margin-top:4px">'
+        +x.ocultas+' ya revisada'+(x.ocultas>1?'s':'')+' &middot; '
+        +'<a href="#" onclick="event.stopPropagation();reverAlarmas('+x.c.id+');return false" style="color:var(--accent);text-decoration:none">volver a mostrar</a></div>':'');
       return '<div style="padding:7px 0;border-top:1px solid rgba(216,90,48,0.15)">'
         +'<div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="selectClient('+x.c.id+');S.tab=\'alarmas\';renderClient()">'
         +'<span style="width:6px;height:6px;border-radius:50%;background:var(--redx);flex-shrink:0"></span>'
@@ -6434,6 +6481,7 @@ function alarmStatus(c){
       if(!hits.length) return;
       breached++;
       detalle.push({
+        rid:r.id,
         label:hits.length===1?('Anuncio: '+hits[0].nombre):(hits.length+' anuncios'),
         valor:fmtAlarmVal(_metAd(r.metric).fmt,hits[0][r.metric]),
         limite:fmtAlarmVal(_metAd(r.metric).fmt,Number(r.value)),
@@ -6446,6 +6494,7 @@ function alarmStatus(c){
     breached++;
     const met=ALARM_METRICS.find(function(x){return x.id===r.metric;})||{label:r.metric,fmt:'num'};
     detalle.push({
+      rid:r.id,
       label:met.label+(r.metric2?' + condicion':''),
       valor:fmtAlarmVal(met.fmt,M[r.metric]),
       limite:fmtAlarmVal(met.fmt,Number(r.value)),
