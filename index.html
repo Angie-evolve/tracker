@@ -1671,7 +1671,7 @@ function activeClients(){ return DB.clients.filter(function(c){return !c.archive
 // Por defecto los archivados quedan fuera: se ven solo si se prende la opcion.
 function cliFiltro(){
   if(!S._cliFiltro){
-    var g={estado:'todos',archivados:false,alarmas:false};
+    var g={estado:'todos',archivados:false,alarmas:false,duenio:'todos'};
     try{ var raw=localStorage.getItem('evold-cli-filtro'); if(raw) g=Object.assign(g, JSON.parse(raw)); }catch(e){}
     S._cliFiltro=g;
   }
@@ -1679,12 +1679,28 @@ function cliFiltro(){
 }
 function cliFiltroActivo(){
   var f=cliFiltro();
-  return f.estado!=='todos' || f.archivados || f.alarmas;
+  return f.estado!=='todos' || f.archivados || f.alarmas || (f.duenio&&f.duenio!=='todos');
 }
+// Quien maneja cada cliente. No es un permiso: todos ven todo, esto solo sirve
+// para filtrar y para saber a quien preguntarle.
+function responsableDe(c){ return (c&&c.owner)||''; }
+function soyYo(email){ return !!email && !!SB.email && email.toLowerCase()===SB.email.toLowerCase(); }
+function equipo(){
+  // Sale de los clientes ya asignados mas la sesion actual: no hay que mantener
+  // una lista de usuarios aparte.
+  var set={};
+  if(SB.email) set[SB.email.toLowerCase()]=SB.email;
+  DB.clients.forEach(function(c){ if(c.owner) set[c.owner.toLowerCase()]=c.owner; });
+  return Object.keys(set).sort().map(function(k){ return set[k]; });
+}
+
 function sidebarClients(){
   var f=cliFiltro();
   return DB.clients.filter(function(c){
     if(c.archived && !f.archivados) return false;
+    if(f.duenio==='mios' && !soyYo(c.owner)) return false;
+    if(f.duenio==='otros' && (soyYo(c.owner)||!c.owner)) return false;
+    if(f.duenio==='sin' && c.owner) return false;
     if(f.estado!=='todos'){
       var live=false;
       try{ live=!!adsDot(c).live; }catch(e){}
@@ -1699,7 +1715,8 @@ function sidebarClients(){
 }
 function setCliFiltro(campo, valor){
   var f=cliFiltro();
-  f[campo]=(campo==='estado')?valor:!f[campo];
+  // estado y duenio son excluyentes entre si; alarmas y archivados son interruptores
+  f[campo]=(campo==='estado'||campo==='duenio')?valor:!f[campo];
   try{ localStorage.setItem('evold-cli-filtro', JSON.stringify(f)); }catch(e){}
   renderSidebar();
   _cliFiltroPintar();
@@ -1722,7 +1739,14 @@ function _cliFiltroPintar(){
     return '<div class="opt'+(sel?' sel':'')+'" onclick="setCliFiltro(\''+campo+'\',\''+valor+'\')">'
       +'<span class="tick">'+(sel?'\u2713':'')+'</span>'+label+'</div>';
   };
-  el.innerHTML='<div class="ttl">Estado</div>'
+  var eq=equipo();
+  el.innerHTML=(eq.length>1?('<div class="ttl">Responsable</div>'
+      +op('duenio','todos','Todos',(f.duenio||'todos')==='todos')
+      +op('duenio','mios','Los mios',f.duenio==='mios')
+      +op('duenio','otros','De otra persona',f.duenio==='otros')
+      +op('duenio','sin','Sin asignar',f.duenio==='sin')
+      +'<div class="sep"></div>'):'')
+    +'<div class="ttl">Estado</div>'
     +op('estado','todos','Todos',f.estado==='todos')
     +op('estado','live','Entregando',f.estado==='live')
     +op('estado','pausa','En pausa',f.estado==='pausa')
@@ -1731,6 +1755,32 @@ function _cliFiltroPintar(){
     +op('archivados','','Incluir archivados',f.archivados)
     +'<div style="font-size:10px;color:var(--sb-text-faint);padding:6px 8px 2px">'+n+' cliente'+(n===1?'':'s')+' a la vista</div>';
 }
+// Asigna o libera un cliente. Es un dato mas del cliente, asi que viaja con la
+// sincronizacion normal y la otra persona lo ve enseguida.
+function asignarCliente(id, email){
+  var c=DB.clients.find(function(x){return x.id===id;});
+  if(!c) return;
+  if(email) c.owner=email; else delete c.owner;
+  save();
+  renderSidebar();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof toast==='function') toast(email?('Ahora lo maneja '+email.split('@')[0]):'Cliente sin asignar');
+}
+
+function menuResponsableHtml(c){
+  var eq=equipo();
+  var actual=responsableDe(c);
+  var opts='<option value=""'+(actual?'':' selected')+'>Sin asignar</option>';
+  eq.forEach(function(e){
+    opts+='<option value="'+esc(e)+'"'+(e.toLowerCase()===actual.toLowerCase()?' selected':'')+'>'
+      +esc(e.split('@')[0])+(soyYo(e)?' (yo)':'')+'</option>';
+  });
+  return '<div style="display:flex;align-items:center;gap:8px">'
+    +'<span style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Responsable</span>'
+    +'<select class="btn btn-sm" onchange="asignarCliente('+c.id+',this.value)">'+opts+'</select>'
+    +'</div>';
+}
+
 function toggleCliFiltro(btn){
   var el=_cliFiltroPanel();
   if(el.classList.contains('on')){ cerrarCliFiltro(); return; }
@@ -1751,6 +1801,8 @@ function archivedClients(){ return DB.clients.filter(function(c){return c.archiv
 // Reemplaza al tooltip nativo, que tapaba las filas de abajo justo al recorrer la lista.
 function clientPeekHtml(c){
   var bits=[];
+  // El responsable primero: es lo que se busca cuando la lista es larga
+  if(c.owner) bits.push(soyYo(c.owner)?'mio':c.owner.split('@')[0]);
   var d=adsDot(c);
   bits.push(d.live?'entregando':(d.state==='amber'?'pausada':'sin datos'));
   var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
@@ -2024,7 +2076,8 @@ function renderClientFicha(c){
         <div style="font-size:22px;font-weight:500;margin-bottom:6px">${esc(c.name)}</div>
         ${c.archived?'<div style="display:inline-block;font-size:11px;padding:3px 10px;border-radius:20px;background:var(--bg3);color:var(--text3);border:0.5px solid var(--border);margin-bottom:4px">Cliente archivado &middot; no figura en el sidebar ni en las metricas</div>':''}
         <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:28px">${pillsHtml}</div>
-        <div style="margin-top:32px;padding-top:20px;border-top:1px solid var(--border)">
+        <div style="margin-top:26px;display:flex;justify-content:center">${menuResponsableHtml(c)}</div>
+        <div style="margin-top:26px;padding-top:20px;border-top:1px solid var(--border)">
           <button class="btn btn-sm" style="color:var(--text3)" onclick="toggleArchiveClient(${c.id})">${c.archived?'&#8631; Reactivar cliente':'&#128451; Archivar &mdash; ya no en servicio'}</button>
         </div>
       </div>
