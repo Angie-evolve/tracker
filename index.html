@@ -4317,6 +4317,14 @@ function integracionesAppHtml(){
         detail:listo?('Location '+esc(iLoc)):'Sin configurar',
         action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
     })(),
+    (function(){
+      var cc=getCitasCfg();
+      var listo=!!(cc.url&&cc.email);
+      return card({name:'Citas canceladas', st:listo?'ok':(cc.url?'partial':'no'),
+        desc:'Un script aparte revisa cada 15 minutos los calendarios de todos los clientes y avisa cuando una cita pasa a cancelada.',
+        detail:listo?('&rarr; '+esc(cc.email)+(cc.whatsapp?' &middot; WhatsApp':'')):'Sin configurar',
+        action:'abrirCitasCanceladas()', actionLabel:listo?'Editar':'Configurar'});
+    })(),
     card({name:'Agencia de GHL', st:agOk?'ok':(agPartial?'partial':'no'),
       desc:'Crear subcuentas desde un snapshot al dar de alta un cliente. Token aparte del de lectura: puede crear y borrar subcuentas.',
       detail:agOk?('Snapshot: '+esc(a.snapshotNombre||a.snapshotId||'sin definir')):(agPartial?'Faltan datos de conexion':'Sin configurar'),
@@ -4400,6 +4408,95 @@ async function guardarSubcuentaInterna(){
   if(typeof toast==='function') toast('Subcuenta interna guardada');
   closeModal();
   if(typeof abrirConfigAgencia==='function') abrirConfigAgencia();
+}
+
+// ---------- Alarma de citas canceladas (script aparte) ----------
+function getCitasCfg(){
+  try{ return JSON.parse(localStorage.getItem('evold-citas-cfg')||'{}')||{}; }catch(e){ return {}; }
+}
+function abrirCitasCanceladas(){
+  var cc=getCitasCfg();
+  var inp='padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font)';
+  var lbl='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
+  var conGhl=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Citas canceladas</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+      +'Vive en un Apps Script propio, separado del proxy de oportunidades. Revisa cada 15 minutos '
+      +'los calendarios de los '+conGhl.length+' clientes con GHL conectado y avisa cuando una cita pasa a cancelada.</div>'
+    +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:12px">'
+      +'<div><div style="'+lbl+'">URL del script (/exec)</div>'
+        +'<input id="cc-url" value="'+esc(cc.url||'')+'" placeholder="https://script.google.com/.../exec" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+      +'<div><div style="'+lbl+'">Secreto</div>'
+        +'<input id="cc-sec" value="'+esc(cc.secret||'evolve-tracker')+'" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Avisar por mail a</div>'
+      +'<input id="cc-mail" value="'+esc(cc.email||'')+'" placeholder="tu@email.com" style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    +'<div style="margin-bottom:14px"><div style="'+lbl+'">WhatsApp (opcional)</div>'
+      +'<input id="cc-wa" value="'+esc(cc.whatsapp||'')+'" placeholder="+5492944..." style="'+inp+';width:100%;box-sizing:border-box">'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">Sale por la subcuenta interna, igual que los avisos del informe.</div></div>'
+    +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.6;background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px">'
+      +'El token de cada cliente necesita el scope <span class="mono">calendars.readonly</span> y '
+      +'<span class="mono">calendars/events.readonly</span>. Si alguno no lo tiene, ese cliente se saltea y queda anotado en el log.</div>'
+    +'<div id="cc-estado" style="font-size:11.5px;color:var(--text3);margin-bottom:12px"></div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px">'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="citasProbar()">Probar ahora</button>'
+      +'<div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="citasGuardar()">Guardar y sincronizar</button></div>'
+    +'</div></div></div>';
+}
+
+function _ccLeer(){
+  var g=function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
+  return { url:g('cc-url'), secret:g('cc-sec')||'evolve-tracker', email:g('cc-mail'), whatsapp:g('cc-wa') };
+}
+function _ccDecir(t,c){
+  var e=document.getElementById('cc-estado');
+  if(e){ e.innerHTML=t; e.style.color=c||'var(--text3)'; }
+}
+
+async function citasGuardar(){
+  var cc=_ccLeer();
+  if(!cc.url){ _ccDecir('Falta la URL del script.','var(--amberx)'); return; }
+  if(!cc.email){ _ccDecir('Falta el mail al que avisar.','var(--amberx)'); return; }
+  localStorage.setItem('evold-citas-cfg', JSON.stringify(cc));
+  // El script vive aparte: necesita su propia copia de los clientes
+  var clientes=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;})
+    .map(function(c){ return {id:c.id, name:c.name, token:c.ghl.token, location:c.ghl.locationId}; });
+  var wa=getWaCfg();
+  var q=function(o){ return Object.keys(o).map(function(k){ return k+'='+encodeURIComponent(o[k]); }).join('&'); };
+  _ccDecir('Guardando...');
+  try{
+    var r1=await fetch(cc.url+'?'+q({secret:cc.secret, action:'save_settings', email:cc.email,
+      waNumero:cc.whatsapp||'', waLocation:wa.location||'', waToken:wa.token||''})).then(function(x){return x.json();});
+    if(!r1||!r1.ok) throw new Error((r1&&r1.error)||'sin respuesta');
+    var r2=await fetch(cc.url+'?'+q({secret:cc.secret, action:'save_clients',
+      clients:JSON.stringify(clientes)})).then(function(x){return x.json();});
+    if(!r2||!r2.ok) throw new Error((r2&&r2.error)||'sin respuesta');
+    _ccDecir('<span style="color:var(--accent)">Listo: '+r2.clientes+' clientes sincronizados. Revisa cada 15 minutos.</span>');
+    if(typeof toast==='function') toast('Alarma de citas configurada');
+    if(typeof abrirConfigAgencia==='function') setTimeout(abrirConfigAgencia,600);
+  }catch(e){
+    _ccDecir('No se pudo guardar: '+esc(e.message),'var(--redx)');
+  }
+}
+
+// Corre una revision al toque, sin esperar al disparador
+async function citasProbar(){
+  var cc=_ccLeer();
+  if(!cc.url){ _ccDecir('Falta la URL del script.','var(--amberx)'); return; }
+  _ccDecir('Revisando los calendarios...');
+  try{
+    var r=await fetch(cc.url+'?secret='+encodeURIComponent(cc.secret)+'&action=run_now').then(function(x){return x.json();});
+    if(!r||!r.ok){ _ccDecir('El script respondio: '+esc((r&&r.error)||'sin datos'),'var(--redx)'); return; }
+    var msg='Revise '+r.revisados+' cliente(s). ';
+    msg+=r.cancelaciones?('<span style="color:var(--amberx)">'+r.cancelaciones+' cancelacion(es) nueva(s).</span>')
+                        :'Sin cancelaciones nuevas.';
+    if(r.errores&&r.errores.length) msg+='<br><span style="color:var(--amberx)">Sin acceso al calendario: '+esc(r.errores.join(' | '))+'</span>';
+    _ccDecir(msg);
+  }catch(e){ _ccDecir('Error de red: '+esc(e.message),'var(--redx)'); }
 }
 
 function toggleAgenciaDetalle(){
