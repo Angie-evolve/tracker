@@ -5168,6 +5168,7 @@ function wrLeerEnvios(){
       day:parseInt(g('env-day')||'1',10),
       monthDay:parseInt(g('env-md')||'1',10),
       hour:parseInt(g('env-hour')!==null?g('env-hour'):'10',10),
+      whatsapp:(g('env-wa')||'').trim(),
       clientes:clientes   // vacio = todos
     });
   }
@@ -5187,9 +5188,20 @@ function wrEnviosChanged(){
     var r=document.getElementById('env-resumen-'+e.id);
     if(r){
       var cuantos=(todos&&todos.checked)?'todos los clientes':(e.clientes.length+' cliente'+(e.clientes.length===1?'':'s'));
-      r.innerHTML=describeEnvio(e)+' &middot; '+cuantos+' &middot; cubre '+reportPeriodLabel(e.freq)+'.';
+      r.innerHTML=describeEnvio(e)+' &middot; '+cuantos+' &middot; cubre '+reportPeriodLabel(e.freq)+'.'
+        +(e.whatsapp?' <span style="color:var(--accent)">Avisa por WhatsApp al '+esc(e.whatsapp)+'.</span>':'');
     }
   });
+}
+
+// Subcuenta desde la que salen los avisos por WhatsApp. GHL solo manda mensajes a
+// contactos de una subcuenta, asi que se elige una sola y desde ahi se avisa a todos.
+function getWaCfg(){
+  try{ return JSON.parse(localStorage.getItem('evold-report-wa')||'{}')||{}; }catch(e){ return {}; }
+}
+function wrGuardarWa(){
+  var g=function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
+  localStorage.setItem('evold-report-wa', JSON.stringify({ location:g('wa-loc'), token:g('wa-tok') }));
 }
 
 function wrAgregarEnvio(){
@@ -5220,8 +5232,12 @@ async function wrPushEnvios(showToast){
   }
   if(st) st.innerHTML='Guardando los envios en el Apps Script...';
   try{
+    wrGuardarWa();
+    const wa=getWaCfg();
     const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
-      +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios)))
+      +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios))
+      +'&waLocation='+encodeURIComponent(wa.location||'')
+      +'&waToken='+encodeURIComponent(wa.token||''))
       .then(function(x){return x.json();});
     if(!r||!r.ok){
       const err=String((r&&r.error)||'sin respuesta');
@@ -5374,6 +5390,7 @@ async function wrPushSchedule(showToast){
 function openWeeklyReportModal(){
   const pushed=localStorage.getItem('evold-report-pushed');
   const envios=getEnvios();
+  const wa=getWaCfg();
   const clientsOk=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
   const selStyle='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);outline:none;cursor:pointer';
   const lblStyle='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
@@ -5405,6 +5422,10 @@ function openWeeklyReportModal(){
         +'<div id="env-md-wrap-'+e.id+'" style="flex:1;display:'+(e.freq==='monthly'?'block':'none')+'"><select id="env-md-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+diasMes+'</select></div>'
         +'<div style="flex:0 0 100px"><select id="env-hour-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+horas+'</select></div>'
       +'</div>'
+      +'<div style="margin-bottom:9px">'
+        +'<input type="tel" id="env-wa-'+e.id+'" value="'+esc(e.whatsapp||'')+'" placeholder="WhatsApp de aviso (opcional) - +5492944..." oninput="wrEnviosChanged()" '
+        +'style="width:100%;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:12px">'
+        +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">Al terminar el envio avisa por WhatsApp que los informes ya estan en el mail.</div></div>'
       +'<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:6px">'
         +'<input type="checkbox" id="env-todos-'+e.id+'"'+(todos?' checked':'')+' onchange="wrEnviosChanged()">'
         +'Todos los clientes con GHL conectado</label>'
@@ -5429,6 +5450,19 @@ function openWeeklyReportModal(){
       +'<span style="font-size:10.5px;color:var(--text3)">no re-sincroniza los clientes</span>'
     +'</div>'
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
+    +'<div style="margin-bottom:14px">'
+      +'<div style="'+lblStyle+'">Subcuenta desde la que salen los avisos</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-bottom:7px">'
+        +'GHL solo manda WhatsApp a contactos de una subcuenta. Elegi una que tenga WhatsApp habilitado: '
+        +'los numeros de arriba se dan de alta ahi como contacto la primera vez.</div>'
+      +'<div style="display:flex;gap:8px">'
+        +'<input id="wa-loc" value="'+esc(wa.location||'')+'" placeholder="locationId" oninput="wrGuardarWa()" '
+        +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
+        +'<input id="wa-tok" value="'+esc(wa.token||'')+'" placeholder="token pit-..." oninput="wrGuardarWa()" '
+        +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
+      +'</div>'
+      +'<div style="font-size:10.5px;color:var(--amberx);margin-top:5px">El token necesita permisos de contactos y de conversaciones.</div>'
+    +'</div>'
     +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6">'
     +'Se van a sincronizar <b style="color:var(--strong)">'+clientsOk.length+' clientes</b> (los que tienen GHL conectado), con sus tokens, reglas de stages y campanas excluidas.'
     +(pushed?'<br>Ultima sincronizacion: '+new Date(+pushed).toLocaleString('es-AR'):'')
