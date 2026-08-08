@@ -201,6 +201,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .pill-amber{background:rgba(186,117,23,0.15);color:var(--amberx)}
 .pill-red{background:rgba(216,90,48,0.15);color:var(--redx)}
 .pill-blue{background:rgba(55,138,221,0.15);color:#6aabf0}
+/* Revisada: verde apagado. Distinto del verde de Finalizada, que es el cierre. */
+.pill-teal{background:rgba(45,170,150,0.15);color:#4fc3ac}
 .pill-gray{background:var(--bg4);color:var(--text2)}
 
 .tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0}
@@ -371,6 +373,7 @@ body.light .pill-green{background:var(--green-bg);color:var(--green-text)}
 body.light .pill-amber{background:var(--amber-bg);color:var(--amber-text)}
 body.light .pill-red{background:var(--red-bg);color:var(--red-text)}
 body.light .pill-blue{background:var(--blue-bg);color:var(--blue-text)}
+body.light .pill-teal{background:rgba(45,170,150,0.12);color:#1e7f6d}
 body.light .modal{box-shadow:0 20px 60px rgba(30,28,25,0.16)}
 body.light .btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 /* --- Tablero de tareas agrupado (rediseno) --- */
@@ -2945,6 +2948,9 @@ var _TK_ESTADOS={
   'proceso':{label:'En proceso',pill:'pill-blue'},
   'delegada':{label:'Delegada',pill:'pill-gray'},
   'revision':{label:'En revision',pill:'pill-amber'},
+  // Ya la miraste y esta bien, pero todavia falta algo para darla por cerrada
+  // (mandarsela al cliente, esperar su ok). No marca la tarea como hecha.
+  'revisada':{label:'Revisada',pill:'pill-teal'},
   'bloqueada':{label:'Bloqueada',pill:'pill-red'},
   'finalizada':{label:'Finalizada',pill:'pill-green'}
 };
@@ -2997,10 +3003,82 @@ function setTicketEstado(clientId,taskId,estado){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
   if(!t) return;
+  const previo=t.estado||'';
   t.estado=estado||''; _tkMarcarProceso(t);
   if(estado==='finalizada'){ t.done=true; t.doneAt=new Date().toISOString(); }
   save();
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+  // Al pasar a revision es cuando existe algo para revisar: se pide el entregable
+  // en el momento, que es cuando se tiene a mano. Despues nadie vuelve a cargarlo.
+  if(estado==='revision' && previo!=='revision') pedirEntregables(clientId, taskId);
+}
+
+// Cartel para enganchar links o notas de entrega a una tarea.
+function pedirEntregables(clientId, taskId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  const ya=(t.attachments||[]).length;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:3px">Que hay para revisar</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +esc(t.text||'').slice(0,120)+(String(t.text||'').length>120?'...':'')
+      +'<br>Pega los links del entregable (Drive, Figma, Loom, lo que sea). Uno por linea o todos juntos: se detectan solos.</div>'
+    +'<textarea id="pe-txt" placeholder="https://drive.google.com/...&#10;https://www.figma.com/..." '
+      +'style="width:100%;box-sizing:border-box;height:120px;padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none;resize:vertical"></textarea>'
+    +(ya?('<div style="font-size:11px;color:var(--text3);margin-top:8px">Ya tiene '+ya+' adjunto'+(ya>1?'s':'')+'. Los nuevos se suman.</div>'):'')
+    +'<div id="pe-aviso" style="font-size:11.5px;color:var(--amberx);margin-top:8px"></div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px">'
+      +'<button class="btn btn-sm" style="color:var(--text3)" onclick="closeModal()">Ahora no</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarEntregables('+clientId+','+taskId+')">Guardar</button>'
+    +'</div></div></div>';
+  setTimeout(function(){ var e=document.getElementById('pe-txt'); if(e) e.focus(); },50);
+}
+
+function guardarEntregables(clientId, taskId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  const txt=((document.getElementById('pe-txt')||{}).value||'').trim();
+  const av=document.getElementById('pe-aviso');
+  if(!txt){ if(av) av.textContent='No pegaste nada. Si todavia no hay entregable, cerra con "Ahora no".'; return; }
+  const urls=txt.match(/https?:\/\/[^\s<>"']+/g)||[];
+  t.attachments=t.attachments||[];
+  let nuevos=0;
+  urls.forEach(function(u){
+    u=u.replace(/[.,;)]+$/,'');   // la puntuacion final no es parte del link
+    if(t.attachments.some(function(a){return a.url===u;})) return;
+    t.attachments.push({url:u, label:_etiquetaLink(u)});
+    nuevos++;
+  });
+  // Lo que no es link se guarda como nota de entrega: a veces la referencia es
+  // "esta en la carpeta compartida" y ese dato tambien sirve.
+  const resto=txt.replace(/https?:\/\/[^\s<>"']+/g,'').replace(/\s+/g,' ').trim();
+  if(resto){
+    t.notaEntrega=resto;
+    t.notas=t.notas||[];
+    t.notas.push({texto:resto, at:new Date().toISOString()});
+  }
+  if(!nuevos && !resto){ if(av) av.textContent='No encontre links nuevos en lo que pegaste.'; return; }
+  save();
+  closeModal();
+  if(typeof toast==='function'){
+    toast(nuevos?(nuevos+' link'+(nuevos>1?'s':'')+' enganchado'+(nuevos>1?'s':'')+' al ticket'):'Nota de entrega guardada');
+  }
+  if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+}
+
+// Nombre corto para el link, asi la lista no queda con URLs kilometricas
+function _etiquetaLink(u){
+  try{
+    var h=new URL(u).hostname.replace(/^www\./,'');
+    var mapa={'drive.google.com':'Drive','docs.google.com':'Documento','figma.com':'Figma',
+              'loom.com':'Loom','youtube.com':'YouTube','youtu.be':'YouTube','notion.so':'Notion',
+              'dropbox.com':'Dropbox','canva.com':'Canva'};
+    return mapa[h]||h;
+  }catch(e){ return 'Link'; }
 }
 
 // ===== Registrar entrega (manual asistido): pegar el mensaje de Ash =====
@@ -3691,7 +3769,7 @@ function convRenderCandidatos(){
     h='<div style="font-size:12px;color:var(--text3)">No encontre tareas, cierres ni cambios de estado claros. Es un buen resultado: prefiero no inventar.</div>';
   }
   if(cd.estados&&cd.estados.length){
-    var _EST={proceso:'En proceso',revision:'En revision',bloqueada:'Bloqueada'};
+    var _EST={proceso:'En proceso',revision:'En revision',revisada:'Revisada',bloqueada:'Bloqueada'};
     h+='<div style="font-size:11px;color:var(--amberx);text-transform:uppercase;letter-spacing:0.06em;margin:14px 0 8px">Cambiaron de estado</div>';
     h+=cd.estados.map(function(k,i){
       return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:8px">'
