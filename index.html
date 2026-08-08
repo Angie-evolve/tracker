@@ -4203,6 +4203,193 @@ function quitarDelEquipo(mail){
   abrirRepartoClientes();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  RUTINAS: tareas que se repiten
+//  Se definen una vez y el tracker las carga solo cuando toca. Como el tracker
+//  corre en el navegador, la revision se hace al abrirlo: si un dia no lo abris,
+//  la tarea se crea igual la proxima vez, con su fecha de vencimiento correcta.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function getRutinas(){ return Array.isArray(DB.rutinas)?DB.rutinas:[]; }
+
+function _hoyISO(d){
+  d=d||new Date();
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
+function _dowMon(d){ return ((d.getDay()+6)%7)+1; }   // lunes=1 ... domingo=7
+
+// Le toca hoy a esta rutina?
+function _rutinaToca(r, hoy){
+  if(!r.activa) return false;
+  if(r.ultima===_hoyISO(hoy)) return false;        // ya se cargo hoy
+  if(r.freq==='daily')   return _dowMon(hoy)<=5 || !r.soloHabiles;
+  if(r.freq==='weekly')  return _dowMon(hoy)===(parseInt(r.day,10)||1);
+  if(r.freq==='monthly') return hoy.getDate()===(parseInt(r.monthDay,10)||1);
+  return false;
+}
+
+// Crea las tareas de las rutinas que corresponden. Devuelve cuantas cargo.
+function correrRutinas(){
+  var rs=getRutinas();
+  if(!rs.length) return 0;
+  var hoy=new Date(), creadas=0;
+  rs.forEach(function(r){
+    if(!_rutinaToca(r,hoy)) return;
+    var objetivo=(r.clientes&&r.clientes.length)
+      ? DB.clients.filter(function(c){ return !c.archived && r.clientes.indexOf(String(c.id))>=0; })
+      : DB.clients.filter(function(c){ return !c.archived; });
+    objetivo.forEach(function(c){
+      c.tasks=c.tasks||[];
+      // Red de seguridad: si ya existe la misma tarea de esta rutina sin cerrar,
+      // no se duplica. Pasa si se corre dos veces el mismo dia en dos maquinas.
+      var repetida=c.tasks.some(function(t){
+        return t.rutinaId===r.id && !t.done && !t.deleted && !t.archivada;
+      });
+      if(repetida) return;
+      var venc=new Date(hoy);
+      venc.setDate(venc.getDate()+(parseInt(r.dias,10)||3));
+      c.tasks.unshift({
+        id:Date.now()+Math.floor(Math.random()*1000),
+        text:r.texto, responsible:r.responsable||'', done:false,
+        source:'Rutina', rutinaId:r.id,
+        due:_hoyISO(venc),
+        delegated:!!r.responsable, delegatedAt:new Date().toISOString(),
+        ticket:'#'+nextTicketFromApp()
+      });
+      creadas++;
+    });
+    r.ultima=_hoyISO(hoy);
+  });
+  if(creadas){ save(); }
+  return creadas;
+}
+
+// ---------- Pantalla de rutinas ----------
+function abrirRutinas(){
+  var rs=getRutinas();
+  var eq=(typeof equipo==='function')?equipo():[];
+  var inp='padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font)';
+  var dias=['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
+
+  var filas=rs.map(function(r,i){
+    var cuantos=(r.clientes&&r.clientes.length)?(r.clientes.length+' clientes'):'todos los clientes';
+    return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px;background:var(--bg3)'+(r.activa?'':';opacity:.55')+'">'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">'
+        +'<input type="checkbox" '+(r.activa?'checked':'')+' onchange="_rutSet('+i+',\'activa\',this.checked)" title="Activa">'
+        +'<input value="'+esc(r.texto||'')+'" placeholder="Que hay que hacer" oninput="_rutSet('+i+',\'texto\',this.value,true)" style="'+inp+';flex:1">'
+        +'<button class="btn btn-sm" style="color:var(--redx)" onclick="_rutBorrar('+i+')">&times;</button>'
+      +'</div>'
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">'
+        +'<select onchange="_rutSet('+i+',\'freq\',this.value)" style="'+inp+'">'
+          +'<option value="daily"'+(r.freq==='daily'?' selected':'')+'>Todos los dias</option>'
+          +'<option value="weekly"'+(r.freq==='weekly'?' selected':'')+'>Cada semana</option>'
+          +'<option value="monthly"'+(r.freq==='monthly'?' selected':'')+'>Cada mes</option>'
+        +'</select>'
+        +(r.freq==='weekly'?'<select onchange="_rutSet('+i+',\'day\',this.value)" style="'+inp+'">'
+          +dias.map(function(d,j){ return '<option value="'+(j+1)+'"'+(String(r.day)===String(j+1)?' selected':'')+'>'+d+'</option>'; }).join('')
+          +'</select>':'')
+        +(r.freq==='monthly'?'<select onchange="_rutSet('+i+',\'monthDay\',this.value)" style="'+inp+'">'
+          +Array.from({length:28},function(_,j){ return '<option value="'+(j+1)+'"'+(String(r.monthDay)===String(j+1)?' selected':'')+'>dia '+(j+1)+'</option>'; }).join('')
+          +'</select>':'')
+        +'<span style="font-size:11px;color:var(--text3)">vence en</span>'
+        +'<input type="number" min="1" max="30" value="'+(r.dias||3)+'" oninput="_rutSet('+i+',\'dias\',this.value,true)" style="'+inp+';width:58px">'
+        +'<span style="font-size:11px;color:var(--text3)">dias</span>'
+        +(eq.length?'<select onchange="_rutSet('+i+',\'responsable\',this.value)" style="'+inp+'">'
+          +'<option value="">Sin responsable</option>'
+          +eq.map(function(e){ return '<option value="'+esc(e)+'"'+(r.responsable===e?' selected':'')+'>'+esc(e.split('@')[0])+'</option>'; }).join('')
+          +'</select>':'')
+      +'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:7px">'
+        +'Se carga en '+cuantos+' &middot; <a href="#" onclick="_rutClientes('+i+');return false" style="color:var(--accent);text-decoration:none">elegir</a>'
+        +(r.ultima?(' &middot; ultima vez: '+r.ultima):' &middot; todavia no corrio')
+      +'</div>'
+    +'</div>';
+  }).join('');
+
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;width:94%;max-height:86vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">Rutinas</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+      +'Tareas que se repiten. Se cargan solas cuando abris el tracker el dia que toca. '
+      +'Si un dia no lo abris, se crean la proxima vez que entres.</div>'
+    +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:12px">Todavia no hay rutinas.</div>')
+    +'<div id="rut-aviso" style="font-size:11.5px;color:var(--text3);margin:10px 0"></div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:14px">'
+      +'<button class="btn btn-sm" onclick="_rutNueva()">Agregar rutina</button>'
+      +'<div style="display:flex;gap:8px">'
+        +'<button class="btn btn-sm" style="color:var(--text3)" onclick="_rutCorrerAhora()">Cargar las que tocan hoy</button>'
+        +'<button class="btn btn-sm" onclick="closeModal();if(typeof abrirConfigAgencia===\'function\')abrirConfigAgencia()">Cerrar</button>'
+      +'</div>'
+    +'</div></div></div>';
+}
+
+function _rutSet(i,campo,valor,sinRedibujar){
+  var rs=getRutinas(); if(!rs[i]) return;
+  rs[i][campo]=valor; save();
+  if(!sinRedibujar) abrirRutinas();
+}
+function _rutNueva(){
+  DB.rutinas=getRutinas();
+  DB.rutinas.push({id:'r'+Date.now().toString().slice(-7), texto:'', freq:'weekly', day:1,
+                   monthDay:1, dias:3, clientes:[], responsable:'', activa:true});
+  save(); abrirRutinas();
+}
+function _rutBorrar(i){
+  var rs=getRutinas(); if(!rs[i]) return;
+  if(!confirm('Borrar la rutina "'+(rs[i].texto||'sin nombre')+'"? Las tareas ya creadas se quedan.')) return;
+  rs.splice(i,1); save(); abrirRutinas();
+}
+
+// Elegir a que clientes se les carga
+function _rutClientes(i){
+  var rs=getRutinas(); var r=rs[i]; if(!r) return;
+  var activos=DB.clients.filter(function(c){return !c.archived;})
+    .sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+  var todos=!r.clientes||!r.clientes.length;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px;width:92%;max-height:80vh;overflow:auto">'
+    +'<div style="font-size:14px;font-weight:600;color:var(--strong);margin-bottom:3px">A que clientes</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">'+esc(r.texto||'(rutina sin nombre)')+'</div>'
+    +'<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer;margin-bottom:10px">'
+      +'<input type="checkbox" id="rut-todos" '+(todos?'checked':'')+' onchange="_rutTodos('+i+',this.checked)">Todos los clientes activos</label>'
+    +'<div id="rut-lista" style="display:'+(todos?'none':'block')+';max-height:280px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">'
+      +activos.map(function(c){
+        var m=todos||r.clientes.indexOf(String(c.id))>=0;
+        return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;color:var(--text2);cursor:pointer">'
+          +'<input type="checkbox" data-cli="'+c.id+'"'+(m?' checked':'')+' onchange="_rutMarcar('+i+')">'+esc(c.name)+'</label>';
+      }).join('')
+    +'</div>'
+    +'<div style="display:flex;justify-content:flex-end;margin-top:14px">'
+      +'<button class="btn btn-sm btn-primary" onclick="abrirRutinas()">Listo</button></div>'
+    +'</div></div>';
+}
+function _rutTodos(i,marcado){
+  var rs=getRutinas(); if(!rs[i]) return;
+  if(marcado){ rs[i].clientes=[]; save(); }
+  var l=document.getElementById('rut-lista'); if(l) l.style.display=marcado?'none':'block';
+  if(!marcado) _rutMarcar(i);
+}
+function _rutMarcar(i){
+  var rs=getRutinas(); if(!rs[i]) return;
+  var ids=[];
+  document.querySelectorAll('#rut-lista input[data-cli]').forEach(function(ch){
+    if(ch.checked) ids.push(ch.getAttribute('data-cli'));
+  });
+  rs[i].clientes=ids; save();
+}
+
+function _rutCorrerAhora(){
+  var n=correrRutinas();
+  var av=document.getElementById('rut-aviso');
+  if(av){
+    av.innerHTML=n?('<span style="color:var(--accent)">'+n+' tarea'+(n>1?'s':'')+' cargada'+(n>1?'s':'')+'.</span>')
+                  :'No habia ninguna para cargar hoy (o ya estaban creadas).';
+  }
+  if(n&&typeof toast==='function') toast(n+' tarea'+(n>1?'s':'')+' de rutina cargada'+(n>1?'s':''));
+}
+
 // Reparto de clientes en una sola pantalla: asignarlos de a uno desde la portada
 // de cada cliente es tedioso cuando son trece.
 function abrirRepartoClientes(){
@@ -4589,6 +4776,14 @@ function integracionesAppHtml(){
         desc:'La subcuenta de la agencia. Desde aca se leen las conversaciones del equipo y salen los avisos por WhatsApp de los informes. No es un cliente y no entra en ninguna metrica.',
         detail:listo?('Location '+esc(iLoc)):'Sin configurar',
         action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
+    })(),
+    (function(){
+      var rs=getRutinas();
+      var act=rs.filter(function(r){return r.activa&&r.texto;}).length;
+      return card({name:'Rutinas', st:act?'ok':'no',
+        desc:'Tareas que se repiten: se cargan solas el dia que toca, en los clientes que elijas. Se revisan al abrir el tracker.',
+        detail:act?(act+' rutina'+(act===1?'':'s')+' activa'+(act===1?'':'s')):'Sin rutinas',
+        action:'abrirRutinas()', actionLabel:rs.length?'Editar':'Crear'});
     })(),
     (function(){
       // Reparto de clientes. No es una conexion externa, pero vive aca porque es
@@ -15006,6 +15201,8 @@ async function arrancarConSesion(){
     var hubo=await sbBajar();
     // Despues de bajar: si no, se pisa la lista que ya estaba en la nube
     registrarEnEquipo();
+    // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
+    try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
     if(!hubo){
       // Primera vez: la base esta vacia y subimos lo que ya hay en esta maquina.
       _sbHuellas={};
