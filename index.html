@@ -6092,7 +6092,7 @@ function showTickets(){
 // y el otro vistas unicas de la pagina. Este script mide en la landing misma, asi
 // numerador y denominador salen del mismo lado. La plantilla vive aca para que
 // nadie tenga que editar el id del cliente a mano en 13 subcuentas.
-var LP_SNIPPET = "/* EVOLVE - tracker de landing (v1)\n   Se pega en GHL: Embudo > Configuracion > Tracking Code > Head (o Body).\n   Cambiar solo la linea CLIENTE. El resto es igual para todos.\n\n   Registra dos eventos:\n     view   -> al cargar la pagina\n     optin  -> al enviarse el formulario\n\n   Los formularios de GHL viven adentro de un iframe, asi que el submit de la\n   pagina no se entera. Por eso se escuchan tres se\u00f1ales distintas y se descarta\n   la repetida: sirve igual para landings armadas con el editor y para las\n   hechas a mano en codigo. */\n(function () {\n  var CLIENTE = 'PEGAR_ID_DEL_CLIENTE';\n\n  var URL = 'https://onnysveksgxtmspxgbow.supabase.co';\n  var KEY = 'sb_publishable_2gpOBfyUspnqRSKH0egoZA_4A6TqMKv';\n\n  // --- id del visitante: localStorage aguanta mas que una cookie y no lo borran\n  // los bloqueadores de cookies. Se pierde en incognito, es lo esperable. ---\n  function id() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }\n  function guardado(clave, minutos) {\n    try {\n      var raw = localStorage.getItem(clave);\n      if (raw) {\n        var o = JSON.parse(raw);\n        if (!minutos || (Date.now() - o.t) < minutos * 60000) {\n          o.t = Date.now();\n          localStorage.setItem(clave, JSON.stringify(o));\n          return o.v;\n        }\n      }\n    } catch (e) {}\n    var v = id();\n    try { localStorage.setItem(clave, JSON.stringify({ v: v, t: Date.now() })); } catch (e) {}\n    return v;\n  }\n  var visitante = guardado('evx_v', 0);          // no vence\n  var sesion    = guardado('evx_s', 30);         // se renueva a los 30 min\n\n  // --- utm: los de la URL, y si no hay, los que quedaron de la primera visita ---\n  var q = new URLSearchParams(location.search);\n  function utm(k) {\n    var v = q.get(k);\n    if (v) { try { sessionStorage.setItem('evx_' + k, v); } catch (e) {} return v; }\n    try { return sessionStorage.getItem('evx_' + k) || null; } catch (e) { return null; }\n  }\n\n  // --- se\u00f1ales de que hay alguien de verdad del otro lado ---\n  var interactuo = false;\n  ['mousemove', 'touchstart', 'scroll', 'keydown'].forEach(function (ev) {\n    window.addEventListener(ev, function () { interactuo = true; }, { once: true, passive: true });\n  });\n  var t0 = Date.now();\n\n  function mandar(tipo) {\n    var cuerpo = {\n      cliente: CLIENTE,\n      tipo: tipo,\n      visitante: visitante,\n      sesion: sesion,\n      pagina: location.pathname,\n      referrer: document.referrer || null,\n      utm_source: utm('utm_source'),\n      utm_medium: utm('utm_medium'),\n      utm_campaign: utm('utm_campaign'),\n      utm_adset: utm('utm_adset'),\n      utm_ad: utm('utm_ad'),\n      fbclid: q.get('fbclid') || null,\n      dispositivo: /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'movil' : 'escritorio',\n      ms_en_pagina: Date.now() - t0,\n      interactuo: interactuo\n    };\n    // Solo 'apikey'. Las claves nuevas (sb_publishable_) no son JWT, asi que\n    // mandarlas tambien en Authorization: Bearer hace que Supabase rechace todo.\n    // keepalive: el navegador lo manda igual aunque la pagina se este yendo,\n    // que es justo lo que pasa cuando el form redirige a la de gracias.\n    try {\n      fetch(URL + '/rest/v1/lp_eventos', {\n        method: 'POST',\n        headers: { 'apikey': KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n        body: JSON.stringify(cuerpo),\n        keepalive: true\n      }).then(function (r) {\n        // Si falla hay que poder verlo: en silencio no se entera nadie.\n        if (!r.ok) r.text().then(function (t) {\n          console.warn('[EVOLVE tracker] ' + tipo + ' rechazado (' + r.status + '): ' + t);\n        });\n      }).catch(function (e) {\n        console.warn('[EVOLVE tracker] no se pudo enviar ' + tipo + ':', e && e.message);\n      });\n    } catch (e) { console.warn('[EVOLVE tracker]', e); }\n  }\n\n  // Nunca dos veces el mismo opt-in: las tres se\u00f1ales pueden dispararse juntas.\n  var yaOptin = false;\n  function optin(origen) {\n    if (yaOptin) return;\n    yaOptin = true;\n    mandar('optin');\n    try { sessionStorage.setItem('evx_optin', origen || '1'); } catch (e) {}\n  }\n\n  // 1) Formularios propios, en landings hechas a mano\n  document.addEventListener('submit', function () { optin('form'); }, true);\n\n  // 2) Formularios de GHL: viven en un iframe y avisan por postMessage.\n  //    El formato del mensaje cambia entre versiones, asi que en vez de exigir\n  //    una forma exacta se acepta cualquier aviso de envio que venga de un\n  //    dominio de GHL. Es preferible a que deje de contar en una actualizacion.\n  window.addEventListener('message', function (e) {\n    var org = String(e.origin || '');\n    if (!/(leadconnector|msgsndr|gohighlevel)/i.test(org)) return;\n    var d = e.data;\n    var txt = (typeof d === 'string') ? d : JSON.stringify(d || '');\n    if (/submit|submission|form.?sent|optin|lead/i.test(txt)) optin('ghl');\n  });\n\n  // 3) Red de seguridad: si la landing redirige a una pagina de gracias y\n  //    ninguna de las dos anteriores llego a disparar, se cuenta ahi.\n  if (/gracias|thank|thanks|success/i.test(location.pathname)) {\n    var previa = null;\n    try { previa = sessionStorage.getItem('evx_optin'); } catch (e) {}\n    if (!previa) optin('gracias');\n  }\n\n  // La visita se registra siempre, al final: asi ms_en_pagina e interactuo\n  // ya tienen algo que contar si la persona hizo algo antes de que cargue todo.\n  if (document.readyState === 'complete') mandar('view');\n  else window.addEventListener('load', function () { mandar('view'); });\n})();\n";
+var LP_SNIPPET = "/* EVOLVE - tracker de landing (v1)\n   Se pega en GHL: Embudo > Configuracion > Tracking Code > Head (o Body).\n   Cambiar CLIENTE y EMBUDO. El resto es igual para todos.\n\n   EMBUDO importa cuando un cliente tiene varios a la vez (pymes, startups,\n   independientes): sin eso los tres se mezclan en un solo opt-in que no\n   describe a ninguno.\n\n   Registra dos eventos:\n     view   -> al cargar la pagina\n     optin  -> al enviarse el formulario\n\n   Los formularios de GHL viven adentro de un iframe, asi que el submit de la\n   pagina no se entera. Por eso se escuchan tres se\u00f1ales distintas y se descarta\n   la repetida: sirve igual para landings armadas con el editor y para las\n   hechas a mano en codigo. */\n(function () {\n  var CLIENTE = 'PEGAR_ID_DEL_CLIENTE';\n  var EMBUDO  = 'PEGAR_NOMBRE_DEL_EMBUDO';\n\n  var URL = 'https://onnysveksgxtmspxgbow.supabase.co';\n  var KEY = 'sb_publishable_2gpOBfyUspnqRSKH0egoZA_4A6TqMKv';\n\n  // --- id del visitante: localStorage aguanta mas que una cookie y no lo borran\n  // los bloqueadores de cookies. Se pierde en incognito, es lo esperable. ---\n  function id() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }\n  function guardado(clave, minutos) {\n    try {\n      var raw = localStorage.getItem(clave);\n      if (raw) {\n        var o = JSON.parse(raw);\n        if (!minutos || (Date.now() - o.t) < minutos * 60000) {\n          o.t = Date.now();\n          localStorage.setItem(clave, JSON.stringify(o));\n          return o.v;\n        }\n      }\n    } catch (e) {}\n    var v = id();\n    try { localStorage.setItem(clave, JSON.stringify({ v: v, t: Date.now() })); } catch (e) {}\n    return v;\n  }\n  var visitante = guardado('evx_v', 0);          // no vence\n  var sesion    = guardado('evx_s', 30);         // se renueva a los 30 min\n\n  // --- utm: los de la URL, y si no hay, los que quedaron de la primera visita ---\n  var q = new URLSearchParams(location.search);\n  function utm(k) {\n    var v = q.get(k);\n    if (v) { try { sessionStorage.setItem('evx_' + k, v); } catch (e) {} return v; }\n    try { return sessionStorage.getItem('evx_' + k) || null; } catch (e) { return null; }\n  }\n\n  // --- se\u00f1ales de que hay alguien de verdad del otro lado ---\n  var interactuo = false;\n  ['mousemove', 'touchstart', 'scroll', 'keydown'].forEach(function (ev) {\n    window.addEventListener(ev, function () { interactuo = true; }, { once: true, passive: true });\n  });\n  var t0 = Date.now();\n\n  function mandar(tipo) {\n    var cuerpo = {\n      cliente: CLIENTE,\n      embudo: (EMBUDO && EMBUDO.indexOf('PEGAR_') !== 0) ? EMBUDO : null,\n      tipo: tipo,\n      visitante: visitante,\n      sesion: sesion,\n      pagina: location.pathname,\n      referrer: document.referrer || null,\n      utm_source: utm('utm_source'),\n      utm_medium: utm('utm_medium'),\n      utm_campaign: utm('utm_campaign'),\n      utm_adset: utm('utm_adset'),\n      utm_ad: utm('utm_ad'),\n      fbclid: q.get('fbclid') || null,\n      dispositivo: /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'movil' : 'escritorio',\n      ms_en_pagina: Date.now() - t0,\n      interactuo: interactuo\n    };\n    // Solo 'apikey'. Las claves nuevas (sb_publishable_) no son JWT, asi que\n    // mandarlas tambien en Authorization: Bearer hace que Supabase rechace todo.\n    // keepalive: el navegador lo manda igual aunque la pagina se este yendo,\n    // que es justo lo que pasa cuando el form redirige a la de gracias.\n    try {\n      fetch(URL + '/rest/v1/lp_eventos', {\n        method: 'POST',\n        headers: { 'apikey': KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n        body: JSON.stringify(cuerpo),\n        keepalive: true\n      }).then(function (r) {\n        // Si falla hay que poder verlo: en silencio no se entera nadie.\n        if (!r.ok) r.text().then(function (t) {\n          console.warn('[EVOLVE tracker] ' + tipo + ' rechazado (' + r.status + '): ' + t);\n        });\n      }).catch(function (e) {\n        console.warn('[EVOLVE tracker] no se pudo enviar ' + tipo + ':', e && e.message);\n      });\n    } catch (e) { console.warn('[EVOLVE tracker]', e); }\n  }\n\n  // Nunca dos veces el mismo opt-in: las tres se\u00f1ales pueden dispararse juntas.\n  var yaOptin = false;\n  function optin(origen) {\n    if (yaOptin) return;\n    yaOptin = true;\n    mandar('optin');\n    try { sessionStorage.setItem('evx_optin', origen || '1'); } catch (e) {}\n  }\n\n  // 1) Formularios propios, en landings hechas a mano\n  document.addEventListener('submit', function () { optin('form'); }, true);\n\n  // 2) Formularios de GHL: viven en un iframe y avisan por postMessage.\n  //    El formato del mensaje cambia entre versiones, asi que en vez de exigir\n  //    una forma exacta se acepta cualquier aviso de envio que venga de un\n  //    dominio de GHL. Es preferible a que deje de contar en una actualizacion.\n  window.addEventListener('message', function (e) {\n    var org = String(e.origin || '');\n    if (!/(leadconnector|msgsndr|gohighlevel)/i.test(org)) return;\n    var d = e.data;\n    var txt = (typeof d === 'string') ? d : JSON.stringify(d || '');\n    if (/submit|submission|form.?sent|optin|lead/i.test(txt)) optin('ghl');\n  });\n\n  // 3) Red de seguridad: si la landing redirige a una pagina de gracias y\n  //    ninguna de las dos anteriores llego a disparar, se cuenta ahi.\n  if (/gracias|thank|thanks|success/i.test(location.pathname)) {\n    var previa = null;\n    try { previa = sessionStorage.getItem('evx_optin'); } catch (e) {}\n    if (!previa) optin('gracias');\n  }\n\n  // La visita se registra siempre, al final: asi ms_en_pagina e interactuo\n  // ya tienen algo que contar si la persona hizo algo antes de que cargue todo.\n  if (document.readyState === 'complete') mandar('view');\n  else window.addEventListener('load', function () { mandar('view'); });\n})();\n";
 
 // Lee lo que llego a Supabase. La landing solo escribe; leer requiere sesion,
 // asi que esto solo funciona con el tracker abierto y logueado.
@@ -6107,7 +6107,7 @@ async function lpVerificar(clientId, silencioso){
   if(!silencioso) pintar('Consultando...');
   try{
     var url=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id))
-      +'&select=tipo,visitante,pagina,creado_en&order=creado_en.desc&limit=2000';
+      +'&select=tipo,visitante,pagina,embudo,creado_en&order=creado_en.desc&limit=2000';
     var r=await fetch(url,{ headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
     if(!r.ok){
       var t=await r.text();
@@ -6126,9 +6126,12 @@ async function lpVerificar(clientId, silencioso){
     var vistas=filas.filter(function(f){ return f.tipo==='view'; });
     var optins=filas.filter(function(f){ return f.tipo==='optin'; });
     var unicos={}; vistas.forEach(function(f){ unicos[f.visitante]=1; });
+    var embudos={}, sinEmbudo=0;
+    filas.forEach(function(f){ if(f.embudo) embudos[f.embudo]=1; else sinEmbudo++; });
     var st={ vistas:vistas.length, unicas:Object.keys(unicos).length, optins:optins.length,
              ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString(),
-             paginas:lpPorPagina(filas) };
+             paginas:lpPorPagina(filas),
+             embudos:Object.keys(embudos), sinEmbudo:sinEmbudo };
     c.lpStats=st;
     lpRecalcular(c);
     save();
@@ -6258,14 +6261,35 @@ function lpSelectorHtml(c){
     +'</div>';
 }
 
-function lpScriptDe(c){
-  return '<script>\n'+LP_SNIPPET.replace('PEGAR_ID_DEL_CLIENTE', String(c.id))+'<\/script>';
+function lpScriptDe(c, embudo){
+  var e=String(embudo||'').trim();
+  return '<script>\n'
+    +LP_SNIPPET.replace('PEGAR_ID_DEL_CLIENTE', String(c.id))
+               .replace('PEGAR_NOMBRE_DEL_EMBUDO', e||'PEGAR_NOMBRE_DEL_EMBUDO')
+    +'<\/script>';
+}
+function _lpEmbudoInput(){
+  var e=document.getElementById('lp-embudo');
+  return e?String(e.value||'').trim():'';
+}
+// Al cambiar el nombre se re-genera el script del cuadro, sin recargar el modal.
+function lpPintarScript(clientId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  var ta=document.getElementById('lp-script');
+  if(!c||!ta) return;
+  ta.value=lpScriptDe(c, _lpEmbudoInput());
 }
 function lpCopiarScript(clientId){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
   if(!c) return;
+  var emb=_lpEmbudoInput();
+  if(!emb){
+    if(typeof toast==='function') toast('Poné el nombre del embudo antes de copiar','amber');
+    var i=document.getElementById('lp-embudo'); if(i) i.focus();
+    return;
+  }
   var ta=document.createElement('textarea');
-  ta.value=lpScriptDe(c);
+  ta.value=lpScriptDe(c, emb);
   document.body.appendChild(ta); ta.select();
   try{ document.execCommand('copy'); }catch(e){}
   ta.remove();
@@ -6285,7 +6309,15 @@ function lpModal(clientId){
         +'<b>2.</b> Pegarlo <b>al final de lo que ya haya</b> (no reemplaza el pixel de Meta: conviven) y guardar.<br>'
         +'<b>3.</b> Abrir la landing una vez y volver aca: si llego el evento, aparece la cuenta abajo.'
       +'</div>'
-      +'<textarea readonly onclick="this.select()" rows="6" style="width:100%;box-sizing:border-box;padding:10px;'
+      +'<div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">'
+        +'<span style="font-size:11.5px;color:var(--text2);flex-shrink:0">Nombre del embudo</span>'
+        +'<input id="lp-embudo" type="text" placeholder="pymes, startups, independientes..." oninput="lpPintarScript('+c.id+')" '
+          +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+          +'background:var(--bg2);color:var(--text);font-size:12.5px">'
+      +'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-bottom:9px;line-height:1.6">'
+        +'Un cliente puede tener varios embudos a la vez. Sin este nombre se mezclan en un solo opt-in.</div>'
+      +'<textarea id="lp-script" readonly onclick="this.select()" rows="6" style="width:100%;box-sizing:border-box;padding:10px;'
         +'font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.5;border:1px solid var(--border2);'
         +'border-radius:var(--radius);background:var(--bg3);color:var(--text2);resize:vertical">'
         +esc(lpScriptDe(c))+'</textarea>'
@@ -6297,6 +6329,7 @@ function lpModal(clientId){
           +(c.lpStats?('Ultima consulta: '+esc(_fmtHaceCorto(c.lpStats.at))+' &middot; '+c.lpStats.vistas+' vistas, '+c.lpStats.optins+' opt-ins'):'Sin consultar todavia.')
         +'</span>'
       +'</div>'
+      +lpAvisoEmbudoHtml(c)
       +lpSelectorHtml(c)
       +'<div class="modal-footer">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
@@ -11307,7 +11340,8 @@ function lpFilasLandings(c, dias){
       var r=f.pagina||'(sin ruta)';
       ultimaDe[f.visitante]=r;                 // se recuerda aunque quede fuera de la ventana
       if(t<desde) return;
-      m[r]=m[r]||{ruta:r,vistas:0,_u:{},optins:0};
+      m[r]=m[r]||{ruta:r,vistas:0,_u:{},optins:0,embudo:f.embudo||''};
+      if(!m[r].embudo && f.embudo) m[r].embudo=f.embudo;
       m[r].vistas++; m[r]._u[f.visitante]=1;
       return;
     }
@@ -11319,10 +11353,23 @@ function lpFilasLandings(c, dias){
   });
   var filas=Object.keys(m).map(function(k){
     var u=Object.keys(m[k]._u).length;
-    return { ruta:k, vistas:m[k].vistas, unicas:u, optins:m[k].optins,
+    return { ruta:k, embudo:m[k].embudo||'', vistas:m[k].vistas, unicas:u, optins:m[k].optins,
              tasa:u?(m[k].optins/u*100):null };
   }).sort(function(a,b){ return b.unicas-a.unicas; });
   return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7 };
+}
+
+// Aviso cuando llegan eventos sin embudo: hasta que se etiqueten, no se puede
+// separar un embudo de otro y el opt-in sale mezclado.
+function lpAvisoEmbudoHtml(c){
+  var st=c.lpStats;
+  if(!st||!st.sinEmbudo) return '';
+  return '<div style="margin-top:12px;padding:10px 13px;background:rgba(240,168,48,0.1);'
+    +'border:1px solid rgba(240,168,48,0.3);border-radius:var(--radius);font-size:11.5px;'
+    +'color:var(--amberx);line-height:1.6">'
+    +'Hay '+st.sinEmbudo+' evento'+(st.sinEmbudo===1?'':'s')+' sin embudo identificado. '
+    +'<span style="color:var(--text3)">Pone el nombre arriba, copia el script de nuevo y reemplazalo en ese embudo de GHL. '
+    +'Hasta entonces esos eventos no se pueden separar de los otros embudos del cliente.</span></div>';
 }
 
 function lpTablaLandingsHtml(c, dias){
@@ -11332,15 +11379,42 @@ function lpTablaLandingsHtml(c, dias){
     +'text-transform:uppercase;letter-spacing:.06em;padding:0 0 8px">'+t+'</th>'; };
   var td=function(t,al,st){ return '<td style="text-align:'+(al||'left')+';font-size:13px;padding:10px 0;'
     +'border-top:1px solid var(--border);'+(st||'')+'">'+t+'</td>'; };
+  // Un cliente puede tener varios embudos corriendo a la vez y no son
+  // comparables entre si: cada uno va en su grupo, con su propio total.
+  var grupos={};
+  r.filas.forEach(function(f){
+    var g=f.embudo||'(sin embudo)';
+    (grupos[g]=grupos[g]||[]).push(f);
+  });
+  var nombres=Object.keys(grupos).sort(function(a,b){
+    if(a==='(sin embudo)') return 1;
+    if(b==='(sin embudo)') return -1;
+    return a.localeCompare(b);
+  });
+  var cabecera=function(nombre, fs){
+    var u=0, o=0;
+    fs.forEach(function(f){ u+=f.unicas; o+=f.optins; });
+    var t=u?(o/u*100):null;
+    var solo=(nombres.length===1&&nombre!=='(sin embudo)');
+    if(solo) return '';
+    return '<tr><td colspan="4" style="padding:14px 0 4px;border-top:1px solid var(--border)">'
+      +'<span style="font-size:11px;font-weight:600;color:'+(nombre==='(sin embudo)'?'var(--amberx)':'var(--text2)')+';'
+      +'text-transform:uppercase;letter-spacing:.06em">'+esc(nombre)+'</span></td>'
+      +'<td style="text-align:right;padding:14px 0 4px;border-top:1px solid var(--border);font-size:12px;'
+      +'font-weight:600;color:var(--text2)">'+(t!=null?t.toFixed(2)+'%':'-')+'</td></tr>';
+  };
   var cuerpo=r.filas.length
-    ? r.filas.map(function(f){
-        return '<tr>'
-          +td('<span class="mono" style="font-size:12px">'+esc(f.ruta)+'</span>')
-          +td(String(f.vistas),'right','color:var(--text3)')
-          +td(String(f.unicas),'right','color:var(--text2)')
-          +td(String(f.optins),'right','color:var(--text2)')
-          +td(f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-','right','font-weight:600;color:'+(f.tasa?'var(--accent)':'var(--text3)'))
-          +'</tr>';
+    ? nombres.map(function(n){
+        return cabecera(n, grupos[n])
+          +grupos[n].map(function(f){
+            return '<tr>'
+              +td('<span class="mono" style="font-size:12px">'+esc(f.ruta)+'</span>')
+              +td(String(f.vistas),'right','color:var(--text3)')
+              +td(String(f.unicas),'right','color:var(--text2)')
+              +td(String(f.optins),'right','color:var(--text2)')
+              +td(f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-','right','font-weight:600;color:'+(f.tasa?'var(--accent)':'var(--text3)'))
+              +'</tr>';
+          }).join('');
       }).join('')
     : '<tr>'+td('<span style="color:var(--text3)">Sin visitas en el periodo.</span>')+'<td colspan="4"></td></tr>';
 
