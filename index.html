@@ -2816,13 +2816,17 @@ function buildMetricRows(c, opts){
     {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
     {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
     {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
+    // v: el opt-in sale del tracker propio de la landing. Antes se calculaba con
+    // registros de GHL sobre vistas de Meta: dos universos distintos, y quedaba
+    // inflado. Si el cliente no tiene el script puesto, se muestra vacio en vez
+    // de un numero que no significa nada.
     {label:'Opt-in %',get:l=>{
       const m=l.metrics||{};
       if(m.optIn!==null&&m.optIn!==undefined&&m.optIn!=='') return fmtVal(m.optIn,'%');
-      const f=F(l);
-      const reg=f?f.registros:(Number(m.registros)||0);
-      const pv=Number(m.pageViews)||0;
-      return (pv>0&&reg>0)?(Math.round(reg/pv*1000)/10)+'%':'<span style="color:var(--text3)" title="Registros de GHL sobre vistas de landing de Meta">-</span>';
+      const r=(typeof lpOptIn==='function')?lpOptIn(c,7):null;
+      if(r&&r.tasa!=null) return '<span title="'+r.optins+' opt-ins sobre '+r.unicas+' visitantes unicos de la landing, ultimos 7 dias">'+r.tasa.toFixed(2)+'%</span>';
+      if(c.lpStats&&c.lpStats.optin7&&c.lpStats.optin7.tasa!=null) return c.lpStats.optin7.tasa.toFixed(2)+'%';
+      return '<span style="color:var(--text3)" title="Falta el tracker de la landing: Integraciones &rarr; Tracker de landing">-</span>';
     }},
     {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
     {label:'Registros',get:l=>{const f=F(l);return f?'<span title="Contactos creados en GHL dentro del rango">'+f.registros+'</span>':fmtVal((l.metrics||{}).registros);}},
@@ -11281,20 +11285,105 @@ function abCfg(c){
   return c.ab;
 }
 
+// Embudo por landing. El opt-in se dispara en la pagina de gracias, asi que
+// para saber a que landing corresponde se busca la ultima pagina de registro
+// que vio ESE visitante antes de convertir. Si el A/B tiene gracias separadas
+// da igual; si comparten una sola, esto es lo que salva la atribucion.
+function lpFilasLandings(c, dias){
+  var raw=(S._lpRaw||{})[String(c.id)];
+  if(!raw) return null;
+  var desde=Date.now()-((dias||7)*86400000);
+  var sel=lpPaginasDe(c);
+  var esReg=function(p){ return !sel.length || sel.indexOf(p||'(sin ruta)')>=0; };
+
+  var ev=raw.slice().sort(function(a,b){
+    return new Date(a.creado_en)-new Date(b.creado_en);   // de vieja a nueva
+  });
+  var m={}, ultimaDe={}, sinAtribuir=0;
+  ev.forEach(function(f){
+    var t=new Date(f.creado_en).getTime();
+    if(f.tipo==='view'){
+      if(!esReg(f.pagina)) return;
+      var r=f.pagina||'(sin ruta)';
+      ultimaDe[f.visitante]=r;                 // se recuerda aunque quede fuera de la ventana
+      if(t<desde) return;
+      m[r]=m[r]||{ruta:r,vistas:0,_u:{},optins:0};
+      m[r].vistas++; m[r]._u[f.visitante]=1;
+      return;
+    }
+    if(f.tipo!=='optin'||t<desde) return;
+    var r2=ultimaDe[f.visitante];
+    if(!r2){ sinAtribuir++; return; }
+    m[r2]=m[r2]||{ruta:r2,vistas:0,_u:{},optins:0};
+    m[r2].optins++;
+  });
+  var filas=Object.keys(m).map(function(k){
+    var u=Object.keys(m[k]._u).length;
+    return { ruta:k, vistas:m[k].vistas, unicas:u, optins:m[k].optins,
+             tasa:u?(m[k].optins/u*100):null };
+  }).sort(function(a,b){ return b.unicas-a.unicas; });
+  return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7 };
+}
+
+function lpTablaLandingsHtml(c, dias){
+  var r=lpFilasLandings(c, dias);
+  if(!r) return '';
+  var th=function(t,al){ return '<th style="text-align:'+(al||'left')+';font-size:10px;font-weight:500;color:var(--text3);'
+    +'text-transform:uppercase;letter-spacing:.06em;padding:0 0 8px">'+t+'</th>'; };
+  var td=function(t,al,st){ return '<td style="text-align:'+(al||'left')+';font-size:13px;padding:10px 0;'
+    +'border-top:1px solid var(--border);'+(st||'')+'">'+t+'</td>'; };
+  var cuerpo=r.filas.length
+    ? r.filas.map(function(f){
+        return '<tr>'
+          +td('<span class="mono" style="font-size:12px">'+esc(f.ruta)+'</span>')
+          +td(String(f.vistas),'right','color:var(--text3)')
+          +td(String(f.unicas),'right','color:var(--text2)')
+          +td(String(f.optins),'right','color:var(--text2)')
+          +td(f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-','right','font-weight:600;color:'+(f.tasa?'var(--accent)':'var(--text3)'))
+          +'</tr>';
+      }).join('')
+    : '<tr>'+td('<span style="color:var(--text3)">Sin visitas en el periodo.</span>')+'<td colspan="4"></td></tr>';
+
+  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-bottom:18px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Landings de conversion</span>'
+      +'<span style="font-size:11px;color:var(--text3)">ultimos '+r.dias+' dias &middot; medicion propia</span>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Opt-ins sobre visitantes unicos, la misma definicion que usa GHL. '
+      +'<a href="javascript:void(0)" onclick="lpModal('+c.id+')" style="color:var(--accent);text-decoration:none">Elegir paginas</a></div>'
+    +'<table width="100%" cellpadding="0" cellspacing="0"><tr>'
+      +th('Landing')+th('Vistas','right')+th('Unicas','right')+th('Opt-ins','right')+th('Opt-in %','right')
+    +'</tr>'+cuerpo+'</table>'
+    +(r.sinAtribuir?'<div style="font-size:10.5px;color:var(--text3);margin-top:9px">'
+      +r.sinAtribuir+' opt-in'+(r.sinAtribuir===1?'':'s')+' sin landing identificada (el visitante no tenia una vista previa registrada).</div>':'')
+    +'</div>';
+}
+
 function dibujarMiddle(c){
   var body=document.getElementById('hoja-middle-body');
   if(!body||!c) return;
+  // Si todavia no se leyeron los eventos de la landing, se bajan una vez y se
+  // vuelve a dibujar. Sin esto la tabla aparece recien al entrar por segunda vez.
+  if(!((S._lpRaw||{})[String(c.id)]) && !S._lpPidiendo){
+    S._lpPidiendo=true;
+    lpVerificar(c.id, true).then(function(){
+      S._lpPidiendo=false;
+      if(S._hoja==='middle') dibujarMiddle(c);
+    }).catch(function(){ S._lpPidiendo=false; });
+  }
   var a=abCfg(c);
+  var tabla=lpTablaLandingsHtml(c);
   if(!a.contactId||!a.fieldId||!c.ghl||!c.ghl.token){
-    body.innerHTML=middleConfigHtml(c);
+    body.innerHTML=tabla+middleConfigHtml(c);
     return;
   }
-  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=S._middleHtml; return; }
-  body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>';
+  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=tabla+S._middleHtml; return; }
+  body.innerHTML=tabla+'<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>';
   cargarAB(c).then(function(html){
     S._middleCargado=c.id; S._middleHtml=html;
     var b=document.getElementById('hoja-middle-body');
-    if(b) b.innerHTML=html;
+    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html;
   }).catch(function(e){
     var b=document.getElementById('hoja-middle-body');
     if(b) b.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo leer: '+esc(e.message)+'</div>'
