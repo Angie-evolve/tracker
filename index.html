@@ -6219,7 +6219,13 @@ function rvAbrir(clientId, periodo, via){
     errorPru:  (ya&&ya.error&&ya.error.pruebas)||'',
     mejoraSi: ya?(ya.mejora&&ya.mejora.hubo?true:false):null,
     mejoraPor:(ya&&ya.mejora&&ya.mejora.porque)||'',
-    mejoraCam:(ya&&ya.mejora&&ya.mejora.cambios)||'',
+    mejoraCam:(function(){
+      var it=rvItemsMejora(ya).map(function(x){ return x.texto; });
+      return it.length?it:[''];
+    })(),
+    // Aprobacion: va despues de la mejora porque casi siempre es sobre eso.
+    aprobSi: (ya&&ya.aprobacion)?(ya.aprobacion.necesita?true:false):null,
+    aprobQue:(ya&&ya.aprobacion&&ya.aprobacion.que)||'',
     // Esta pregunta es sobre el informe en si (los numeros del mail), no sobre
     // el trabajo del periodo. Por eso va aparte y al final.
     informeSi: (ya&&ya.informe)?(ya.informe.hubo?true:false):null,
@@ -6252,9 +6258,13 @@ function rvLeerCampos(){
   if(!_rvD) return;
   var g=function(id){ var e=document.getElementById(id); return e?e.value:null; };
   var pares=[['rv-error-cual','errorCual'],['rv-error-sol','errorSol'],['rv-error-pru','errorPru'],
-             ['rv-mejora-por','mejoraPor'],['rv-mejora-cam','mejoraCam'],
-             ['rv-informe-cual','informeCual']];
+             ['rv-mejora-por','mejoraPor'],
+             ['rv-aprob-que','aprobQue'],['rv-informe-cual','informeCual']];
   pares.forEach(function(p){ var v=g(p[0]); if(v!==null) _rvD[p[1]]=v; });
+  // Los cambios son varios campos: se leen todos juntos
+  var cams=[], i=0, e;
+  while((e=document.getElementById('rv-cambio-'+i))){ cams.push(e.value); i++; }
+  if(cams.length) _rvD.mejoraCam=cams;
 }
 
 function rvPintarCuerpo(){
@@ -6282,6 +6292,21 @@ function rvPintarCuerpo(){
     return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:12px">'+inner+'</div>';
   };
   var preg=function(t){ return '<div style="font-size:13px;color:var(--strong);line-height:1.5">'+t+'</div>'; };
+  // Cada cambio va en su propio campo: despues se decide uno por uno si se
+  // convierte en tarea, y para eso tienen que estar separados desde el origen.
+  var cambiosUI=function(){
+    var arr=(_rvD.mejoraCam&&_rvD.mejoraCam.length)?_rvD.mejoraCam:[''];
+    return arr.map(function(txt,i){
+      return '<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px">'
+        +'<textarea id="rv-cambio-'+i+'" rows="2" placeholder="Un cambio concreto" '
+        +'style="flex:1;box-sizing:border-box;padding:9px 11px;font-size:12.5px;line-height:1.55;'
+        +'border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);'
+        +'font-family:var(--font);resize:vertical;outline:none">'+esc(txt||'')+'</textarea>'
+        +(arr.length>1?'<button class="btn btn-sm" style="color:var(--text3);flex-shrink:0" onclick="rvQuitarCambio('+i+')">&times;</button>':'')
+        +'</div>';
+    }).join('')
+    +'<button class="btn btn-sm" style="color:var(--text3)" onclick="rvAgregarCambio()">+ Agregar otro cambio</button>';
+  };
 
   el.innerHTML=''
     +bloque(preg('&iquest;Se reporto un error en alguna automatizacion o en el frontend?')
@@ -6295,7 +6320,14 @@ function rvPintarCuerpo(){
       +sino('mejoraSi', _rvD.mejoraSi)
       +(_rvD.mejoraSi===true
         ? lbl('&iquest;Por que?')+ta('rv-mejora-por', _rvD.mejoraPor, 'Que problema o limite se ve hoy')
-          +lbl('&iquest;Que cambios haria?')+ta('rv-mejora-cam', _rvD.mejoraCam, 'La mejora concreta que proponen')
+          +lbl('&iquest;Que cambios haria? <span style="text-transform:none;letter-spacing:0">(uno por renglon)</span>')
+          +cambiosUI()
+        : ''))
+    +bloque(preg('&iquest;Necesita aprobacion para avanzar?')
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Un cambio, un gasto o una decision que no se ejecuta hasta que alguien la apruebe.</div>'
+      +sino('aprobSi', _rvD.aprobSi)
+      +(_rvD.aprobSi===true
+        ? lbl('&iquest;Que hay que aprobar?')+ta('rv-aprob-que', _rvD.aprobQue, 'Que se necesita decidir y por que no puede avanzar solo')
         : ''))
     +bloque(preg('&iquest;Hay algun error en el informe?')
       +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Un numero que no cierra, una metrica en cero que no deberia estarlo, un cliente que no corresponde.</div>'
@@ -6305,19 +6337,38 @@ function rvPintarCuerpo(){
         : ''));
 }
 
+function rvAgregarCambio(){
+  if(!_rvD) return;
+  rvLeerCampos();
+  _rvD.mejoraCam=(_rvD.mejoraCam&&_rvD.mejoraCam.length)?_rvD.mejoraCam:[''];
+  _rvD.mejoraCam.push('');
+  rvPintarCuerpo();
+}
+function rvQuitarCambio(i){
+  if(!_rvD) return;
+  rvLeerCampos();
+  _rvD.mejoraCam.splice(i,1);
+  if(!_rvD.mejoraCam.length) _rvD.mejoraCam=[''];
+  rvPintarCuerpo();
+}
+
 function rvGuardar(){
   if(!_rvD) return;
   rvLeerCampos();
   var d=_rvD;
   var msg=document.getElementById('rv-msg');
   var decir=function(t){ if(msg) msg.textContent=t; };
-  if(d.errorSi===null||d.mejoraSi===null||d.informeSi===null){ decir('Faltan contestar las tres preguntas.'); return; }
+  if(d.errorSi===null||d.mejoraSi===null||d.aprobSi===null||d.informeSi===null){ decir('Faltan contestar las cuatro preguntas.'); return; }
   var falta=function(v){ return !String(v||'').trim(); };
   if(d.errorSi===true&&(falta(d.errorCual)||falta(d.errorSol)||falta(d.errorPru))){
     decir('Si hubo un error, hace falta el detalle: cual fue, como quedo solucionado y que pruebas se hicieron.'); return;
   }
-  if(d.mejoraSi===true&&(falta(d.mejoraPor)||falta(d.mejoraCam))){
-    decir('Si hay una mejora, hace falta el motivo y que cambios harias.'); return;
+  var camTxt=(d.mejoraCam||[]).map(function(x){ return String(x||'').trim(); }).filter(Boolean);
+  if(d.mejoraSi===true&&(falta(d.mejoraPor)||!camTxt.length)){
+    decir('Si hay una mejora, hace falta el motivo y al menos un cambio.'); return;
+  }
+  if(d.aprobSi===true&&falta(d.aprobQue)){
+    decir('Si hace falta una aprobacion, contanos que hay que aprobar.'); return;
   }
   if(d.informeSi===true&&falta(d.informeCual)){
     decir('Si el informe tiene un error, contanos cual.'); return;
@@ -6339,7 +6390,11 @@ function rvGuardar(){
             pruebas:String(d.errorPru||'').trim() },
     mejora:{ hubo:d.mejoraSi===true,
              porque:String(d.mejoraPor||'').trim(),
-             cambios:String(d.mejoraCam||'').trim() },
+             cambios:camTxt.join('\n'),
+             items:camTxt.map(function(t,i){ return { id:'c'+Date.now()+'_'+i, texto:t, estado:'pendiente' }; }) },
+    aprobacion:{ necesita:d.aprobSi===true,
+                 que:String(d.aprobQue||'').trim(),
+                 resuelto:false, resueltoAt:'', resueltoPor:'' },
     informe:{ hubo:d.informeSi===true,
               cual:String(d.informeCual||'').trim() }
   };
@@ -6347,6 +6402,18 @@ function rvGuardar(){
   if(previa){
     reg.id=previa.id;
     reg.creadoAt=previa.creadoAt;
+    // Un cambio que ya se decidio no vuelve a pendiente porque se edito el texto
+    var antes=rvItemsMejora(previa);
+    reg.mejora.items.forEach(function(it){
+      var m=antes.find(function(a){ return a.texto===it.texto&&a.estado!=='pendiente'; });
+      if(m){ it.estado=m.estado; it.taskId=m.taskId; it.decididoPor=m.decididoPor; }
+    });
+    // Si ya se habia aprobado, la edicion no lo deshace
+    if(previa.aprobacion&&previa.aprobacion.resuelto){
+      reg.aprobacion.resuelto=true;
+      reg.aprobacion.resueltoAt=previa.aprobacion.resueltoAt;
+      reg.aprobacion.resueltoPor=previa.aprobacion.resueltoPor;
+    }
     reg.editadoAt=new Date().toISOString();
     lista[lista.indexOf(previa)]=reg;
   } else {
@@ -6443,6 +6510,171 @@ function rvToggleDetalle(k){
   showTickets();
 }
 
+// Los cambios propuestos se guardan uno por uno: cada uno se decide por separado
+// (se crea la tarea o se descarta). Las revisiones viejas guardaban todo en un
+// texto suelto, asi que se parten por renglon al leerlas.
+function rvItemsMejora(r){
+  if(!r||!r.mejora||!r.mejora.hubo) return [];
+  if(Array.isArray(r.mejora.items)) return r.mejora.items;
+  var t=String(r.mejora.cambios||'').trim();
+  if(!t) return [];
+  return t.split('\n').filter(function(x){ return x.trim(); })
+    .map(function(x,i){ return { id:'c'+i, texto:x.trim(), estado:'pendiente' }; });
+}
+// Migra en el momento: hasta que no se toca un boton, no hace falta reescribir nada.
+function _rvAsegurarItems(c, r){
+  if(!Array.isArray(r.mejora&&r.mejora.items)){
+    r.mejora=r.mejora||{hubo:true};
+    r.mejora.items=rvItemsMejora(r);
+  }
+  return r.mejora.items;
+}
+
+function rvCrearTareaDeCambio(clientId, revId, itemId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var r=rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r) return;
+  var items=_rvAsegurarItems(c,r);
+  var it=items.find(function(x){ return x.id===itemId; });
+  if(!it||it.estado==='tarea') return;
+  var venc=new Date(); venc.setDate(venc.getDate()+7);
+  var t={
+    id:Date.now()+Math.floor(Math.random()*1000),
+    text:it.texto,
+    responsible:(typeof responsableDe==='function')?(responsableDe(c)||''):'',
+    done:false, source:'Revision', due:rvISO(venc),
+    delegated:true, delegatedAt:new Date().toISOString(),
+    ticket:'#'+nextTicketFromApp()
+  };
+  c.tasks=c.tasks||[];
+  c.tasks.unshift(t);
+  it.estado='tarea'; it.taskId=t.id; it.decididoPor=(typeof SB==='object'&&SB.email)?SB.email:'';
+  save();
+  showTickets();
+  if(typeof toast==='function') toast('Tarea '+t.ticket+' creada en '+c.name);
+}
+function rvDescartarCambio(clientId, revId, itemId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var r=rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r) return;
+  var it=_rvAsegurarItems(c,r).find(function(x){ return x.id===itemId; });
+  if(!it) return;
+  it.estado='descartado'; it.decididoPor=(typeof SB==='object'&&SB.email)?SB.email:'';
+  save(); showTickets();
+}
+function rvReabrirCambio(clientId, revId, itemId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var r=rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r) return;
+  var it=_rvAsegurarItems(c,r).find(function(x){ return x.id===itemId; });
+  if(!it) return;
+  it.estado='pendiente'; delete it.taskId;
+  save(); showTickets();
+}
+
+// Lista de cambios de una revision, con su decision
+function rvCambiosHtml(c, r){
+  var items=rvItemsMejora(r);
+  if(!items.length) return '';
+  var filas=items.map(function(it){
+    var acciones='';
+    if(it.estado==='tarea'){
+      acciones='<span style="font-size:10.5px;color:var(--accent);flex-shrink:0">Tarea creada</span>';
+    } else if(it.estado==='descartado'){
+      acciones='<span style="font-size:10.5px;color:var(--text3);flex-shrink:0">Descartado</span>'
+        +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" onclick="rvReabrirCambio('+c.id+',\''+r.id+'\',\''+it.id+'\')">Deshacer</button>';
+    } else {
+      acciones='<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="rvCrearTareaDeCambio('+c.id+',\''+r.id+'\',\''+it.id+'\')">Crear tarea</button>'
+        +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" onclick="rvDescartarCambio('+c.id+',\''+r.id+'\',\''+it.id+'\')">Descartar</button>';
+    }
+    var apagado=(it.estado==='descartado');
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;line-height:1.55;color:'+(apagado?'var(--text3)':'var(--text2)')+';'
+        +(apagado?'text-decoration:line-through;':'')+'">'+esc(it.texto)+'</span>'
+      +acciones+'</div>';
+  }).join('');
+  return '<div style="margin-top:9px">'
+    +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Cambios propuestos</div>'
+    +filas+'</div>';
+}
+
+// Todo lo propuesto que todavia no se decidio, de cualquier cliente
+function rvCambiosPendientes(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    rvLista(c).forEach(function(r){
+      rvItemsMejora(r).forEach(function(it){
+        if(it.estado==='pendiente') out.push({ c:c, r:r, it:it });
+      });
+    });
+  });
+  return out;
+}
+function rvCambiosPanelHtml(){
+  var lista=rvCambiosPendientes();
+  if(!lista.length) return '';
+  var filas=lista.map(function(x){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)">'
+      +'<span style="font-size:12px;color:var(--strong);width:130px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.c.name)+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text2);line-height:1.55">'+esc(x.it.texto)+'</span>'
+      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="rvCrearTareaDeCambio('+x.c.id+',\''+x.r.id+'\',\''+x.it.id+'\')">Crear tarea</button>'
+      +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" onclick="rvDescartarCambio('+x.c.id+',\''+x.r.id+'\',\''+x.it.id+'\')">Descartar</button>'
+      +'</div>';
+  }).join('');
+  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:14px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Cambios propuestos</span>'
+      +'<span style="font-size:11px;color:var(--text3)">'+lista.length+' sin decidir</span>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:2px">Cada uno se convierte en tarea del cliente o se descarta.</div>'
+    +filas+'</div>';
+}
+
+// Marca como aprobado lo que la revision dejo pendiente de decision.
+function rvAprobar(clientId, revId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var r=rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r||!r.aprobacion) return;
+  r.aprobacion.resuelto=true;
+  r.aprobacion.resueltoAt=new Date().toISOString();
+  r.aprobacion.resueltoPor=(typeof SB==='object'&&SB.email)?SB.email:'';
+  save();
+  showTickets();
+  if(typeof toast==='function') toast('Aprobado');
+}
+
+// Todo lo que quedo esperando una decision, de cualquier cliente y periodo.
+function rvEsperandoAprobacion(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    rvLista(c).forEach(function(r){
+      if(r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto) out.push({ c:c, r:r });
+    });
+  });
+  return out.sort(function(a,b){ return String(a.r.creadoAt||'').localeCompare(String(b.r.creadoAt||'')); });
+}
+
+function rvAprobacionesHtml(){
+  var lista=rvEsperandoAprobacion();
+  if(!lista.length) return '';
+  var filas=lista.map(function(x){
+    return '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid rgba(240,168,48,0.2)">'
+      +'<span style="font-size:12.5px;color:var(--strong);width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.c.name)+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text2);line-height:1.55">'+esc(x.r.aprobacion.que)+'</span>'
+      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="rvAprobar('+x.c.id+',\''+x.r.id+'\')">Aprobar</button>'
+      +'</div>';
+  }).join('');
+  return '<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);'
+    +'border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:14px">'
+    +'<div style="font-size:10px;font-weight:600;color:var(--amberx);text-transform:uppercase;letter-spacing:0.07em">'
+      +lista.length+' espera'+(lista.length===1?'':'n')+' tu aprobacion</div>'
+    +filas+'</div>';
+}
+
 function rvPanelHtml(){
   var pend=rvPendientes();
   var chip=function(txt, color, bg){
@@ -6497,6 +6729,12 @@ function rvPanelHtml(){
             +(r.mejora&&r.mejora.hubo
               ? chip('Mejora','var(--amberx)','rgba(240,168,48,0.14)')
               : chip('Sin mejoras','var(--text3)','var(--bg3)'))
+            +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
+              ? chip('Espera aprobacion','var(--amberx)','rgba(240,168,48,0.2)')
+              : '')
+            +((r.aprobacion&&r.aprobacion.necesita&&r.aprobacion.resuelto)
+              ? chip('Aprobado','var(--accent)','rgba(29,158,117,0.12)')
+              : '')
             +((r.informe&&r.informe.hubo)
               ? chip('Informe con error','var(--redx)','rgba(216,90,48,0.14)')
               : '')
@@ -6507,9 +6745,12 @@ function rvPanelHtml(){
               +det('Como quedo solucionado', r.error&&r.error.solucion)
               +det('Pruebas que se hicieron', r.error&&r.error.pruebas)
               +det('Por que la mejora', r.mejora&&r.mejora.porque)
-              +det('Cambios propuestos', r.mejora&&r.mejora.cambios)
+              +rvCambiosHtml(c, r)
+              +det('Que hay que aprobar', r.aprobacion&&r.aprobacion.que)
               +det('Error en el informe', r.informe&&r.informe.cual)
               +'<div style="display:flex;gap:8px;margin-top:12px">'
+                +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
+                  ?'<button class="btn btn-sm btn-primary" onclick="rvAprobar('+c.id+',\''+r.id+'\')">Marcar como aprobado</button>':'')
                 +'<button class="btn btn-sm" onclick="rvAbrir('+c.id+',\''+r.periodo+'\',\'tracker\')">Editar</button>'
                 +'<button class="btn btn-sm" style="color:var(--redx)" onclick="rvBorrar('+c.id+',\''+r.id+'\')">Eliminar</button>'
               +'</div></div>'
@@ -6525,6 +6766,8 @@ function rvPanelHtml(){
   };
 
   return ''
+    +rvAprobacionesHtml()
+    +rvCambiosPanelHtml()
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">'
       +titulo('Pendientes', pend.length+' de '+rvClientesConInforme().length+' clientes con informe')
       +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
