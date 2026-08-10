@@ -6090,6 +6090,59 @@ function showTickets(){
 // nadie tenga que editar el id del cliente a mano en 13 subcuentas.
 var LP_SNIPPET = "/* EVOLVE - tracker de landing (v1)\n   Se pega en GHL: Embudo > Configuracion > Tracking Code > Head (o Body).\n   Cambiar solo la linea CLIENTE. El resto es igual para todos.\n\n   Registra dos eventos:\n     view   -> al cargar la pagina\n     optin  -> al enviarse el formulario\n\n   Los formularios de GHL viven adentro de un iframe, asi que el submit de la\n   pagina no se entera. Por eso se escuchan tres se\u00f1ales distintas y se descarta\n   la repetida: sirve igual para landings armadas con el editor y para las\n   hechas a mano en codigo. */\n(function () {\n  var CLIENTE = 'PEGAR_ID_DEL_CLIENTE';\n\n  var URL = 'https://onnysveksgxtmspxgbow.supabase.co';\n  var KEY = 'sb_publishable_2gpOBfyUspnqRSKH0egoZA_4A6TqMKv';\n\n  // --- id del visitante: localStorage aguanta mas que una cookie y no lo borran\n  // los bloqueadores de cookies. Se pierde en incognito, es lo esperable. ---\n  function id() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }\n  function guardado(clave, minutos) {\n    try {\n      var raw = localStorage.getItem(clave);\n      if (raw) {\n        var o = JSON.parse(raw);\n        if (!minutos || (Date.now() - o.t) < minutos * 60000) {\n          o.t = Date.now();\n          localStorage.setItem(clave, JSON.stringify(o));\n          return o.v;\n        }\n      }\n    } catch (e) {}\n    var v = id();\n    try { localStorage.setItem(clave, JSON.stringify({ v: v, t: Date.now() })); } catch (e) {}\n    return v;\n  }\n  var visitante = guardado('evx_v', 0);          // no vence\n  var sesion    = guardado('evx_s', 30);         // se renueva a los 30 min\n\n  // --- utm: los de la URL, y si no hay, los que quedaron de la primera visita ---\n  var q = new URLSearchParams(location.search);\n  function utm(k) {\n    var v = q.get(k);\n    if (v) { try { sessionStorage.setItem('evx_' + k, v); } catch (e) {} return v; }\n    try { return sessionStorage.getItem('evx_' + k) || null; } catch (e) { return null; }\n  }\n\n  // --- se\u00f1ales de que hay alguien de verdad del otro lado ---\n  var interactuo = false;\n  ['mousemove', 'touchstart', 'scroll', 'keydown'].forEach(function (ev) {\n    window.addEventListener(ev, function () { interactuo = true; }, { once: true, passive: true });\n  });\n  var t0 = Date.now();\n\n  function mandar(tipo) {\n    var cuerpo = {\n      cliente: CLIENTE,\n      tipo: tipo,\n      visitante: visitante,\n      sesion: sesion,\n      pagina: location.pathname,\n      referrer: document.referrer || null,\n      utm_source: utm('utm_source'),\n      utm_medium: utm('utm_medium'),\n      utm_campaign: utm('utm_campaign'),\n      utm_adset: utm('utm_adset'),\n      utm_ad: utm('utm_ad'),\n      fbclid: q.get('fbclid') || null,\n      dispositivo: /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'movil' : 'escritorio',\n      ms_en_pagina: Date.now() - t0,\n      interactuo: interactuo\n    };\n    // keepalive: el navegador lo manda igual aunque la pagina se este yendo,\n    // que es justo lo que pasa cuando el form redirige a la de gracias.\n    try {\n      fetch(URL + '/rest/v1/lp_eventos', {\n        method: 'POST',\n        headers: { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY,\n                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n        body: JSON.stringify(cuerpo),\n        keepalive: true\n      }).catch(function () {});\n    } catch (e) {}\n  }\n\n  // Nunca dos veces el mismo opt-in: las tres se\u00f1ales pueden dispararse juntas.\n  var yaOptin = false;\n  function optin(origen) {\n    if (yaOptin) return;\n    yaOptin = true;\n    mandar('optin');\n    try { sessionStorage.setItem('evx_optin', origen || '1'); } catch (e) {}\n  }\n\n  // 1) Formularios propios, en landings hechas a mano\n  document.addEventListener('submit', function () { optin('form'); }, true);\n\n  // 2) Formularios de GHL: viven en un iframe y avisan por postMessage.\n  //    El formato del mensaje cambia entre versiones, asi que en vez de exigir\n  //    una forma exacta se acepta cualquier aviso de envio que venga de un\n  //    dominio de GHL. Es preferible a que deje de contar en una actualizacion.\n  window.addEventListener('message', function (e) {\n    var org = String(e.origin || '');\n    if (!/(leadconnector|msgsndr|gohighlevel)/i.test(org)) return;\n    var d = e.data;\n    var txt = (typeof d === 'string') ? d : JSON.stringify(d || '');\n    if (/submit|submission|form.?sent|optin|lead/i.test(txt)) optin('ghl');\n  });\n\n  // 3) Red de seguridad: si la landing redirige a una pagina de gracias y\n  //    ninguna de las dos anteriores llego a disparar, se cuenta ahi.\n  if (/gracias|thank|thanks|success/i.test(location.pathname)) {\n    var previa = null;\n    try { previa = sessionStorage.getItem('evx_optin'); } catch (e) {}\n    if (!previa) optin('gracias');\n  }\n\n  // La visita se registra siempre, al final: asi ms_en_pagina e interactuo\n  // ya tienen algo que contar si la persona hizo algo antes de que cargue todo.\n  if (document.readyState === 'complete') mandar('view');\n  else window.addEventListener('load', function () { mandar('view'); });\n})();\n";
 
+// Lee lo que llego a Supabase. La landing solo escribe; leer requiere sesion,
+// asi que esto solo funciona con el tracker abierto y logueado.
+async function lpVerificar(clientId, silencioso){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return null;
+  var pintar=function(txt, color){
+    var el=document.getElementById('lp-estado');
+    if(el) el.innerHTML='<span style="color:'+(color||'var(--text3)')+'">'+txt+'</span>';
+  };
+  if(!SB.token){ pintar('Hay que iniciar sesion para leer los eventos.','var(--amberx)'); return null; }
+  if(!silencioso) pintar('Consultando...');
+  try{
+    var url=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id))
+      +'&select=tipo,visitante,creado_en&order=creado_en.desc&limit=1000';
+    var r=await fetch(url,{ headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
+    if(!r.ok){
+      var t=await r.text();
+      // El error mas comun es que todavia no se corrio el SQL de la tabla.
+      var msg=/lp_eventos/.test(t)&&/does not exist|relation/.test(t)
+        ? 'Falta crear la tabla: corre lp_eventos.sql en Supabase.'
+        : ('Supabase respondio '+r.status);
+      pintar(msg,'var(--redx)');
+      return null;
+    }
+    var filas=await r.json();
+    var vistas=filas.filter(function(f){ return f.tipo==='view'; });
+    var optins=filas.filter(function(f){ return f.tipo==='optin'; });
+    var unicos={}; vistas.forEach(function(f){ unicos[f.visitante]=1; });
+    var st={ vistas:vistas.length, unicas:Object.keys(unicos).length, optins:optins.length,
+             ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString() };
+    c.lpStats=st;
+    save();
+    if(!filas.length){
+      pintar('Todavia no llego ningun evento. Abri la landing y volve a probar.','var(--amberx)');
+    } else {
+      pintar('Llegaron '+st.vistas+' vista'+(st.vistas===1?'':'s')+' ('+st.unicas+' unica'+(st.unicas===1?'':'s')+')'
+        +' y '+st.optins+' opt-in'+(st.optins===1?'':'s')+'. Ultimo: '+_fmtHaceCorto(st.ultimo)+'.','var(--accent)');
+    }
+    return st;
+  }catch(e){
+    pintar('No se pudo consultar: '+esc(e.message),'var(--redx)');
+    return null;
+  }
+}
+function _fmtHaceCorto(iso){
+  if(!iso) return '-';
+  var m=Math.floor((Date.now()-new Date(iso).getTime())/60000);
+  if(m<1) return 'recien';
+  if(m<60) return 'hace '+m+' min';
+  if(m<1440) return 'hace '+Math.floor(m/60)+' h';
+  return 'hace '+Math.floor(m/1440)+' d';
+}
+
 function lpScriptDe(c){
   return '<script>\n'+LP_SNIPPET.replace('PEGAR_ID_DEL_CLIENTE', String(c.id))+'<\/script>';
 }
@@ -6123,6 +6176,12 @@ function lpModal(clientId){
         +esc(lpScriptDe(c))+'</textarea>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:9px;line-height:1.6">'
         +'El script solo puede escribir eventos, no leer nada. Va en el embudo entero, no pagina por pagina.</div>'
+      +'<div style="display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+        +'<button class="btn btn-sm" onclick="lpVerificar('+c.id+')">Probar conexion</button>'
+        +'<span id="lp-estado" style="flex:1;min-width:0;font-size:11.5px;color:var(--text3)">'
+          +(c.lpStats?('Ultima consulta: '+esc(_fmtHaceCorto(c.lpStats.at))+' &middot; '+c.lpStats.vistas+' vistas, '+c.lpStats.optins+' opt-ins'):'Sin consultar todavia.')
+        +'</span>'
+      +'</div>'
       +'<div class="modal-footer">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
         +'<button class="btn btn-sm btn-primary" onclick="lpCopiarScript('+c.id+')">Copiar script</button>'
@@ -8829,10 +8888,14 @@ function renderTab(){
         desc:'Importa las metricas semanales del sheet del equipo a la linea activa de cada cliente (bloques, adsets y guiones).',
         detail:sheetsOk?'API key cargada &middot; sheet del equipo':'',
         action:'openSyncModal()',actionLabel:sheetsOk?'Sincronizar':'Conectar'}),
-      card({name:'Tracker de landing', st:'no',
-        desc:'Mide visitas y opt-ins en la landing misma, con la definicion de GHL: opt-ins sobre visitas unicas. Hoy el opt-in se calcula con vistas de Meta, que cuentan otra cosa y lo dejan inflado.',
-        detail:'Se pega una vez en el Tracking Code del embudo',
-        action:'lpModal('+c.id+')', actionLabel:'Ver script'}),
+      (function(){
+        var st=c.lpStats;
+        var hay=!!(st&&st.vistas);
+        return card({name:'Tracker de landing', st:hay?'ok':'no',
+          desc:'Mide visitas y opt-ins en la landing misma, con la definicion de GHL: opt-ins sobre visitas unicas. Hoy el opt-in se calcula con vistas de Meta, que cuentan otra cosa y lo dejan inflado.',
+          detail:hay?(st.vistas+' vistas &middot; '+st.unicas+' unicas &middot; '+st.optins+' opt-ins'):'Se pega una vez en el Tracking Code del embudo',
+          action:'lpModal('+c.id+')', actionLabel:hay?'Ver detalle':'Ver script'});
+      })(),
       card({name:'Fathom (llamadas)',st:fathomN?'ok':'no',
         desc:'Llamadas grabadas del cliente para el Success tracker, las metricas de llamadas y el contexto de los reportes con IA. Importacion por JSON.',
         detail:fathomN?(fathomN+' llamadas importadas'):'',
