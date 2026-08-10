@@ -6082,6 +6082,54 @@ function showTickets(){
   if(typeof convChequearNuevas==='function') convChequearNuevas();
 }
 
+
+// ================= TRACKER DE LANDING =================
+// El opt-in de Meta y el de GHL no son comparables: uno cuenta vistas de anuncio
+// y el otro vistas unicas de la pagina. Este script mide en la landing misma, asi
+// numerador y denominador salen del mismo lado. La plantilla vive aca para que
+// nadie tenga que editar el id del cliente a mano en 13 subcuentas.
+var LP_SNIPPET = "/* EVOLVE - tracker de landing (v1)\n   Se pega en GHL: Embudo > Configuracion > Tracking Code > Head (o Body).\n   Cambiar solo la linea CLIENTE. El resto es igual para todos.\n\n   Registra dos eventos:\n     view   -> al cargar la pagina\n     optin  -> al enviarse el formulario\n\n   Los formularios de GHL viven adentro de un iframe, asi que el submit de la\n   pagina no se entera. Por eso se escuchan tres se\u00f1ales distintas y se descarta\n   la repetida: sirve igual para landings armadas con el editor y para las\n   hechas a mano en codigo. */\n(function () {\n  var CLIENTE = 'PEGAR_ID_DEL_CLIENTE';\n\n  var URL = 'https://onnysveksgxtmspxgbow.supabase.co';\n  var KEY = 'sb_publishable_2gpOBfyUspnqRSKH0egoZA_4A6TqMKv';\n\n  // --- id del visitante: localStorage aguanta mas que una cookie y no lo borran\n  // los bloqueadores de cookies. Se pierde en incognito, es lo esperable. ---\n  function id() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }\n  function guardado(clave, minutos) {\n    try {\n      var raw = localStorage.getItem(clave);\n      if (raw) {\n        var o = JSON.parse(raw);\n        if (!minutos || (Date.now() - o.t) < minutos * 60000) {\n          o.t = Date.now();\n          localStorage.setItem(clave, JSON.stringify(o));\n          return o.v;\n        }\n      }\n    } catch (e) {}\n    var v = id();\n    try { localStorage.setItem(clave, JSON.stringify({ v: v, t: Date.now() })); } catch (e) {}\n    return v;\n  }\n  var visitante = guardado('evx_v', 0);          // no vence\n  var sesion    = guardado('evx_s', 30);         // se renueva a los 30 min\n\n  // --- utm: los de la URL, y si no hay, los que quedaron de la primera visita ---\n  var q = new URLSearchParams(location.search);\n  function utm(k) {\n    var v = q.get(k);\n    if (v) { try { sessionStorage.setItem('evx_' + k, v); } catch (e) {} return v; }\n    try { return sessionStorage.getItem('evx_' + k) || null; } catch (e) { return null; }\n  }\n\n  // --- se\u00f1ales de que hay alguien de verdad del otro lado ---\n  var interactuo = false;\n  ['mousemove', 'touchstart', 'scroll', 'keydown'].forEach(function (ev) {\n    window.addEventListener(ev, function () { interactuo = true; }, { once: true, passive: true });\n  });\n  var t0 = Date.now();\n\n  function mandar(tipo) {\n    var cuerpo = {\n      cliente: CLIENTE,\n      tipo: tipo,\n      visitante: visitante,\n      sesion: sesion,\n      pagina: location.pathname,\n      referrer: document.referrer || null,\n      utm_source: utm('utm_source'),\n      utm_medium: utm('utm_medium'),\n      utm_campaign: utm('utm_campaign'),\n      utm_adset: utm('utm_adset'),\n      utm_ad: utm('utm_ad'),\n      fbclid: q.get('fbclid') || null,\n      dispositivo: /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'movil' : 'escritorio',\n      ms_en_pagina: Date.now() - t0,\n      interactuo: interactuo\n    };\n    // keepalive: el navegador lo manda igual aunque la pagina se este yendo,\n    // que es justo lo que pasa cuando el form redirige a la de gracias.\n    try {\n      fetch(URL + '/rest/v1/lp_eventos', {\n        method: 'POST',\n        headers: { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY,\n                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' },\n        body: JSON.stringify(cuerpo),\n        keepalive: true\n      }).catch(function () {});\n    } catch (e) {}\n  }\n\n  // Nunca dos veces el mismo opt-in: las tres se\u00f1ales pueden dispararse juntas.\n  var yaOptin = false;\n  function optin(origen) {\n    if (yaOptin) return;\n    yaOptin = true;\n    mandar('optin');\n    try { sessionStorage.setItem('evx_optin', origen || '1'); } catch (e) {}\n  }\n\n  // 1) Formularios propios, en landings hechas a mano\n  document.addEventListener('submit', function () { optin('form'); }, true);\n\n  // 2) Formularios de GHL: viven en un iframe y avisan por postMessage.\n  //    El formato del mensaje cambia entre versiones, asi que en vez de exigir\n  //    una forma exacta se acepta cualquier aviso de envio que venga de un\n  //    dominio de GHL. Es preferible a que deje de contar en una actualizacion.\n  window.addEventListener('message', function (e) {\n    var org = String(e.origin || '');\n    if (!/(leadconnector|msgsndr|gohighlevel)/i.test(org)) return;\n    var d = e.data;\n    var txt = (typeof d === 'string') ? d : JSON.stringify(d || '');\n    if (/submit|submission|form.?sent|optin|lead/i.test(txt)) optin('ghl');\n  });\n\n  // 3) Red de seguridad: si la landing redirige a una pagina de gracias y\n  //    ninguna de las dos anteriores llego a disparar, se cuenta ahi.\n  if (/gracias|thank|thanks|success/i.test(location.pathname)) {\n    var previa = null;\n    try { previa = sessionStorage.getItem('evx_optin'); } catch (e) {}\n    if (!previa) optin('gracias');\n  }\n\n  // La visita se registra siempre, al final: asi ms_en_pagina e interactuo\n  // ya tienen algo que contar si la persona hizo algo antes de que cargue todo.\n  if (document.readyState === 'complete') mandar('view');\n  else window.addEventListener('load', function () { mandar('view'); });\n})();\n";
+
+function lpScriptDe(c){
+  return '<script>\n'+LP_SNIPPET.replace('PEGAR_ID_DEL_CLIENTE', String(c.id))+'<\/script>';
+}
+function lpCopiarScript(clientId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var ta=document.createElement('textarea');
+  ta.value=lpScriptDe(c);
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  ta.remove();
+  if(typeof toast==='function') toast('Script copiado para '+c.name);
+}
+function lpModal(clientId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:94%">'
+      +'<div class="modal-title">Tracker de landing &middot; '+esc(c.name)+'</div>'
+      +'<div class="modal-sub">Mide visitas y opt-ins en la landing, con la misma definicion que usa GHL: '
+        +'opt-ins sobre visitas unicas. Sirve para landings del editor y para las hechas en codigo.</div>'
+      +'<div style="font-size:12px;color:var(--text2);line-height:1.75;margin:14px 0">'
+        +'<b>1.</b> En GHL: Sitios &rarr; Embudos &rarr; el embudo &rarr; Configuracion &rarr; Tracking Code &rarr; Head.<br>'
+        +'<b>2.</b> Pegar el script y guardar.<br>'
+        +'<b>3.</b> Abrir la landing una vez y volver aca: si llego el evento, aparece la cuenta abajo.'
+      +'</div>'
+      +'<textarea readonly onclick="this.select()" rows="6" style="width:100%;box-sizing:border-box;padding:10px;'
+        +'font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.5;border:1px solid var(--border2);'
+        +'border-radius:var(--radius);background:var(--bg3);color:var(--text2);resize:vertical">'
+        +esc(lpScriptDe(c))+'</textarea>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:9px;line-height:1.6">'
+        +'El script solo puede escribir eventos, no leer nada. Va en el embudo entero, no pagina por pagina.</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="lpCopiarScript('+c.id+')">Copiar script</button>'
+      +'</div>'
+    +'</div></div>';
+}
+
 // ================= REVISIONES DEL INFORME =================
 // Formulario corto que se responde SIEMPRE aca adentro. Llega por tres vias:
 // el boton del informe por mail, el link del aviso de WhatsApp y la torre de
@@ -8781,6 +8829,10 @@ function renderTab(){
         desc:'Importa las metricas semanales del sheet del equipo a la linea activa de cada cliente (bloques, adsets y guiones).',
         detail:sheetsOk?'API key cargada &middot; sheet del equipo':'',
         action:'openSyncModal()',actionLabel:sheetsOk?'Sincronizar':'Conectar'}),
+      card({name:'Tracker de landing', st:'no',
+        desc:'Mide visitas y opt-ins en la landing misma, con la definicion de GHL: opt-ins sobre visitas unicas. Hoy el opt-in se calcula con vistas de Meta, que cuentan otra cosa y lo dejan inflado.',
+        detail:'Se pega una vez en el Tracking Code del embudo',
+        action:'lpModal('+c.id+')', actionLabel:'Ver script'}),
       card({name:'Fathom (llamadas)',st:fathomN?'ok':'no',
         desc:'Llamadas grabadas del cliente para el Success tracker, las metricas de llamadas y el contexto de los reportes con IA. Importacion por JSON.',
         detail:fathomN?(fathomN+' llamadas importadas'):'',
