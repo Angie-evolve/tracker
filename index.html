@@ -6586,6 +6586,7 @@ function openWeeklyReportModal(){
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
         +'<input type="email" id="env-mail-'+e.id+'" value="'+esc(e.email||'')+'" placeholder="destinatario@email.com" oninput="wrEnviosChanged()" '
         +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:12.5px">'
+        +'<button class="btn btn-sm" onclick="wrProbarEnvio(\''+e.id+'\')" title="Manda un solo informe a este destinatario">Probar</button>'
         +(envios.length>1?'<button class="btn btn-sm" style="color:var(--redx)" onclick="wrBorrarEnvio(\''+e.id+'\')">Quitar</button>':'')
       +'</div>'
       +'<div style="display:flex;gap:7px;margin-bottom:8px">'
@@ -6644,7 +6645,7 @@ function openWeeklyReportModal(){
     +'Google no dispara al minuto exacto: si elegis 08:00, puede salir 08:25.'
     +'</div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px">'
-    +'<button class="btn btn-sm" onclick="testWeeklyReportNow()" style="color:var(--text3)">Enviar prueba ahora</button>'
+    +'<button class="btn btn-sm" onclick="testWeeklyReportNow()" style="color:var(--text3)" title="Manda TODOS los envios completos a todos los destinatarios">Enviar todo ahora</button>'
     +'<div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
     +'<button class="btn btn-sm btn-primary" onclick="pushWeeklyReportConfig()">Guardar y sincronizar</button></div>'
     +'</div></div></div>';
@@ -6742,6 +6743,41 @@ function testWeeklyReportNow(){
       if(st) st.innerHTML=res&&res.ok?'<span style="color:var(--accent)">Enviado - revisa tu casilla (y spam la primera vez).</span>':'<span style="color:var(--redx)">Error: '+esc((res&&res.error)||'desconocido')+'</span>';
     })
     .catch(function(e){ if(st) st.innerHTML='<span style="color:var(--redx)">Error de red: '+esc(e.message)+'</span>'; });
+}
+// Prueba de UN envio: manda el informe de un solo cliente a ese destinatario.
+// Alcanza para ver el formato, el boton de la revision y el aviso por WhatsApp,
+// sin llenarle la casilla a los otros destinatarios.
+async function wrProbarEnvio(id){
+  const proxy=getGhlProxy();
+  if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion primero'); return; }
+  const envio=wrLeerEnvios().filter(function(e){ return e.id===id; })[0];
+  const st=document.getElementById('wr-status');
+  const decir=function(t){ if(st) st.innerHTML=t; };
+  if(!envio||!envio.email){ decir('<span style="color:var(--amberx)">Ese envio no tiene mail destino.</span>'); return; }
+  // El script manda con lo que tiene guardado, no con lo que se ve en pantalla:
+  // si se acaba de tocar algo hay que subirlo antes o la prueba no lo refleja.
+  decir('Guardando los envios antes de probar...');
+  const guardado=await wrPushEnvios(false);
+  if(!guardado||!guardado.ok) return;
+  decir('Enviando 1 informe a '+esc(envio.email)+'... (puede tardar 1 min)');
+  try{
+    const res=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=run_weekly_report_now&envioId='+encodeURIComponent(id)+'&limite=1')
+      .then(function(r){ return r.json(); });
+    if(res&&res.ok){
+      const n=(res.detalle&&res.detalle.enviados)||0;
+      decir(n
+        ? '<span style="color:var(--accent)">Enviado a '+esc(envio.email)+' - revisa la casilla (y spam la primera vez).</span>'
+        : '<span style="color:var(--amberx)">El envio corrio pero no salio ningun mail: revisa que sus clientes esten sincronizados.</span>');
+    } else {
+      const err=String((res&&res.error)||'desconocido');
+      decir('<span style="color:var(--redx)">'+(/desconocida/i.test(err)
+        ? 'Tu Apps Script todavia no soporta la prueba por envio. Actualizalo a la v14 y volve a publicar.'
+        : 'Error: '+esc(err))+'</span>');
+    }
+  }catch(e){
+    decir('<span style="color:var(--redx)">Error de red: '+esc(e.message)+'</span>');
+  }
 }
 
 // ================= RECORDS DE EFICIENCIA (libro de mejores marcas por cliente) =================
