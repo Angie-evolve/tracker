@@ -1969,7 +1969,9 @@ function _tkSubtabsHtml(){
   var mk=function(k,l){ var act=(S.tkTab||'tareas')===k; return '<button class="btn btn-sm" onclick="S.tkTab=\''+k+'\';S._actSeenSession=null;showTickets()" style="'+(act?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'+l+'</button>'; };
   var _un=(typeof actUnseenCount==='function')?actUnseenCount():0;
   var _actLbl='Actividad'+(_un?' <span class="pill pill-green" style="font-size:9px;padding:0 5px;margin-left:3px">'+_un+'</span>':'');
-  return '<div style="display:flex;gap:8px;margin-bottom:18px">'+mk('tareas','Tareas')+mk('actividad',_actLbl)+'</div>';
+  var _pend=(typeof rvPendientesCount==='function')?rvPendientesCount():0;
+  var _revLbl='Revisiones'+(_pend?' <span class="pill pill-amber" style="font-size:9px;padding:0 5px;margin-left:3px">'+_pend+'</span>':'');
+  return '<div style="display:flex;gap:8px;margin-bottom:18px">'+mk('tareas','Tareas')+mk('actividad',_actLbl)+mk('revisiones',_revLbl)+'</div>';
 }
 function showOverview(){
   // La pestana Clientes se quito de la torre: los archivados se manejan
@@ -4778,6 +4780,23 @@ function integracionesAppHtml(){
         action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
     })(),
     (function(){
+      // La revision se responde siempre en el tracker. Lo unico configurable
+      // aca es la direccion publica, que es la que viaja al mail y al WhatsApp.
+      var pend=(typeof rvPendientesCount==='function')?rvPendientesCount():0;
+      var total=(typeof rvClientesConInforme==='function')?rvClientesConInforme().length:0;
+      var url=(typeof rvTrackerUrl==='function')?rvTrackerUrl():'';
+      var propia=false;
+      try{ propia=!!localStorage.getItem('evold-tracker-url'); }catch(e){}
+      return card({name:'Revisiones', st:total?(propia?'ok':'partial'):'no',
+        desc:'Al terminar cada informe se abre una revision del periodo. Se responde en el tracker, venga del boton del mail, del link de WhatsApp o de la torre de control.',
+        detail:total
+          ?(pend?(pend+' pendiente'+(pend===1?'':'s')+' de '+total+' clientes'):('al dia &middot; '+total+' clientes'))
+            +(propia?'':' &middot; falta fijar la direccion publica')
+          :'Sin clientes con informe',
+        action:'S.tkTab=\'revisiones\';showTickets()', actionLabel:'Ver revisiones',
+        action2:'rvConfigModal()', action2Label:'Direccion publica'});
+    })(),
+    (function(){
       var rs=getRutinas();
       var act=rs.filter(function(r){return r.activa&&r.texto;}).length;
       return card({name:'Rutinas', st:act?'ok':'no',
@@ -5794,7 +5813,7 @@ function showTickets(){
     +'</div>'
     +_overviewMetricsHtml()
     +_tkSubtabsHtml()
-    +(S.tkTab==='actividad'?_actividadHtml():(''
+    +(S.tkTab==='revisiones'?rvPanelHtml():(S.tkTab==='actividad'?_actividadHtml():(''
     +progresoHtml
     +_tkAlarmasHtml()
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
@@ -5828,11 +5847,448 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>')))
+        +'</div>'))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
 }
+
+// ================= REVISIONES DEL INFORME =================
+// Formulario corto que se responde SIEMPRE aca adentro. Llega por tres vias:
+// el boton del informe por mail, el link del aviso de WhatsApp y la torre de
+// control (pestana Revisiones). La respuesta se guarda dentro del cliente
+// (c.revisiones), asi viaja sola a Supabase con el resto de sus datos.
+//
+// El periodo de la revision es el mismo que cubre el informe de ese cliente:
+// si el informe es diario, se revisan los ultimos 7 dias; si es semanal, la
+// semana pasada. La ventana se calcula igual que en el Apps Script
+// (_windowFor), porque si no coinciden el link del mail abre un periodo que
+// la torre no reconoce.
+
+// URL publica del tracker. Es la que se le manda al Apps Script para armar los
+// links del mail y del WhatsApp. Por defecto, la direccion desde la que se abrio.
+function rvTrackerUrl(){
+  var u='';
+  try{ u=localStorage.getItem('evold-tracker-url')||''; }catch(e){}
+  if(!u) u=location.origin+location.pathname;
+  return String(u).replace(/[?#].*$/,'');
+}
+function rvSetTrackerUrl(u){
+  try{ localStorage.setItem('evold-tracker-url', String(u||'').trim().replace(/[?#].*$/,'')); }catch(e){}
+}
+
+function rvISO(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function rvFmtDia(d){ return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2); }
+
+// Ventana que cubre el informe recien enviado, segun su frecuencia.
+function rvVentana(freq, ahora){
+  ahora=ahora||new Date();
+  if(freq==='monthly'){
+    return { from:new Date(ahora.getFullYear(), ahora.getMonth()-1, 1),
+             to:  new Date(ahora.getFullYear(), ahora.getMonth(), 0) };
+  }
+  if(freq==='daily'||freq==='biweekly'){
+    var dias=(freq==='daily')?7:14;
+    var to=new Date(ahora); to.setHours(0,0,0,0); to.setDate(to.getDate()-1);
+    var from=new Date(to); from.setDate(from.getDate()-(dias-1));
+    return { from:from, to:to };
+  }
+  var dow=(ahora.getDay()+6)%7;
+  var lun=new Date(ahora); lun.setHours(0,0,0,0); lun.setDate(lun.getDate()-dow-7);
+  var dom=new Date(lun); dom.setDate(dom.getDate()+6);
+  return { from:lun, to:dom };
+}
+// El periodo se identifica por su ultimo dia (YYYY-MM-DD): es lo unico que
+// viaja en el link del mail, y alcanza para reconstruir todo el rango.
+function rvPeriodoActual(freq, ahora){ return rvISO(rvVentana(freq, ahora).to); }
+function rvRangoDeFin(freq, iso){
+  var p=String(iso||'').split('-');
+  var to=new Date(Number(p[0])||1970, (Number(p[1])||1)-1, Number(p[2])||1);
+  to.setHours(0,0,0,0);
+  if(freq==='monthly') return { from:new Date(to.getFullYear(), to.getMonth(), 1), to:to };
+  var dias=(freq==='biweekly')?14:7;
+  var from=new Date(to); from.setDate(from.getDate()-(dias-1));
+  return { from:from, to:to };
+}
+function rvRangoTexto(freq, iso){
+  var r=rvRangoDeFin(freq, iso);
+  return rvFmtDia(r.from)+' al '+rvFmtDia(r.to);
+}
+function rvFreqTexto(freq){
+  return { daily:'informe diario', weekly:'informe semanal',
+           biweekly:'informe cada 15 dias', monthly:'informe mensual' }[freq]||'informe semanal';
+}
+
+// Frecuencia con la que este cliente recibe el informe. Sale del primer envio
+// que lo incluya (un envio sin lista de clientes los incluye a todos).
+function rvFreqCliente(clientId){
+  var id=String(clientId);
+  var envios=(typeof getEnvios==='function')?getEnvios():[];
+  for(var i=0;i<envios.length;i++){
+    var e=envios[i]||{};
+    var todos=!e.clientes||!e.clientes.length;
+    if(todos||e.clientes.indexOf(id)>=0) return e.freq||'weekly';
+  }
+  return 'weekly';
+}
+// Clientes que reciben informe: son los que tienen algo que revisar.
+function rvClientesConInforme(){
+  var envios=(typeof getEnvios==='function')?getEnvios():[];
+  var conGhl=(DB.clients||[]).filter(function(c){
+    return !c.archived && c.ghl && c.ghl.token && c.ghl.locationId;
+  });
+  if(!envios.length) return conGhl;
+  return conGhl.filter(function(c){
+    var id=String(c.id);
+    return envios.some(function(e){
+      var todos=!e.clientes||!e.clientes.length;
+      return todos||e.clientes.indexOf(id)>=0;
+    });
+  });
+}
+
+function rvLista(c){ if(!Array.isArray(c.revisiones)) c.revisiones=[]; return c.revisiones; }
+function rvBuscar(c, periodo){
+  var l=rvLista(c);
+  for(var i=0;i<l.length;i++){ if(l[i].periodo===periodo) return l[i]; }
+  return null;
+}
+// Clientes con el periodo actual sin responder
+function rvPendientes(){
+  return rvClientesConInforme().filter(function(c){
+    return !rvBuscar(c, rvPeriodoActual(rvFreqCliente(c.id)));
+  });
+}
+function rvPendientesCount(){
+  try{ return rvPendientes().length; }catch(e){ return 0; }
+}
+
+// Link directo a la revision de un cliente. Es el que se pega en el mail.
+function rvLink(clientId, periodo, via){
+  return rvTrackerUrl()+'?rev='+encodeURIComponent(String(clientId))
+    +'&periodo='+encodeURIComponent(periodo||'')
+    +'&via='+encodeURIComponent(via||'link');
+}
+
+// ---------- Formulario ----------
+// El borrador vive fuera del DOM: las preguntas de seguimiento aparecen y
+// desaparecen al tocar Si/No, y sin esto se perderia lo ya escrito.
+var _rvD=null;
+
+function rvAbrir(clientId, periodo, via){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c){ if(typeof toast==='function') toast('No encontre ese cliente','red'); return; }
+  var freq=rvFreqCliente(c.id);
+  var per=periodo||rvPeriodoActual(freq);
+  var ya=rvBuscar(c, per);
+  _rvD={
+    clientId:c.id, periodo:per, freq:freq, via:via||'tracker',
+    editando:!!ya,
+    errorSi: ya?(ya.error&&ya.error.hubo?true:false):null,
+    errorCual: (ya&&ya.error&&ya.error.cual)||'',
+    errorSol:  (ya&&ya.error&&ya.error.solucion)||'',
+    errorPru:  (ya&&ya.error&&ya.error.pruebas)||'',
+    mejoraSi: ya?(ya.mejora&&ya.mejora.hubo?true:false):null,
+    mejoraPor:(ya&&ya.mejora&&ya.mejora.porque)||'',
+    mejoraCam:(ya&&ya.mejora&&ya.mejora.cambios)||''
+  };
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:94%">'
+      +'<div class="modal-title">Revision de '+esc(c.name)+'</div>'
+      +'<div class="modal-sub">'+rvFreqTexto(freq)+' &middot; '+rvRangoTexto(freq, per)
+        +(_rvD.editando?' &middot; <span style="color:var(--amberx)">ya respondida, se va a reemplazar</span>':'')+'</div>'
+      +'<div id="rv-body"></div>'
+      +'<div id="rv-msg" style="font-size:11.5px;color:var(--redx);margin-top:10px;min-height:15px"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="rvGuardar()">Guardar revision</button>'
+      +'</div>'
+    +'</div></div>';
+  rvPintarCuerpo();
+}
+
+function rvSet(campo, valor){
+  if(!_rvD) return;
+  rvLeerCampos();
+  _rvD[campo]=valor;
+  rvPintarCuerpo();
+}
+// Se lee antes de cada repintado para no perder lo tipeado
+function rvLeerCampos(){
+  if(!_rvD) return;
+  var g=function(id){ var e=document.getElementById(id); return e?e.value:null; };
+  var pares=[['rv-error-cual','errorCual'],['rv-error-sol','errorSol'],['rv-error-pru','errorPru'],
+             ['rv-mejora-por','mejoraPor'],['rv-mejora-cam','mejoraCam']];
+  pares.forEach(function(p){ var v=g(p[0]); if(v!==null) _rvD[p[1]]=v; });
+}
+
+function rvPintarCuerpo(){
+  var el=document.getElementById('rv-body');
+  if(!el||!_rvD) return;
+  var ta=function(id, val, ph){
+    return '<textarea id="'+id+'" rows="2" placeholder="'+esc(ph)+'" '
+      +'style="width:100%;box-sizing:border-box;padding:9px 11px;font-size:12.5px;line-height:1.55;'
+      +'border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);'
+      +'font-family:var(--font);resize:vertical;outline:none">'+esc(val||'')+'</textarea>';
+  };
+  var lbl=function(t){
+    return '<div style="font-size:11px;color:var(--text3);margin:10px 0 5px">'+t+'</div>';
+  };
+  var sino=function(campo, val){
+    var b=function(v, txt){
+      var act=(val===v);
+      var col=v?'var(--accent)':'var(--text2)';
+      return '<button class="btn btn-sm" onclick="rvSet(\''+campo+'\','+(v?'true':'false')+')" '
+        +'style="'+(act?'border-color:'+col+';color:'+col:'color:var(--text3)')+'">'+txt+'</button>';
+    };
+    return '<div style="display:flex;gap:8px;margin-top:7px">'+b(true,'Si')+b(false,'No')+'</div>';
+  };
+  var bloque=function(inner){
+    return '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:12px">'+inner+'</div>';
+  };
+  var preg=function(t){ return '<div style="font-size:13px;color:var(--strong);line-height:1.5">'+t+'</div>'; };
+
+  el.innerHTML=''
+    +bloque(preg('&iquest;Se reporto un error en alguna automatizacion o en el frontend?')
+      +sino('errorSi', _rvD.errorSi)
+      +(_rvD.errorSi===true
+        ? lbl('&iquest;Cual fue?')+ta('rv-error-cual', _rvD.errorCual, 'Que fallo y donde')
+          +lbl('&iquest;Como quedo solucionado?')+ta('rv-error-sol', _rvD.errorSol, 'Que se cambio para resolverlo')
+          +lbl('&iquest;Que pruebas se hicieron?')+ta('rv-error-pru', _rvD.errorPru, 'Como se verifico que quedo andando')
+        : ''))
+    +bloque(preg('&iquest;Se detecto alguna mejora por hacer?')
+      +sino('mejoraSi', _rvD.mejoraSi)
+      +(_rvD.mejoraSi===true
+        ? lbl('&iquest;Por que?')+ta('rv-mejora-por', _rvD.mejoraPor, 'Que problema o limite se ve hoy')
+          +lbl('&iquest;Que cambios haria?')+ta('rv-mejora-cam', _rvD.mejoraCam, 'La mejora concreta que proponen')
+        : ''));
+}
+
+function rvGuardar(){
+  if(!_rvD) return;
+  rvLeerCampos();
+  var d=_rvD;
+  var msg=document.getElementById('rv-msg');
+  var decir=function(t){ if(msg) msg.textContent=t; };
+  if(d.errorSi===null||d.mejoraSi===null){ decir('Faltan contestar las dos preguntas.'); return; }
+  var falta=function(v){ return !String(v||'').trim(); };
+  if(d.errorSi===true&&(falta(d.errorCual)||falta(d.errorSol)||falta(d.errorPru))){
+    decir('Si hubo un error, hace falta el detalle: cual fue, como quedo solucionado y que pruebas se hicieron.'); return;
+  }
+  if(d.mejoraSi===true&&(falta(d.mejoraPor)||falta(d.mejoraCam))){
+    decir('Si hay una mejora, hace falta el motivo y que cambios harias.'); return;
+  }
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(d.clientId); });
+  if(!c){ decir('No encontre ese cliente.'); return; }
+  var lista=rvLista(c);
+  var rango=rvRangoDeFin(d.freq, d.periodo);
+  var reg={
+    id:'rv'+Date.now(),
+    periodo:d.periodo, freq:d.freq,
+    desde:rvISO(rango.from), hasta:rvISO(rango.to),
+    via:d.via||'tracker',
+    autor:(typeof SB==='object'&&SB.email)?SB.email:'',
+    creadoAt:new Date().toISOString(),
+    error:{ hubo:d.errorSi===true,
+            cual:String(d.errorCual||'').trim(),
+            solucion:String(d.errorSol||'').trim(),
+            pruebas:String(d.errorPru||'').trim() },
+    mejora:{ hubo:d.mejoraSi===true,
+             porque:String(d.mejoraPor||'').trim(),
+             cambios:String(d.mejoraCam||'').trim() }
+  };
+  var previa=rvBuscar(c, d.periodo);
+  if(previa){
+    reg.id=previa.id;
+    reg.creadoAt=previa.creadoAt;
+    reg.editadoAt=new Date().toISOString();
+    lista[lista.indexOf(previa)]=reg;
+  } else {
+    lista.unshift(reg);
+  }
+  save();
+  _rvD=null;
+  closeModal();
+  if(typeof toast==='function') toast('Revision guardada');
+  S.tkTab='revisiones';
+  showTickets();
+}
+
+function rvBorrar(clientId, revId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  c.revisiones=rvLista(c).filter(function(r){ return r.id!==revId; });
+  save();
+  showTickets();
+  if(typeof toast==='function') toast('Revision eliminada');
+}
+
+// ---------- Panel en la torre de control ----------
+function rvToggleDetalle(k){
+  S._rvAbiertas=S._rvAbiertas||{};
+  S._rvAbiertas[k]=!S._rvAbiertas[k];
+  showTickets();
+}
+
+function rvPanelHtml(){
+  var pend=rvPendientes();
+  var chip=function(txt, color, bg){
+    return '<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:'+bg+';color:'+color+'">'+txt+'</span>';
+  };
+  var pendHtml=pend.length
+    ? pend.map(function(c){
+        var f=rvFreqCliente(c.id), per=rvPeriodoActual(f);
+        return '<div style="display:flex;align-items:center;gap:12px;padding:12px 6px;border-top:1px solid var(--border)">'
+          +'<span style="width:7px;height:7px;border-radius:50%;background:var(--amberx);flex-shrink:0"></span>'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;color:var(--strong);font-weight:500">'+esc(c.name)+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+rvFreqTexto(f)+' &middot; '+rvRangoTexto(f, per)+'</div>'
+          +'</div>'
+          +'<button class="btn btn-sm" style="color:var(--text3)" onclick="rvCopiarLink('+c.id+',\''+per+'\')">Copiar link</button>'
+          +'<button class="btn btn-sm btn-primary" onclick="rvAbrir('+c.id+',\''+per+'\',\'tracker\')">Responder</button>'
+          +'</div>';
+      }).join('')
+    : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">'
+      +'Todas las revisiones del periodo estan respondidas.</div>';
+
+  // Historial: todas las revisiones de todos los clientes, de la mas nueva a la mas vieja
+  var todas=[];
+  (DB.clients||[]).forEach(function(c){
+    rvLista(c).forEach(function(r){ todas.push({ c:c, r:r }); });
+  });
+  todas.sort(function(a,b){ return String(b.r.creadoAt||'').localeCompare(String(a.r.creadoAt||'')); });
+
+  S._rvAbiertas=S._rvAbiertas||{};
+  var histHtml=todas.length
+    ? todas.slice(0,40).map(function(x){
+        var r=x.r, c=x.c, k=c.id+':'+r.id;
+        var abierta=!!S._rvAbiertas[k];
+        var det=function(t, v){
+          return v ? '<div style="margin-top:9px"><div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">'+t+'</div>'
+            +'<div style="font-size:12.5px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(v)+'</div></div>' : '';
+        };
+        return '<div style="border-top:1px solid var(--border);padding:12px 6px">'
+          +'<div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="rvToggleDetalle(\''+k+'\')">'
+            +'<span style="font-size:9px;color:var(--text3);display:inline-block;transform:rotate('+(abierta?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
+            +'<div style="flex:1;min-width:0">'
+              +'<div style="font-size:12.5px;color:var(--strong)">'+esc(c.name)
+                +' <span style="color:var(--text3);font-weight:400">&middot; '+rvRangoTexto(r.freq, r.periodo)+'</span></div>'
+              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
+                +(r.autor?esc(r.autor)+' &middot; ':'')
+                +(r.creadoAt?new Date(r.creadoAt).toLocaleDateString('es-AR'):'')
+                +' &middot; desde '+esc(r.via||'tracker')+'</div>'
+            +'</div>'
+            +(r.error&&r.error.hubo
+              ? chip('Error','var(--redx)','rgba(216,90,48,0.14)')
+              : chip('Sin errores','var(--accent)','rgba(29,158,117,0.12)'))
+            +(r.mejora&&r.mejora.hubo
+              ? chip('Mejora','var(--amberx)','rgba(240,168,48,0.14)')
+              : chip('Sin mejoras','var(--text3)','var(--bg3)'))
+          +'</div>'
+          +(abierta
+            ? '<div style="padding:6px 0 2px 21px">'
+              +det('Cual fue el error', r.error&&r.error.cual)
+              +det('Como quedo solucionado', r.error&&r.error.solucion)
+              +det('Pruebas que se hicieron', r.error&&r.error.pruebas)
+              +det('Por que la mejora', r.mejora&&r.mejora.porque)
+              +det('Cambios propuestos', r.mejora&&r.mejora.cambios)
+              +'<div style="display:flex;gap:8px;margin-top:12px">'
+                +'<button class="btn btn-sm" onclick="rvAbrir('+c.id+',\''+r.periodo+'\',\'tracker\')">Editar</button>'
+                +'<button class="btn btn-sm" style="color:var(--redx)" onclick="rvBorrar('+c.id+',\''+r.id+'\')">Eliminar</button>'
+              +'</div></div>'
+            : '')
+          +'</div>';
+      }).join('')
+    : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">Todavia no hay revisiones respondidas.</div>';
+
+  var titulo=function(t, sub){
+    return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">'+t+'</span>'
+      +(sub?'<span style="font-size:11px;color:var(--text3)">'+sub+'</span>':'')+'</div>';
+  };
+
+  return ''
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">'
+      +titulo('Pendientes', pend.length+' de '+rvClientesConInforme().length+' clientes con informe')
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+        +'Cada informe que sale por mail abre su revision. Se responde aca, venga del mail, del WhatsApp o de esta pantalla.</div>'
+      +pendHtml
+    +'</div>'
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
+      +titulo('Respondidas', todas.length?(todas.length+' en total'):'')
+      +histHtml
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:12px;line-height:1.6">'
+      +'Los links del mail y del WhatsApp apuntan a <span class="mono">'+esc(rvTrackerUrl())+'</span>. '
+      +'<a href="javascript:void(0)" onclick="rvConfigModal()" style="color:var(--accent);text-decoration:none">Cambiar direccion</a>'
+    +'</div>';
+}
+
+function rvCopiarLink(clientId, periodo){
+  var url=rvLink(clientId, periodo, 'link');
+  var ta=document.createElement('textarea');
+  ta.value=url; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  ta.remove();
+  if(typeof toast==='function') toast('Link copiado');
+}
+
+function rvConfigModal(){
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+      +'<div class="modal-title">Direccion publica del tracker</div>'
+      +'<div class="modal-sub">Es la direccion que se pega en el boton del informe y en el aviso de WhatsApp. '
+        +'Tiene que ser la que abren desde el celular, no una ruta local.</div>'
+      +'<div class="form-row"><input id="rv-url" type="url" value="'+esc(rvTrackerUrl())+'" placeholder="https://angie-evolve.github.io/tracker/"></div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.6">'
+        +'Despues de cambiarla hay que volver a tocar "Guardar y sincronizar" en Informe automatico: '
+        +'la direccion viaja al Apps Script junto con la configuracion de cada cliente.</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="rvGuardarUrl()">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function rvGuardarUrl(){
+  var e=document.getElementById('rv-url');
+  rvSetTrackerUrl(e?e.value:'');
+  closeModal();
+  if(typeof toast==='function') toast('Direccion guardada');
+  showTickets();
+}
+
+// ---------- Entrada por link (mail / WhatsApp) ----------
+// El link puede llegar antes de iniciar sesion, asi que se guarda y se abre
+// recien cuando la app termino de cargar.
+function rvGuardarLinkPendiente(){
+  try{
+    var q=new URLSearchParams(location.search);
+    var rev=q.get('rev');
+    if(!rev) return;
+    sessionStorage.setItem('evold-rev-pend', JSON.stringify({
+      rev:rev, periodo:q.get('periodo')||'', via:q.get('via')||'mail'
+    }));
+    // Se limpia la barra de direcciones: si no, recargar vuelve a abrir el formulario.
+    if(history&&history.replaceState) history.replaceState(null,'',location.origin+location.pathname);
+  }catch(e){}
+}
+function rvAbrirDesdeLink(){
+  var p=null;
+  try{
+    p=JSON.parse(sessionStorage.getItem('evold-rev-pend')||'null');
+    sessionStorage.removeItem('evold-rev-pend');
+  }catch(e){ p=null; }
+  if(!p||!p.rev) return;
+  S.tkTab='revisiones';
+  showTickets();
+  if(p.rev==='panel') return;
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(p.rev); });
+  if(!c){ if(typeof toast==='function') toast('El link apunta a un cliente que no esta en este tracker','amber'); return; }
+  rvAbrir(c.id, p.periodo||'', p.via||'mail');
+}
+
 
 // ================= INFORME AUTOMATICO POR MAIL (frecuencia configurable via Apps Script) =================
 // El horario vive en el Apps Script (es quien tiene el disparador). Aca se guarda una copia
@@ -6255,7 +6711,10 @@ async function pushWeeklyReportConfig(){
       const payload={name:c.name,ghlToken:c.ghl.token,ghlLocation:c.ghl.locationId,
         metaToken:c.metaToken||'',metaAccountId:c.metaAccountId||'',
         excluded:(al&&al.excludedCampaigns)||[],rules:getGhlRules(c),
-        ticketsAbiertos:_tks.length,ticketsVencidos:_venc};
+        ticketsAbiertos:_tks.length,ticketsVencidos:_venc,
+        // Con esto el informe puede armar el boton de la revision: quien es el
+        // cliente y a que direccion mandarlo.
+        key:String(c.id), trackerUrl:(typeof rvTrackerUrl==='function')?rvTrackerUrl():''};
       const r=await fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_config&clientKey='+enc(String(c.id))+'&payload='+enc(JSON.stringify(payload))).then(function(x){return x.json();}).catch(function(){return null;});
       if(r&&r.ok) ok++;
       await new Promise(function(r2){setTimeout(r2,150);});
@@ -15144,6 +15603,9 @@ function toggleTheme(){
 }
 applyTheme(localStorage.getItem('evold-theme')||'dark');
 load();
+// El link del mail o del WhatsApp puede caer antes de iniciar sesion: se guarda
+// ahora y el formulario se abre cuando la app termino de cargar.
+try{ rvGuardarLinkPendiente(); }catch(e){}
 if(localStorage.getItem('evold-sidebar-collapsed')==='1'){
   document.getElementById('sidebar').classList.add('collapsed');
 }
@@ -15191,6 +15653,7 @@ function pantallaLogin(msg){
     SB.listo=false;
     d.remove();
     renderSidebar(); showTickets();
+    try{ rvAbrirDesdeLink(); }catch(e){}
   };
   setTimeout(function(){ var e=document.getElementById('sb-mail'); if(e) e.focus(); },50);
 }
@@ -15216,6 +15679,7 @@ async function arrancarConSesion(){
   // Huellas de partida, asi el primer save() no reenvia todo de nuevo
   (DB.clients||[]).forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
   renderSidebar(); showTickets();
+  try{ rvAbrirDesdeLink(); }catch(e){}
   try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
 }
 
