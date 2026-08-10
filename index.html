@@ -10545,7 +10545,47 @@ function embudoSubNav(){
   return '<div style="display:flex;gap:8px;margin-bottom:18px;align-items:center">'
     +inf
     +'<span style="width:1px;height:18px;background:var(--border);margin:0 3px"></span>'
-    +b('top','Top of Funnel')+b('middle','Middle of Funnel')+bottomConMenu(sel)+b('records','Records')+'</div>';
+    +topConMenu(sel)+b('middle','Middle of Funnel')+bottomConMenu(sel)+b('records','Records')+'</div>';
+}
+
+// Top of Funnel abre ademas el Guionizador. Va colgado de ahi porque escribir el
+// anuncio es trabajo de captacion: se decide mirando las mismas metricas que
+// cuelgan de esta hoja, no en otra pestana.
+function topConMenu(sel){
+  var on=(sel==='top'||sel==='guion');
+  var abierto=!!S._topMenu;
+  return '<span style="position:relative;display:inline-flex">'
+    +'<button onclick="toggleTopMenu(event)" style="font-size:12.5px;padding:7px 13px;border-radius:999px;border:1px solid '
+      +(on?'transparent':'var(--border2)')+';background:'+(on?'var(--accent)':'transparent')+';color:'
+      +(on?'var(--on-accent)':'var(--text2)')+';cursor:pointer;font-family:var(--font);display:inline-flex;align-items:center;gap:6px">'
+      +(sel==='guion'?'Top of Funnel &middot; Guionizador':'Top of Funnel')
+      +'<span style="font-size:9px;opacity:.75;transform:rotate('+(abierto?'180':'0')+'deg);transition:transform .15s">&#9660;</span>'
+    +'</button>'
+    +(abierto
+      ?'<div style="position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:230px;background:var(--bg2);'
+        +'border:1px solid var(--border2);border-radius:var(--radius-lg);padding:5px;box-shadow:0 10px 30px -12px rgba(0,0,0,.7)">'
+        +_topItem('top','Metricas de captacion','Gasto, alcance, CPL y avisos de Meta',sel)
+        +_topItem('guion','Guionizador','Angulos y guiones a partir del anuncio base',sel)
+      +'</div>'
+      :'')
+  +'</span>';
+}
+function _topItem(k,titulo,sub,sel){
+  var act=(sel===k);
+  return '<button onclick="elegirTop(\''+k+'\')" style="display:block;width:100%;text-align:left;padding:8px 10px;border:0;'
+    +'border-radius:8px;cursor:pointer;font-family:var(--font);background:'+(act?'var(--bg3)':'transparent')+'">'
+    +'<div style="font-size:12.5px;color:'+(act?'var(--accent)':'var(--text)')+'">'+titulo+'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'+sub+'</div></button>';
+}
+function toggleTopMenu(ev){
+  if(ev) ev.stopPropagation();
+  S._topMenu=!S._topMenu;
+  S._bofMenu=false;      // no dos menus abiertos a la vez
+  _repintarSubNav();
+}
+function elegirTop(k){
+  S._topMenu=false;
+  setHoja(k);
 }
 
 // Bottom of Funnel abre ademas la herramienta de Capacitacion, que analiza las
@@ -10592,7 +10632,7 @@ function _repintarSubNav(){
 }
 // Un clic afuera cierra el menu, como cualquier desplegable
 document.addEventListener('click',function(){
-  if(S._bofMenu){ S._bofMenu=false; _repintarSubNav(); }
+  if(S._bofMenu||S._topMenu){ S._bofMenu=false; S._topMenu=false; _repintarSubNav(); }
 });
 
 function embudoHojasHtml(topHtml, c){
@@ -10602,6 +10642,7 @@ function embudoHojasHtml(topHtml, c){
     +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'</div>'
     +'<div id="hoja-ventas-body" style="display:'+((sel==='bottom'||sel==='records'||sel==='cap')?'block':'none')+'"></div>'
     +'<div id="hoja-middle-body" style="display:'+(sel==='middle'?'block':'none')+'"></div>'
+    +'<div id="hoja-guion-body" style="display:'+(sel==='guion'?'block':'none')+'"></div>'
     +'<div id="hoja-vacio" style="display:'+(sel==='informes'?'block':'none')+'">'+liveSectionHtml(c)+'</div>';
 }
 
@@ -10609,7 +10650,27 @@ function montarHojas(c){
   S._hojaCliente=c;
   if(S._hoja==='informes'||!S._hoja) kickLiveRefresh(c); // solo se autoactualiza si esta a la vista           // lo necesita setHoja para dibujar el funnel
   S._hojaVentasMontada=null; // se rearma al volver a entrar a la pestana
+  S._hojaGuionMontada=false;
   if(S._hoja==='bottom'||S._hoja==='records'||S._hoja==='cap') _dibujarVentas(_vistaDeHoja(S._hoja));
+  if(S._hoja==='guion') _dibujarGuion();
+}
+
+// El guionizador es pesado (arma la grilla de anuncios y variantes), asi que se
+// dibuja recien cuando se lo pide y una sola vez por visita a la pestana.
+function _dibujarGuion(){
+  var body=document.getElementById('hoja-guion-body');
+  if(!body||!S._hojaCliente) return;
+  if(S._hojaGuionMontada) return;
+  S._hojaGuionMontada=true;
+  body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">Cargando...</div>';
+  setTimeout(function(){
+    try{ renderGuionLab(S._hojaCliente, body); }
+    catch(e){
+      console.warn('hoja guion:',e);
+      S._hojaGuionMontada=false;
+      body.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo cargar el guionizador.</div>';
+    }
+  },0);
 }
 
 // Las tres hojas de abajo salen de renderVentasTab; solo cambia que muestra.
@@ -10638,11 +10699,14 @@ function setHoja(k){
   var top=document.getElementById('hoja-top-body');
   var ven=document.getElementById('hoja-ventas-body');
   var mid=document.getElementById('hoja-middle-body');
+  var gui=document.getElementById('hoja-guion-body');
   var vac=document.getElementById('hoja-vacio');
   var esVentas=(S._hoja==='bottom'||S._hoja==='records'||S._hoja==='cap');
   if(top) top.style.display=(S._hoja==='top')?'block':'none';
   if(ven) ven.style.display=esVentas?'block':'none';
   if(mid) mid.style.display=(S._hoja==='middle')?'block':'none';
+  if(gui) gui.style.display=(S._hoja==='guion')?'block':'none';
+  if(S._hoja==='guion') _dibujarGuion();
   if(S._hoja==='middle') dibujarMiddle(S._hojaCliente);
   if(vac) vac.style.display=(S._hoja==='informes')?'block':'none';
   if(S._hoja==='informes' && S._hojaCliente) kickLiveRefresh(S._hojaCliente);
