@@ -6103,7 +6103,7 @@ async function lpVerificar(clientId, silencioso){
   if(!silencioso) pintar('Consultando...');
   try{
     var url=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id))
-      +'&select=tipo,visitante,creado_en&order=creado_en.desc&limit=1000';
+      +'&select=tipo,visitante,pagina,creado_en&order=creado_en.desc&limit=2000';
     var r=await fetch(url,{ headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
     if(!r.ok){
       var t=await r.text();
@@ -6115,12 +6115,18 @@ async function lpVerificar(clientId, silencioso){
       return null;
     }
     var filas=await r.json();
+    // Los eventos crudos quedan solo en memoria: son muchos y no tiene sentido
+    // sincronizarlos. Alcanza con poder recalcular al cambiar la seleccion.
+    S._lpRaw=S._lpRaw||{};
+    S._lpRaw[String(c.id)]=filas;
     var vistas=filas.filter(function(f){ return f.tipo==='view'; });
     var optins=filas.filter(function(f){ return f.tipo==='optin'; });
     var unicos={}; vistas.forEach(function(f){ unicos[f.visitante]=1; });
     var st={ vistas:vistas.length, unicas:Object.keys(unicos).length, optins:optins.length,
-             ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString() };
+             ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString(),
+             paginas:lpPorPagina(filas) };
     c.lpStats=st;
+    lpRecalcular(c);
     save();
     if(!filas.length){
       pintar('Todavia no llego ningun evento. Abri la landing y volve a probar.','var(--amberx)');
@@ -6141,6 +6147,111 @@ function _fmtHaceCorto(iso){
   if(m<60) return 'hace '+m+' min';
   if(m<1440) return 'hace '+Math.floor(m/60)+' h';
   return 'hace '+Math.floor(m/1440)+' d';
+}
+
+// Desglose por ruta, ordenado por visitas: es lo que se ofrece para elegir.
+function lpPorPagina(filas){
+  var m={};
+  filas.forEach(function(f){
+    if(f.tipo!=='view') return;
+    var r=f.pagina||'(sin ruta)';
+    m[r]=m[r]||{ruta:r,vistas:0,_u:{}};
+    m[r].vistas++;
+    m[r]._u[f.visitante]=1;
+  });
+  return Object.keys(m).map(function(k){
+    return { ruta:k, vistas:m[k].vistas, unicas:Object.keys(m[k]._u).length };
+  }).sort(function(a,b){ return b.vistas-a.vistas; });
+}
+
+// Paginas de registro elegidas. Si no se eligio ninguna, se asume que son todas
+// las que no parecen de gracias: sirve para que el numero no quede vacio de
+// entrada, pero lo correcto es elegirlas a mano.
+function lpPaginasDe(c){
+  if(Array.isArray(c.lpPaginas)&&c.lpPaginas.length) return c.lpPaginas;
+  return ((c.lpStats&&c.lpStats.paginas)||[])
+    .filter(function(p){ return !/gracias|thank|thanks|success/i.test(p.ruta); })
+    .map(function(p){ return p.ruta; });
+}
+function lpAuto(c){ return !(Array.isArray(c.lpPaginas)&&c.lpPaginas.length); }
+
+// Opt-in con la definicion de GHL: opt-ins sobre visitantes unicos de las
+// paginas de registro. El opt-in en si no se filtra por ruta, porque suele
+// dispararse en la de gracias.
+function lpOptIn(c, dias){
+  var raw=(S._lpRaw||{})[String(c.id)];
+  if(!raw) return null;
+  var desde=Date.now()-((dias||7)*86400000);
+  var sel=lpPaginasDe(c);
+  var unicos={}, optins=0;
+  raw.forEach(function(f){
+    if(new Date(f.creado_en).getTime()<desde) return;
+    if(f.tipo==='optin'){ optins++; return; }
+    if(f.tipo!=='view') return;
+    if(sel.length && sel.indexOf(f.pagina||'(sin ruta)')<0) return;
+    unicos[f.visitante]=1;
+  });
+  var u=Object.keys(unicos).length;
+  return { unicas:u, optins:optins, tasa:u?(optins/u*100):null, dias:dias||7 };
+}
+function lpRecalcular(c){
+  var r7=lpOptIn(c,7), r30=lpOptIn(c,30);
+  if(c.lpStats){ c.lpStats.optin7=r7; c.lpStats.optin30=r30; }
+  return r7;
+}
+function lpTogglePagina(clientId, ruta){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  // La primera vez se parte de lo que estaba asumido, para no perder la seleccion
+  // implicita al tocar el primer casillero.
+  if(!Array.isArray(c.lpPaginas)||!c.lpPaginas.length) c.lpPaginas=lpPaginasDe(c).slice();
+  var i=c.lpPaginas.indexOf(ruta);
+  if(i>=0) c.lpPaginas.splice(i,1); else c.lpPaginas.push(ruta);
+  lpRecalcular(c);
+  save();
+  lpModal(c.id);
+}
+function lpResetPaginas(clientId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  delete c.lpPaginas;
+  lpRecalcular(c);
+  save();
+  lpModal(c.id);
+}
+
+// Bloque del selector dentro del modal
+function lpSelectorHtml(c){
+  var pgs=(c.lpStats&&c.lpStats.paginas)||[];
+  if(!pgs.length) return '';
+  var sel=lpPaginasDe(c);
+  var filas=pgs.map(function(p){
+    var on=sel.indexOf(p.ruta)>=0;
+    return '<label style="display:flex;align-items:center;gap:9px;padding:6px 0;cursor:pointer">'
+      +'<input type="checkbox"'+(on?' checked':'')+' onchange="lpTogglePagina('+c.id+',\''+p.ruta.replace(/'/g,"\\'")+'\')">'
+      +'<span class="mono" style="flex:1;min-width:0;font-size:11.5px;color:'+(on?'var(--text)':'var(--text3)')+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.ruta)+'</span>'
+      +'<span style="font-size:11px;color:var(--text3);flex-shrink:0">'+p.unicas+' unicas &middot; '+p.vistas+' vistas</span>'
+      +'</label>';
+  }).join('');
+  var r=lpOptIn(c,7);
+  var tasa=(r&&r.tasa!=null)?(r.tasa.toFixed(2)+'%'):'-';
+  return '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">'
+      +'<span style="font-size:11.5px;color:var(--text2)">Paginas de registro</span>'
+      +'<span style="font-size:10.5px;color:var(--text3)">'
+        +(lpAuto(c)?'deducidas solas':'<a href="javascript:void(0)" onclick="lpResetPaginas('+c.id+')" style="color:var(--accent);text-decoration:none">volver a deducirlas</a>')
+      +'</span>'
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+      +'Marca las del opt-in. Si hay A/B con rutas distintas, marca las dos: se suman.</div>'
+    +filas
+    +'<div style="margin-top:10px;padding:9px 12px;background:var(--bg3);border-radius:var(--radius);display:flex;align-items:baseline;justify-content:space-between">'
+      +'<span style="font-size:11.5px;color:var(--text3)">Opt-in de los ultimos 7 dias</span>'
+      +'<span style="font-size:15px;font-weight:600;color:var(--accent)">'+tasa+'</span>'
+    +'</div>'
+    +(r?'<div style="font-size:10.5px;color:var(--text3);margin-top:5px">'
+      +r.optins+' opt-in'+(r.optins===1?'':'s')+' sobre '+r.unicas+' visitante'+(r.unicas===1?'':'s')+' unico'+(r.unicas===1?'':'s')+' de las paginas marcadas.</div>':'')
+    +'</div>';
 }
 
 function lpScriptDe(c){
@@ -6182,6 +6293,7 @@ function lpModal(clientId){
           +(c.lpStats?('Ultima consulta: '+esc(_fmtHaceCorto(c.lpStats.at))+' &middot; '+c.lpStats.vistas+' vistas, '+c.lpStats.optins+' opt-ins'):'Sin consultar todavia.')
         +'</span>'
       +'</div>'
+      +lpSelectorHtml(c)
       +'<div class="modal-footer">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
         +'<button class="btn btn-sm btn-primary" onclick="lpCopiarScript('+c.id+')">Copiar script</button>'
@@ -8893,7 +9005,10 @@ function renderTab(){
         var hay=!!(st&&st.vistas);
         return card({name:'Tracker de landing', st:hay?'ok':'no',
           desc:'Mide visitas y opt-ins en la landing misma, con la definicion de GHL: opt-ins sobre visitas unicas. Hoy el opt-in se calcula con vistas de Meta, que cuentan otra cosa y lo dejan inflado.',
-          detail:hay?(st.vistas+' vistas &middot; '+st.unicas+' unicas &middot; '+st.optins+' opt-ins'):'Se pega una vez en el Tracking Code del embudo',
+          detail:hay?((st.optin7&&st.optin7.tasa!=null)
+              ?('Opt-in 7d: '+st.optin7.tasa.toFixed(2)+'% &middot; '+st.optin7.optins+' de '+st.optin7.unicas+' unicos')
+              :(st.vistas+' vistas &middot; '+st.unicas+' unicas &middot; '+st.optins+' opt-ins'))
+            :'Se pega una vez en el Tracking Code del embudo',
           action:'lpModal('+c.id+')', actionLabel:hay?'Ver detalle':'Ver script'});
       })(),
       card({name:'Fathom (llamadas)',st:fathomN?'ok':'no',
