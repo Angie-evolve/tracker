@@ -3178,6 +3178,8 @@ function _ticketRows(){
   return rows;
 }
 function _tkOrigen(t){
+  if(t.source==='Revision') return 'Revision';
+  if(t.source==='Rutina') return 'Rutina';
   return (!t.source||t.source==='Manual')?'Manual':'Llamada';
 }
 function _tkDias(a,b){ return Math.max(0,Math.round((b-a)/86400000)); }
@@ -5692,6 +5694,7 @@ function showTickets(){
       +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(t.responsible||'Ashy')+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta+'</div>'
       +((t.attachments&&t.attachments.length)?'<div style=\"margin-top:5px;display:flex;flex-wrap:wrap;gap:6px\">'+t.attachments.map(function(a){return '<a href=\"'+esc(a.url)+'\" target=\"_blank\" rel=\"noopener\" onclick=\"event.stopPropagation()\" style=\"font-size:10.5px;color:var(--accent);background:rgba(29,158,117,0.1);border:1px solid rgba(29,158,117,0.25);border-radius:6px;padding:2px 8px;text-decoration:none;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block\" title=\"'+esc(a.url)+'\">&#128206; '+esc(a.label||a.url)+'</a>';}).join('')+'</div>':'')
       +'</div>'
+      +((t.revision&&!t.done)?'<button class=\"btn btn-sm\" style=\"flex-shrink:0;border-color:var(--accent);color:var(--accent)\" onclick=\"event.stopPropagation();rvAbrirTarea('+c.id+','+t.id+')\">Responder</button>':'')
       +chip
       +'<span class=\"tk-pill\">'+esc(t.ticket||'-')+'</span>'
       +'<button class=\"tk-dots\" aria-label=\"Opciones\" onclick=\"event.stopPropagation();toggleTicketMenu('+c.id+','+t.id+',this)\">&#8942;</button>'
@@ -6123,6 +6126,7 @@ function rvGuardar(){
   } else {
     lista.unshift(reg);
   }
+  rvCerrarTarea(c, d.periodo);
   save();
   _rvD=null;
   closeModal();
@@ -6138,6 +6142,72 @@ function rvBorrar(clientId, revId){
   save();
   showTickets();
   if(typeof toast==='function') toast('Revision eliminada');
+}
+
+// ---------- La revision como tarea ----------
+// Una revision que vive solo en su pestana compite con Tareas en vez de sumarse.
+// Asi que cada periodo pendiente se carga como ticket en el cliente, igual que
+// una rutina: aparece en la torre, se le puede poner responsable y vencimiento,
+// y se cierra sola cuando se responde el formulario.
+function rvTareasActivas(){ return DB.revTareas!==false; }   // por defecto: si
+function rvToggleTareas(){
+  DB.revTareas=!rvTareasActivas();
+  if(rvTareasActivas()) rvGenerarTareas();
+  save();
+  showTickets();
+}
+
+// La tarea abierta de un periodo, si existe
+function rvTareaDe(c, periodo){
+  var l=c.tasks||[];
+  for(var i=0;i<l.length;i++){
+    if(l[i].revision && l[i].revision.periodo===periodo && !l[i].deleted) return l[i];
+  }
+  return null;
+}
+
+// Carga las tareas de los periodos pendientes. Se corre al abrir el tracker,
+// en el mismo lugar que las rutinas. Devuelve cuantas creo.
+function rvGenerarTareas(){
+  if(!rvTareasActivas()) return 0;
+  var creadas=0;
+  rvPendientes().forEach(function(c){
+    var freq=rvFreqCliente(c.id);
+    var per=rvPeriodoActual(freq);
+    c.tasks=c.tasks||[];
+    if(rvTareaDe(c, per)) return;             // ya esta cargada
+    var venc=new Date(); venc.setDate(venc.getDate()+2);
+    var resp=(typeof responsableDe==='function')?(responsableDe(c)||''):'';
+    c.tasks.unshift({
+      id:Date.now()+Math.floor(Math.random()*1000),
+      text:'Revision del informe - '+rvRangoTexto(freq, per),
+      responsible:resp, done:false,
+      source:'Revision', revision:{ periodo:per, freq:freq },
+      due:rvISO(venc),
+      delegated:true, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp()
+    });
+    creadas++;
+  });
+  if(creadas) save();
+  return creadas;
+}
+
+// Abre el formulario desde el ticket de la torre o de la pestana Tareas.
+function rvAbrirTarea(clientId, taskId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var t=(c.tasks||[]).find(function(x){ return String(x.id)===String(taskId); });
+  if(!t||!t.revision) return;
+  rvAbrir(c.id, t.revision.periodo, 'tarea');
+}
+
+// Cierra la tarea del periodo cuando la revision se responde.
+function rvCerrarTarea(c, periodo){
+  var t=rvTareaDe(c, periodo);
+  if(!t || t.done) return;
+  t.done=true;
+  t.doneAt=new Date().toISOString();
 }
 
 // ---------- Panel en la torre de control ----------
@@ -6233,6 +6303,11 @@ function rvPanelHtml(){
       +titulo('Pendientes', pend.length+' de '+rvClientesConInforme().length+' clientes con informe')
       +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
         +'Cada informe que sale por mail abre su revision. Se responde aca, venga del mail, del WhatsApp o de esta pantalla.</div>'
+      +'<label style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text2);cursor:pointer;margin-bottom:2px">'
+        +'<input type="checkbox"'+(rvTareasActivas()?' checked':'')+' onchange="rvToggleTareas()">'
+        +'Cargarlas como tarea en cada cliente</label>'
+      +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+        +'Se cargan al abrir el tracker, con dos dias de plazo, y se cierran solas al responder.</div>'
       +pendHtml
     +'</div>'
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
@@ -15722,6 +15797,8 @@ async function arrancarConSesion(){
     registrarEnEquipo();
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
+    // Las revisiones pendientes tambien entran como tarea, con el mismo criterio.
+    try{ var _rv=rvGenerarTareas(); if(_rv&&typeof toast==='function') toast(_rv+' revision'+(_rv>1?'es':'')+' pendiente'+(_rv>1?'s':'')+' cargada'+(_rv>1?'s':'')+' como tarea'); }catch(e){}
     if(!hubo){
       // Primera vez: la base esta vacia y subimos lo que ya hay en esta maquina.
       _sbHuellas={};
