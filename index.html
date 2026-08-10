@@ -6105,19 +6105,39 @@ async function lpVerificar(clientId, silencioso){
   };
   if(!SB.token){ pintar('Hay que iniciar sesion para leer los eventos.','var(--amberx)'); return null; }
   if(!silencioso) pintar('Consultando...');
+  var base=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id));
+  var pedir=function(campos){
+    return fetch(base+'&select='+campos+'&order=creado_en.desc&limit=2000',
+      { headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
+  };
   try{
-    var url=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id))
-      +'&select=tipo,visitante,pagina,embudo,creado_en&order=creado_en.desc&limit=2000';
-    var r=await fetch(url,{ headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
+    var faltaEmbudo=false;
+    var r=await pedir('tipo,visitante,pagina,embudo,creado_en');
     if(!r.ok){
-      var t=await r.text();
-      // El error mas comun es que todavia no se corrio el SQL de la tabla.
-      var msg=/lp_eventos/.test(t)&&/does not exist|relation/.test(t)
-        ? 'Falta crear la tabla: corre lp_eventos.sql en Supabase.'
-        : ('Supabase respondio '+r.status);
-      pintar(msg,'var(--redx)');
+      var t0=await r.text();
+      // La columna 'embudo' es nueva. Si el ALTER TABLE todavia no se corrio, no
+      // tiene sentido quedarse sin datos: se pide lo de antes y se avisa.
+      if(/embudo/.test(t0)){
+        faltaEmbudo=true;
+        r=await pedir('tipo,visitante,pagina,creado_en');
+      } else {
+        var msg=/lp_eventos/.test(t0)&&/does not exist|relation/.test(t0)
+          ? 'Falta crear la tabla: corre lp_eventos.sql en Supabase.'
+          : ('Supabase respondio '+r.status+': '+String(t0).slice(0,120));
+        pintar(msg,'var(--redx)');
+        c.lpError=msg; save();
+        return null;
+      }
+    }
+    if(!r.ok){
+      var t1=await r.text();
+      pintar('Supabase respondio '+r.status+': '+String(t1).slice(0,120),'var(--redx)');
+      c.lpError='Supabase respondio '+r.status; save();
       return null;
     }
+    c.lpError=faltaEmbudo
+      ? 'Falta la columna embudo en Supabase: corre el ALTER TABLE del final de lp_eventos.sql.'
+      : '';
     var filas=await r.json();
     // Los eventos crudos quedan solo en memoria: son muchos y no tiene sentido
     // sincronizarlos. Alcanza con poder recalcular al cambiar la seleccion.
@@ -11363,6 +11383,11 @@ function lpFilasLandings(c, dias){
 // separar un embudo de otro y el opt-in sale mezclado.
 function lpAvisoEmbudoHtml(c){
   var st=c.lpStats;
+  if(c.lpError){
+    return '<div style="margin-top:12px;padding:10px 13px;background:rgba(216,90,48,0.1);'
+      +'border:1px solid rgba(216,90,48,0.3);border-radius:var(--radius);font-size:11.5px;'
+      +'color:var(--redx);line-height:1.6">'+esc(c.lpError)+'</div>';
+  }
   if(!st||!st.sinEmbudo) return '';
   return '<div style="margin-top:12px;padding:10px 13px;background:rgba(240,168,48,0.1);'
     +'border:1px solid rgba(240,168,48,0.3);border-radius:var(--radius);font-size:11.5px;'
@@ -11374,7 +11399,19 @@ function lpAvisoEmbudoHtml(c){
 
 function lpTablaLandingsHtml(c, dias){
   var r=lpFilasLandings(c, dias);
-  if(!r) return '';
+  // Sin datos: si hubo un error al leer, se dice cual. Callarse hace que parezca
+  // que el tracker no esta instalado cuando en realidad fallo la consulta.
+  if(!r){
+    if(c.lpError){
+      return '<div style="background:rgba(216,90,48,0.08);border:1px solid rgba(216,90,48,0.3);'
+        +'border-radius:var(--radius-lg);padding:12px 15px;margin-bottom:18px;font-size:12px;color:var(--redx)">'
+        +'Landings de conversion: '+esc(c.lpError)+'</div>';
+    }
+    if(c.lpStats) return '<div style="background:var(--bg2);border:1px solid var(--border);'
+      +'border-radius:var(--radius-lg);padding:12px 15px;margin-bottom:18px;font-size:12px;color:var(--text3)">'
+      +'Landings de conversion: leyendo eventos...</div>';
+    return '';
+  }
   var th=function(t,al){ return '<th style="text-align:'+(al||'left')+';font-size:10px;font-weight:500;color:var(--text3);'
     +'text-transform:uppercase;letter-spacing:.06em;padding:0 0 8px">'+t+'</th>'; };
   var td=function(t,al,st){ return '<td style="text-align:'+(al||'left')+';font-size:13px;padding:10px 0;'
