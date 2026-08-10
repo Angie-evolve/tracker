@@ -2059,7 +2059,7 @@ function toggleRecurrente(clientId){
   renderSidebar();
 }
 
-function selectClient(id){if(typeof stopActPoll==='function')stopActPoll();S.clientId=id;S.view='client';S.clientView='ficha';S.tab='ads';renderSidebar();renderClient();collapseSidebar();}
+function selectClient(id){if(typeof stopActPoll==='function')stopActPoll();if(typeof mpStopPoll==='function')mpStopPoll();S.clientId=id;S.view='client';S.clientView='ficha';S.tab='ads';renderSidebar();renderClient();collapseSidebar();}
 function openClientTab(tabKey){S.tab=tabKey;S.clientView='full';renderClient();}
 function backToFicha(){S.clientView='ficha';renderClient();}
 function setMetricsView(v){S.metricsView=v;renderClient();}
@@ -5521,13 +5521,167 @@ function stopActPoll(){
   if(_ACT_POLL.timer){ clearInterval(_ACT_POLL.timer); _ACT_POLL.timer=null; }
 }
 document.addEventListener('visibilitychange', function(){
-  if(document.visibilityState==='visible' && S.view==='tickets') startActPoll(); else stopActPoll();
+  if(document.visibilityState==='visible' && S.view==='tickets'){ startActPoll(); mpStartPoll(); }
+  else { stopActPoll(); mpStopPoll(); }
 });
+
+// ================= PULSO DE META (sondeo liviano) =================
+// syncMetaAds baja el arbol entero (campanas -> adsets -> anuncios -> previews):
+// unas 50 llamadas por cliente. Eso no se puede sondear sin comerse el rate limit.
+// Esto es una sola llamada por cliente, a nivel conjunto, y solo contesta tres
+// preguntas: gasto o no, hubo resultados, hay algo en aprendizaje limitado.
+// El arbol completo se sigue bajando al entrar a Ads & Guiones, igual que antes.
+
+var _MP_POLL={ timer:null, idx:0, lastAt:0, lastClient:'' };
+
+function mpClientes(){
+  return (DB.clients||[]).filter(function(c){
+    return !c.archived && c.metaToken && c.metaAccountId;
+  });
+}
+
+// Meta reporta el mismo lead bajo varios action_type a la vez: se toma el maximo,
+// no la suma, con el mismo criterio que usa syncMetaAds.
+function _mpLeads(actions){
+  var tipos=['lead','onsite_web_lead','onsite_conversion.lead_grouped',
+             'offsite_conversion.fb_pixel_lead','offsite_lead_add_20_s_calls',
+             'onsite_conversion.messaging_first_reply'];
+  var m=0;
+  (actions||[]).forEach(function(a){
+    if(tipos.indexOf(a.action_type)<0) return;
+    var v=parseInt(a.value||0,10)||0;
+    if(v>m) m=v;
+  });
+  return m;
+}
+
+async function mpTraer(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c||!c.metaToken||!c.metaAccountId) return null;
+  var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
+  var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+  var excl=(al&&al.excludedCampaigns)||[];
+  // Los conjuntos se piden a nivel cuenta, no campana por campana: una sola llamada.
+  var campos='name,effective_status,campaign_id,learning_stage_info,'
+    +'insights.date_preset(last_3d){spend,actions,impressions}';
+  var url='https://graph.facebook.com/v19.0/'+actId+'/adsets?fields='+encodeURIComponent(campos)
+    +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
+  try{
+    var r=await fetch(url);
+    var d=await r.json();
+    if(d.error){
+      c.metaPulso={ at:new Date().toISOString(), error:_metaErrCorto(d.error.message||'error de Meta') };
+      save();
+      return c.metaPulso;
+    }
+    var gasto=0, resultados=0, impresiones=0, activos=0, limitados=[], aprendiendo=0;
+    (d.data||[]).forEach(function(as){
+      if(excl.indexOf(as.campaign_id)>=0) return;
+      var vivo=String(as.effective_status||'')==='ACTIVE';
+      if(vivo) activos++;
+      var ins=as.insights&&as.insights.data&&as.insights.data[0];
+      if(ins){
+        gasto+=parseFloat(ins.spend||0)||0;
+        impresiones+=parseInt(ins.impressions||0,10)||0;
+        resultados+=_mpLeads(ins.actions);
+      }
+      var ls=(as.learning_stage_info&&as.learning_stage_info.status)||'';
+      if(vivo&&ls==='LEARNING_LIMITED') limitados.push(as.name||'conjunto sin nombre');
+      if(vivo&&ls==='LEARNING') aprendiendo++;
+    });
+    c.metaPulso={ at:new Date().toISOString(), gasto:gasto, resultados:resultados,
+                  impresiones:impresiones, activos:activos, limitados:limitados,
+                  aprendiendo:aprendiendo, error:'' };
+    save();
+    return c.metaPulso;
+  }catch(e){
+    c.metaPulso={ at:new Date().toISOString(), error:'no se pudo consultar a Meta' };
+    save();
+    return c.metaPulso;
+  }
+}
+
+// Que hay que mirar de este cliente. Devuelve null si esta todo bien.
+function mpDiagnostico(c){
+  var p=c.metaPulso;
+  if(!p||p.error) return p&&p.error?{ nivel:'info', txt:p.error }:null;
+  if(p.activos===0) return null;                       // sin conjuntos activos no hay nada que avisar
+  if(!p.gasto) return { nivel:'alto', txt:'Sin gasto en 3 dias con '+p.activos+' conjunto'+(p.activos===1?'':'s')+' activo'+(p.activos===1?'':'s') };
+  if((p.limitados||[]).length) return { nivel:'alto', txt:'Aprendizaje limitado: '+p.limitados.slice(0,2).join(', ')+((p.limitados.length>2)?' y '+(p.limitados.length-2)+' mas':'') };
+  if(!p.resultados) return { nivel:'medio', txt:money(p.gasto)+' en 3 dias sin resultados' };
+  return null;
+}
+
+function mpPanelHtml(){
+  var lista=mpClientes();
+  if(!lista.length) return '';
+  var filas=[];
+  lista.forEach(function(c){
+    var d=mpDiagnostico(c);
+    if(!d) return;
+    var col=d.nivel==='alto'?'var(--redx)':(d.nivel==='medio'?'var(--amberx)':'var(--text3)');
+    filas.push('<div style="display:flex;align-items:center;gap:12px;padding:10px 6px;border-top:1px solid var(--border)">'
+      +'<span style="width:7px;height:7px;border-radius:50%;background:'+col+';flex-shrink:0"></span>'
+      +'<span style="font-size:12.5px;color:var(--strong);width:150px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.name)+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:12px;color:'+col+'">'+esc(d.txt)+'</span>'
+      +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" onclick="selectClient('+c.id+');S.tab=\'ads\';S.clientView=\'full\';renderClient()">Ver campanas</button>'
+      +'</div>');
+  });
+  var revisados=lista.filter(function(c){ return c.metaPulso&&c.metaPulso.at; }).length;
+  var pie='<div style="font-size:10.5px;color:var(--text3);margin-top:9px">'
+    +revisados+' de '+lista.length+' cuentas consultadas'
+    +(_MP_POLL.lastClient?' &middot; ultima: '+esc(_MP_POLL.lastClient):'')
+    +' &middot; <a href="javascript:void(0)" onclick="mpRefrescarTodo()" style="color:var(--accent);text-decoration:none">revisar todas ahora</a></div>';
+  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Pulso de Meta</span>'
+      +'<span style="font-size:11px;color:var(--text3)">gasto, resultados y aprendizaje de los ultimos 3 dias</span>'
+    +'</div>'
+    +(filas.length?filas.join(''):'<div style="padding:14px 6px 4px;font-size:12px;color:var(--text3)">Ninguna cuenta necesita atencion.</div>')
+    +pie+'</div>';
+}
+
+// Revisa una cuenta cada 5 minutos, rotando. Con 13 clientes, cada uno cae
+// aproximadamente una vez por hora: suficiente para algo que Meta actualiza lento.
+async function mpPollTick(){
+  if(S.view!=='tickets') return;
+  if(document.visibilityState==='hidden') return;
+  var lista=mpClientes();
+  if(!lista.length) return;
+  if(_MP_POLL.idx>=lista.length) _MP_POLL.idx=0;
+  var c=lista[_MP_POLL.idx];
+  _MP_POLL.idx=(_MP_POLL.idx+1)%lista.length;
+  await mpTraer(c.id);
+  _MP_POLL.lastAt=Date.now();
+  _MP_POLL.lastClient=c.name||'';
+  if(S.view==='tickets'&&(S.tkTab||'tareas')==='tareas') showTickets();
+}
+function mpStartPoll(){
+  if(_MP_POLL.timer) return;
+  _MP_POLL.timer=setInterval(mpPollTick, 300000);
+  setTimeout(mpPollTick, 4000);
+}
+function mpStopPoll(){
+  if(_MP_POLL.timer){ clearInterval(_MP_POLL.timer); _MP_POLL.timer=null; }
+}
+async function mpRefrescarTodo(){
+  var lista=mpClientes();
+  if(!lista.length) return;
+  if(typeof toast==='function') toast('Revisando '+lista.length+' cuentas de Meta...');
+  for(var i=0;i<lista.length;i++){
+    await mpTraer(lista[i].id);
+    await new Promise(function(r){ setTimeout(r,400); });   // no atropellar el rate limit
+  }
+  if(typeof toast==='function') toast('Pulso de Meta actualizado');
+  showTickets();
+}
+
 
 function showTickets(){
   if(S.tkTab==='clientes') S.tkTab='tareas';
   S.view='tickets'; S.clientId=null; renderSidebar();
   if(typeof startActPoll==='function') startActPoll();
+  if(typeof mpStartPoll==='function') mpStartPoll();
   const _since=+(localStorage.getItem('evold-tickets-since')||0);
   const all=_ticketRows();
   const tickets=all.filter(function(r){
@@ -5819,6 +5973,7 @@ function showTickets(){
     +(S.tkTab==='revisiones'?rvPanelHtml():(S.tkTab==='actividad'?_actividadHtml():(''
     +progresoHtml
     +_tkAlarmasHtml()
+    +mpPanelHtml()
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
     +'<span style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-right:2px">Metricas de</span>'
     +['hoy','7d','30d','todo'].map(function(p){
@@ -13141,6 +13296,11 @@ function renderTaskRow(t, clientId){
         +'<button onclick="scheduleTask('+clientId+','+t.id+')" style="font-size:11px;padding:4px 10px;border-radius:var(--radius);background:#E1F5EE;border:0.5px solid #5DCAA5;color:#0F6E56;cursor:pointer;font-weight:500;white-space:nowrap">Agendar</button>'
         +'</div>';
     }
+  }
+  // Las tareas de revision llevan su propio boton: sin el, desde esta vista no
+  // habia forma de responder el formulario y habia que ir hasta la torre.
+  if(t.revision&&!t.done){
+    actions='<button onclick="rvAbrirTarea('+clientId+','+t.id+')" style="font-size:11px;padding:4px 10px;border-radius:var(--radius);background:#E1F5EE;border:0.5px solid #5DCAA5;color:#0F6E56;cursor:pointer;font-weight:500;white-space:nowrap">Responder</button>'+actions;
   }
   return '<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 14px;background:var(--bg2);border:0.5px solid '+borderColor+';border-radius:var(--radius-lg);margin-bottom:6px'+(t.done?';opacity:.55':'')+'">'    +'<input type="checkbox"'+(t.done?' checked':'')    +' onchange="toggleTask('+clientId+','+t.id+',this.checked)"'    +' style="margin-top:2px;width:15px;height:15px;cursor:pointer;accent-color:#1D9E75;flex-shrink:0">'    +'<div style="flex:1;min-width:0">'    +'<div style="font-size:13px;color:'+(t.done?'var(--text3)':'var(--text)')+';'+(t.done?'text-decoration:line-through;':'')+' line-height:1.5;margin-bottom:6px">'+esc(t.text)+'</div>'    +(meta?'<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:4px">'+meta+'</div>':'')    +(t.source?'<div style="font-size:11px;color:var(--text3);font-style:italic">'+esc(t.source)+'</div>':'')    +'</div>'    +'<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0">'    +actions    +'<button onclick="deleteTask('+clientId+','+t.id+')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:0;margin-top:2px">&times;</button>'    +'</div>'    +'</div>';
 }
