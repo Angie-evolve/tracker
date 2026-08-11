@@ -1948,16 +1948,44 @@ function renderSidebar(){
 }
 
 // Overview
+// Cierres de un cliente en los ultimos N dias. Se cuenta por la fecha en que la
+// oportunidad se movio, no por cuando entro el lead: lo que interesa es si el
+// cliente esta cerrando ahora, no cuando llego ese contacto.
+function _cierresDe(cl, dias){
+  var ops=(cl.ghl&&cl.ghl.opportunities)||[];
+  if(!ops.length) return 0;
+  var desde=Date.now()-((dias||30)*86400000);
+  var rules=(typeof getGhlRules==='function')?getGhlRules(cl):{};
+  var gan=(rules.ganado||[]).map(function(x){ return String(x).toLowerCase(); });
+  return ops.filter(function(o){
+    var esGanado=(o.status==='won')||(gan.length&&gan.indexOf(String(o.pipelineStage||'').toLowerCase())>=0);
+    if(!esGanado) return false;
+    var t=new Date(o.updatedAt||o.createdAt||0).getTime();
+    return t&&t>=desde;
+  }).length;
+}
+
 function _overviewMetricsHtml(){
   var _base=activeClients();
-  var activos=_base.filter(function(cl){ return hasCurrentlyActiveLine(cl.conversionLines||[]); });
+  var DIAS_CIERRE=30;
+  // Activo = no archivado. Antes pedia una linea de conversion corriendo hoy, y
+  // marcaba cero apenas se vencia la fecha de fin de los bloques.
+  var activos=_base;
   var now=new Date();
-  var conGarantia=_base.filter(function(cl){ var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null; return end&&end>=now; });
+  // Vigente = contrato con fin futuro, o una recurrencia activa (que no tiene fin).
+  var conGarantia=_base.filter(function(cl){
+    if(cl.serviceType==='recurrente'||cl.recurrente) return true;
+    var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null;
+    return end&&end>=now;
+  });
   var recurrentes=_base.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
   var mrr=recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
   var ltv=activos.filter(function(cl){return cl.serviceType==='garantia'||!cl.serviceType;}).reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
-  var enRiesgo=_base.filter(function(cl){return cl.health&&(cl.health.color==='red'||cl.health.color==='amber');});
-  var paraEscalar=_base.filter(function(cl){return cl.health&&cl.health.color==='green';});
+  // En riesgo / para escalar: se leen de los cierres reales de GHL, no de un
+  // score que habia que cargar a mano y nadie completaba.
+  var conGhl=_base.filter(function(cl){ return cl.ghl&&((cl.ghl.opportunities||[]).length); });
+  var enRiesgo=conGhl.filter(function(cl){ return _cierresDe(cl,DIAS_CIERRE)===0; });
+  var paraEscalar=conGhl.filter(function(cl){ return _cierresDe(cl,DIAS_CIERRE)>0; });
   var now2=new Date();
   var vencidoActivo=activos.filter(function(cl){ var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null; return end&&end<now2; });
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
@@ -1966,8 +1994,8 @@ function _overviewMetricsHtml(){
     +'<div class="metric-card"><div class="metric-label">Recurrentes</div><div class="metric-value">'+recurrentes.length+'</div></div>'
     +'<div class="metric-card"><div class="metric-label">Ingresos recurrentes</div><div class="metric-value" style="color:var(--accent)">$'+mrr.toLocaleString()+'</div></div>'
     +'<div class="metric-card"><div class="metric-label">LTV activos</div><div class="metric-value" style="color:var(--accent)">$'+ltv.toLocaleString()+'</div></div>'
-    +'<div class="metric-card" style="background:rgba(216,90,48,0.08);border:0.5px solid rgba(216,90,48,0.2)"><div class="metric-label" style="color:var(--redx)">En riesgo</div><div class="metric-value" style="color:var(--redx)">'+enRiesgo.length+'</div></div>'
-    +'<div class="metric-card" style="background:rgba(29,158,117,0.08);border:0.5px solid rgba(29,158,117,0.2)"><div class="metric-label" style="color:var(--accent)">Para escalar</div><div class="metric-value" style="color:var(--accent)">'+paraEscalar.length+'</div></div>'
+    +'<div class="metric-card" style="background:rgba(216,90,48,0.08);border:0.5px solid rgba(216,90,48,0.2)"><div class="metric-label" style="color:var(--redx)" title="Clientes con GHL conectado que no cerraron nada en los ultimos 30 dias">Sin cierres &middot; 30d</div><div class="metric-value" style="color:var(--redx)">'+enRiesgo.length+'</div></div>'
+    +'<div class="metric-card" style="background:rgba(29,158,117,0.08);border:0.5px solid rgba(29,158,117,0.2)"><div class="metric-label" style="color:var(--accent)" title="Clientes que cerraron al menos una oportunidad en los ultimos 30 dias">Con cierres &middot; 30d</div><div class="metric-value" style="color:var(--accent)">'+paraEscalar.length+'</div></div>'
     +'<div class="metric-card" style="background:rgba(186,117,23,0.08);border:0.5px solid rgba(186,117,23,0.2)"><div class="metric-label" style="color:#BA7517">Contrato vencido activo</div><div class="metric-value" style="color:#BA7517">'+vencidoActivo.length+'</div></div>'
     +'</div>';
 }
