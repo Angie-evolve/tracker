@@ -277,6 +277,21 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   .fic-in{opacity:1;transform:none;animation:none}
   #fic-halo{transition:none}
 }
+/* Tablero de tareas por estado. La columna se ilumina al arrastrar encima:
+   sin eso no se sabe donde se va a soltar. */
+.tk-col{display:flex;flex-direction:column;gap:8px;min-height:64px;padding:8px;border-radius:var(--radius-lg);
+  background:rgba(255,255,255,0.015);border:1px dashed transparent;transition:background .15s,border-color .15s}
+.tk-col.vacia{border-color:var(--border);align-items:center;justify-content:center}
+.tk-col.sobre{background:rgba(78,207,160,0.07);border-color:rgba(78,207,160,0.45)}
+.tk-pipe{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;
+  cursor:grab;transition:border-color .15s,transform .15s}
+.tk-pipe:hover{border-color:var(--border2);transform:translateY(-2px)}
+.tk-pipe:active{cursor:grabbing}
+.tk-pipe-cli{font-size:10px;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;margin-bottom:4px}
+.tk-pipe-txt{font-size:12.5px;color:var(--text);line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;
+  -webkit-box-orient:vertical;overflow:hidden}
+.tk-pipe-pie{display:flex;align-items:center;gap:7px;margin-top:8px}
+@media (prefers-reduced-motion:reduce){.tk-col,.tk-pipe{transition:none}}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 16px;font-size:12px;color:var(--text);z-index:9999;display:flex;align-items:center;gap:8px;box-shadow:0 8px 32px rgba(0,0,0,0.4);transform:translateY(80px);opacity:0;transition:all 0.3s cubic-bezier(.4,0,.2,1)}
 .toast.show{transform:translateY(0);opacity:1}
 
@@ -5848,6 +5863,114 @@ function _tkFiltroPintar(){
       +op('duenio','sin','Sin asignar',d==='sin')):'');
 }
 
+// ---- Vista pipeline: las mismas tareas, en columnas por estado. El estado ya
+// se carga en cada ticket pero no se veia agregado en ningun lado: aca se ve
+// donde se traba el trabajo, no solo cuanto falta. Se arrastra entre columnas. ----
+var TK_PIPE_ORDEN=['delegada','proceso','revision','revisada','bloqueada'];
+
+function tkVista(){
+  try{ return localStorage.getItem('evold-tk-vista')||'lista'; }catch(e){ return 'lista'; }
+}
+function setTkVista(v){
+  try{ localStorage.setItem('evold-tk-vista', v); }catch(e){}
+  showTickets();
+}
+function _tkSelectorVistaHtml(){
+  var v=tkVista();
+  var b=function(k,label,icono){
+    return '<button onclick="setTkVista(\''+k+'\')" style="border:0;background:'+(v===k?'var(--bg)':'transparent')
+      +';color:'+(v===k?'var(--accent)':'var(--text3)')+';font-family:var(--font);font-size:11.5px;padding:5px 13px;'
+      +'border-radius:99px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:.15s'
+      +(v===k?';box-shadow:0 1px 3px rgba(0,0,0,.4)':'')+'">'
+      +'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+icono+'</svg>'
+      +label+'</button>';
+  };
+  return '<div style="display:flex;gap:2px;background:var(--bg3);border-radius:99px;padding:3px">'
+    +b('lista','Lista','<path d="M4 6h16M4 12h16M4 18h16"/>')
+    +b('pipe','Pipeline','<path d="M4 5h5v14H4zM10 5h5v9h-5zM16 5h4v6h-4z"/>')
+    +'</div>';
+}
+
+// Tarjeta compacta. Muestra lo minimo para decidir: que es, de quien, y cuanto
+// falta. El resto se ve al abrirla.
+function _tkPipeCard(r){
+  var t=r.t, c=r.c;
+  var fin=(typeof _dueEnd==='function')?_dueEnd(t.due):null;
+  var vencida=fin&&!t.done&&fin<new Date();
+  var venc=t.done?'hecha':(t.due?(vencida?('vencida '+_tkDiasTxt(fin)):('vence '+_tkDiasTxt(fin))):'sin fecha');
+  var col=t.done?'var(--text3)':(vencida?'var(--redx)':(t.due?'var(--amberx)':'var(--text3)'));
+  var quien=String(t.responsible||'').split('@')[0]||'sin asignar';
+  return '<div class="tk-pipe" draggable="true" data-cid="'+c.id+'" data-tid="'+t.id+'" '
+    +'ondragstart="tkPipeDrag(event)" onclick="openTicketEdit('+c.id+','+t.id+')"'
+    +(vencida?' style="border-left:2px solid var(--redx)"':'')+'>'
+    +'<div class="tk-pipe-cli">'+esc(c.name)+'</div>'
+    +'<div class="tk-pipe-txt">'+esc(t.text||'')+'</div>'
+    +'<div class="tk-pipe-pie">'
+      +'<span class="mono" style="font-size:10px;color:var(--text3)">'+esc(t.ticket||'')+'</span>'
+      +'<span style="font-size:10.5px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(quien)+'</span>'
+      +'<span style="font-size:10.5px;color:'+col+';margin-left:auto;white-space:nowrap">'+venc+'</span>'
+    +'</div></div>';
+}
+function _tkDiasTxt(fin){
+  var d=Math.round((fin-new Date())/86400000);
+  if(d===0) return 'hoy';
+  if(d===1) return 'manana';
+  if(d===-1) return 'ayer';
+  return (d<0?('hace '+Math.abs(d)+' d'):('en '+d+' d'));
+}
+
+// Arrastrar entre columnas cambia el estado, que es el punto de la vista.
+function tkPipeDrag(ev){
+  var el=ev.currentTarget;
+  ev.dataTransfer.setData('text/plain', el.dataset.cid+':'+el.dataset.tid);
+  ev.dataTransfer.effectAllowed='move';
+  el.style.opacity='.4';
+}
+function tkPipeOver(ev){ ev.preventDefault(); ev.currentTarget.classList.add('sobre'); }
+function tkPipeSale(ev){ ev.currentTarget.classList.remove('sobre'); }
+function tkPipeDrop(ev, estado){
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('sobre');
+  var d=String(ev.dataTransfer.getData('text/plain')||'').split(':');
+  if(d.length!==2) return;
+  setTicketEstado(parseInt(d[0],10), parseInt(d[1],10), estado);
+}
+
+function tkPipeHtml(list){
+  var porEstado={};
+  TK_PIPE_ORDEN.forEach(function(k){ porEstado[k]=[]; });
+  var sinEstado=[];
+  list.forEach(function(r){
+    var e=r.t.estado;
+    if(e&&porEstado[e]) porEstado[e].push(r);
+    else if(e==='finalizada'||r.t.done) { /* las cerradas no van al tablero */ }
+    else sinEstado.push(r);
+  });
+  // Las que nunca recibieron estado entran como delegadas: es lo que son.
+  porEstado.delegada=sinEstado.concat(porEstado.delegada);
+
+  var cols=TK_PIPE_ORDEN.map(function(k){
+    var def=_TK_ESTADOS[k]||{label:k};
+    var ts=porEstado[k]||[];
+    var color={delegada:'#7a7a7a',proceso:'#85b7eb',revision:'var(--amberx)',
+               revisada:'#5dcaa5',bloqueada:'var(--redx)'}[k]||'var(--text3)';
+    return '<div style="width:236px;flex-shrink:0">'
+      +'<div style="display:flex;align-items:center;gap:7px;padding:0 2px 9px">'
+        +'<span style="width:6px;height:6px;border-radius:50%;background:'+color+'"></span>'
+        +'<span style="font-size:11px;color:var(--text2);letter-spacing:.03em">'+esc(def.label)+'</span>'
+        +'<span style="font-size:10.5px;color:var(--text3);margin-left:auto">'+ts.length+'</span>'
+      +'</div>'
+      +'<div class="tk-col'+(ts.length?'':' vacia')+'" ondragover="tkPipeOver(event)" ondragleave="tkPipeSale(event)" '
+        +'ondrop="tkPipeDrop(event,\''+k+'\')">'
+        +(ts.length?ts.map(_tkPipeCard).join(''):'<span style="font-size:10.5px;color:var(--text3)">arrastra una aca</span>')
+      +'</div></div>';
+  }).join('');
+
+  return '<div style="display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:8px">'+cols+'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:10px">'
+      +'Arrastra una tarjeta a otra columna para cambiarle el estado. Las finalizadas no figuran en el tablero.</div>';
+}
+
 function showTickets(){
   if(S.tkTab==='clientes') S.tkTab='tareas';
   S.view='tickets'; S.clientId=null; renderSidebar();
@@ -6179,6 +6302,7 @@ function showTickets(){
     +kpi('Entregas a tiempo',aTiempo!=null?aTiempo+'%':'-')
     +'</div>'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+      +_tkSelectorVistaHtml()
       +'<span style="font-size:13px;color:var(--strong)">'+_tkEstadoLabel(filter)+'</span>'
       +'<span style="font-size:12px;color:var(--text3)">'+list.length+'</span>'
       +(tkFiltroDuenio()!=='todos'?'<span style="font-size:11px;color:var(--accent);border:1px solid rgba(78,207,160,.3);'
@@ -6189,12 +6313,14 @@ function showTickets(){
         +'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
         +'stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></button>'
     +'</div>'
-    +(list.length
+    +(tkVista()==='pipe'
+      ? tkPipeHtml(list)
+      : (list.length
       ?'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px 16px 16px">'+rowsHtml+elimHtml+'</div>'
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>'))))
+        +'</div>')))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
