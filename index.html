@@ -2082,8 +2082,6 @@ const CLIENT_TABS=[
   {k:'success', l:'Success tracker', icon:'M4 20V10M10 20V4M16 20v-7M22 20H2'},
   {k:'embudo', l:'Embudo de Ventas', icon:'M4 4h16l-6 8v6l-4 2v-8z'},
   {k:'integraciones', l:'Integraciones', icon:'M9 7V2m6 5V2M7 7h10v4a5 5 0 01-10 0V7zm5 9v6'},
-  {k:'alarmas', l:'Alarmas', icon:'M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0'},
-  {k:'tareas', l:'Tareas', icon:'M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11'}
 ];
 
 function renderClientFicha(c){
@@ -6147,11 +6145,18 @@ async function lpVerificar(clientId, silencioso){
     var optins=filas.filter(function(f){ return f.tipo==='optin'; });
     var unicos={}; vistas.forEach(function(f){ unicos[f.visitante]=1; });
     var embudos={}, sinEmbudo=0;
-    filas.forEach(function(f){ if(f.embudo) embudos[f.embudo]=1; else sinEmbudo++; });
+    filas.forEach(function(f){
+      if(!f.embudo){ sinEmbudo++; return; }
+      var e=embudos[f.embudo]=embudos[f.embudo]||{nombre:f.embudo,vistas:0,optins:0,ultimo:''};
+      if(f.tipo==='view') e.vistas++; else if(f.tipo==='optin') e.optins++;
+      if(!e.ultimo||f.creado_en>e.ultimo) e.ultimo=f.creado_en;
+    });
+    var embudosDetalle=Object.keys(embudos).map(function(k){ return embudos[k]; })
+      .sort(function(a,b){ return b.vistas-a.vistas; });
     var st={ vistas:vistas.length, unicas:Object.keys(unicos).length, optins:optins.length,
              ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString(),
              paginas:lpPorPagina(filas),
-             embudos:Object.keys(embudos), sinEmbudo:sinEmbudo };
+             embudos:Object.keys(embudos), embudosDetalle:embudosDetalle, sinEmbudo:sinEmbudo };
     c.lpStats=st;
     lpRecalcular(c);
     save();
@@ -6329,14 +6334,16 @@ function lpModal(clientId){
         +'<b>2.</b> Pegarlo <b>al final de lo que ya haya</b> (no reemplaza el pixel de Meta: conviven) y guardar.<br>'
         +'<b>3.</b> Abrir la landing una vez y volver aca: si llego el evento, aparece la cuenta abajo.'
       +'</div>'
-      +'<div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">'
-        +'<span style="font-size:11.5px;color:var(--text2);flex-shrink:0">Nombre del embudo</span>'
+      +lpEmbudosHtml(c)
+      +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 9px">'
+        +'<span style="font-size:11.5px;color:var(--text2);flex-shrink:0">Generar script para</span>'
         +'<input id="lp-embudo" type="text" placeholder="pymes, startups, independientes..." oninput="lpPintarScript('+c.id+')" '
           +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
           +'background:var(--bg2);color:var(--text);font-size:12.5px">'
       +'</div>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-bottom:9px;line-height:1.6">'
-        +'Un cliente puede tener varios embudos a la vez. Sin este nombre se mezclan en un solo opt-in.</div>'
+        +'<b>Un script por embudo.</b> Escribi el nombre, copia, y pega ese script en ese embudo de GHL. '
+        +'Para el siguiente, cambia el nombre y volve a copiar. Sin nombre se mezclan en un solo opt-in.</div>'
       +'<textarea id="lp-script" readonly onclick="this.select()" rows="6" style="width:100%;box-sizing:border-box;padding:10px;'
         +'font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.5;border:1px solid var(--border2);'
         +'border-radius:var(--radius);background:var(--bg3);color:var(--text2);resize:vertical">'
@@ -8491,6 +8498,9 @@ function renderTab(){
     S._hoja={records:'records', cap:'cap'}[S.ventasTab]||'bottom';
     S.tab='embudo';
   }
+  // Alarmas vive arriba de Informes; las tareas del cliente, en Success tracker.
+  if(S.tab==='alarmas'){ S._hoja='informes'; S.tab='embudo'; }
+  if(S.tab==='tareas') S.tab='success';
 
   if(S.tab==='lineas'){
     const ROWS=buildMetricRows(c,{live:false});
@@ -11381,6 +11391,25 @@ function lpFilasLandings(c, dias){
 
 // Aviso cuando llegan eventos sin embudo: hasta que se etiqueten, no se puede
 // separar un embudo de otro y el opt-in sale mezclado.
+// Los embudos no se cargan en el tracker: se descubren solos cuando empiezan a
+// llegar eventos etiquetados. Esto los muestra para saber cuales ya estan puestos.
+function lpEmbudosHtml(c){
+  var det=(c.lpStats&&c.lpStats.embudosDetalle)||[];
+  var sin=(c.lpStats&&c.lpStats.sinEmbudo)||0;
+  if(!det.length&&!sin) return '';
+  var chip=function(txt,col,bg){
+    return '<span style="font-size:11px;padding:3px 9px;border-radius:20px;background:'+bg+';color:'+col+'">'+txt+'</span>';
+  };
+  var chips=det.map(function(e){
+    return chip(esc(e.nombre)+' <span style="opacity:.6">'+e.vistas+' vistas &middot; '+e.optins+' opt-ins</span>',
+      'var(--accent)','rgba(29,158,117,0.12)');
+  }).join(' ');
+  if(sin) chips+=' '+chip('sin nombre <span style="opacity:.6">'+sin+' eventos</span>','var(--amberx)','rgba(240,168,48,0.16)');
+  return '<div style="margin-top:12px">'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:6px">Embudos con eventos llegando</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px">'+chips+'</div></div>';
+}
+
 function lpAvisoEmbudoHtml(c){
   var st=c.lpStats;
   if(c.lpError){
