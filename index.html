@@ -333,6 +333,20 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   .faro-gira,.faro-luz,.faro-ola{animation:none}
   .faro-luz{opacity:1}
 }
+/* Velo de carga: se difumina lo que se esta por reemplazar. Los numeros viejos
+   siguen ahi pero se lee que ya no son los definitivos. */
+.carga-velo{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;gap:10px;
+  background:rgba(13,13,13,0.62);backdrop-filter:blur(1.5px);-webkit-backdrop-filter:blur(1.5px);
+  border-radius:var(--radius-lg);opacity:0;pointer-events:none;transition:opacity .18s ease}
+.carga-velo.on{opacity:1;pointer-events:auto}
+.carga-spin{width:14px;height:14px;border-radius:50%;border:1.6px solid var(--border2);
+  border-top-color:var(--accent);animation:cargaGirar .75s linear infinite;flex-shrink:0}
+@keyframes cargaGirar{to{transform:rotate(360deg)}}
+.carga-txt{font-size:12px;color:var(--text2)}
+@media (prefers-reduced-motion:reduce){
+  .carga-velo{transition:none}
+  .carga-spin{animation:none;border-top-color:var(--accent);opacity:.7}
+}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 16px;font-size:12px;color:var(--text);z-index:9999;display:flex;align-items:center;gap:8px;box-shadow:0 8px 32px rgba(0,0,0,0.4);transform:translateY(80px);opacity:0;transition:all 0.3s cubic-bezier(.4,0,.2,1)}
 .toast.show{transform:translateY(0);opacity:1}
 
@@ -5943,7 +5957,7 @@ function mpPanelHtml(){
     +revisados+' de '+lista.length+' cuentas consultadas'
     +(_MP_POLL.lastClient?' &middot; ultima: '+esc(_MP_POLL.lastClient):'')
     +' &middot; <a href="javascript:void(0)" onclick="mpRefrescarTodo()" style="color:var(--accent);text-decoration:none">revisar todas ahora</a></div>';
-  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
+  return '<div id="mp-panel" style="position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">'
       +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Pulso de Meta</span>'
       +'<span style="font-size:11px;color:var(--text3)">gasto, resultados y aprendizaje de los ultimos 3 dias</span>'
@@ -5981,13 +5995,24 @@ function mpStopPoll(){
 async function mpRefrescarTodo(){
   var lista=mpClientes();
   if(!lista.length) return;
-  if(typeof toast==='function') toast('Revisando '+lista.length+' cuentas de Meta...');
+  _mpVelo('Revisando 1 de '+lista.length+' cuentas');
   for(var i=0;i<lista.length;i++){
+    _mpVelo('Revisando '+(i+1)+' de '+lista.length+' cuentas');
     await mpTraer(lista[i].id);
     await new Promise(function(r){ setTimeout(r,400); });   // no atropellar el rate limit
   }
   if(typeof toast==='function') toast('Pulso de Meta actualizado');
   showTickets();
+}
+// El panel se redibuja al terminar, asi que el velo se va solo con el.
+function _mpVelo(texto){
+  var pan=document.getElementById('mp-panel');
+  if(!pan) return;
+  pan.style.position='relative';
+  var v=pan.querySelector('.carga-velo');
+  if(!v){ v=document.createElement('div'); v.className='carga-velo'; pan.appendChild(v); }
+  v.innerHTML='<span class="carga-spin"></span><span class="carga-txt">'+esc(texto)+'</span>';
+  v.classList.add('on');
 }
 
 
@@ -9493,7 +9518,7 @@ function renderTab(){
           .map(m=>'<div style="background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 12px"><div style="font-size:10px;color:var(--text3);margin-bottom:4px">'+m.l+'</div><div style="font-size:16px;font-weight:500;color:var(--accent)">'+m.v+'</div></div>').join('');
         })()}
       </div>
-      <div style="border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px;display:flex">
+      <div id="meta-tabla" style="position:relative;border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px;display:flex">
         ${(()=>{
           var _adWins=adWinsMap(c);
           // Si ninguna oportunidad trae el UTM del anuncio, no se puede marcar ganadores:
@@ -16056,11 +16081,36 @@ function _learningLabel(v){
   return '';
 }
 
+// Velo de carga sobre la tabla de campanas. Se difumina lo que se va a
+// reemplazar, asi queda claro que esos numeros son los viejos y estan por
+// cambiar. Las metricas de arriba siguen legibles.
+function metaVelo(texto){
+  var cont=document.getElementById('meta-tabla')||document.getElementById('meta-data-container');
+  if(!cont) return;
+  cont.style.position='relative';
+  var v=document.getElementById('meta-velo');
+  if(!v){
+    v=document.createElement('div');
+    v.id='meta-velo';
+    v.className='carga-velo';
+    cont.appendChild(v);
+  }
+  v.innerHTML='<span class="carga-spin"></span><span class="carga-txt">'+esc(texto||'Actualizando campanas')+'</span>';
+  v.classList.add('on');
+}
+function metaVeloOff(){
+  var v=document.getElementById('meta-velo');
+  if(v) v.classList.remove('on');
+}
+// La tabla se redibuja al terminar y el velo se va con ella, pero si el render
+// tarda queda visible: por eso tambien se apaga a mano.
+
 async function syncMetaAds(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.metaToken||!c.metaAccountId) return;
   var btn=document.getElementById('meta-sync-btn');
   if(btn){btn.disabled=true;btn.textContent='Sincronizando...';}
+  metaVelo('Actualizando campanas');
 
   var token=c.metaToken;
   var actId='act_'+c.metaAccountId;
@@ -16122,7 +16172,7 @@ async function syncMetaAds(clientId){
     if(data.error) throw new Error(data.error.message);
 
     var campaigns=data.data||[];
-    if(!campaigns.length){toast('Sin campanas en ese periodo');if(btn){btn.disabled=false;btn.textContent='Sincronizar Meta';}return;}
+    if(!campaigns.length){toast('Sin campanas en ese periodo');metaVeloOff();if(btn){btn.disabled=false;btn.textContent='Sincronizar Meta';}return;}
 
     // Fetch adsets + ads for each campaign
     for(var ci=0;ci<campaigns.length;ci++){
@@ -16352,6 +16402,7 @@ async function syncMetaAds(clientId){
   }catch(e){
     toast('Error Meta: '+e.message,'red');
   }
+  metaVeloOff();
   if(btn){btn.disabled=false;btn.textContent='Sincronizar Meta';}
 }
 
