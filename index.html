@@ -7097,7 +7097,10 @@ function rvAbrir(clientId, periodo, via){
     // Esta pregunta es sobre el informe en si (los numeros del mail), no sobre
     // el trabajo del periodo. Por eso va aparte y al final.
     informeSi: (ya&&ya.informe)?(ya.informe.hubo?true:false):null,
-    informeCual:(ya&&ya.informe&&ya.informe.cual)||''
+    informeCual:(ya&&ya.informe&&ya.informe.cual)||'',
+    // Cada cuanto seguir recibiendo el informe de este cliente. Arranca con lo
+    // que ya tiene configurado: cambiarlo aca evita ir al modal del informe.
+    frecuencia: rvFrecActual(c.id)
   };
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
@@ -7197,6 +7200,19 @@ function rvPintarCuerpo(){
       +(_rvD.aprobSi===true
         ? lbl('&iquest;Que hay que aprobar?')+ta('rv-aprob-que', _rvD.aprobQue, 'Que se necesita decidir y por que no puede avanzar solo')
         : ''))
+    +bloque(preg('&iquest;Cada cuanto seguir recibiendo este informe?')
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Cambia solo la rutina de este cliente. El resto queda igual.</div>'
+      +(function(){
+          var act=_rvD.frecuencia||'default';
+          var op=[['default','Como esta ahora'],['daily','Todos los dias'],['weekly','Semanal'],
+                  ['biweekly','Cada 15 dias'],['monthly','Mensual'],['off','Pausar']];
+          return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+            +op.map(function(o){
+              var sel=(act===o[0]);
+              return '<button class="btn btn-sm" onclick="rvSet(\'frecuencia\',\''+o[0]+'\')" style="'
+                +(sel?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'+o[1]+'</button>';
+            }).join('')+'</div>';
+        })())
     +bloque(preg('&iquest;Hay algun error en el informe?')
       +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Un numero que no cierra, una metrica en cero que no deberia estarlo, un cliente que no corresponde.</div>'
       +sino('informeSi', _rvD.informeSi)
@@ -7218,6 +7234,47 @@ function rvQuitarCambio(i){
   _rvD.mejoraCam.splice(i,1);
   if(!_rvD.mejoraCam.length) _rvD.mejoraCam=[''];
   rvPintarCuerpo();
+}
+
+// La rutina que tiene hoy este cliente. 'default' = hereda la general.
+function rvFrecActual(clientId){
+  try{
+    var per=(getReportSchedule().perClient)||{};
+    var cs=per[String(clientId)];
+    return (cs&&cs.freq)?cs.freq:'default';
+  }catch(e){ return 'default'; }
+}
+
+// Guarda la rutina de un cliente y la empuja al Apps Script. Es el mismo
+// mecanismo del modal del informe, pero para un solo cliente.
+function rvAplicarFrecuencia(c, freq){
+  var s;
+  try{ s=getReportSchedule(); }catch(e){ return; }
+  s.perClient=s.perClient||{};
+  var k=String(c.id);
+  if(!freq||freq==='default') delete s.perClient[k];
+  else s.perClient[k]={ freq:freq, day:s.day, monthDay:s.monthDay };
+  setReportSchedule(s);
+  var proxy=getGhlProxy();
+  if(!proxy.url) return;
+  var enc=encodeURIComponent;
+  fetch(proxy.url+'?secret='+enc(proxy.secret)+'&action=save_report_schedule'
+    +'&freq='+enc(s.freq)+'&day='+enc(s.day)+'&hour='+enc(s.hour)+'&monthDay='+enc(s.monthDay)
+    +'&perClient='+enc(JSON.stringify(s.perClient||{})))
+    .then(function(r){ return r.json(); })
+    .then(function(r){
+      if(typeof toast==='function'){
+        toast(r&&r.ok ? ('Informe de '+c.name+': '+_rvFrecTxt(freq))
+                      : 'La revision se guardo, pero no se pudo cambiar la rutina en el Apps Script','amber');
+      }
+    })
+    .catch(function(){
+      if(typeof toast==='function') toast('La revision se guardo, pero no se pudo avisar al Apps Script','amber');
+    });
+}
+function _rvFrecTxt(f){
+  return {daily:'todos los dias', weekly:'semanal', biweekly:'cada 15 dias',
+          monthly:'mensual', off:'pausado'}[f]||'como estaba';
 }
 
 function rvGuardar(){
@@ -7288,7 +7345,10 @@ function rvGuardar(){
     lista.unshift(reg);
   }
   rvCerrarTarea(c, d.periodo);
+  reg.frecuencia=d.frecuencia||'default';
   save();
+  // Si cambio la rutina, se guarda y se empuja al Apps Script.
+  if((d.frecuencia||'default')!==rvFrecActual(c.id)) rvAplicarFrecuencia(c, d.frecuencia);
   _rvD=null;
   closeModal();
   if(typeof toast==='function') toast('Revision guardada');
