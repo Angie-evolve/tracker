@@ -8906,17 +8906,25 @@ function renderDefaultAlarmsModal(){
     // El aviso al telefono reusa los numeros de los envios del informe: una sola
     // lista de telefonos para todo.
     +(function(){
-        var nums=(getEnvios()||[]).map(function(e){ return String(e.whatsapp||'').trim(); }).filter(Boolean);
-        var uniq=nums.filter(function(v,i,ar){ return ar.indexOf(v)===i; });
+        var disp=alarmasNumerosDisponibles();
+        var el=alarmasElegidos();
         var canal=(typeof getWaCfg==='function')?(getWaCfg().canal||'SMS'):'SMS';
-        return '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;background:var(--bg3);border-radius:var(--radius);padding:10px 12px">'
-          +'<input type="checkbox" id="al-msg"'+(alarmasAvisoOn()?' checked':'')+' onchange="setAlarmasAviso(this.checked)" style="margin-top:2px">'
-          +'<span>Avisar tambien por <b>'+esc(canal)+'</b>'
-          +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;line-height:1.6">'
-          +(uniq.length
-            ? 'Un mensaje por cada metrica fuera de benchmark, a '+esc(uniq.join(', '))+'. Los dias malos pueden ser varios seguidos.'
-            : 'Carga un numero en los envios del informe (Integraciones &rarr; Informe automatico) para poder usarlo.')
-          +'</div></span></label>'; })()
+        if(!disp.length){
+          return '<div style="font-size:11.5px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:10px 12px;line-height:1.6">'
+            +'Para avisar por '+esc(canal)+', carga un numero en los envios del informe (Integraciones &rarr; Informe automatico).</div>';
+        }
+        return '<div style="background:var(--bg3);border-radius:var(--radius);padding:10px 12px">'
+          +'<div style="font-size:12px;color:var(--text2);margin-bottom:6px">Avisar tambien por <b>'+esc(canal)+'</b> a:</div>'
+          +disp.map(function(d){
+            var on=el.indexOf(d.numero)>=0;
+            return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;padding:3px 0">'
+              +'<input type="checkbox"'+(on?' checked':'')+' onchange="toggleAlarmaNumero(\''+d.numero.replace(/'/g,"\\'")+'\')">'
+              +'<span class="mono" style="font-size:11.5px">'+esc(d.numero)+'</span>'
+              +(d.mail?'<span style="font-size:10.5px;color:var(--text3)">'+esc(d.mail)+'</span>':'')
+              +'</label>';
+          }).join('')
+          +'<div id="al-nums-detalle" style="font-size:10.5px;color:var(--text3);margin-top:5px;line-height:1.6">'+_alarmasDetalleTxt()+'</div>'
+          +'</div>'; })()
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Reglas</div>'
     +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Sin reglas por defecto.</div>')
     +'<button class="btn btn-sm" onclick="_defAlarmDraft.rules.push({id:\'def-\'+Date.now(),metric:\'frecuencia\',op:\'gt\',value:2,enabled:true});renderDefaultAlarmsModal()">+ Agregar regla</button>'
@@ -9034,21 +9042,41 @@ function checkAlarms(c){
 
 // Numeros a los que avisar las alarmas. Se reusan los de los envios del informe,
 // para no tener dos listas de telefonos que mantener.
-function alarmasTelefonos(){
-  if(!alarmasAvisoOn()) return [];
+// Los numeros disponibles salen de los envios del informe, pero se elige uno por
+// uno cuales reciben alarmas: no es el mismo tipo de aviso.
+function alarmasNumerosDisponibles(){
   var vistos={}, out=[];
   (getEnvios()||[]).forEach(function(e){
     var n=String(e.whatsapp||'').trim();
-    if(n&&!vistos[n]){ vistos[n]=1; out.push(n); }
+    if(n&&!vistos[n]){ vistos[n]=1; out.push({numero:n, mail:e.email||''}); }
   });
   return out;
 }
-function alarmasAvisoOn(){
-  try{ return localStorage.getItem('evold-alarmas-msg')==='1'; }catch(e){ return false; }
+function alarmasElegidos(){
+  try{ return JSON.parse(localStorage.getItem('evold-alarmas-nums')||'[]')||[]; }catch(e){ return []; }
 }
-function setAlarmasAviso(v){
-  try{ localStorage.setItem('evold-alarmas-msg', v?'1':'0'); }catch(e){}
+function alarmasTelefonos(){
+  var el=alarmasElegidos();
+  if(!el.length) return [];
+  var hay={}; alarmasNumerosDisponibles().forEach(function(d){ hay[d.numero]=1; });
+  // Si un numero se saco de los envios, deja de recibir alarmas solo.
+  return el.filter(function(n){ return hay[n]; });
 }
+function toggleAlarmaNumero(n){
+  var el=alarmasElegidos();
+  var i=el.indexOf(n);
+  if(i>=0) el.splice(i,1); else el.push(n);
+  try{ localStorage.setItem('evold-alarmas-nums', JSON.stringify(el)); }catch(e){}
+  var d=document.getElementById('al-nums-detalle');
+  if(d) d.innerHTML=_alarmasDetalleTxt();
+}
+function _alarmasDetalleTxt(){
+  var n=alarmasTelefonos().length;
+  return n
+    ? ('Un mensaje por cada metrica fuera de benchmark, a '+n+' numero'+(n===1?'':'s')+'. Los dias malos pueden ser varios seguidos.')
+    : 'Ningun numero elegido: las alarmas salen solo por mail.';
+}
+function alarmasAvisoOn(){ return alarmasTelefonos().length>0; }
 
 function _alarmasAvisarTelefono(c, triggered, lines){
   var nums=alarmasTelefonos();
