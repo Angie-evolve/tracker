@@ -4890,7 +4890,7 @@ function _tkAlarmasHtml(){
   if(!disparadas.length) return '';
   disparadas.sort(function(a,b){ return b.n-a.n; });
   var total=disparadas.reduce(function(s,x){return s+x.n;},0);
-  return '<div style="background:rgba(216,90,48,0.07);border:1px solid rgba(216,90,48,0.28);border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:20px">'
+  return '<div id="al-panel" style="position:relative;background:rgba(216,90,48,0.07);border:1px solid rgba(216,90,48,0.28);border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:20px">'
     +'<div style="position:relative;display:flex;align-items:center;gap:8px;margin-bottom:10px;overflow:hidden">'
     +'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--redx)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0"/></svg>'
     +'<span style="font-size:11px;color:var(--redx);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;position:relative;z-index:2;padding-right:6px">Alarmas de clientes &middot; '+total+' fuera de benchmark</span>'
@@ -4918,6 +4918,11 @@ function _tkAlarmasHtml(){
         +metricas
         +'</div>';
     }).join('')
+    // Pie: deja ver que el barrido esta corriendo y permite forzarlo.
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:9px;border-top:1px solid rgba(216,90,48,0.15)">'
+      +'<span style="flex:1;font-size:10.5px;color:var(--text3)">'+alBarridoEstado()+'</span>'
+      +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 10px" onclick="alBarridoTodo()">Revisar todos ahora</button>'
+    +'</div>'
     +'</div>';
 }
 
@@ -9466,6 +9471,103 @@ function testAlarmEmail(){
   fetch(url).then(function(r){return r.json();}).then(function(res){
     if(typeof toast==='function') toast(res&&res.ok?'Mail de prueba enviado a '+to:('Error: '+((res&&res.error)||'desconocido')));
   }).catch(function(e){ if(typeof toast==='function') toast('Error de red: '+e.message); });
+}
+
+// ================= BARRIDO DE ALARMAS EN SEGUNDO PLANO =================
+// Antes las alarmas solo se evaluaban al entrar al cliente: si nadie abria
+// Zentenio en tres dias, sus alarmas no salian. Esto recorre todos los clientes
+// de a uno y dispara las que correspondan, sin abrir ninguna pestana.
+//
+// No duplica logica: refresca la linea con refreshLiveLine y evalua con
+// checkAlarms, las mismas funciones que usa la vista del cliente. El limite de
+// una vez cada 24h por regla ya vive adentro de checkAlarms.
+var _AL_BARRIDO={ timer:null, idx:0, lastAt:0, lastClient:'', revisados:0, vuelta:0 };
+
+// Solo los que pueden tener alarmas: activos, con GHL y con alguna regla.
+function alBarridoClientes(){
+  return (typeof activeClients==='function'?activeClients():(DB.clients||[]))
+    .filter(function(c){
+      if(!c || c.archived) return false;
+      if(!c.ghl || !c.ghl.token || !c.ghl.locationId) return false;
+      var r=(typeof effectiveAlarmRules==='function')?effectiveAlarmRules(c):[];
+      return r && r.length;
+    });
+}
+
+async function alBarridoTick(){
+  // Con la pestana en segundo plano no se corre: la API igual no responde bien
+  // y no queremos gastar rate limit de Meta al pedo.
+  if(document.visibilityState==='hidden') return;
+  var lista=alBarridoClientes();
+  if(!lista.length) return;
+  if(_AL_BARRIDO.idx>=lista.length){ _AL_BARRIDO.idx=0; _AL_BARRIDO.vuelta++; }
+  var c=lista[_AL_BARRIDO.idx];
+  _AL_BARRIDO.idx++;
+  try{
+    // Si la linea ya se refresco hace poco no se vuelve a pedir: alcanza con
+    // reevaluar lo que hay.
+    var l=(c.liveLines||[]).find(function(x){return x.rolling;});
+    var vieja=!l || !l.updatedAt || (Date.now()-new Date(l.updatedAt).getTime())>60*60000;
+    if(vieja && typeof refreshLiveLine==='function') await refreshLiveLine(c.id);
+    var cc=DB.clients.find(function(x){return x.id===c.id;});
+    if(cc && typeof checkAlarms==='function') checkAlarms(cc);
+    _AL_BARRIDO.revisados++;
+  }catch(e){
+    console.warn('[alarmas] fallo revisando '+c.name+':', e.message);
+  }
+  _AL_BARRIDO.lastAt=Date.now();
+  _AL_BARRIDO.lastClient=c.name||'';
+}
+
+function alBarridoStart(){
+  if(_AL_BARRIDO.timer) return;
+  // Un cliente cada 2 minutos: con 13 clientes, una vuelta completa cada media
+  // hora. Espaciado para no atropellar el rate limit de Meta ni el de GHL.
+  _AL_BARRIDO.timer=setInterval(alBarridoTick, 120000);
+  setTimeout(alBarridoTick, 15000);
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible') setTimeout(alBarridoTick, 2000);
+  });
+}
+function alBarridoStop(){
+  if(_AL_BARRIDO.timer){ clearInterval(_AL_BARRIDO.timer); _AL_BARRIDO.timer=null; }
+}
+
+// Barrido completo a pedido, desde el panel de alarmas del Mirador.
+async function alBarridoTodo(){
+  var lista=alBarridoClientes();
+  if(!lista.length){ if(typeof toast==='function') toast('Ningun cliente tiene alarmas configuradas'); return; }
+  for(var i=0;i<lista.length;i++){
+    _alBarridoVelo('Revisando '+(i+1)+' de '+lista.length+' clientes');
+    var c=lista[i];
+    try{
+      if(typeof refreshLiveLine==='function') await refreshLiveLine(c.id);
+      var cc=DB.clients.find(function(x){return x.id===c.id;});
+      if(cc && typeof checkAlarms==='function') checkAlarms(cc);
+    }catch(e){ console.warn('[alarmas] '+c.name+':', e.message); }
+    await new Promise(function(r){ setTimeout(r,500); });
+  }
+  _AL_BARRIDO.lastAt=Date.now();
+  if(typeof toast==='function') toast(lista.length+' clientes revisados');
+  if(S.view==='tickets') showTickets();
+}
+function _alBarridoVelo(txt){
+  var pan=document.getElementById('al-panel');
+  if(!pan) return;
+  pan.style.position='relative';
+  var v=pan.querySelector('.carga-velo');
+  if(!v){ v=document.createElement('div'); v.className='carga-velo'; pan.appendChild(v); }
+  v.innerHTML='<span class="carga-spin"></span><span class="carga-txt">'+esc(txt)+'</span>';
+  v.classList.add('on');
+}
+// Estado del barrido, para el pie del panel de alarmas.
+function alBarridoEstado(){
+  var n=alBarridoClientes().length;
+  if(!n) return '';
+  if(!_AL_BARRIDO.lastAt) return 'revisando cada 2 min &middot; '+n+' clientes con alarmas';
+  var min=Math.round((Date.now()-_AL_BARRIDO.lastAt)/60000);
+  return n+' clientes con alarmas &middot; ultimo: '+esc(_AL_BARRIDO.lastClient)
+    +' '+(min<1?'recien':('hace '+min+' min'));
 }
 
 function kickLiveRefresh(c){
@@ -18070,6 +18172,8 @@ async function arrancarConSesion(){
     // Despues de bajar: si no, se pisa la lista que ya estaba en la nube
     registrarEnEquipo();
     _limpiarSyncsColgados();
+    // Las alarmas se revisan solas de a un cliente por vez, sin abrir pestanas.
+    try{ alBarridoStart(); }catch(e){}
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
     // Las revisiones pendientes tambien entran como tarea, con el mismo criterio.
