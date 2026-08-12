@@ -8037,7 +8037,11 @@ function openWeeklyReportModal(){
       ?('<div style="font-size:11.5px;background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6;color:'
         +(wa.location&&wa.token?'var(--text2)':'var(--amberx)')+'">'
         +(wa.location&&wa.token
-          ? 'Los avisos por WhatsApp salen desde la subcuenta interna (<span class="mono">'+esc(wa.location)+'</span>).'
+          ? ('Los avisos por WhatsApp salen desde la subcuenta interna (<span class="mono">'+esc(wa.location)+'</span>).'
+             +'<div style="margin-top:8px;display:flex;align-items:center;gap:9px">'
+             +'<button class="btn btn-sm" onclick="wrProbarWhatsApp()">Probar aviso</button>'
+             +'<span id="wr-wa-estado" style="flex:1;min-width:0;font-size:11px;color:var(--text3)">Manda un mensaje de prueba al primer numero cargado.</span>'
+             +'</div>')
           : 'Cargaste numeros de aviso pero falta configurar la <b>Subcuenta interna</b> en Integraciones: sin eso el WhatsApp no sale. Los informes por mail no se ven afectados.')
         +'</div>')
       :'')
@@ -8154,6 +8158,32 @@ function testWeeklyReportNow(){
 // Prueba de UN envio: manda el informe de un solo cliente a ese destinatario.
 // Alcanza para ver el formato, el boton de la revision y el aviso por WhatsApp,
 // sin llenarle la casilla a los otros destinatarios.
+// Prueba el aviso por WhatsApp solo, sin mandar informes. Antes, si fallaba,
+// el error quedaba en el log del Apps Script y no lo veia nadie.
+async function wrProbarWhatsApp(){
+  const proxy=getGhlProxy();
+  const st=document.getElementById('wr-wa-estado');
+  const decir=function(t,c){ if(st) st.innerHTML='<span style="color:'+(c||'var(--text3)')+'">'+t+'</span>'; };
+  if(!proxy.url){ decir('Configura la conexion primero','var(--amberx)'); return; }
+  const envio=wrLeerEnvios().filter(function(e){ return (e.whatsapp||'').trim(); })[0];
+  if(!envio){ decir('Ningun envio tiene numero de WhatsApp cargado.','var(--amberx)'); return; }
+  decir('Guardando y probando...');
+  const guardado=await wrPushEnvios(false);
+  if(!guardado||!guardado.ok) return;
+  try{
+    const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=test_whatsapp&numero='+encodeURIComponent(envio.whatsapp))
+      .then(function(x){ return x.json(); });
+    if(r&&r.ok){ decir('Enviado a '+esc(envio.whatsapp)+'. Si no llega, revisa que ese numero exista como contacto y que la subcuenta tenga WhatsApp conectado.','var(--accent)'); }
+    else{
+      const err=String((r&&r.error)||'sin respuesta');
+      decir(/desconocida/i.test(err)
+        ? 'Tu Apps Script no tiene la prueba: actualizalo a la v15 y volve a publicar.'
+        : 'No salio: '+esc(err), 'var(--redx)');
+    }
+  }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); }
+}
+
 async function wrProbarEnvio(id){
   const proxy=getGhlProxy();
   if(!proxy.url){ if(typeof toast==='function') toast('Configura la conexion primero'); return; }
