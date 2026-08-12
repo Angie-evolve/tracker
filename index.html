@@ -14477,15 +14477,82 @@ function editarAbCfg(clientId){
   if(b) b.innerHTML=middleConfigHtml(c);
 }
 
+// ---- Datos viejos en Bottom of Funnel ----
+// El caso que lo motivo: el ultimo sync habia sido 4 dias antes y faltaban
+// oportunidades sin que nada lo dijera. Los numeros se veian normales.
+var VT_HORAS_VIEJO=12;
+function _vtHorasDesdeSync(c){
+  var t=c&&c.ghl&&c.ghl.lastSync?new Date(c.ghl.lastSync).getTime():0;
+  if(!t) return null;                       // nunca se sincronizo
+  return (Date.now()-t)/3600000;
+}
+function _vtHaceTxt(h){
+  if(h==null) return 'nunca';
+  if(h<1) return 'hace '+Math.max(1,Math.round(h*60))+' min';
+  if(h<24) return 'hace '+Math.round(h)+' h';
+  var d=Math.round(h/24);
+  return 'hace '+d+' dia'+(d===1?'':'s');
+}
+function vtAvisoViejoHtml(c){
+  if(c&&c.ghl&&c.ghl._syncing) return '';   // ya se esta actualizando
+  var h=_vtHorasDesdeSync(c);
+  if(h!=null && h<VT_HORAS_VIEJO) return '';
+  try{ if(sessionStorage.getItem('evold-vt-ocultar-'+c.id)==='1') return ''; }catch(e){}
+  var cuando=(h==null)
+    ? 'Todavia no se sincronizo con GHL.'
+    : ('Estos numeros son de '+_vtFechaTxt(c.ghl.lastSync)+'. Puede que falten oportunidades de '+_vtHaceTxt(h).replace('hace ','los ultimos ')+'.');
+  return '<div style="display:flex;align-items:center;gap:11px;background:rgba(240,168,48,0.09);'
+    +'border:1px solid rgba(240,168,48,0.28);border-radius:var(--radius);padding:9px 13px;margin-bottom:13px">'
+    +'<span style="color:var(--amberx);font-size:14px;flex-shrink:0">&#9888;</span>'
+    +'<span style="flex:1;font-size:12px;color:var(--text);line-height:1.5">'+cuando+'</span>'
+    +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="syncGhl('+c.id+')">Sincronizar</button>'
+    +'<button class="btn btn-sm" style="flex-shrink:0" onclick="vtOcultarAviso('+c.id+')">Despues</button>'
+    +'</div>';
+}
+function _vtFechaTxt(iso){
+  try{
+    var d=new Date(iso);
+    var meses=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    return 'el '+d.getDate()+' de '+meses[d.getMonth()];
+  }catch(e){ return 'antes'; }
+}
+// "Despues" calla el aviso hasta que se cierre la pestana: no queremos que
+// quede escondido para siempre y volvamos al problema original.
+function vtOcultarAviso(id){
+  try{ sessionStorage.setItem('evold-vt-ocultar-'+id,'1'); }catch(e){}
+  if(typeof renderTab==='function') renderTab();
+}
+
+// Al entrar al cliente se sincroniza solo si los datos estan viejos. Silencioso:
+// el velo de la tabla ya muestra que algo esta pasando.
+function vtSyncSiHaceFalta(c){
+  if(!c||!c.ghl||!c.ghl.token||!c.ghl.locationId) return;
+  if(c.ghl._syncing) return;
+  var proxy=(typeof getGhlProxy==='function')?getGhlProxy():null;
+  if(!proxy||!proxy.url) return;
+  var h=_vtHorasDesdeSync(c);
+  if(h!=null && h<VT_HORAS_VIEJO) return;
+  window._vtAuto=window._vtAuto||{};
+  // Una sola vez por cliente por sesion, para no re-sincronizar al ir y volver.
+  if(window._vtAuto[c.id]) return;
+  window._vtAuto[c.id]=Date.now();
+  if(typeof syncGhl==='function') syncGhl(c.id, true);
+}
+
 function renderVentasTab(c, el){
   const esc=function(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
   const proxy=getGhlProxy();
   c.ghl=c.ghl||{};
   const header=function(right){
-    return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px">'
-      +'<div><div style="font-size:11px;color:var(--text3)">Oportunidades sincronizadas desde GHL</div></div>'
+    return vtAvisoViejoHtml(c)
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px">'
+      +'<div><div style="font-size:11px;color:var(--text3)">Oportunidades sincronizadas desde GHL'
+      +(function(){ var h=_vtHorasDesdeSync(c); return (c.ghl&&c.ghl._syncing)?'':(' &middot; '+_vtHaceTxt(h)); })()
+      +'</div></div>'
       +'<div style="display:flex;gap:8px;align-items:center">'+(right||'')+'</div></div>';
   };
+  // Datos viejos: se pide la actualizacion sola al entrar.
+  vtSyncSiHaceFalta(c);
 
   // 1) Falta proxy
   if(!proxy.url||!proxy.secret){
@@ -15024,6 +15091,10 @@ function renderVentasTab(c, el){
     +'</div>'
     +'<input id="ghl-search-input" type="text" placeholder="Buscar por nombre..." value="'+esc(searchVal)+'" oninput="filterGhlTable(this.value,'+c.id+')" style="width:220px;padding:7px 11px;font-size:12px;border:1px solid var(--border2);border-radius:99px;background:var(--bg3);color:var(--text);font-family:var(--font);outline:none">'
     +'</div>';
+  // Velo mientras se trae de GHL, igual que en la tabla de campanas de Meta.
+  html+='<div style="position:relative">'
+    +((c.ghl&&c.ghl._syncing)?('<div class="carga-velo on" style="border-radius:var(--radius-lg)">'
+      +'<span class="carga-spin"></span><span class="carga-txt">Trayendo oportunidades de GHL...</span></div>'):'');
   html+='<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     +'<thead><tr style="text-align:left;color:var(--text3)">'
     +(_ghlCols||['Contacto','Stage','Estado','Valor','Fecha']).map(function(h){return '<th style="padding:10px 12px;font-weight:500;border-bottom:1px solid var(--border)">'+_colLabel(h)+'</th>';}).join('')
@@ -15078,7 +15149,7 @@ function renderVentasTab(c, el){
     };
     html+='<tr style="border-bottom:1px solid var(--border)">'+cols.map(function(c){return cells[c]||'<td></td>';}).join('')+'</tr>';
   });
-  html+='</tbody></table></div>';
+  html+='</tbody></table></div></div>';
   if(_ocultos>0){
     html+='<div onclick="toggleGhlTabla()" style="text-align:center;padding:9px 0;font-size:12px;color:var(--text3);cursor:pointer">'
       +'Ver los '+_ocultos+' contactos restantes</div>';
