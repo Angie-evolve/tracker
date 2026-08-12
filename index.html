@@ -365,6 +365,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #ver-globo .vg-ds{font-size:11px;color:var(--text3);line-height:1.55;margin-bottom:10px}
 #ver-globo .vg-row{display:flex;gap:8px}
 @media (prefers-reduced-motion:reduce){#ver-globo{transition:none}.ver-punto{animation:none}}
+/* Fila de anuncio contra el benchmark. En reposo la tabla se ve igual que
+   siempre; el rojo aparece solo en la fila que se toca, para no pintar de
+   alerta toda la pantalla. */
+.mb-fila{transition:background .13s}
+.mb-fila:hover{background:rgba(255,255,255,0.02)}
+.mb-fila.sel{background:rgba(255,255,255,0.045)}
+.mb-sig{display:none}
+.mb-fila.sel .mb-mal{background:rgba(240,112,80,0.14)!important;color:var(--redx)!important;font-weight:500}
+.mb-fila.sel .mb-mal .mb-sig{display:inline;margin-left:5px;font-weight:700}
+@media (prefers-reduced-motion:reduce){.mb-fila{transition:none}}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 16px;font-size:12px;color:var(--text);z-index:9999;display:flex;align-items:center;gap:8px;box-shadow:0 8px 32px rgba(0,0,0,0.4);transform:translateY(80px);opacity:0;transition:all 0.3s cubic-bezier(.4,0,.2,1)}
 .toast.show{transform:translateY(0);opacity:1}
 
@@ -9999,7 +10009,12 @@ function renderTab(){
           });
           return '<div style="flex-shrink:0;width:190px;border-right:0.5px solid var(--border)">'+leftRows.join('')+'</div>'
             +'<div style="overflow-x:auto;flex:1"><div style="display:flex;flex-direction:column;min-width:max-content">'
-            +metricRows.map(function(r){return '<div style="display:flex">'+r+'</div>';}).join('')
+            +metricRows.map(function(r,ri){
+                // ri 0 es el encabezado; las demas son filas de datos y se pueden
+                // seleccionar para ver que metricas se salen del benchmark.
+                return ri===0 ? '<div style="display:flex">'+r+'</div>'
+                  : '<div class="mb-fila" onclick="mbSel(this)" style="display:flex;cursor:pointer">'+r+'</div>';
+              }).join('')
             +'</div></div>';
         })()}
       </div>
@@ -16061,10 +16076,53 @@ function metaSoloIncluidasBtn(activeLine){
     +(on?'ver las '+fuera+' ocultas':'ocultar '+fuera+' destildadas')+'</button>';
 }
 
+// Las reglas de la agencia aplicadas a UNA fila de la tabla de Meta. La misma
+// regla que mira la cuenta entera sirve para el anuncio: un CPC de $1.50 esta
+// mal en los dos lados. Devuelve que columnas se pasan y por cuanto.
+var _MB_MAP={ cpc:'cpc', cpm:'cpm', frequency:'frecuencia', spend:'adSpent',
+              impressions:'impresiones', reach:'alcance', clicks:'clics' };
+// Al tocar una fila se marca; tocar de nuevo la desmarca. Solo una a la vez.
+function mbSel(el){
+  var ya=el.classList.contains('sel');
+  var cont=el.parentNode;
+  if(cont) cont.querySelectorAll('.mb-fila.sel').forEach(function(x){ x.classList.remove('sel'); });
+  if(!ya) el.classList.add('sel');
+}
+
+function metaBenchFila(obj){
+  var c=(typeof DB!=='undefined'&&S&&S.clientId)?DB.clients.find(function(x){return x.id===S.clientId;}):null;
+  if(!c||typeof effectiveAlarmRules!=='function') return {};
+  var reglas;
+  try{ reglas=effectiveAlarmRules(c)||[]; }catch(e){ return {}; }
+  var out={};
+  reglas.forEach(function(r){
+    if(!r||!r.metric) return;
+    // Solo las reglas de una sola condicion: las compuestas ("inversion Y sin
+    // agendas") hablan de la cuenta, no de un anuncio suelto.
+    if(r.metric2) return;
+    var col=null;
+    for(var k in _MB_MAP){ if(_MB_MAP[k]===r.metric){ col=k; break; } }
+    if(!col) return;
+    var v=Number(obj[col]);
+    if(!isFinite(v)) return;
+    var lim=Number(r.value);
+    if(!isFinite(lim)) return;
+    var mal=(r.op==='lt') ? (v<lim) : (v>lim);
+    if(!mal) return;
+    var met=(typeof ALARM_METRICS!=='undefined')
+      ? (ALARM_METRICS.find(function(m){return m.id===r.metric;})||{label:r.metric,fmt:'num'})
+      : {label:r.metric,fmt:'num'};
+    var f=function(x){ return met.fmt==='money'?('$'+Number(x).toFixed(2)):(met.fmt==='pct'?(x+'%'):String(x)); };
+    out[col]={ label:met.label, limite:(r.op==='lt'?'min ':'max ')+f(lim) };
+  });
+  return out;
+}
+
 function metaRowMetrics(obj, isWinner){
   // _fxC lo setea el render de Ads: si el cliente tiene tasa cargada, las
   // columnas de dinero se muestran en USD igual que las tarjetas de arriba.
   var _c=window._fxC;
+  var _mbFuera=metaBenchFila(obj);
   return META_METRIC_COLS.map(function(col){
     var v=obj[col.key];
     if(col.money && _c && typeof fxActiva==='function' && fxActiva(_c)){
@@ -16076,7 +16134,9 @@ function metaRowMetrics(obj, isWinner){
     if(isWinner) style+=';background:rgba(29,158,117,0.06)';
     if(col.color&&disp!=='-') style+=';color:var(--accent)';
     if(col.bold) style+=';font-weight:500';
-    return '<div style="'+style+'">'+disp+'</div>';
+    var _f=_mbFuera&&_mbFuera[col.key];
+    var _cls=_f?' class="mb-mal" title="'+esc(_f.label+': '+_f.limite)+'"':'';
+    return '<div'+_cls+' style="'+style+'">'+disp+(_f?'<span class="mb-sig">!</span>':'')+'</div>';
   }).join('');
 }
 
