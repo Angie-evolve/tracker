@@ -5145,6 +5145,16 @@ function abrirSubcuentaInterna(){
       +'<div><div style="'+lbl+'">Secreto</div>'
         +'<input id="si-sec" value="'+esc(sec)+'" style="'+inp+';width:100%;box-sizing:border-box"></div>'
     +'</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Usuario que manda el aviso</div>'
+      +'<div style="display:flex;gap:7px;align-items:center">'
+      +'<select id="si-user" style="'+inp+';flex:1;cursor:pointer">'
+        +'<option value="">Sin asignar (lo elige GHL)</option>'
+        +(function(){ var g=localStorage.getItem('evold-conv-user')||'', n=localStorage.getItem('evold-conv-user-nom')||'';
+           return g?('<option value="'+esc(g)+'" selected>'+esc(n||g)+'</option>'):''; })()
+      +'</select>'
+      +'<button class="btn btn-sm" style="flex-shrink:0" onclick="siCargarUsuarios()">Cargar</button>'
+      +'</div>'
+      +'<div id="si-user-est" style="font-size:10.5px;color:var(--text3);margin-top:4px">Como al asignar un workflow. Toca Cargar para traer los usuarios de la subcuenta.</div></div>'
     +'<div style="margin-bottom:12px"><div style="'+lbl+'">Canal del aviso</div>'
       +(function(){ var cn=localStorage.getItem('evold-conv-canal')||'SMS';
         return '<select id="si-canal" style="'+inp+';width:100%;box-sizing:border-box;cursor:pointer">'
@@ -5186,6 +5196,9 @@ async function guardarSubcuentaInterna(){
   localStorage.setItem('evold-conv-mi-numero',g2('si-nom'));
   localStorage.setItem('evold-conv-from',g2('si-from'));
   localStorage.setItem('evold-conv-canal',g2('si-canal')||'SMS');
+  var _su=document.getElementById('si-user');
+  localStorage.setItem('evold-conv-user',_su?_su.value:'');
+  localStorage.setItem('evold-conv-user-nom',(_su&&_su.selectedIndex>=0)?(_su.options[_su.selectedIndex].textContent||''):'');
   // Los avisos del informe viven en el Apps Script, asi que hay que empujarlos ahi
   decir('Guardado. Avisando al Apps Script...');
   var proxy=getGhlProxy();
@@ -7793,11 +7806,40 @@ function wrEnviosChanged(){
 
 // Subcuenta desde la que salen los avisos por WhatsApp. GHL solo manda mensajes a
 // contactos de una subcuenta, asi que se elige una sola y desde ahi se avisa a todos.
+// Trae los usuarios de la subcuenta interna, con el numero que tiene cada uno.
+async function siCargarUsuarios(){
+  var est=document.getElementById('si-user-est');
+  var sel=document.getElementById('si-user');
+  var decir=function(t,c){ if(est){ est.innerHTML=t; est.style.color=c||'var(--text3)'; } };
+  var proxy=getGhlProxy();
+  if(!proxy.url){ decir('Configura primero el proxy de GHL.','var(--amberx)'); return; }
+  // Las credenciales tienen que estar en el script: se empujan antes de preguntar.
+  var loc=(document.getElementById('si-loc')||{}).value||'';
+  var tok=(document.getElementById('si-tok')||{}).value||'';
+  if(!loc||!tok){ decir('Cargá el Location ID y el token primero.','var(--amberx)'); return; }
+  decir('Buscando usuarios...');
+  try{
+    await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(getEnvios()))
+      +'&waLocation='+encodeURIComponent(loc)+'&waToken='+encodeURIComponent(tok)).then(function(x){return x.json();});
+    var r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)+'&action=wa_usuarios', 20000);
+    if(!r||!r.ok){ decir('No se pudo: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return; }
+    var actual=localStorage.getItem('evold-conv-user')||'';
+    sel.innerHTML='<option value="">Sin asignar (lo elige GHL)</option>'
+      +(r.users||[]).map(function(u){
+        return '<option value="'+esc(u.id)+'"'+(u.id===actual?' selected':'')+'>'
+          +esc(u.nombre)+(u.numero?(' - '+esc(u.numero)):'')+'</option>';
+      }).join('');
+    decir((r.users||[]).length+' usuarios. Elegí el que manda los avisos y guardá.','var(--accent)');
+  }catch(e){ decir('Error: '+esc(e.message),'var(--redx)'); }
+}
+
 function getWaCfg(){
   return { location: localStorage.getItem('evold-conv-loc')||'',
            token:    localStorage.getItem('evold-conv-token')||'',
            from:     localStorage.getItem('evold-conv-from')||'',
-           canal:    localStorage.getItem('evold-conv-canal')||'SMS' };
+           canal:    localStorage.getItem('evold-conv-canal')||'SMS',
+           user:     localStorage.getItem('evold-conv-user')||'' };
 }
 
 function wrAgregarEnvio(){
@@ -7834,7 +7876,8 @@ async function wrPushEnvios(showToast){
       +'&waLocation='+encodeURIComponent(wa.location||'')
       +'&waToken='+encodeURIComponent(wa.token||'')
       +'&waFrom='+encodeURIComponent(wa.from||'')
-      +'&waCanal='+encodeURIComponent(wa.canal||'SMS'))
+      +'&waCanal='+encodeURIComponent(wa.canal||'SMS')
+      +'&waUser='+encodeURIComponent(wa.user||''))
       .then(function(x){return x.json();});
     if(!r||!r.ok){
       const err=String((r&&r.error)||'sin respuesta');
@@ -8210,7 +8253,8 @@ async function wrProbarWhatsApp(envioId){
     const r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
       +'&action=test_whatsapp&numero='+encodeURIComponent(envio.whatsapp)
       +'&waFrom='+encodeURIComponent(getWaCfg().from||'')
-      +'&waCanal='+encodeURIComponent(getWaCfg().canal||'SMS'), 20000);
+      +'&waCanal='+encodeURIComponent(getWaCfg().canal||'SMS')
+      +'&waUser='+encodeURIComponent(getWaCfg().user||''), 20000);
     if(r&&r.ok){ decir('Enviado a '+esc(envio.whatsapp)+'. Si no llega, revisa que ese numero exista como contacto y que la subcuenta tenga WhatsApp conectado.','var(--accent)'); }
     else{
       const err=String((r&&r.error)||'sin respuesta');
