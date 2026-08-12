@@ -11737,7 +11737,12 @@ async function syncGhl(clientId, silent, skipEnrich){
   // no puede quedar tapando la tabla para siempre.
   clearTimeout(window._ghlVeloTimer);
   window._ghlVeloTimer=setTimeout(function(){
-    if(c.ghl&&c.ghl._syncing){ c.ghl._syncing=false; if(typeof renderTab==='function') renderTab(); }
+    if(c.ghl&&c.ghl._syncing){
+      c.ghl._syncing=false;
+      try{ save(); }catch(e){}          // guardado: si no, al recargar sigue trabado
+      if(typeof toast==='function') toast('La sincronizacion de '+c.name+' no termino. Proba de nuevo.','amber');
+      if(typeof renderTab==='function') renderTab();
+    }
     _ghlVeloOff();
   }, 185000);
   const pageLimit=100; // fetch 100 per page
@@ -18043,6 +18048,19 @@ function pantallaLogin(msg){
   setTimeout(function(){ var e=document.getElementById('sb-mail'); if(e) e.focus(); },50);
 }
 
+// Un sync interrumpido (recarga, pestana cerrada) deja _syncing en true y la
+// funcion corta al entrar: ese cliente no vuelve a sincronizar nunca. Al
+// arrancar no hay ninguno corriendo, asi que se limpian todos.
+function _limpiarSyncsColgados(){
+  var n=0;
+  (DB.clients||[]).forEach(function(c){
+    if(c&&c.ghl&&c.ghl._syncing){ c.ghl._syncing=false; n++; }
+    if(c&&c.ghl&&c.ghl._enriching){ c.ghl._enriching=false; }
+  });
+  if(n) console.warn('[GHL] '+n+' sincronizacion(es) sin terminar, destrabadas');
+  return n;
+}
+
 async function arrancarConSesion(){
   SB.listo=true;
   // Empieza a mirar si se publico una version nueva del tracker.
@@ -18051,6 +18069,7 @@ async function arrancarConSesion(){
     var hubo=await sbBajar();
     // Despues de bajar: si no, se pisa la lista que ya estaba en la nube
     registrarEnEquipo();
+    _limpiarSyncsColgados();
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
     // Las revisiones pendientes tambien entran como tarea, con el mismo criterio.
