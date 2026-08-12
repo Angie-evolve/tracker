@@ -5145,6 +5145,9 @@ function abrirSubcuentaInterna(){
       +'<div><div style="'+lbl+'">Secreto</div>'
         +'<input id="si-sec" value="'+esc(sec)+'" style="'+inp+';width:100%;box-sizing:border-box"></div>'
     +'</div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Numero desde el que sale el aviso</div>'
+      +'<input id="si-from" value="'+esc(localStorage.getItem('evold-conv-from')||'')+'" placeholder="+5492944... (opcional)" style="'+inp+';width:100%;box-sizing:border-box">'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">Solo hace falta si la subcuenta tiene varios WhatsApp conectados: sin esto, GHL elige uno y el aviso puede salir desde el numero equivocado.</div></div>'
     +'<div style="margin-bottom:12px"><div style="'+lbl+'">Tu nombre en GHL</div>'
       +'<input id="si-nom" value="'+esc(nom)+'" placeholder="Angie" style="'+inp+';width:100%;box-sizing:border-box">'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">El que aparece entre corchetes en las conversaciones. El escaneo de Tickets solo mira las que maneja este usuario.</div></div>'
@@ -5174,6 +5177,7 @@ async function guardarSubcuentaInterna(){
   localStorage.setItem('evold-conv-url',g2('si-url'));
   localStorage.setItem('evold-conv-secret',g2('si-sec')||'evolve-tracker');
   localStorage.setItem('evold-conv-mi-numero',g2('si-nom'));
+  localStorage.setItem('evold-conv-from',g2('si-from'));
   // Los avisos del informe viven en el Apps Script, asi que hay que empujarlos ahi
   decir('Guardado. Avisando al Apps Script...');
   var proxy=getGhlProxy();
@@ -7783,7 +7787,8 @@ function wrEnviosChanged(){
 // contactos de una subcuenta, asi que se elige una sola y desde ahi se avisa a todos.
 function getWaCfg(){
   return { location: localStorage.getItem('evold-conv-loc')||'',
-           token:    localStorage.getItem('evold-conv-token')||'' };
+           token:    localStorage.getItem('evold-conv-token')||'',
+           from:     localStorage.getItem('evold-conv-from')||'' };
 }
 
 function wrAgregarEnvio(){
@@ -7818,7 +7823,8 @@ async function wrPushEnvios(showToast){
     const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
       +'&action=save_report_envios&envios='+encodeURIComponent(JSON.stringify(envios))
       +'&waLocation='+encodeURIComponent(wa.location||'')
-      +'&waToken='+encodeURIComponent(wa.token||''))
+      +'&waToken='+encodeURIComponent(wa.token||'')
+      +'&waFrom='+encodeURIComponent(wa.from||''))
       .then(function(x){return x.json();});
     if(!r||!r.ok){
       const err=String((r&&r.error)||'sin respuesta');
@@ -8006,9 +8012,14 @@ function openWeeklyReportModal(){
         +'<div style="flex:0 0 100px"><select id="env-hour-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+horas+'</select></div>'
       +'</div>'
       +'<div style="margin-bottom:9px">'
+        +'<div style="display:flex;gap:7px;align-items:center">'
         +'<input type="tel" id="env-wa-'+e.id+'" value="'+esc(e.whatsapp||'')+'" placeholder="WhatsApp de aviso (opcional) - +5492944..." oninput="wrEnviosChanged()" '
-        +'style="width:100%;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:12px">'
-        +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">Al terminar el envio avisa por WhatsApp que los informes ya estan en el mail.</div></div>'
+        +'style="flex:1;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:12px">'
+        // Cada envio prueba su propio numero: con varios cargados, un boton
+        // unico que probaba el primero no servia para verificar el resto.
+        +'<button class="btn btn-sm" style="flex-shrink:0" onclick="wrProbarWhatsApp(\''+e.id+'\')">Probar</button>'
+        +'</div>'
+        +'<div id="wr-wa-'+e.id+'" style="font-size:10.5px;color:var(--text3);margin-top:3px">Al terminar el envio avisa por WhatsApp que los informes ya estan en el mail.</div></div>'
       +'<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:6px">'
         +'<input type="checkbox" id="env-todos-'+e.id+'"'+(todos?' checked':'')+' onchange="wrEnviosChanged()">'
         +'Todos los clientes con GHL conectado</label>'
@@ -8037,7 +8048,9 @@ function openWeeklyReportModal(){
       ?('<div style="font-size:11.5px;background:var(--bg3);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;line-height:1.6;color:'
         +(wa.location&&wa.token?'var(--text2)':'var(--amberx)')+'">'
         +(wa.location&&wa.token
-          ? ('Los avisos por WhatsApp salen desde la subcuenta interna (<span class="mono">'+esc(wa.location)+'</span>).'
+          ? ('Los avisos por WhatsApp salen desde la subcuenta interna (<span class="mono">'+esc(wa.location)+'</span>)'
+             +(wa.from?(' con el numero <span class="mono">'+esc(wa.from)+'</span>.')
+                      :'. <span style="color:var(--text3)">Si tiene varios WhatsApp conectados, fija cual usar en Integraciones &rarr; Subcuenta interna.</span>')
              +'<div style="margin-top:8px;display:flex;align-items:center;gap:9px">'
              +'<button class="btn btn-sm" onclick="wrProbarWhatsApp()">Probar aviso</button>'
              +'<span id="wr-wa-estado" style="flex:1;min-width:0;font-size:11px;color:var(--text3)">Manda un mensaje de prueba al primer numero cargado.</span>'
@@ -8160,19 +8173,24 @@ function testWeeklyReportNow(){
 // sin llenarle la casilla a los otros destinatarios.
 // Prueba el aviso por WhatsApp solo, sin mandar informes. Antes, si fallaba,
 // el error quedaba en el log del Apps Script y no lo veia nadie.
-async function wrProbarWhatsApp(){
+async function wrProbarWhatsApp(envioId){
   const proxy=getGhlProxy();
-  const st=document.getElementById('wr-wa-estado');
+  // Si viene un id, el mensaje va debajo de ese envio; si no, al pie general.
+  const st=document.getElementById(envioId?('wr-wa-'+envioId):'wr-wa-estado');
   const decir=function(t,c){ if(st) st.innerHTML='<span style="color:'+(c||'var(--text3)')+'">'+t+'</span>'; };
   if(!proxy.url){ decir('Configura la conexion primero','var(--amberx)'); return; }
-  const envio=wrLeerEnvios().filter(function(e){ return (e.whatsapp||'').trim(); })[0];
-  if(!envio){ decir('Ningun envio tiene numero de WhatsApp cargado.','var(--amberx)'); return; }
+  const todos=wrLeerEnvios();
+  const envio=envioId
+    ? todos.filter(function(e){ return e.id===envioId; })[0]
+    : todos.filter(function(e){ return (e.whatsapp||'').trim(); })[0];
+  if(!envio||!(envio.whatsapp||'').trim()){ decir('Pone un numero de WhatsApp en este envio y volve a probar.','var(--amberx)'); return; }
   decir('Guardando y probando...');
   const guardado=await wrPushEnvios(false);
   if(!guardado||!guardado.ok) return;
   try{
     const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
-      +'&action=test_whatsapp&numero='+encodeURIComponent(envio.whatsapp))
+      +'&action=test_whatsapp&numero='+encodeURIComponent(envio.whatsapp)
+      +'&waFrom='+encodeURIComponent(getWaCfg().from||''))
       .then(function(x){ return x.json(); });
     if(r&&r.ok){ decir('Enviado a '+esc(envio.whatsapp)+'. Si no llega, revisa que ese numero exista como contacto y que la subcuenta tenga WhatsApp conectado.','var(--accent)'); }
     else{
