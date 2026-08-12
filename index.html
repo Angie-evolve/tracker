@@ -11733,6 +11733,13 @@ async function syncGhl(clientId, silent, skipEnrich){
   if(!c.ghl.token||!c.ghl.locationId){ if(!silent) toast('Falta el token o el location del cliente','red'); return; }
   if(c.ghl._syncing) return;
   c.ghl._syncing=true; if(!silent) toast('Sincronizando con GHL...'); renderTab();
+  // Red de seguridad: si por cualquier motivo no se limpia la bandera, el velo
+  // no puede quedar tapando la tabla para siempre.
+  clearTimeout(window._ghlVeloTimer);
+  window._ghlVeloTimer=setTimeout(function(){
+    if(c.ghl&&c.ghl._syncing){ c.ghl._syncing=false; if(typeof renderTab==='function') renderTab(); }
+    _ghlVeloOff();
+  }, 185000);
   const pageLimit=100; // fetch 100 per page
   const controller=new AbortController();
   const timer=setTimeout(function(){ controller.abort(); }, 180000);
@@ -11774,12 +11781,16 @@ async function syncGhl(clientId, silent, skipEnrich){
     c.ghl.opportunities=mergeGhlOpps(c.ghl.opportunities, allOpps, truncated);
     c.ghl.lastSync=new Date().toISOString();
     c.ghl._syncing=false; save();
+    clearTimeout(window._ghlVeloTimer);
     if(!silent||nChanges) toast(allOpps.length+' oportunidades sincronizadas'+(nChanges?' \u00b7 '+nChanges+' novedades':''));
     renderTab();
+    _ghlVeloOff();
     if(!skipEnrich) enrichContactsBackground(c, proxy);
   }catch(e){
     clearTimeout(timer);
     c.ghl._syncing=false;
+    clearTimeout(window._ghlVeloTimer);
+    _ghlVeloOff();
     c.ghl._syncError=e.name==='AbortError'?'Tardo demasiado. Reintenta.':(e.message||'fallo la sincronizacion');
     save();
     const msg='Error GHL: '+c.ghl._syncError;
@@ -11789,6 +11800,14 @@ async function syncGhl(clientId, silent, skipEnrich){
     const el=document.getElementById('tab-content');
     if(el) el.innerHTML='<div style="padding:20px;color:var(--redx);font-size:13px">Error: '+c.ghl._syncError+'<br><button class="btn btn-sm" style="margin-top:10px" onclick="syncGhl('+clientId+',false)">Reintentar</button></div>';
   }
+}
+
+// El velo se saca a mano ademas de por el redibujado: el enriquecimiento corre
+// despues del render y volvia a pintar la tabla con el estado anterior, dejando
+// el velo puesto sobre datos que ya estaban actualizados.
+function _ghlVeloOff(){
+  var v=document.getElementById('ghl-velo');
+  if(v) v.classList.remove('on');
 }
 
 async function enrichContactsBackground(c, proxy){
@@ -11846,10 +11865,10 @@ async function enrichContactsBackground(c, proxy){
   for(var i=0;i<toEnrich.length;i+=CONC){
     await Promise.all(toEnrich.slice(i,i+CONC).map(one));
     save(); // persistimos cada tanda: si cerras la pestaña, no se pierde lo ya enriquecido
-    if(i && i%30===0){ renderTab(); } // refresco parcial para ver los anuncios poblarse
+    if(i && i%30===0){ renderTab(); _ghlVeloOff(); } // refresco parcial para ver los anuncios poblarse
     await new Promise(function(r){setTimeout(r,120);});
   }
-  if(enriched>0){ save(); renderTab(); toast(enriched+' contactos enriquecidos'); }
+  if(enriched>0){ save(); renderTab(); _ghlVeloOff(); toast(enriched+' contactos enriquecidos'); }
 }
 
 function _ghlAgo(iso){
@@ -15093,7 +15112,7 @@ function renderVentasTab(c, el){
     +'</div>';
   // Velo mientras se trae de GHL, igual que en la tabla de campanas de Meta.
   html+='<div style="position:relative">'
-    +((c.ghl&&c.ghl._syncing)?('<div class="carga-velo on" style="border-radius:var(--radius-lg)">'
+    +((c.ghl&&c.ghl._syncing)?('<div id="ghl-velo" class="carga-velo on" style="border-radius:var(--radius-lg)">'
       +'<span class="carga-spin"></span><span class="carga-txt">Trayendo oportunidades de GHL...</span></div>'):'');
   html+='<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     +'<thead><tr style="text-align:left;color:var(--text3)">'
