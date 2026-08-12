@@ -8902,7 +8902,21 @@ function renderDefaultAlarmsModal(){
     +'<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Se aplican a todos los clientes automaticamente. Cada cliente puede apagarlas desde su propia pestana de Alarmas.</div>'
     +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Mail por defecto (si el cliente no tiene uno propio)</label>'
         +'<textarea id="def-alarm-email" rows="2" placeholder="vos@agencia.com, socio@agencia.com" style="'+inp+';width:100%;box-sizing:border-box;font-family:var(--font);resize:vertical">'+esc(d.email||'')+'</textarea>'
-    +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Podes poner varios separados por coma. Cada cliente puede tener los suyos y pisar estos.</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px">Podes poner varios separados por coma. Cada cliente puede tener los suyos y pisar estos.</div>'
+    // El aviso al telefono reusa los numeros de los envios del informe: una sola
+    // lista de telefonos para todo.
+    +(function(){
+        var nums=(getEnvios()||[]).map(function(e){ return String(e.whatsapp||'').trim(); }).filter(Boolean);
+        var uniq=nums.filter(function(v,i,ar){ return ar.indexOf(v)===i; });
+        var canal=(typeof getWaCfg==='function')?(getWaCfg().canal||'SMS'):'SMS';
+        return '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;background:var(--bg3);border-radius:var(--radius);padding:10px 12px">'
+          +'<input type="checkbox" id="al-msg"'+(alarmasAvisoOn()?' checked':'')+' onchange="setAlarmasAviso(this.checked)" style="margin-top:2px">'
+          +'<span>Avisar tambien por <b>'+esc(canal)+'</b>'
+          +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;line-height:1.6">'
+          +(uniq.length
+            ? 'Un mensaje por cada metrica fuera de benchmark, a '+esc(uniq.join(', '))+'. Los dias malos pueden ser varios seguidos.'
+            : 'Carga un numero en los envios del informe (Integraciones &rarr; Informe automatico) para poder usarlo.')
+          +'</div></span></label>'; })()
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Reglas</div>'
     +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Sin reglas por defecto.</div>')
     +'<button class="btn btn-sm" onclick="_defAlarmDraft.rules.push({id:\'def-\'+Date.now(),metric:\'frecuencia\',op:\'gt\',value:2,enabled:true});renderDefaultAlarmsModal()">+ Agregar regla</button>'
@@ -9013,6 +9027,44 @@ function checkAlarms(c){
       if(typeof toast==='function'){ var _n=_email.split(',').length; toast('Alarma enviada a '+(_n>1?_n+' destinatarios':_email)); }
     }
   }).catch(function(){});
+  // Aviso al telefono: uno por alarma, con la metrica y el valor. El mail sigue
+  // llevando el detalle completo; esto es para enterarse sin abrir la casilla.
+  _alarmasAvisarTelefono(c, triggered, lines);
+}
+
+// Numeros a los que avisar las alarmas. Se reusan los de los envios del informe,
+// para no tener dos listas de telefonos que mantener.
+function alarmasTelefonos(){
+  if(!alarmasAvisoOn()) return [];
+  var vistos={}, out=[];
+  (getEnvios()||[]).forEach(function(e){
+    var n=String(e.whatsapp||'').trim();
+    if(n&&!vistos[n]){ vistos[n]=1; out.push(n); }
+  });
+  return out;
+}
+function alarmasAvisoOn(){
+  try{ return localStorage.getItem('evold-alarmas-msg')==='1'; }catch(e){ return false; }
+}
+function setAlarmasAviso(v){
+  try{ localStorage.setItem('evold-alarmas-msg', v?'1':'0'); }catch(e){}
+}
+
+function _alarmasAvisarTelefono(c, triggered, lines){
+  var nums=alarmasTelefonos();
+  if(!nums.length||!triggered.length) return;
+  var proxy=getGhlProxy();
+  if(!proxy.url) return;
+  // Un mensaje por alarma. Cada linea ya trae metrica, valor y limite.
+  triggered.forEach(function(t, i){
+    var txt='['+c.name+'] '+String(lines[i]||'').replace(/^-\s*/,'').replace(/\n\s*/g,' - ');
+    nums.forEach(function(n){
+      fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+        +'&action=alert_msg&numero='+encodeURIComponent(n)
+        +'&texto='+encodeURIComponent(txt.slice(0,600)))
+        .catch(function(){});
+    });
+  });
 }
 // ---- Modal de configuracion ----
 function openAlarmsModal(clientId){
