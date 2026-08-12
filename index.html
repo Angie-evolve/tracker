@@ -8183,6 +8183,15 @@ function testWeeklyReportNow(){
 // sin llenarle la casilla a los otros destinatarios.
 // Prueba el aviso por WhatsApp solo, sin mandar informes. Antes, si fallaba,
 // el error quedaba en el log del Apps Script y no lo veia nadie.
+// Si el Apps Script no contesta, sin esto el boton queda en "probando..." para
+// siempre. Mejor cortar y decirlo.
+function _fetchConLimite(url, ms){
+  return Promise.race([
+    fetch(url).then(function(r){ return r.json(); }),
+    new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('El Apps Script no contesto en '+Math.round((ms||15000)/1000)+'s. Revisa que este publicado con la version nueva.')); }, ms||15000); })
+  ]);
+}
+
 async function wrProbarWhatsApp(envioId){
   const proxy=getGhlProxy();
   // Si viene un id, el mensaje va debajo de ese envio; si no, al pie general.
@@ -8198,11 +8207,10 @@ async function wrProbarWhatsApp(envioId){
   const guardado=await wrPushEnvios(false);
   if(!guardado||!guardado.ok) return;
   try{
-    const r=await fetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+    const r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
       +'&action=test_whatsapp&numero='+encodeURIComponent(envio.whatsapp)
       +'&waFrom='+encodeURIComponent(getWaCfg().from||'')
-      +'&waCanal='+encodeURIComponent(getWaCfg().canal||'SMS'))
-      .then(function(x){ return x.json(); });
+      +'&waCanal='+encodeURIComponent(getWaCfg().canal||'SMS'), 20000);
     if(r&&r.ok){ decir('Enviado a '+esc(envio.whatsapp)+'. Si no llega, revisa que ese numero exista como contacto y que la subcuenta tenga WhatsApp conectado.','var(--accent)'); }
     else{
       const err=String((r&&r.error)||'sin respuesta');
@@ -8210,7 +8218,12 @@ async function wrProbarWhatsApp(envioId){
         ? 'Tu Apps Script no tiene la prueba: actualizalo a la v15 y volve a publicar.'
         : 'No salio: '+esc(err), 'var(--redx)');
     }
-  }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); }
+  }catch(e){
+    var m=String(e.message||'');
+    decir(/Unexpected token|not valid JSON/i.test(m)
+      ? 'El Apps Script devolvio una pagina en vez de datos: falta publicar la version nueva (Implementar &rarr; Administrar implementaciones &rarr; Nueva version).'
+      : esc(m), 'var(--redx)');
+  }
 }
 
 async function wrProbarEnvio(id){
