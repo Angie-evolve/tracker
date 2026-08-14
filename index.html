@@ -469,6 +469,27 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .vh-row>span:first-child{font-size:12.5px;color:var(--text2)}
 .vh-val{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13.5px;color:var(--strong)}
 .vh-val.zero{color:var(--text3)}
+
+/* ===== Matriz mensual (pie de Bottom of Funnel) ===== */
+.mm{margin-top:26px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
+.mm-top{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.mm-title{font-size:13px;font-weight:600;color:var(--strong)}
+.mm-scroll{overflow-x:auto;margin:0 -20px;padding:0 20px}
+.mm-tab{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+.mm-tab th,.mm-tab td{white-space:nowrap;text-align:right;padding:9px 0 9px 20px}
+.mm-tab th{font-size:10px;font-weight:500;letter-spacing:0.09em;text-transform:uppercase;color:var(--text3);padding-bottom:11px;border-bottom:1px solid var(--border2)}
+.mm-tab td{border-bottom:1px solid var(--border);color:var(--strong)}
+.mm-tab tbody tr:last-child td{border-bottom:0}
+.mm-tab tbody tr:hover td{background:var(--bg3)}
+/* la columna de metricas queda anclada: con 12 meses el scroll horizontal es inevitable */
+.mm-tab th.mm-met,.mm-tab td.mm-met{position:sticky;left:0;z-index:2;text-align:left;padding-left:0;padding-right:24px;background:var(--bg2);color:var(--text2);font-weight:400}
+.mm-tab tbody tr:hover td.mm-met{background:var(--bg3)}
+.mm-tab td.mm-zero{color:var(--text3)}
+.mm-tab th.mm-hoy{color:var(--text2)}
+.mm-tab td.mm-hoy,.mm-tab th.mm-hoy{background:var(--bg3)}
+.mm-tab tbody tr:hover td.mm-hoy{background:var(--bg4)}
+.mm-tag{display:inline-block;font-size:9px;font-weight:400;letter-spacing:0.02em;text-transform:none;color:var(--accent);border:1px solid currentColor;border-radius:99px;padding:0 5px;margin-left:6px;vertical-align:1px;opacity:.85}
+.mm-foot{font-size:11px;color:var(--text3);margin-top:14px;line-height:1.65;max-width:660px}
 .vh-costs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 24px;border-top:1px solid var(--border2);margin-bottom:22px}
 .vh-costs>div{padding:12px 0;border-bottom:1px solid var(--border)}
 
@@ -14706,6 +14727,112 @@ function vtSyncSiHaceFalta(c){
   setTimeout(function(){ if(typeof syncGhl==='function') syncGhl(c.id, true); }, 1500);
 }
 
+// ================= Matriz mensual (pie de Bottom of Funnel) =================
+// Una fila por metrica, una columna por mes. Sale de GHL: cada oportunidad cae en
+// el mes en que ENTRO (createdAt), no en el mes en que avanzo de etapa. Ignora el
+// filtro de periodo de arriba, porque aca el mes es el eje, pero respeta el segmento.
+function setMmRango(n){ S.mmRango=+n; renderTab(); }
+
+function mensualMatrizHtml(ops, rules, money){
+  if(!ops || !ops.length) return '';
+  var stamps=[];
+  ops.forEach(function(o){ if(o.createdAt){ var d=new Date(o.createdAt); if(!isNaN(d)) stamps.push(d.getTime()); } });
+  if(!stamps.length) return '';
+
+  // Meses: del mes de la primera oportunidad al mes actual, recortado al rango elegido.
+  var rango=S.mmRango||6;
+  var hoy=new Date();
+  var first=new Date(Math.min.apply(null,stamps));
+  var primerMes=new Date(first.getFullYear(),first.getMonth(),1);
+  var meses=[], cur=new Date(hoy.getFullYear(),hoy.getMonth(),1);
+  while(cur>=primerMes && meses.length<24){
+    meses.unshift({y:cur.getFullYear(),m:cur.getMonth()});
+    cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);
+  }
+  if(meses.length>rango) meses=meses.slice(meses.length-rango);
+  if(meses.length<2) return '';  // con un solo mes la matriz no dice nada
+
+  var idx={}; meses.forEach(function(mm,i){ idx[mm.y+'-'+mm.m]=i; });
+  var buckets=meses.map(function(){ return []; });
+  ops.forEach(function(o){
+    if(!o.createdAt) return;
+    var d=new Date(o.createdAt); if(isNaN(d)) return;
+    var i=idx[d.getFullYear()+'-'+d.getMonth()];
+    if(i!=null) buckets[i].push(o);
+  });
+
+  var cnt=function(sub,arr){
+    if(!arr||!arr.length) return null;   // regla sin configurar: la fila entera se omite
+    return sub.filter(function(o){ return arr.indexOf(_n(o.pipelineStage))>=0; }).length;
+  };
+  var col=buckets.map(function(sub){
+    var ag=cnt(sub,rules.agendas), asi=cnt(sub,rules.asistencias);
+    var won=sub.filter(function(o){ return deriveEstado(o).label==='Ganado'; });
+    var rev=won.reduce(function(s,o){ return s+(Number(o.monetaryValue)||0); },0);
+    return {
+      leads:sub.length,
+      agendas:ag,
+      asistencias:asi,
+      noshow:cnt(sub,rules.noShows),
+      show:(ag&&asi!=null)?asi/ag*100:null,
+      calif:sub.filter(function(o){ return o._sql; }).length,
+      pres:cnt(sub,rules.presentaciones),
+      cierres:won.length,
+      tasa:asi?won.length/asi*100:null,
+      valor:rev,
+      ticket:won.length?rev/won.length:null
+    };
+  });
+
+  var fNum=function(v){ return v==null?null:Math.round(v).toLocaleString('es-AR'); };
+  var fPct=function(v){ return v==null?null:(Math.round(v*10)/10).toFixed(1).replace('.',',')+'%'; };
+  var fMon=function(v){ return v==null?null:money(v); };
+  var FILAS=[
+    {k:'leads',l:'Oportunidades',f:fNum},
+    {k:'agendas',l:'Agendas',f:fNum},
+    {k:'asistencias',l:'Asistencias',f:fNum},
+    {k:'noshow',l:'No shows',f:fNum},
+    {k:'show',l:'Show rate',f:fPct},
+    {k:'calif',l:'Llamadas calificadas',f:fNum},
+    {k:'pres',l:'Presentaciones',f:fNum},
+    {k:'cierres',l:'Cierres',f:fNum},
+    {k:'tasa',l:'Tasa de cierre',f:fPct},
+    {k:'valor',l:'Facturacion',f:fMon},
+    {k:'ticket',l:'Ticket promedio',f:fMon}
+  ].filter(function(f){
+    return col.some(function(cc){ return cc[f.k]!=null; });   // sin regla configurada, no hay fila
+  });
+  if(!FILAS.length) return '';
+
+  var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  var enCurso=function(mm){ return mm.y===hoy.getFullYear()&&mm.m===hoy.getMonth(); };
+  var rangos=[3,6,12].map(function(r){
+    return '<button class="'+((S.mmRango||6)===r?'on':'')+'" onclick="setMmRango('+r+')">'+r+' meses</button>';
+  }).join('');
+
+  return '<div class="mm">'
+    +'<div class="mm-top"><div class="mm-title">Mes a mes</div><div class="vh-seg">'+rangos+'</div></div>'
+    +'<div class="mm-scroll"><table class="mm-tab"><thead><tr><th class="mm-met">Metrica</th>'
+    +meses.map(function(mm){
+        return '<th class="'+(enCurso(mm)?'mm-hoy':'')+'">'+MES[mm.m]+' '+String(mm.y).slice(2)
+          +(enCurso(mm)?'<span class="mm-tag">en curso</span>':'')+'</th>';
+      }).join('')
+    +'</tr></thead><tbody>'
+    +FILAS.map(function(f){
+        return '<tr><td class="mm-met">'+f.l+'</td>'
+          +col.map(function(cc,i){
+              var v=f.f(cc[f.k]);
+              var zero=(v==null||v==='0'||v==='$0'||v==='0,0%');
+              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')+'">'+(v==null?'&mdash;':v)+'</td>';
+            }).join('')
+          +'</tr>';
+      }).join('')
+    +'</tbody></table></div>'
+    +'<div class="mm-foot">Cada oportunidad cae en el mes en que entro, no en el mes en que avanzo: la columna de un mes son los cierres de los leads de ese mes. '
+    +'El mes en curso va sombreado porque todavia esta sumando. Respeta el segmento elegido arriba, pero no el filtro de periodo.</div>'
+    +'</div>';
+}
+
 function renderVentasTab(c, el){
   const esc=function(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
   const proxy=getGhlProxy();
@@ -15321,6 +15448,14 @@ function renderVentasTab(c, el){
     html+='<div onclick="toggleGhlTabla()" style="text-align:center;padding:9px 0;font-size:12px;color:var(--text3);cursor:pointer">'
       +'Ver los '+_ocultos+' contactos restantes</div>';
   }
+  // Matriz mensual al pie: mismo segmento, pero sobre TODAS las oportunidades,
+  // porque el filtro de periodo de arriba colapsaria el eje de meses a uno solo.
+  var _opsMens = seg ? ops.filter(function(o){ return (keyOf(o)||'(sin dato)')===seg; }) : ops;
+  if(view==='embudo'&&seg&&S.ventasPais){
+    _opsMens=_opsMens.filter(function(o){ return _n(paisOf(o))===_n(S.ventasPais); });
+  }
+  html+=mensualMatrizHtml(_opsMens, _rules, money);
+
   el.innerHTML=html;
 }
 
