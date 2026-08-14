@@ -14759,13 +14759,20 @@ function _mmActions(row){
   };
 }
 
+// El cache vive SOLO en memoria. Antes colgaba del cliente, y como save() serializa
+// DB entero a localStorage, el desglose quedaba grabado en disco: al recargar volvia
+// "fresco" y el codigo nuevo nunca le preguntaba nada a Meta. Son 12 meses en una
+// sola consulta, rehacerla al abrir la pestana no cuesta nada.
+const _mmCache={};
 async function fetchMetaMensual(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.metaToken||!c.metaAccountId) return null;
+  if(c._metaMensual){ delete c._metaMensual; save(); }   // limpiar el cache viejo que quedo en disco
   const al=getActiveLine(c.conversionLines||[]);
   const excl=((al&&al.excludedCampaigns)||[]).map(String);
-  const cacheKey='v1|'+excl.slice().sort().join(',');
-  if(c._metaMensual && c._metaMensual.key===cacheKey && (Date.now()-c._metaMensual.at)<10*60*1000) return c._metaMensual;
+  const cacheKey='v2|'+excl.slice().sort().join(',');
+  const prev=_mmCache[clientId];
+  if(prev && prev.key===cacheKey && (Date.now()-prev.at)<10*60*1000) return prev;
 
   const hoy=new Date();
   const desde=new Date(hoy.getFullYear(), hoy.getMonth()-11, 1);
@@ -14803,8 +14810,8 @@ async function fetchMetaMensual(clientId){
     });
     url=(data.paging&&data.paging.next)||null;
   }
-  c._metaMensual={key:cacheKey, at:Date.now(), meses:meses};
-  return c._metaMensual;
+  _mmCache[clientId]={key:cacheKey, at:Date.now(), meses:meses};
+  return _mmCache[clientId];
 }
 
 function mmTopHtml(cache){
@@ -14910,7 +14917,7 @@ function dibujarMmTop(c){
     return;
   }
   // Con cache fresca se pinta directo; si no, se avisa que esta pidiendo.
-  var cache=c._metaMensual;
+  var cache=_mmCache[c.id];
   if(!(cache&&(Date.now()-cache.at)<10*60*1000)){
     host.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
       +'<div class="mm-foot" style="margin-top:10px">Pidiendo el desglose mensual a Meta...</div></div>';
