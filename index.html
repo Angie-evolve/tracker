@@ -14989,6 +14989,51 @@ function arPrefill(idx){
   }
 }
 
+/* ---------- tasa de cierre: sale de GHL, no de Meta ---------- */
+// Un lead de esta semana todavia no tuvo tiempo de cerrar, asi que una ventana de
+// 7 dias sobre oportunidades recien creadas da casi siempre 0% y el arbol leeria
+// una caida que no existe. Por eso las dos ventanas van desplazadas hacia atras:
+// "Ahora" son los leads de hace 15 a 45 dias y "Base" los 30 dias anteriores.
+function _arVentanaCierre(ops, desdeDias, hastaDias){
+  var hoy=Date.now(), DIA=86400000;
+  var sub=ops.filter(function(o){
+    if(!o.createdAt) return false;
+    var d=new Date(o.createdAt).getTime();
+    if(isNaN(d)) return false;
+    var edad=(hoy-d)/DIA;
+    return edad>=hastaDias && edad<desdeDias;
+  });
+  if(!sub.length) return null;
+  var won=sub.filter(function(o){ return deriveEstado(o).label==='Ganado'; }).length;
+  return {n:sub.length, won:won, tasa:won/sub.length*100};
+}
+function arCierreGhl(){
+  var c=S._hojaCliente, note=arEl('ghl-note');
+  var mostrar=function(html){ if(note){ note.innerHTML=html; note.style.display='block'; } };
+  if(!c||!c.ghl||!((c.ghl.opportunities||[]).length)){
+    mostrar('No hay oportunidades sincronizadas de GHL para este cliente.');
+    return;
+  }
+  var ops=c.ghl.opportunities;
+  var ahora=_arVentanaCierre(ops,45,15);
+  var base =_arVentanaCierre(ops,75,45);
+  if(!ahora&&!base){
+    mostrar('No hay oportunidades en las ventanas que se necesitan (leads de hace 15 a 75 dias).');
+    return;
+  }
+  var set=function(id,v){ var e=arEl(id); if(e) e.value=(v==null)?'':String(Math.round(v*10)/10); };
+  set('closA', ahora?ahora.tasa:null);
+  set('closB', base?base.tasa:null);
+  var flaco=(ahora&&ahora.n<20)||(base&&base.n<20);
+  mostrar('Tasa de cierre cargada desde GHL. <b>Ahora</b>: '
+    +(ahora?ahora.won+' de '+ahora.n+' leads de hace 15 a 45 dias':'sin datos')
+    +'. <b>Base</b>: '+(base?base.won+' de '+base.n+' leads de los 30 dias previos':'sin datos')+'.'
+    +'<br>Las ventanas van corridas a proposito: un lead de esta semana todavia no tuvo tiempo de cerrar, '
+    +'y medirlo contra los ultimos 7 dias daria una caida falsa.'
+    +(flaco?'<br><b>Muestra chica.</b> Con menos de 20 leads por ventana un solo cierre mueve la tasa varios puntos: tomalo como indicio, no como senal.':'')
+    +'<br>Es la tasa de todo el cliente, no de la campana elegida arriba: GHL no siempre trae el anuncio de origen.');
+}
+
 /* ---------- motor ---------- */
 function arDelta(b,a){ if(b==null||a==null||b===0) return null; return (a-b)/b*100; }
 function arFmt(d){ return d==null?'sin dato':((d>0?'+':'')+d.toFixed(1)+'%'); }
@@ -15376,8 +15421,10 @@ function arShellHtml(c){
 
     +'<div class="ar-step" id="ar-step-data" style="display:none"><div class="hd"><span class="n">DATOS</span><span class="t">Ventana movil de 7 dias contra la base</span></div><div class="bd">'
       +'<p class="ar-note" style="margin-bottom:14px">Nunca dia contra dia: el ruido diario en frio es mas grande que el efecto que buscas. Mismo placement en ambas columnas.</p>'
-      +'<div style="margin-bottom:14px">'+selAds+'</div>'
-      +'<div id="ar-prefill-note" class="ar-callout" style="display:none;margin-bottom:14px"></div>'
+      +'<div style="margin-bottom:10px">'+selAds+'</div>'
+      +'<div id="ar-prefill-note" class="ar-callout" style="display:none;margin-bottom:12px"></div>'
+      +'<div style="margin-bottom:12px"><button class="btn btn-sm" onclick="arCierreGhl()">Cargar tasa de cierre desde GHL</button></div>'
+      +'<div id="ar-ghl-note" class="ar-callout" style="display:none;margin-bottom:14px"></div>'
 
       +'<div class="ar-grid3">'
         +'<div class="fh">Higiene de medicion</div><div class="fh">Dias de ventana</div><div class="fh">Clicks del anuncio</div>'
