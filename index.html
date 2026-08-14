@@ -12458,7 +12458,7 @@ function embudoHojasHtml(topHtml, c){
   if(S._hoja===undefined||S._hoja===null||S._hoja==='') S._hoja='informes'; // vista de entrada
   var sel=S._hoja||'';
   return embudoSubNav()
-    +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'</div>'
+    +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'<div id="mm-top-host"></div></div>'
     +'<div id="hoja-ventas-body" style="display:'+((sel==='bottom'||sel==='records'||sel==='cap')?'block':'none')+'"></div>'
     +'<div id="hoja-middle-body" style="display:'+(sel==='middle'?'block':'none')+'"></div>'
     +'<div id="hoja-guion-body" style="display:'+(sel==='guion'?'block':'none')+'"></div>'
@@ -12471,6 +12471,7 @@ function montarHojas(c){
   S._hojaVentasMontada=null; // se rearma al volver a entrar a la pestana
   S._hojaGuionMontada=false;
   if(S._hoja==='bottom'||S._hoja==='records'||S._hoja==='cap') _dibujarVentas(_vistaDeHoja(S._hoja));
+  if(S._hoja==='top') dibujarMmTop(c);
   if(S._hoja==='guion') _dibujarGuion();
 }
 
@@ -12526,6 +12527,7 @@ function setHoja(k){
   if(mid) mid.style.display=(S._hoja==='middle')?'block':'none';
   if(gui) gui.style.display=(S._hoja==='guion')?'block':'none';
   if(S._hoja==='guion') _dibujarGuion();
+  if(S._hoja==='top') dibujarMmTop(S._hojaCliente);
   if(S._hoja==='middle') dibujarMiddle(S._hojaCliente);
   if(vac) vac.style.display=(S._hoja==='informes')?'block':'none';
   if(S._hoja==='informes' && S._hojaCliente) kickLiveRefresh(S._hojaCliente);
@@ -14730,11 +14732,210 @@ function vtSyncSiHaceFalta(c){
   setTimeout(function(){ if(typeof syncGhl==='function') syncGhl(c.id, true); }, 1500);
 }
 
+// ================= Matriz mensual de Top of Funnel =================
+// Los insights que guarda la app son de UN rango (el de la sincronizacion), asi que
+// para ver mes a mes hay que pedirle a Meta el desglose: una sola consulta a nivel
+// campana con time_increment=monthly. Se piden siempre 12 meses y se recorta local,
+// asi cambiar de 3 a 12 no dispara otra consulta.
+const _MM_ALIAS_LEAD=['lead','onsite_web_lead','onsite_conversion.lead_grouped',
+  'offsite_conversion.fb_pixel_lead','offsite_lead_add_20_s_calls','onsite_conversion.messaging_first_reply'];
+
+function _mmActions(row){
+  var acts=row.actions||[];
+  var get=function(t){ var a=acts.find(function(x){return x.action_type===t;}); return a?(parseInt(a.value||0)||0):0; };
+  // Meta reporta el mismo evento bajo varios alias a la vez: sumarlos lo multiplica.
+  var max=function(list){ var m=0; list.forEach(function(t){ var v=get(t); if(v>m) m=v; }); return m; };
+  var barrer=function(re){ var m=0; acts.forEach(function(a){ if(re.test(a.action_type||'')){ var v=parseInt(a.value||0)||0; if(v>m) m=v; } }); return m; };
+  var leads=max(_MM_ALIAS_LEAD);
+  var reg=max(['complete_registration','offsite_conversion.fb_pixel_complete_registration','onsite_conversion.complete_registration']);
+  var purch=max(['purchase','offsite_conversion.fb_pixel_purchase','onsite_web_purchase']);
+  var msg=max(['onsite_conversion.messaging_conversation_started_7d','onsite_conversion.total_messaging_connection']);
+  var sched=Math.max(max(['schedule','onsite_conversion.schedule','onsite_web_schedule','offsite_conversion.fb_pixel_schedule']), barrer(/schedule/i));
+  var custom=barrer(/custom/i);
+  return {
+    leads:leads,
+    landing:get('landing_page_view'),
+    results:(purch||sched||reg||custom||leads||msg||0)
+  };
+}
+
+async function fetchMetaMensual(clientId){
+  const c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.metaToken||!c.metaAccountId) return null;
+  const al=getActiveLine(c.conversionLines||[]);
+  const excl=((al&&al.excludedCampaigns)||[]).map(String);
+  const cacheKey='v1|'+excl.slice().sort().join(',');
+  if(c._metaMensual && c._metaMensual.key===cacheKey && (Date.now()-c._metaMensual.at)<10*60*1000) return c._metaMensual;
+
+  const hoy=new Date();
+  const desde=new Date(hoy.getFullYear(), hoy.getMonth()-11, 1);
+  const tr='{"since":"'+isoDate(desde)+'","until":"'+isoDate(hoy)+'"}';
+  const campos='campaign_id,spend,impressions,clicks,actions';
+  var url='https://graph.facebook.com/v19.0/act_'+c.metaAccountId+'/insights'
+    +'?level=campaign&time_increment=monthly'
+    +'&time_range='+encodeURIComponent(tr)
+    +'&fields='+encodeURIComponent(campos)
+    +'&limit=500&access_token='+c.metaToken;
+
+  const meses={};
+  var paginas=0;
+  while(url && paginas<10){
+    paginas++;
+    const resp=await fetch(url);
+    const data=await resp.json();
+    if(data.error) throw new Error(data.error.message||'Meta no respondio');
+    (data.data||[]).forEach(function(row){
+      if(excl.indexOf(String(row.campaign_id))>=0) return;   // campanas destildadas en Ads
+      const d=new Date(row.date_start);
+      if(isNaN(d)) return;
+      const k=d.getFullYear()+'-'+d.getMonth();
+      const m=meses[k]||(meses[k]={spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0});
+      const a=_mmActions(row);
+      m.spend+=parseFloat(row.spend||0)||0;
+      m.impressions+=parseInt(row.impressions||0)||0;
+      m.clicks+=parseInt(row.clicks||0)||0;
+      m.leads+=a.leads; m.landing+=a.landing; m.results+=a.results;
+    });
+    url=(data.paging&&data.paging.next)||null;
+  }
+  c._metaMensual={key:cacheKey, at:Date.now(), meses:meses};
+  return c._metaMensual;
+}
+
+function mmTopHtml(cache){
+  const datos=cache.meses||{};
+  const claves=Object.keys(datos);
+  if(!claves.length) return '<div class="mm"><div class="mm-title">Mes a mes</div>'
+    +'<div class="mm-foot" style="margin-top:10px">Meta no devolvio inversion en los ultimos 12 meses para las campanas incluidas.</div></div>';
+
+  // Meses: del primero con datos al actual, recortado al rango elegido
+  const hoy=new Date();
+  var minY=9999,minM=0;
+  claves.forEach(function(k){
+    var p=k.split('-'), y=+p[0], m=+p[1];
+    if(y<minY||(y===minY&&m<minM)){ minY=y; minM=m; }
+  });
+  var meses=[], cur=new Date(hoy.getFullYear(),hoy.getMonth(),1), tope=new Date(minY,minM,1);
+  while(cur>=tope && meses.length<24){
+    meses.unshift({y:cur.getFullYear(),m:cur.getMonth()});
+    cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);
+  }
+  const rango=S.mmRango||6;
+  if(meses.length>rango) meses=meses.slice(meses.length-rango);
+  if(!meses.length) return '';
+
+  const col=meses.map(function(mm){
+    const d=datos[mm.y+'-'+mm.m]||{spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0};
+    return {
+      spend:d.spend,
+      impressions:d.impressions,
+      clicks:d.clicks,
+      ctr:d.impressions? d.clicks/d.impressions*100 : null,
+      cpm:d.impressions? d.spend/d.impressions*1000 : null,
+      cpc:d.clicks? d.spend/d.clicks : null,
+      landing:d.landing,
+      cpLanding:d.landing? d.spend/d.landing : null,
+      leads:d.leads,
+      cpl:d.leads? d.spend/d.leads : null,
+      results:d.results,
+      cpr:d.results? d.spend/d.results : null
+    };
+  });
+
+  const money=function(n){ return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2}); };
+  const fNum=function(v){ return v==null?null:Math.round(v).toLocaleString('es-AR'); };
+  const fPct=function(v){ return v==null?null:(Math.round(v*100)/100).toFixed(2).replace('.',',')+'%'; };
+  const fMon=function(v){ return v==null?null:money(v); };
+  var FILAS=[
+    {k:'spend',l:'Inversion',f:fMon},
+    {k:'impressions',l:'Impresiones',f:fNum},
+    {k:'clicks',l:'Clics',f:fNum},
+    {k:'ctr',l:'CTR',f:fPct},
+    {k:'cpm',l:'CPM',f:fMon},
+    {k:'cpc',l:'CPC',f:fMon},
+    {k:'landing',l:'Visitas a la landing',f:fNum},
+    {k:'cpLanding',l:'Costo por visita',f:fMon},
+    {k:'leads',l:'Leads',f:fNum},
+    {k:'cpl',l:'CPL',f:fMon},
+    {k:'results',l:'Resultados',f:fNum},
+    {k:'cpr',l:'Costo por resultado',f:fMon}
+  ].filter(function(f){
+    // sin el evento configurado en Meta la fila es toda ceros: no aporta nada
+    return col.some(function(cc){ return cc[f.k]!=null && cc[f.k]!==0; });
+  });
+  if(!FILAS.length) return '';
+
+  const MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const enCurso=function(mm){ return mm.y===hoy.getFullYear()&&mm.m===hoy.getMonth(); };
+  const rangos=[3,6,12].map(function(r){
+    return '<button class="'+((S.mmRango||6)===r?'on':'')+'" onclick="setMmRango('+r+')">'+r+' meses</button>';
+  }).join('');
+
+  return '<div class="mm">'
+    +'<div class="mm-top"><div class="mm-title">Mes a mes</div><div class="vh-seg">'+rangos+'</div></div>'
+    +'<div class="mm-scroll"><table class="mm-tab" style="min-width:'+(200+meses.length*92)+'px"><thead><tr><th class="mm-met">Metrica</th>'
+    +meses.map(function(mm){
+        return '<th class="'+(enCurso(mm)?'mm-hoy':'')+'">'+MES[mm.m]+' '+String(mm.y).slice(2)
+          +(enCurso(mm)?'<span class="mm-tag">en curso</span>':'')+'</th>';
+      }).join('')
+    +'</tr></thead><tbody>'
+    +FILAS.map(function(f){
+        return '<tr><td class="mm-met">'+f.l+'</td>'
+          +col.map(function(cc,i){
+              var v=f.f(cc[f.k]);
+              var zero=(v==null||cc[f.k]===0);
+              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')+'">'+(v==null?'&mdash;':v)+'</td>';
+            }).join('')
+          +'</tr>';
+      }).join('')
+    +'</tbody></table></div>'
+    +'<div class="mm-foot">Desglose mensual pedido a Meta aparte de la sincronizacion, que trae un rango unico. '
+    +'Suma solo las campanas tildadas arriba y el mes en curso va sombreado porque todavia esta gastando.</div>'
+    +'</div>';
+}
+
+function dibujarMmTop(c){
+  var host=document.getElementById('mm-top-host');
+  if(!host) return;
+  if(!c){ host.innerHTML=''; return; }
+  if(!c.metaToken||!c.metaAccountId){
+    host.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
+      +'<div class="mm-foot" style="margin-top:10px">Conecta Meta para ver el desglose mensual.</div></div>';
+    return;
+  }
+  // Con cache fresca se pinta directo; si no, se avisa que esta pidiendo.
+  var cache=c._metaMensual;
+  if(!(cache&&(Date.now()-cache.at)<10*60*1000)){
+    host.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
+      +'<div class="mm-foot" style="margin-top:10px">Pidiendo el desglose mensual a Meta...</div></div>';
+  }else{
+    host.innerHTML=mmTopHtml(cache);
+  }
+  fetchMetaMensual(c.id).then(function(res){
+    var h2=document.getElementById('mm-top-host');
+    if(!h2||S._hoja!=='top') return;
+    h2.innerHTML=res?mmTopHtml(res):'';
+  }).catch(function(e){
+    console.warn('mm top:',e);
+    var h2=document.getElementById('mm-top-host');
+    if(!h2||S._hoja!=='top') return;
+    h2.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
+      +'<div class="mm-foot" style="margin-top:10px">No se pudo traer el desglose mensual: '+esc(e.message||'error de Meta')+'. '
+      +'<button class="btn btn-sm" style="margin-left:8px" onclick="dibujarMmTop(S._hojaCliente)">Reintentar</button></div></div>';
+  });
+}
+
 // ================= Matriz mensual (pie de Bottom of Funnel) =================
 // Una fila por metrica, una columna por mes. Sale de GHL: cada oportunidad cae en
 // el mes en que ENTRO (createdAt), no en el mes en que avanzo de etapa. Ignora el
 // filtro de periodo de arriba, porque aca el mes es el eje, pero respeta el segmento.
-function setMmRango(n){ S.mmRango=+n; renderTab(); }
+function setMmRango(n){
+  S.mmRango=+n;
+  // En Top ya tenemos los 12 meses en memoria: recortar es instantaneo y rearmar
+  // la pestana entera volveria a dibujar toda la grilla de Meta al pedo.
+  if(S._hoja==='top'){ dibujarMmTop(S._hojaCliente); return; }
+  renderTab();
+}
 
 function mensualMatrizHtml(ops, rules, money){
   if(!ops || !ops.length) return '';
