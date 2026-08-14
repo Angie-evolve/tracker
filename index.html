@@ -14994,6 +14994,25 @@ function arPrefill(idx){
 // 7 dias sobre oportunidades recien creadas da casi siempre 0% y el arbol leeria
 // una caida que no existe. Por eso las dos ventanas van desplazadas hacia atras:
 // "Ahora" son los leads de hace 15 a 45 dias y "Base" los 30 dias anteriores.
+// Los filtros son los mismos de Bottom of Funnel: salen de ghlAtribucion.
+const AR_VISTAS={anuncios:'anuncio',adset:'conjunto',placement:'placement',embudo:'campana',pais:'pais'};
+
+function _arKeyOf(c){
+  var atr=ghlAtribucion(c);
+  var v=S.arbolView||'embudo';
+  if(v==='embudo') return atr.campaignOf;
+  if(v==='pais') return atr.paisOf;
+  if(v==='adset') return function(o){ return _deriveAdset(c,o); };
+  if(v==='placement') return function(o){ return _derivePlacement(c,o); };
+  return atr.adOf;
+}
+function _arSegmentos(c){
+  var ops=(c&&c.ghl&&c.ghl.opportunities)||[];
+  var keyOf=_arKeyOf(c), mapa={};
+  ops.forEach(function(o){ var k=keyOf(o)||'(sin dato)'; mapa[k]=(mapa[k]||0)+1; });
+  return Object.keys(mapa).map(function(k){ return {k:k,n:mapa[k]}; })
+    .sort(function(a,b){ return b.n-a.n; }).slice(0,12);
+}
 function _arVentanaCierre(ops, desdeDias, hastaDias){
   var hoy=Date.now(), DIA=86400000;
   var sub=ops.filter(function(o){
@@ -15007,31 +15026,53 @@ function _arVentanaCierre(ops, desdeDias, hastaDias){
   var won=sub.filter(function(o){ return deriveEstado(o).label==='Ganado'; }).length;
   return {n:sub.length, won:won, tasa:won/sub.length*100};
 }
+
+function arGhlView(v){
+  S.arbolView=v; S.arbolSeg=null;
+  var sel=arEl('ghl-seg');
+  if(sel) sel.innerHTML=_arSegOpcionesHtml(S._hojaCliente);
+  ['anuncios','adset','placement','embudo','pais'].forEach(function(x){
+    var b=arEl('gv-'+x); if(b) b.className=(x===v?'on':'');
+  });
+  arCierreGhl();
+}
+function arGhlSeg(s){ S.arbolSeg=s||null; arCierreGhl(); }
+function _arSegOpcionesHtml(c){
+  var segs=_arSegmentos(c);
+  return '<option value="">Todos ('+segs.reduce(function(a,b){return a+b.n;},0)+')</option>'
+    +segs.map(function(s){
+      return '<option value="'+esc(s.k)+'"'+(S.arbolSeg===s.k?' selected':'')+'>'+esc(s.k)+' ('+s.n+')</option>';
+    }).join('');
+}
+
 function arCierreGhl(){
   var c=S._hojaCliente, note=arEl('ghl-note');
+  var set=function(id,v){ var e=arEl(id); if(e) e.value=(v==null)?'':String(Math.round(v*10)/10); };
   var mostrar=function(html){ if(note){ note.innerHTML=html; note.style.display='block'; } };
   if(!c||!c.ghl||!((c.ghl.opportunities||[]).length)){
+    set('closA',null); set('closB',null);
     mostrar('No hay oportunidades sincronizadas de GHL para este cliente.');
     return;
   }
   var ops=c.ghl.opportunities;
+  var seg=S.arbolSeg;
+  if(seg){
+    var keyOf=_arKeyOf(c);
+    ops=ops.filter(function(o){ return (keyOf(o)||'(sin dato)')===seg; });
+  }
   var ahora=_arVentanaCierre(ops,45,15);
   var base =_arVentanaCierre(ops,75,45);
-  if(!ahora&&!base){
-    mostrar('No hay oportunidades en las ventanas que se necesitan (leads de hace 15 a 75 dias).');
-    return;
-  }
-  var set=function(id,v){ var e=arEl(id); if(e) e.value=(v==null)?'':String(Math.round(v*10)/10); };
   set('closA', ahora?ahora.tasa:null);
   set('closB', base?base.tasa:null);
-  var flaco=(ahora&&ahora.n<20)||(base&&base.n<20);
-  mostrar('Tasa de cierre cargada desde GHL. <b>Ahora</b>: '
-    +(ahora?ahora.won+' de '+ahora.n+' leads de hace 15 a 45 dias':'sin datos')
-    +'. <b>Base</b>: '+(base?base.won+' de '+base.n+' leads de los 30 dias previos':'sin datos')+'.'
+
+  var etiqueta=seg?('<b>'+esc(seg)+'</b> ('+(AR_VISTAS[S.arbolView||'embudo'])+')'):'todo el cliente';
+  var flaco=(ahora&&ahora.n<20)||(base&&base.n<20)||(!ahora||!base);
+  mostrar('Tasa de cierre de '+etiqueta+'. <b>Ahora</b>: '
+    +(ahora?ahora.won+' de '+ahora.n+' leads de hace 15 a 45 dias':'sin leads en la ventana')
+    +'. <b>Base</b>: '+(base?base.won+' de '+base.n+' leads de los 30 dias previos':'sin leads en la ventana')+'.'
     +'<br>Las ventanas van corridas a proposito: un lead de esta semana todavia no tuvo tiempo de cerrar, '
     +'y medirlo contra los ultimos 7 dias daria una caida falsa.'
-    +(flaco?'<br><b>Muestra chica.</b> Con menos de 20 leads por ventana un solo cierre mueve la tasa varios puntos: tomalo como indicio, no como senal.':'')
-    +'<br>Es la tasa de todo el cliente, no de la campana elegida arriba: GHL no siempre trae el anuncio de origen.');
+    +(flaco?'<br><b>Muestra chica.</b> Con pocos leads por ventana un solo cierre mueve la tasa varios puntos: tomalo como indicio, no como senal. Probá agrupando mas arriba o sacando el filtro.':''));
 }
 
 /* ---------- motor ---------- */
@@ -15380,6 +15421,18 @@ function arShellHtml(c){
   var tab=function(k,l){ return '<button id="ar-tab-'+k+'" class="'+(sub===k?'on':'')+'" onclick="arSub(\''+k+'\')">'+l+'</button>'; };
 
   /* ---- diagnostico ---- */
+  // Filtros de la tasa de cierre: mismos criterios de atribucion que Bottom of Funnel.
+  if(!S.arbolView) S.arbolView='embudo';
+  var hayGhl=!!(c&&c.ghl&&((c.ghl.opportunities||[]).length));
+  var gvBtn=function(k,l){ return '<button id="ar-gv-'+k+'" class="'+(S.arbolView===k?'on':'')+'" onclick="arGhlView(\''+k+'\')">'+l+'</button>'; };
+  var ghlFiltro=hayGhl
+    ? '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">'
+      +'<span class="ar-note" style="white-space:nowrap">Tasa de cierre &mdash; agrupar por</span>'
+      +'<div class="vh-seg">'+gvBtn('embudo','Campana')+gvBtn('anuncios','Anuncio')+gvBtn('adset','Conjunto')+gvBtn('pais','Pais')+'</div>'
+      +'<select class="ar-sel" id="ar-ghl-seg" onchange="arGhlSeg(this.value)">'+_arSegOpcionesHtml(c)+'</select>'
+      +'</div>'
+    : '';
+
   var nivel=S.arbolNivel;
   var nivBtn=function(k,l){ return '<button id="ar-niv-'+k+'" class="'+(nivel===k?'on':'')+'" onclick="arNivel(\''+k+'\')">'+l+'</button>'; };
   var selAds=hayMeta
@@ -15423,7 +15476,7 @@ function arShellHtml(c){
       +'<p class="ar-note" style="margin-bottom:14px">Nunca dia contra dia: el ruido diario en frio es mas grande que el efecto que buscas. Mismo placement en ambas columnas.</p>'
       +'<div style="margin-bottom:10px">'+selAds+'</div>'
       +'<div id="ar-prefill-note" class="ar-callout" style="display:none;margin-bottom:12px"></div>'
-      +'<div style="margin-bottom:12px"><button class="btn btn-sm" onclick="arCierreGhl()">Cargar tasa de cierre desde GHL</button></div>'
+      +ghlFiltro
       +'<div id="ar-ghl-note" class="ar-callout" style="display:none;margin-bottom:14px"></div>'
 
       +'<div class="ar-grid3">'
@@ -15603,6 +15656,7 @@ function dibujarArbol(c){
   S.arbolPick={};
   body.innerHTML=arShellHtml(c);
   arRenderReg();
+  try{ arCierreGhl(); }catch(e){ console.warn('arbol/ghl:',e); }   // la fila de cierre entra sola
 }
 
 // ================= Matriz mensual de Top of Funnel =================
@@ -15923,6 +15977,121 @@ function mensualMatrizHtml(ops, rules, money){
     +'</div>';
 }
 
+// ---- Atribucion de una oportunidad de GHL (anuncio / conjunto / campana / pais) ----
+// Vivia dentro de renderVentasTab. Se saco afuera para que el arbol de diagnostico
+// pueda filtrar con exactamente el mismo criterio que Bottom of Funnel, en vez de
+// tener su propia copia que se despega con el tiempo.
+function ghlAtribucion(c){
+  // --- Helpers de atribucion (anuncio / embudo / pais) ---
+const faGet=function(fa,names){
+  if(!fa) return ''; var keys=Object.keys(fa); var i,j;
+  for(i=0;i<names.length;i++){ for(j=0;j<keys.length;j++){ if(keys[j].toLowerCase().trim()===names[i]) return fa[keys[j]]; } }
+  for(j=0;j<keys.length;j++){ var kl=keys[j].toLowerCase(); for(i=0;i<names.length;i++){ if(kl.indexOf(names[i])>=0) return fa[keys[j]]; } }
+  return '';
+};
+const _tzCountry=function(tz){
+  tz=String(tz||'');
+  if(/Argentina/i.test(tz)) return 'Argentina';
+  if(/Mexico|Hermosillo|Monterrey|Cancun|Tijuana|Merida|Chihuahua|Mazatlan|Matamoros|Ojinaga|Bahia_Banderas/i.test(tz)) return 'Mexico';
+  if(/Bogota/i.test(tz)) return 'Colombia';
+  if(/Lima/i.test(tz)) return 'Peru';
+  if(/Santiago/i.test(tz)) return 'Chile';
+  if(/Montevideo/i.test(tz)) return 'Uruguay';
+  if(/Sao_Paulo|Bahia|Fortaleza|Recife|Manaus/i.test(tz)) return 'Brasil';
+  if(/Guayaquil/i.test(tz)) return 'Ecuador';
+  if(/Caracas/i.test(tz)) return 'Venezuela';
+  if(/La_Paz/i.test(tz)) return 'Bolivia';
+  if(/Asuncion/i.test(tz)) return 'Paraguay';
+  if(/Madrid/i.test(tz)) return 'Espana';
+  if(/Guatemala/i.test(tz)) return 'Guatemala';
+  if(/Costa_Rica/i.test(tz)) return 'Costa Rica';
+  return '';
+};
+const _adIdx=metaAdIndex(c);
+const adOf=function(o){
+  var s=o.source||{};
+  var raw=faGet(o.formAnswers,['utm_ad','utm ad']) || s.utmAd || s.utmContent || s.utmCampaign || s.utmSource || '';
+  return resolveAdLabel(c, raw, _adIdx);
+};
+const geoOf=function(o){
+  var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']);
+  if(tz){ var parts=String(tz).split('/'); var city=parts[parts.length-1].replace(/_/g,' '); var loc=[city,_tzCountry(tz)].filter(Boolean).join(', '); if(loc) return loc; }
+  var g=o.geo||{};
+  if(g.location) return g.location;
+  if(g.timezone){ var tzParts=String(g.timezone).split('/'); return tzParts[tzParts.length-1].replace(/_/g,' '); }
+  return [g.city,g.state,g.country].filter(function(x){return x && x!=='US';}).join(', ') || g.country || '';
+};
+const paisOf=function(o){
+  var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']) || (o.geo&&o.geo.timezone) || '';
+  var ctry=_tzCountry(tz);
+  if(ctry) return ctry;
+  var g=o.geo||{};
+  if(g.country && g.country!=='US') return g.country;
+  if(g.location){ var parts=String(g.location).split(','); var last=parts[parts.length-1].trim(); if(last) return last; }
+  return '';
+};
+const fuenteOf=function(o){
+  if(!o.source) return '';
+  var ref=(o.source.referrer||'').toLowerCase();
+  var src=(o.source.utmSource||'').toLowerCase();
+  var isMeta=src==='meta'||src==='facebook'||src==='instagram';
+  var isFbRef=ref.indexOf('facebook.com')>=0||ref.indexOf('instagram.com')>=0||ref.indexOf('l.facebook')>=0;
+  var isLanding=ref.length>0&&!isFbRef&&(ref.indexOf('http')===0);
+  if(isLanding&&isMeta) return 'Landing (Meta)';
+  if(isLanding) return 'Landing';
+  if(isMeta||isFbRef) return 'Meta';
+  if(src) return o.source.utmSource;
+  if(o.formAnswers&&(o.formAnswers['Lead Source']||o.formAnswers['source'])) return o.formAnswers['Lead Source']||o.formAnswers['source'];
+  return '';
+};
+
+// Campana de Meta del lead: utm_campaign directo, o deducida matcheando el anuncio del lead
+// (adId / utm_ad / utm_adset) contra el arbol campanas->adsets->ads sincronizado en Ads & Guiones.
+const _campNames={};     // campaignId -> nombre
+const _adToCamp={};      // adId / adsetId / nombre normalizado -> nombre de campana
+const _adNamePairs=[];   // para match aproximado por nombre
+(function(){
+  var al=getActiveLine(c.conversionLines||[]);
+  ((al&&al.metaCampaigns)||[]).forEach(function(cp){
+    var cname=cp.name||String(cp.id);
+    _campNames[String(cp.id)]=cname;
+    _adToCamp['n:'+_n(cname)]=cname;
+    ((cp.adsets)||[]).forEach(function(as){
+      if(as.id) _adToCamp[String(as.id)]=cname;
+      if(as.name){ _adToCamp['n:'+_n(as.name)]=cname; _adNamePairs.push({n:_n(as.name),camp:cname}); }
+      ((as.ads)||[]).forEach(function(ad){
+        if(ad.id) _adToCamp[String(ad.id)]=cname;
+        if(ad.name){ _adToCamp['n:'+_n(ad.name)]=cname; _adNamePairs.push({n:_n(ad.name),camp:cname}); }
+      });
+    });
+  });
+})();
+const campaignOf=function(o){
+  var s=o.source||{};
+  var raw=String(faGet(o.formAnswers,['utm_campaign','campaign'])||s.utmCampaign||'').trim();
+  if(raw) return _campNames[raw]||raw;
+  var cands=[s.adId, s.utmAd, s.utmContent, s.utmAdset,
+    faGet(o.formAnswers,['utm_ad','utm ad']), faGet(o.formAnswers,['utm_adset'])];
+  for(var i=0;i<cands.length;i++){
+    var v=String(cands[i]||'').trim();
+    if(!v) continue;
+    if(_adToCamp[v]) return _adToCamp[v];               // match por ID exacto
+    var vn=_n(v);
+    if(_adToCamp['n:'+vn]) return _adToCamp['n:'+vn];   // match por nombre exacto
+    if(vn.length>=4){                                    // match aproximado (contiene)
+      for(var j=0;j<_adNamePairs.length;j++){
+        var p=_adNamePairs[j];
+        if(p.n.indexOf(vn)>=0||vn.indexOf(p.n)>=0) return p.camp;
+      }
+    }
+  }
+  return '';
+};
+
+  return {faGet:faGet, adOf:adOf, geoOf:geoOf, paisOf:paisOf, fuenteOf:fuenteOf,
+          campaignOf:campaignOf, campNames:_campNames};
+}
+
 function renderVentasTab(c, el){
   const esc=function(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
   const proxy=getGhlProxy();
@@ -16006,111 +16175,10 @@ function renderVentasTab(c, el){
   // ================= Metricas (hairline · TOF/MOF/BOF) =================
   const money=function(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{maximumFractionDigits:2});};
 
-  // --- Helpers de atribucion (anuncio / embudo / pais) ---
-  const faGet=function(fa,names){
-    if(!fa) return ''; var keys=Object.keys(fa); var i,j;
-    for(i=0;i<names.length;i++){ for(j=0;j<keys.length;j++){ if(keys[j].toLowerCase().trim()===names[i]) return fa[keys[j]]; } }
-    for(j=0;j<keys.length;j++){ var kl=keys[j].toLowerCase(); for(i=0;i<names.length;i++){ if(kl.indexOf(names[i])>=0) return fa[keys[j]]; } }
-    return '';
-  };
-  const _tzCountry=function(tz){
-    tz=String(tz||'');
-    if(/Argentina/i.test(tz)) return 'Argentina';
-    if(/Mexico|Hermosillo|Monterrey|Cancun|Tijuana|Merida|Chihuahua|Mazatlan|Matamoros|Ojinaga|Bahia_Banderas/i.test(tz)) return 'Mexico';
-    if(/Bogota/i.test(tz)) return 'Colombia';
-    if(/Lima/i.test(tz)) return 'Peru';
-    if(/Santiago/i.test(tz)) return 'Chile';
-    if(/Montevideo/i.test(tz)) return 'Uruguay';
-    if(/Sao_Paulo|Bahia|Fortaleza|Recife|Manaus/i.test(tz)) return 'Brasil';
-    if(/Guayaquil/i.test(tz)) return 'Ecuador';
-    if(/Caracas/i.test(tz)) return 'Venezuela';
-    if(/La_Paz/i.test(tz)) return 'Bolivia';
-    if(/Asuncion/i.test(tz)) return 'Paraguay';
-    if(/Madrid/i.test(tz)) return 'Espana';
-    if(/Guatemala/i.test(tz)) return 'Guatemala';
-    if(/Costa_Rica/i.test(tz)) return 'Costa Rica';
-    return '';
-  };
-  const _adIdx=metaAdIndex(c);
-  const adOf=function(o){
-    var s=o.source||{};
-    var raw=faGet(o.formAnswers,['utm_ad','utm ad']) || s.utmAd || s.utmContent || s.utmCampaign || s.utmSource || '';
-    return resolveAdLabel(c, raw, _adIdx);
-  };
-  const geoOf=function(o){
-    var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']);
-    if(tz){ var parts=String(tz).split('/'); var city=parts[parts.length-1].replace(/_/g,' '); var loc=[city,_tzCountry(tz)].filter(Boolean).join(', '); if(loc) return loc; }
-    var g=o.geo||{};
-    if(g.location) return g.location;
-    if(g.timezone){ var tzParts=String(g.timezone).split('/'); return tzParts[tzParts.length-1].replace(/_/g,' '); }
-    return [g.city,g.state,g.country].filter(function(x){return x && x!=='US';}).join(', ') || g.country || '';
-  };
-  const paisOf=function(o){
-    var tz=faGet(o.formAnswers,['timezone','time zone','zona horaria']) || (o.geo&&o.geo.timezone) || '';
-    var ctry=_tzCountry(tz);
-    if(ctry) return ctry;
-    var g=o.geo||{};
-    if(g.country && g.country!=='US') return g.country;
-    if(g.location){ var parts=String(g.location).split(','); var last=parts[parts.length-1].trim(); if(last) return last; }
-    return '';
-  };
-  const fuenteOf=function(o){
-    if(!o.source) return '';
-    var ref=(o.source.referrer||'').toLowerCase();
-    var src=(o.source.utmSource||'').toLowerCase();
-    var isMeta=src==='meta'||src==='facebook'||src==='instagram';
-    var isFbRef=ref.indexOf('facebook.com')>=0||ref.indexOf('instagram.com')>=0||ref.indexOf('l.facebook')>=0;
-    var isLanding=ref.length>0&&!isFbRef&&(ref.indexOf('http')===0);
-    if(isLanding&&isMeta) return 'Landing (Meta)';
-    if(isLanding) return 'Landing';
-    if(isMeta||isFbRef) return 'Meta';
-    if(src) return o.source.utmSource;
-    if(o.formAnswers&&(o.formAnswers['Lead Source']||o.formAnswers['source'])) return o.formAnswers['Lead Source']||o.formAnswers['source'];
-    return '';
-  };
-
-  // Campana de Meta del lead: utm_campaign directo, o deducida matcheando el anuncio del lead
-  // (adId / utm_ad / utm_adset) contra el arbol campanas->adsets->ads sincronizado en Ads & Guiones.
-  const _campNames={};     // campaignId -> nombre
-  const _adToCamp={};      // adId / adsetId / nombre normalizado -> nombre de campana
-  const _adNamePairs=[];   // para match aproximado por nombre
-  (function(){
-    var al=getActiveLine(c.conversionLines||[]);
-    ((al&&al.metaCampaigns)||[]).forEach(function(cp){
-      var cname=cp.name||String(cp.id);
-      _campNames[String(cp.id)]=cname;
-      _adToCamp['n:'+_n(cname)]=cname;
-      ((cp.adsets)||[]).forEach(function(as){
-        if(as.id) _adToCamp[String(as.id)]=cname;
-        if(as.name){ _adToCamp['n:'+_n(as.name)]=cname; _adNamePairs.push({n:_n(as.name),camp:cname}); }
-        ((as.ads)||[]).forEach(function(ad){
-          if(ad.id) _adToCamp[String(ad.id)]=cname;
-          if(ad.name){ _adToCamp['n:'+_n(ad.name)]=cname; _adNamePairs.push({n:_n(ad.name),camp:cname}); }
-        });
-      });
-    });
-  })();
-  const campaignOf=function(o){
-    var s=o.source||{};
-    var raw=String(faGet(o.formAnswers,['utm_campaign','campaign'])||s.utmCampaign||'').trim();
-    if(raw) return _campNames[raw]||raw;
-    var cands=[s.adId, s.utmAd, s.utmContent, s.utmAdset,
-      faGet(o.formAnswers,['utm_ad','utm ad']), faGet(o.formAnswers,['utm_adset'])];
-    for(var i=0;i<cands.length;i++){
-      var v=String(cands[i]||'').trim();
-      if(!v) continue;
-      if(_adToCamp[v]) return _adToCamp[v];               // match por ID exacto
-      var vn=_n(v);
-      if(_adToCamp['n:'+vn]) return _adToCamp['n:'+vn];   // match por nombre exacto
-      if(vn.length>=4){                                    // match aproximado (contiene)
-        for(var j=0;j<_adNamePairs.length;j++){
-          var p=_adNamePairs[j];
-          if(p.n.indexOf(vn)>=0||vn.indexOf(p.n)>=0) return p.camp;
-        }
-      }
-    }
-    return '';
-  };
+  // Atribucion: la misma que usa el arbol de diagnostico (ver ghlAtribucion).
+  var _atr=ghlAtribucion(c);
+  var adOf=_atr.adOf, geoOf=_atr.geoOf, paisOf=_atr.paisOf, fuenteOf=_atr.fuenteOf;
+  var campaignOf=_atr.campaignOf, _campNames=_atr.campNames;
 
   // --- Periodo ---
   const period=S.ventasPeriod||'todo';
