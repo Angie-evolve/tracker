@@ -14916,23 +14916,51 @@ function arRegimen(){
 }
 
 /* ---------- precarga desde Meta ---------- */
-function arAdsList(c){
+// La lista se arma al nivel elegido. Por defecto campana: a nivel anuncio son
+// decenas de filas con nombres repetidos entre conjuntos y no se puede elegir.
+// Respeta los checkboxes de campanas incluidas, igual que el resto de la app.
+function arItems(c){
   var al=getActiveLine((c&&c.conversionLines)||[]);
+  var excl=((al&&al.excludedCampaigns)||[]).map(String);
+  var nivel=S.arbolNivel||'camp';
   var out=[];
   (((al&&al.metaCampaigns))||[]).forEach(function(cp){
+    if(excl.indexOf(String(cp.id))>=0) return;
+    if(nivel==='camp'){ out.push({name:cp.name||String(cp.id), ctx:'', obj:cp}); return; }
     ((cp.adsets)||[]).forEach(function(as){
+      if(nivel==='adset'){ out.push({name:as.name||String(as.id), ctx:cp.name||'', obj:as}); return; }
       ((as.ads)||[]).forEach(function(ad){
-        if(ad&&ad.id) out.push({id:String(ad.id), name:ad.name||String(ad.id), camp:cp.name||'', ad:ad});
+        if(ad) out.push({name:ad.name||String(ad.id), ctx:as.name||cp.name||'', obj:ad});
       });
     });
   });
   return out;
 }
-function arPrefill(adId){
+function arOpcionesHtml(c){
+  var nivel=S.arbolNivel||'camp';
+  var etiq={camp:'una campana',adset:'un conjunto',ad:'un anuncio'}[nivel];
+  var items=arItems(c);
+  // El indice alcanza como valor y evita el choque de ids repetidos entre conjuntos.
+  return '<option value="">Cargar &laquo;Ahora&raquo; desde '+etiq+'&hellip;</option>'
+    +items.map(function(it,i){
+      return '<option value="'+i+'">'+esc(it.name)+(it.ctx?' &middot; '+esc(it.ctx):'')+'</option>';
+    }).join('');
+}
+function arNivel(k){
+  S.arbolNivel=k;
+  ['camp','adset','ad'].forEach(function(x){
+    var b=arEl('niv-'+x); if(b) b.className=(x===k?'on':'');
+  });
+  var sel=arEl('adsel');
+  if(sel){ sel.innerHTML=arOpcionesHtml(S._hojaCliente); sel.value=''; }
+  var n=arEl('prefill-note'); if(n) n.style.display='none';
+}
+function arPrefill(idx){
   var c=S._hojaCliente, note=arEl('prefill-note');
-  var found=arAdsList(c).filter(function(x){return x.id===String(adId);})[0];
+  if(idx===''||idx==null){ if(note) note.style.display='none'; return; }
+  var found=arItems(c)[parseInt(idx,10)];
   if(!found){ if(note) note.style.display='none'; return; }
-  var a=found.ad, imp=Number(a.impressions)||0, lv=Number(a.landingViews)||0;
+  var a=found.obj, imp=Number(a.impressions)||0, lv=Number(a.landingViews)||0;
   var set=function(id,v){
     var e=arEl(id); if(!e) return;
     e.value=(v==null||!isFinite(v))?'':String(Math.round(v*100)/100);
@@ -14948,8 +14976,12 @@ function arPrefill(adId){
   set('cpaA', isNaN(cpa)?null:cpa);
   var cl=arEl('clicks'); if(cl) cl.value=String(Number(a.clicks)||0);
   if(note){
-    note.innerHTML='Columna &laquo;Ahora&raquo; cargada desde <b>'+esc(found.name)+'</b>. '
-      +'El hook sale de reproducciones sobre impresiones, no de vistas de 3s: revisalo contra Ads Manager antes de decidir.';
+    var nivel=S.arbolNivel||'camp';
+    note.innerHTML='Columna &laquo;Ahora&raquo; cargada desde <b>'+esc(found.name)+'</b>.'
+      +'<br>El hook sale de reproducciones sobre impresiones, no de vistas de 3s: revisalo contra Ads Manager antes de decidir.'
+      +(nivel!=='ad'
+        ? '<br>A este nivel el hook es el promedio de todos los creativos que corren adentro: un ganador nuevo puede tapar a uno que se esta muriendo. Si el veredicto sale raro, baja a anuncio.'
+        : '');
     note.style.display='block';
   }
   if(!arPick().regimen){
@@ -15295,16 +15327,21 @@ function _arAcc(n, titulo, cuerpo, abierto){
 }
 
 function arShellHtml(c){
-  var ads=arAdsList(c);
+  if(!S.arbolNivel) S.arbolNivel='camp';
+  // getActiveLine devuelve null si el cliente no tiene linea todavia.
+  var _al=getActiveLine((c&&c.conversionLines)||[]);
+  var hayMeta=arItems(c).length>0 || (((_al&&_al.metaCampaigns))||[]).length>0;
   var sub=S.arbolSub||'diag';
   var tab=function(k,l){ return '<button id="ar-tab-'+k+'" class="'+(sub===k?'on':'')+'" onclick="arSub(\''+k+'\')">'+l+'</button>'; };
 
   /* ---- diagnostico ---- */
-  var selAds=ads.length
-    ? '<select class="ar-sel" id="ar-adsel" onchange="arPrefill(this.value)">'
-      +'<option value="">Cargar &laquo;Ahora&raquo; desde un anuncio&hellip;</option>'
-      +ads.map(function(a){ return '<option value="'+esc(a.id)+'">'+esc(a.name)+(a.camp?' &middot; '+esc(a.camp):'')+'</option>'; }).join('')
-      +'</select>'
+  var nivel=S.arbolNivel;
+  var nivBtn=function(k,l){ return '<button id="ar-niv-'+k+'" class="'+(nivel===k?'on':'')+'" onclick="arNivel(\''+k+'\')">'+l+'</button>'; };
+  var selAds=hayMeta
+    ? '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      +'<div class="vh-seg">'+nivBtn('camp','Campana')+nivBtn('adset','Conjunto')+nivBtn('ad','Anuncio')+'</div>'
+      +'<select class="ar-sel" id="ar-adsel" onchange="arPrefill(this.value)">'+arOpcionesHtml(c)+'</select>'
+      +'</div>'
     : '<span class="ar-note">Sincroniza Meta en Top of Funnel para poder precargar los numeros.</span>';
 
   var diag='<div class="ar-eyebrow">Diagnostico en vivo</div>'
