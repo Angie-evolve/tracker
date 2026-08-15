@@ -243,6 +243,28 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .ov-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;cursor:pointer;transition:all 0.2s}
 .ov-card:hover{border-color:var(--border2);transform:translateY(-1px)}
 
+.cp-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg2)}
+.cp-inner{min-width:840px}
+.cp-head{display:grid;grid-template-columns:170px repeat(12,1fr);border-bottom:1px solid var(--border);background:var(--bg3)}
+.cp-head>div{font-size:10px;color:var(--text3);padding:8px 4px;text-align:center;text-transform:uppercase;letter-spacing:0.05em}
+.cp-head>div:first-child{text-align:left;padding-left:14px}
+.cp-head>div.cp-now{color:var(--accent)}
+.cp-lane{display:grid;grid-template-columns:170px repeat(12,1fr);border-bottom:1px solid var(--border);min-height:54px}
+.cp-lane:last-child{border-bottom:none}
+.cp-name{padding:10px 13px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);border-right:1px solid var(--border);cursor:pointer}
+.cp-name:hover{background:var(--bg3)}
+.cp-cell{border-right:1px solid rgba(255,255,255,0.04);padding:5px 3px;display:flex;flex-direction:column;gap:3px;justify-content:center}
+.cp-cell:last-child{border-right:none}
+.cp-blk{border-radius:5px;min-height:16px;display:flex;align-items:center;justify-content:center;font-size:9px;
+  color:#0d0d0d;font-weight:500;cursor:pointer;transition:transform .12s;border:none;font-family:var(--font);padding:2px 3px}
+.cp-blk:hover{transform:translateY(-1px)}
+.cp-ghost{border-radius:5px;min-height:16px;border:1px dashed var(--border2);background:transparent;color:var(--text3);
+  font-size:10px;cursor:pointer;opacity:0;transition:opacity .15s;font-family:var(--font)}
+.cp-cell:hover .cp-ghost{opacity:1}
+.cp-ghost:hover{color:var(--accent);border-color:rgba(78,207,160,0.45)}
+.cp-q{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer;transition:border-color .15s}
+.cp-q:hover{border-color:var(--border2)}
+.cp-q.cp-qnow{border-color:rgba(78,207,160,0.4)}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px)}
 .modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:580px;max-height:90vh;overflow-y:auto;padding:24px;box-shadow:0 24px 80px rgba(0,0,0,0.6)}
 .modal-title{font-size:16px;font-weight:500;color:var(--strong);margin-bottom:6px}
@@ -9808,6 +9830,285 @@ function borrarRefMercado(idx){
   refs.splice(idx,1); save(); renderTab();
 }
 
+// ---- Calendario anual de contenido (vista carriles por eje) ----
+// La estrategia del año vive arriba (foco por trimestre) y las piezas cuelgan
+// de un eje de comunicacion. Los huecos del carril son la lectura importante:
+// un eje que no habla seis meses seguidos se ve como espacio en blanco.
+const CP_MESES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const CP_MESC=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const CP_FORMATOS=['reel','estatico','carrusel','vsl','live','otro'];
+const CP_ESTADOS=[{k:'idea',n:'Idea',c:'#555'},{k:'guion',n:'Guionada',c:'#f0a830'},{k:'grab',n:'Grabada',c:'#378ADD'},{k:'pub',n:'Publicada',c:'#4ecfa0'}];
+const CP_COLORES=['#4ecfa0','#378ADD','#f0a830','#f07050','#a78bfa','#5bc0de'];
+const CP_EJES_BASE=[
+  {n:'Autoridad tecnica', c:'#4ecfa0'},
+  {n:'Casos y resultados', c:'#378ADD'},
+  {n:'Detras de escena', c:'#f0a830'},
+  {n:'Oferta directa', c:'#f07050'}
+];
+function _cpId(){return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function cpEstado(k){return CP_ESTADOS.find(function(e){return e.k===k;})||CP_ESTADOS[0];}
+function cpAnio(){ return S.mercadoYear||(S.mercadoYear=new Date().getFullYear()); }
+function cpCambiarAnio(d){ S.mercadoYear=cpAnio()+d; renderTab(); }
+// Estructura por cliente. Los ejes son del cliente (transversales al año);
+// el foco de cada trimestre y las piezas, del año elegido.
+function getContentPlan(c){
+  if(!c.contentPlan||typeof c.contentPlan!=='object') c.contentPlan={};
+  var cp=c.contentPlan;
+  if(!Array.isArray(cp.ejes)||!cp.ejes.length){
+    cp.ejes=CP_EJES_BASE.map(function(e){return {id:_cpId(),n:e.n,c:e.c};});
+  }
+  if(!cp.years||typeof cp.years!=='object') cp.years={};
+  return cp;
+}
+function getPlanAnio(c,y){
+  var cp=getContentPlan(c); var k=String(y||cpAnio());
+  if(!cp.years[k]) cp.years[k]={qs:['','','',''], piezas:[]};
+  if(!Array.isArray(cp.years[k].qs)) cp.years[k].qs=['','','',''];
+  if(!Array.isArray(cp.years[k].piezas)) cp.years[k].piezas=[];
+  // Red de seguridad: una pieza con un eje que ya no existe no se dibujaria en
+  // ningun carril y quedaria invisible. La devolvemos al primer eje.
+  cp.years[k].piezas.forEach(function(p){
+    if(!cp.ejes.some(function(e){return e.id===p.e;})) p.e=cp.ejes[0].id;
+    var m=parseInt(p.m,10); p.m=(isNaN(m)||m<0||m>11)?0:m;
+  });
+  return cp.years[k];
+}
+function _cpCli(){ return DB.clients.find(function(x){return x.id===S.clientId;}); }
+
+// --- Piezas ---
+function abrirPieza(id,mes,ejeId){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c), cp=getContentPlan(c);
+  var nuevo=!id;
+  var p=nuevo?{t:'',e:ejeId||cp.ejes[0].id,f:'reel',m:(mes===null||mes===undefined)?new Date().getMonth():mes,s:'idea',link:''}
+             :pl.piezas.find(function(x){return x.id===id;});
+  if(!p) return;
+  var arg=nuevo?'null':"'"+p.id+"'";
+  var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:470px;width:92%">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px">'
+      +'<span style="font-size:15px;font-weight:600;color:var(--strong)">'+(nuevo?'Nueva pieza':'Editar pieza')+'</span>'
+      +'<span style="font-size:11px;color:var(--text3)">'+cpAnio()+'</span></div>'
+    +'<div style="display:flex;flex-direction:column;gap:11px">'
+      +'<div><div style="'+lbl+'">Titulo o idea</div>'
+        +'<input id="cp-t" value="'+esc(p.t||'')+'" placeholder="De que va la pieza" style="'+inp+'" '
+        +'onkeydown="if(event.key===\'Enter\')guardarPieza('+arg+')"></div>'
+      +'<div style="display:flex;gap:10px">'
+        +'<div style="flex:1"><div style="'+lbl+'">Eje</div><select id="cp-e" style="'+inp+'">'
+          +cp.ejes.map(function(e){return '<option value="'+esc(e.id)+'"'+(e.id===p.e?' selected':'')+'>'+esc(e.n)+'</option>';}).join('')
+        +'</select></div>'
+        +'<div style="flex:1"><div style="'+lbl+'">Mes</div><select id="cp-m" style="'+inp+'">'
+          +CP_MESES.map(function(m,i){return '<option value="'+i+'"'+(i===p.m?' selected':'')+'>'+m+'</option>';}).join('')
+        +'</select></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:10px">'
+        +'<div style="flex:1"><div style="'+lbl+'">Formato</div><select id="cp-f" style="'+inp+'">'
+          +CP_FORMATOS.map(function(f){return '<option value="'+f+'"'+(f===p.f?' selected':'')+'>'+f+'</option>';}).join('')
+        +'</select></div>'
+        +'<div style="flex:1"><div style="'+lbl+'">Estado</div><select id="cp-s" style="'+inp+'">'
+          +CP_ESTADOS.map(function(e){return '<option value="'+e.k+'"'+(e.k===p.s?' selected':'')+'>'+e.n+'</option>';}).join('')
+        +'</select></div>'
+      +'</div>'
+      +'<div><div style="'+lbl+'">Link (opcional)</div>'
+        +'<input id="cp-link" value="'+esc(p.link||'')+'" placeholder="guion, drive, post publicado" style="'+inp+'"></div>'
+    +'</div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px">'
+      +(nuevo?'<span></span>':'<button class="btn btn-sm" style="color:var(--text3)" onclick="borrarPieza(\''+p.id+'\')">Borrar</button>')
+      +'<span style="display:flex;gap:8px">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarPieza('+arg+')">Guardar</button></span>'
+    +'</div></div></div>';
+  setTimeout(function(){var f=document.getElementById('cp-t'); if(f) f.focus();},50);
+}
+function guardarPieza(id){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  var v=function(k){var el=document.getElementById(k); return el?el.value:'';};
+  var t=(v('cp-t')||'').trim();
+  if(!t){ toast('Falta el titulo de la pieza','red'); return; }
+  var datos={t:t, e:v('cp-e'), f:v('cp-f'), m:parseInt(v('cp-m'),10)||0, s:v('cp-s'), link:(v('cp-link')||'').trim()};
+  if(!id){ datos.id=_cpId(); pl.piezas.push(datos); }
+  else{
+    var p=pl.piezas.find(function(x){return x.id===id;});
+    if(!p) return; Object.keys(datos).forEach(function(k){p[k]=datos[k];});
+  }
+  save(); closeModal(); renderTab(); toast('Guardado');
+}
+function borrarPieza(id){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  var i=pl.piezas.findIndex(function(x){return x.id===id;});
+  if(i<0) return;
+  if(!confirm('Borrar "'+(pl.piezas[i].t||'esta pieza')+'"?')) return;
+  pl.piezas.splice(i,1); save(); closeModal(); renderTab();
+}
+
+// --- Foco del trimestre: la parte estrategica del calendario ---
+function abrirFocoQ(qi){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:430px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong)">Foco de Q'+(qi+1)+' &middot; '+cpAnio()+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin:5px 0 14px;line-height:1.6">'
+      +CP_MESES[qi*3]+' a '+CP_MESES[qi*3+2]+'. Que tiene que lograr la comunicacion en estos tres meses.</div>'
+    +'<textarea id="cp-q" rows="3" placeholder="Ej: instalar el problema, que el mercado nombre el dolor" '
+      +'style="'+inp+';resize:vertical">'+esc(pl.qs[qi]||'')+'</textarea>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarFocoQ('+qi+')">Guardar</button>'
+    +'</div></div></div>';
+  setTimeout(function(){var f=document.getElementById('cp-q'); if(f) f.focus();},50);
+}
+function guardarFocoQ(qi){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  var el=document.getElementById('cp-q');
+  pl.qs[qi]=el?el.value.trim():'';
+  save(); closeModal(); renderTab();
+}
+
+// --- Ejes de comunicacion ---
+function abrirEjes(){
+  var c=_cpCli(); if(!c) return;
+  var cp=getContentPlan(c);
+  var pl=getPlanAnio(c);
+  var inp='padding:7px 9px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  var filas=cp.ejes.map(function(e,i){
+    var usos=pl.piezas.filter(function(p){return p.e===e.id;}).length;
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="display:flex;gap:3px;flex-shrink:0">'
+        +CP_COLORES.map(function(col){
+          return '<button title="'+col+'" onclick="_ejeColor('+i+',\''+col+'\')" style="width:13px;height:13px;border-radius:50%;background:'+col+';cursor:pointer;'
+            +'border:'+(col===e.c?'2px solid var(--strong)':'1px solid var(--border2)')+';padding:0"></button>';
+        }).join('')
+      +'</span>'
+      +'<input value="'+esc(e.n)+'" onchange="_ejeNombre('+i+',this.value)" style="'+inp+';flex:1">'
+      +'<span style="font-size:10.5px;color:var(--text3);width:52px;text-align:right;flex-shrink:0">'+usos+' pieza'+(usos===1?'':'s')+'</span>'
+      +'<button class="btn btn-sm" style="padding:3px 8px;font-size:11px;color:var(--text3);flex-shrink:0" onclick="_ejeBorrar('+i+')">Borrar</button>'
+    +'</div>';
+  }).join('');
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:94%;max-height:86vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong)">Ejes de comunicacion</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin:5px 0 14px;line-height:1.6">'
+      +'Los temas de los que habla el cliente todo el año. Cada uno es un carril del calendario &mdash; '
+      +'si un carril queda vacio varios meses, ese mensaje se apago.</div>'
+    +filas
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">'
+      +'<button class="btn btn-sm" onclick="_ejeAgregar()">+ Agregar eje</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="closeModal();renderTab()">Listo</button>'
+    +'</div></div></div>';
+}
+function _ejeNombre(i,v){
+  var c=_cpCli(); if(!c) return;
+  var cp=getContentPlan(c); if(!cp.ejes[i]) return;
+  cp.ejes[i].n=String(v||'').trim()||'Sin nombre'; save();
+}
+function _ejeColor(i,col){
+  var c=_cpCli(); if(!c) return;
+  var cp=getContentPlan(c); if(!cp.ejes[i]) return;
+  cp.ejes[i].c=col; save(); abrirEjes();
+}
+function _ejeAgregar(){
+  var c=_cpCli(); if(!c) return;
+  var cp=getContentPlan(c);
+  cp.ejes.push({id:_cpId(), n:'Nuevo eje', c:CP_COLORES[cp.ejes.length%CP_COLORES.length]});
+  save(); abrirEjes();
+}
+function _ejeBorrar(i){
+  var c=_cpCli(); if(!c) return;
+  var cp=getContentPlan(c); var e=cp.ejes[i]; if(!e) return;
+  if(cp.ejes.length<2){ toast('Tiene que quedar al menos un eje','red'); return; }
+  // Cuantas piezas quedarian huerfanas, en todos los años
+  var usos=0;
+  Object.keys(cp.years||{}).forEach(function(y){
+    usos+=(cp.years[y].piezas||[]).filter(function(p){return p.e===e.id;}).length;
+  });
+  if(!confirm('Borrar el eje "'+e.n+'"?'+(usos?' Sus '+usos+' pieza(s) pasan al primer eje de la lista.':''))) return;
+  cp.ejes.splice(i,1);
+  var destino=cp.ejes[0].id;
+  Object.keys(cp.years||{}).forEach(function(y){
+    (cp.years[y].piezas||[]).forEach(function(p){ if(p.e===e.id) p.e=destino; });
+  });
+  save(); abrirEjes();
+}
+
+// --- El bloque HTML del calendario (se inyecta en el tab de mercado) ---
+function calendarioContenidoHtml(c){
+  var cp=getContentPlan(c), y=cpAnio(), pl=getPlanAnio(c,y);
+  var hoy=new Date(), mesHoy=(hoy.getFullYear()===y)?hoy.getMonth():-1;
+  var tot=pl.piezas.length;
+  var pub=pl.piezas.filter(function(p){return p.s==='pub';}).length;
+  var prod=pl.piezas.filter(function(p){return p.s==='guion'||p.s==='grab';}).length;
+
+  var h='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:13px">'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Calendario anual de contenido</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">'
+      +(tot? tot+' pieza'+(tot===1?'':'s')+' en '+y+' &middot; '+pub+' publicada'+(pub===1?'':'s')+' &middot; '+prod+' en produccion &middot; '+(tot-pub-prod)+' todavia idea'
+           : 'Sin piezas cargadas en '+y+'. Pasa el mouse por una celda y toca el + para sumar la primera.')
+    +'</div></div>'
+    +'<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
+      +'<button class="btn btn-sm" style="padding:5px 9px" onclick="cpCambiarAnio(-1)" title="Año anterior">&lsaquo;</button>'
+      +'<span style="font-size:12.5px;color:var(--text);min-width:38px;text-align:center">'+y+'</span>'
+      +'<button class="btn btn-sm" style="padding:5px 9px" onclick="cpCambiarAnio(1)" title="Año siguiente">&rsaquo;</button>'
+      +'<button class="btn btn-sm" style="margin-left:6px" onclick="abrirEjes()">Ejes</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="abrirPieza(null,null,null)">Agregar pieza</button>'
+    +'</div></div>';
+
+  // Foco por trimestre: la estrategia arriba de las piezas
+  h+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:13px">';
+  for(var q=0;q<4;q++){
+    var esQ=(mesHoy>=0&&Math.floor(mesHoy/3)===q);
+    var txt=pl.qs[q]||'';
+    var nq=pl.piezas.filter(function(p){return Math.floor(p.m/3)===q;}).length;
+    h+='<div class="cp-q'+(esQ?' cp-qnow':'')+'" onclick="abrirFocoQ('+q+')" title="Editar el foco de Q'+(q+1)+'">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">'
+        +'<span style="font-size:11.5px;font-weight:500;color:'+(esQ?'var(--accent)':'var(--text)')+'">Q'+(q+1)+'</span>'
+        +'<span style="font-size:10px;color:var(--text3)">'+nq+'</span></div>'
+      +'<div style="font-size:11.5px;color:'+(txt?'var(--text2)':'var(--text3)')+';line-height:1.5;margin-top:5px">'
+        +(txt?esc(txt):'sin foco definido')+'</div></div>';
+  }
+  h+='</div>';
+
+  // Carriles
+  h+='<div class="cp-wrap"><div class="cp-inner"><div class="cp-head"><div>Eje de comunicacion</div>';
+  for(var i=0;i<12;i++) h+='<div'+(i===mesHoy?' class="cp-now"':'')+'>'+CP_MESC[i]+'</div>';
+  h+='</div>';
+  cp.ejes.forEach(function(e){
+    h+='<div class="cp-lane"><div class="cp-name" onclick="abrirEjes()" title="Editar ejes">'
+      +'<span style="width:6px;height:6px;border-radius:50%;background:'+e.c+';flex-shrink:0"></span>'
+      +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(e.n)+'</span></div>';
+    for(var m=0;m<12;m++){
+      var pz=pl.piezas.filter(function(p){return p.m===m&&p.e===e.id;});
+      h+='<div class="cp-cell">';
+      pz.forEach(function(p){
+        var st=cpEstado(p.s);
+        h+='<button class="cp-blk" style="background:'+e.c+';opacity:'+(p.s==='idea'?'0.4':'0.92')+'" '
+          +'onclick="abrirPieza(\''+p.id+'\')" title="'+esc(p.t)+' &#10;'+esc(p.f)+' &middot; '+st.n+'">'
+          +esc(String(p.f||'').slice(0,3))+'</button>';
+      });
+      h+='<button class="cp-ghost" onclick="abrirPieza(null,'+m+',\''+e.id+'\')" title="Sumar pieza en '+CP_MESES[m]+'">+</button>';
+      h+='</div>';
+    }
+    h+='</div>';
+  });
+  h+='</div></div>';
+
+  h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:11px;font-size:11px;color:var(--text3)">'
+    +'<span style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:9px;border-radius:4px;background:var(--accent);opacity:0.92"></span>Agendada o lista</span>'
+    +'<span style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:9px;border-radius:4px;background:var(--accent);opacity:0.4"></span>Todavia es idea</span>'
+    +'<span style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:9px;border-radius:4px;border:1px dashed var(--border2)"></span>Hueco: ese eje no habla ese mes</span>'
+    +'</div>';
+  return h;
+}
+
 function renderTab(){
   const c=DB.clients.find(x=>x.id===S.clientId);
   const el=document.getElementById('tab-content');
@@ -10481,6 +10782,8 @@ function renderTab(){
         }).join('')
       +'</div>';
     }
+    html+='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>';
+    html+=calendarioContenidoHtml(c);
     el.innerHTML=html;
   }
 
