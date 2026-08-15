@@ -2521,6 +2521,7 @@ function setMetricsView(v){S.metricsView=v;renderClient();}
 const CLIENT_TABS=[
   {k:'success', l:'Success tracker', icon:'M4 20V10M10 20V4M16 20v-7M22 20H2'},
   {k:'embudo', l:'Embudo de Ventas', icon:'M4 4h16l-6 8v6l-4 2v-8z'},
+  {k:'mercado', l:'Analisis de mercado', icon:'M11 3a8 8 0 100 16 8 8 0 000-16zm10 18l-4.6-4.6'},
   {k:'integraciones', l:'Integraciones', icon:'M9 7V2m6 5V2M7 7h10v4a5 5 0 01-10 0V7zm5 9v6'},
 ];
 
@@ -2629,7 +2630,7 @@ function renderClient(){
   document.getElementById('main-content').innerHTML=`
     <div class="zoom-in">
     <div class="content">
-      ${(S.tab==='ventas'||S.tab==='ads'||S.tab==='embudo'||S.tab==='integraciones'||S.tab==='alarmas'||S.tab==='success'||S.tab==='tareas') ? '' : `
+      ${(S.tab==='ventas'||S.tab==='ads'||S.tab==='embudo'||S.tab==='integraciones'||S.tab==='mercado'||S.tab==='alarmas'||S.tab==='success'||S.tab==='tareas') ? '' : `
       <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:10px">
         <span style="font-size:11px;color:var(--text3);margin-right:4px;text-transform:uppercase;letter-spacing:0.05em">Metricas:</span>
         <button class="btn btn-sm" onclick="setMetricsView('historico')" style="${_isHist?'border-color:rgba(29,158,117,0.5);color:var(--accent)':'color:var(--text3)'}">Historico</button>
@@ -9741,6 +9742,72 @@ function kickLiveRefresh(c){
   });
 }
 
+// ---- Analisis de mercado: cuentas de Instagram que seguimos por cliente ----
+// Lista simple y editable a mano. Vive dentro del cliente (c.marketRefs), asi
+// viaja sola en el backup y en la sync a Supabase.
+function getMercadoRefs(c){
+  if(!Array.isArray(c.marketRefs)) c.marketRefs=[];
+  return c.marketRefs;
+}
+// Acepta "@juan", "juan", "instagram.com/juan", "https://www.instagram.com/juan/?hl=es"
+function _igParse(v){
+  var s=String(v||'').trim();
+  if(!s) return {handle:'',url:''};
+  var m=s.match(/instagram\.com\/([A-Za-z0-9._]+)/i);
+  var h=m?m[1]:s.replace(/^https?:\/\//i,'').replace(/^@/,'').split(/[\/?#]/)[0];
+  h=(h||'').replace(/[^A-Za-z0-9._]/g,'');
+  return {handle:h, url:h?('https://instagram.com/'+h):''};
+}
+function abrirRefMercado(idx){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var refs=getMercadoRefs(c);
+  var nuevo=(idx===null||idx===undefined);
+  var r=nuevo?{name:'',url:'',handle:'',note:''}:refs[idx];
+  if(!r) return;
+  var arg=nuevo?'null':String(idx);
+  var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:14px">'+(nuevo?'Nueva cuenta':'Editar cuenta')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:11px">'
+      +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Nombre</div>'
+        +'<input id="mr-name" value="'+esc(r.name||'')+'" placeholder="Como le decimos" style="'+inp+'" '
+        +'onkeydown="if(event.key===\'Enter\')guardarRefMercado('+arg+')"></div>'
+      +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Instagram</div>'
+        +'<input id="mr-url" value="'+esc(r.url||(r.handle?'@'+r.handle:''))+'" placeholder="@usuario o link" style="'+inp+'" '
+        +'onkeydown="if(event.key===\'Enter\')guardarRefMercado('+arg+')"></div>'
+      +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Nota (opcional)</div>'
+        +'<textarea id="mr-note" rows="3" placeholder="Que nos interesa de esta cuenta" style="'+inp+';resize:vertical">'+esc(r.note||'')+'</textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarRefMercado('+arg+')">Guardar</button>'
+    +'</div></div></div>';
+  setTimeout(function(){var f=document.getElementById('mr-name'); if(f) f.focus();},50);
+}
+function guardarRefMercado(idx){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var refs=getMercadoRefs(c);
+  var name=((document.getElementById('mr-name')||{}).value||'').trim();
+  var raw=((document.getElementById('mr-url')||{}).value||'').trim();
+  var note=((document.getElementById('mr-note')||{}).value||'').trim();
+  var p=_igParse(raw);
+  if(!name && !p.handle){ toast('Pone al menos el nombre o el link','red'); return; }
+  var obj={name:name, handle:p.handle, url:p.url, note:note};
+  if(idx===null||idx===undefined) refs.push(obj);
+  else refs[idx]=Object.assign({},refs[idx]||{},obj);
+  save(); closeModal();
+  if(S.tab==='mercado') renderTab();
+  toast('Guardado');
+}
+function borrarRefMercado(idx){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var refs=getMercadoRefs(c); var r=refs[idx]; if(!r) return;
+  if(!confirm('Borrar "'+(r.name||r.handle||'esta cuenta')+'" de la lista?')) return;
+  refs.splice(idx,1); save(); renderTab();
+}
+
 function renderTab(){
   const c=DB.clients.find(x=>x.id===S.clientId);
   const el=document.getElementById('tab-content');
@@ -10383,6 +10450,37 @@ function renderTab(){
     html+='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px">Disponibles para integrar</div>';
     html+='<div style="font-size:11.5px;color:var(--text3);margin:-4px 0 12px">Todavia no estan conectadas - si alguna te sirve, pedila y la armamos.</div>';
     html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">'+sugeridas+'</div>';
+    el.innerHTML=html;
+  }
+
+  else if(S.tab==='mercado'){
+    const refs=getMercadoRefs(c);
+    let html='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">'
+      +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Referentes en Instagram</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">Cuentas que miramos para este cliente: competencia, referentes de formato, casos que estan funcionando.</div></div>'
+      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="abrirRefMercado(null)">Agregar</button></div>';
+    if(!refs.length){
+      html+='<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:36px 20px;text-align:center">'
+        +'<div style="font-size:13px;color:var(--text2)">Todavia no hay cuentas guardadas.</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Sumá la primera con el boton de arriba.</div></div>';
+    }else{
+      html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">'
+        +refs.map(function(r,i){
+          const h=r.handle||_igParse(r.url||'').handle;
+          const u=r.url||(h?'https://instagram.com/'+h:'');
+          return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;display:flex;flex-direction:column;gap:7px">'
+            +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
+              +'<span style="font-size:13.5px;font-weight:500;color:var(--strong);line-height:1.3;word-break:break-word">'+esc(r.name||h||'Sin nombre')+'</span>'
+              +'<span style="display:flex;gap:5px;flex-shrink:0">'
+                +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px" onclick="abrirRefMercado('+i+')">Editar</button>'
+                +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px;color:var(--text3)" onclick="borrarRefMercado('+i+')">Borrar</button>'
+              +'</span></div>'
+            +(u?'<a href="'+esc(u)+'" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);text-decoration:none;word-break:break-all">@'+esc(h)+'</a>':'')
+            +(r.note?'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;white-space:pre-wrap">'+esc(r.note)+'</div>':'')
+          +'</div>';
+        }).join('')
+      +'</div>';
+    }
     el.innerHTML=html;
   }
 
