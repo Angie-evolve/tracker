@@ -7458,18 +7458,27 @@ function rvSetTrackerUrl(u){
 function rvISO(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 function rvFmtDia(d){ return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2); }
 
+// Una frecuencia personalizada viaja como 'custom:N', donde N son los dias que
+// cubre el informe. Asi el dato entra entero en el mismo string que ya usaban
+// todas las funciones de abajo, y una revision vieja conserva su ventana real
+// aunque despues cambies la configuracion del envio.
+function _rvCustomDias(freq){
+  var m=/^custom:(\d+)$/.exec(String(freq||''));
+  return m?Math.max(1,Math.min(90,parseInt(m[1],10))):null;
+}
 // Ventana que cubre el informe recien enviado, segun su frecuencia.
 function rvVentana(freq, ahora){
   ahora=ahora||new Date();
-  if(freq==='monthly'){
-    return { from:new Date(ahora.getFullYear(), ahora.getMonth()-1, 1),
-             to:  new Date(ahora.getFullYear(), ahora.getMonth(), 0) };
-  }
-  if(freq==='daily'||freq==='biweekly'){
-    var dias=(freq==='daily')?7:14;
+  var cus=_rvCustomDias(freq);
+  if(cus||freq==='daily'||freq==='biweekly'){
+    var dias=cus||((freq==='daily')?7:14);
     var to=new Date(ahora); to.setHours(0,0,0,0); to.setDate(to.getDate()-1);
     var from=new Date(to); from.setDate(from.getDate()-(dias-1));
     return { from:from, to:to };
+  }
+  if(freq==='monthly'){
+    return { from:new Date(ahora.getFullYear(), ahora.getMonth()-1, 1),
+             to:  new Date(ahora.getFullYear(), ahora.getMonth(), 0) };
   }
   var dow=(ahora.getDay()+6)%7;
   var lun=new Date(ahora); lun.setHours(0,0,0,0); lun.setDate(lun.getDate()-dow-7);
@@ -7484,7 +7493,7 @@ function rvRangoDeFin(freq, iso){
   var to=new Date(Number(p[0])||1970, (Number(p[1])||1)-1, Number(p[2])||1);
   to.setHours(0,0,0,0);
   if(freq==='monthly') return { from:new Date(to.getFullYear(), to.getMonth(), 1), to:to };
-  var dias=(freq==='biweekly')?14:7;
+  var dias=_rvCustomDias(freq)||((freq==='biweekly')?14:7);
   var from=new Date(to); from.setDate(from.getDate()-(dias-1));
   return { from:from, to:to };
 }
@@ -7493,6 +7502,8 @@ function rvRangoTexto(freq, iso){
   return rvFmtDia(r.from)+' al '+rvFmtDia(r.to);
 }
 function rvFreqTexto(freq){
+  var cus=_rvCustomDias(freq);
+  if(cus) return 'informe de '+cus+' dias';
   return { daily:'informe diario', weekly:'informe semanal',
            biweekly:'informe cada 15 dias', monthly:'informe mensual' }[freq]||'informe semanal';
 }
@@ -7505,7 +7516,10 @@ function rvFreqCliente(clientId){
   for(var i=0;i<envios.length;i++){
     var e=envios[i]||{};
     var todos=!e.clientes||!e.clientes.length;
-    if(todos||e.clientes.indexOf(id)>=0) return e.freq||'weekly';
+    if(todos||e.clientes.indexOf(id)>=0){
+      if((e.freq||'')==='custom') return 'custom:'+(parseInt(e.cover,10)||7);
+      return e.freq||'weekly';
+    }
   }
   return 'weekly';
 }
@@ -8359,8 +8373,22 @@ function getEnvios(){
 }
 function setEnvios(e){ localStorage.setItem('evold-report-envios', JSON.stringify(e)); }
 
+// Dias elegidos de una frecuencia personalizada, en texto: "lunes, miercoles y viernes"
+function _envDiasTexto(days){
+  var d=(days||[]).slice().sort(function(a,b){return a-b;})
+    .map(function(n){ return (WR_DAYS[n-1]||'').toLowerCase(); }).filter(Boolean);
+  if(!d.length) return 'sin dias elegidos';
+  if(d.length===7) return 'todos los dias';
+  if(d.length===1) return 'los '+d[0];
+  return 'los '+d.slice(0,-1).join(', ')+' y '+d[d.length-1];
+}
 function describeEnvio(e){
   var h=(e.hour<10?'0':'')+e.hour+':00';
+  if(e.freq==='custom'){
+    if(!(e.days||[]).length) return 'Sin dias elegidos: no sale nunca';
+    var td=_envDiasTexto(e.days);
+    return td.charAt(0).toUpperCase()+td.slice(1)+' a las '+h;
+  }
   if(e.freq==='daily')    return 'Todos los dias a las '+h;
   if(e.freq==='biweekly') return 'Cada 15 dias, los '+WR_DAYS[(e.day||1)-1].toLowerCase()+' a las '+h;
   if(e.freq==='monthly')  return 'El dia '+(e.monthDay||1)+' de cada mes a las '+h;
@@ -8380,11 +8408,16 @@ function wrLeerEnvios(){
     if(!(todos&&todos.checked)){
       for(var j=0;j<chks.length;j++){ if(chks[j].checked) clientes.push(chks[j].getAttribute('data-cli')); }
     }
+    var diasCustom=[];
+    var chkD=cajas[i].querySelectorAll('input[type=checkbox][data-dow]');
+    for(var k=0;k<chkD.length;k++){ if(chkD[k].checked) diasCustom.push(parseInt(chkD[k].getAttribute('data-dow'),10)); }
     out.push({
       id:id, email:(g('env-mail')||'').trim(),
       freq:g('env-freq')||'weekly',
       day:parseInt(g('env-day')||'1',10),
       monthDay:parseInt(g('env-md')||'1',10),
+      days:diasCustom,
+      cover:Math.max(1,Math.min(90,parseInt(g('env-cover')||'7',10)||7)),
       hour:parseInt(g('env-hour')!==null?g('env-hour'):'10',10),
       whatsapp:(g('env-wa')||'').trim(),
       clientes:clientes   // vacio = todos
@@ -8398,16 +8431,21 @@ function wrEnviosChanged(){
   setEnvios(envios);
   envios.forEach(function(e){
     var dw=document.getElementById('env-day-wrap-'+e.id), dm=document.getElementById('env-md-wrap-'+e.id);
+    var cw=document.getElementById('env-custom-'+e.id);
     if(dw) dw.style.display=(e.freq==='weekly'||e.freq==='biweekly')?'block':'none';
     if(dm) dm.style.display=(e.freq==='monthly')?'block':'none';
+    if(cw) cw.style.display=(e.freq==='custom')?'block':'none';
     var todos=document.getElementById('env-todos-'+e.id);
     var lista=document.getElementById('env-lista-'+e.id);
     if(lista) lista.style.display=(todos&&todos.checked)?'none':'block';
     var r=document.getElementById('env-resumen-'+e.id);
     if(r){
       var cuantos=(todos&&todos.checked)?'todos los clientes':(e.clientes.length+' cliente'+(e.clientes.length===1?'':'s'));
-      r.innerHTML=describeEnvio(e)+' &middot; '+cuantos+' &middot; cubre '+reportPeriodLabel(e.freq)+'.'
-        +(e.whatsapp?' <span style="color:var(--accent)">Avisa por WhatsApp al '+esc(e.whatsapp)+'.</span>':'');
+      var aviso=(e.freq==='custom'&&!(e.days||[]).length)
+        ? ' <span style="color:var(--amberx)">Elegi al menos un dia o no sale nunca.</span>' : '';
+      r.innerHTML=describeEnvio(e)+' &middot; '+cuantos+' &middot; cubre '+reportPeriodLabel(e.freq,e.cover)+'.'
+        +(e.whatsapp?' <span style="color:var(--accent)">Avisa por WhatsApp al '+esc(e.whatsapp)+'.</span>':'')
+        +aviso;
     }
   });
 }
@@ -8453,7 +8491,7 @@ function getWaCfg(){
 function wrAgregarEnvio(){
   var envios=wrLeerEnvios();
   envios.push({ id:'e'+Date.now().toString().slice(-6), email:'', freq:'weekly',
-                day:1, monthDay:1, hour:10, clientes:[] });
+                day:1, monthDay:1, days:[1,3,5], cover:7, hour:10, clientes:[] });
   setEnvios(envios);
   openWeeklyReportModal();
 }
@@ -8516,7 +8554,8 @@ function getReportSchedule(){
 }
 function setReportSchedule(s){ localStorage.setItem('evold-report-sched',JSON.stringify(s)); }
 // Que periodo cubre el informe segun cada frecuencia (lo tiene que respetar el Apps Script)
-function reportPeriodLabel(freq){
+function reportPeriodLabel(freq, cover){
+  if(freq==='custom') return 'los ultimos '+(parseInt(cover,10)||7)+' dias (moviles)';
   if(freq==='daily') return 'los ultimos 7 dias (moviles)';
   if(freq==='monthly') return 'el mes pasado completo';
   if(freq==='biweekly') return 'los ultimos 14 dias';
@@ -8667,10 +8706,31 @@ function openWeeklyReportModal(){
         +'<div style="flex:1"><select id="env-freq-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'
           +opt('daily','Todos los dias',e.freq)+opt('weekly','Cada semana',e.freq)
           +opt('biweekly','Cada 15 dias',e.freq)+opt('monthly','Cada mes',e.freq)
+          +opt('custom','Personalizada',e.freq)
         +'</select></div>'
         +'<div id="env-day-wrap-'+e.id+'" style="flex:1;display:'+((e.freq==='weekly'||e.freq==='biweekly')?'block':'none')+'"><select id="env-day-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+dias+'</select></div>'
         +'<div id="env-md-wrap-'+e.id+'" style="flex:1;display:'+(e.freq==='monthly'?'block':'none')+'"><select id="env-md-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+diasMes+'</select></div>'
         +'<div style="flex:0 0 100px"><select id="env-hour-'+e.id+'" onchange="wrEnviosChanged()" style="'+selStyle+'">'+horas+'</select></div>'
+      +'</div>'
+      +'<div id="env-custom-'+e.id+'" style="display:'+(e.freq==='custom'?'block':'none')+';background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:9px 11px;margin-bottom:9px">'
+        +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Que dias sale</div>'
+        +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px">'
+        +WR_DAYS.map(function(d,j){
+          var on=(e.days||[]).indexOf(j+1)>=0;
+          return '<label style="display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--text2);cursor:pointer;'
+            +'border:1px solid '+(on?'var(--accent)':'var(--border2)')+';border-radius:var(--radius);padding:4px 8px">'
+            +'<input type="checkbox" data-dow="'+(j+1)+'"'+(on?' checked':'')+' onchange="wrEnviosChanged();openWeeklyReportModal()" style="margin:0">'
+            +esc(d.slice(0,3))+'</label>';
+        }).join('')
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">'
+        +'<span style="font-size:11.5px;color:var(--text2)">Cada informe cubre los ultimos</span>'
+        +'<input type="number" id="env-cover-'+e.id+'" min="1" max="90" value="'+(parseInt(e.cover,10)||7)+'" onchange="wrEnviosChanged()" '
+        +'style="width:62px;padding:5px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
+        +'<span style="font-size:11.5px;color:var(--text2)">dias</span>'
+        +'</div>'
+        +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px;line-height:1.6">'
+        +'Ventana movil: siempre termina el dia anterior al envio. Es la misma ventana que despues revisas en la pestana Revisiones.</div>'
       +'</div>'
       +'<div style="margin-bottom:9px">'
         +'<div style="display:flex;gap:7px;align-items:center">'
