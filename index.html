@@ -4816,6 +4816,43 @@ function _rutinaToca(r, hoy){
   return false;
 }
 
+// Archivado automatico: una tarea de rutina que vencio sin hacerse no sirve de
+// nada apilada en la torre. Se archiva marcada como incompleta y la proxima vez
+// que toque la rutina se genera una nueva y limpia.
+function rutAutoArchivar(){ return DB.rutArchivar!==false; }   // por defecto: si
+function rutToggleAutoArchivar(){
+  DB.rutArchivar=!rutAutoArchivar();
+  save(); abrirRutinas();
+}
+function rutArchivarIncompletas(){
+  if(!rutAutoArchivar()) return 0;
+  var ahora=new Date(), n=0;
+  var rs=getRutinas();
+  (DB.clients||[]).forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(!t.rutinaId||t.done||t.deleted||t.archivada) return;
+      var lim=_dueEnd(t.due);
+      if(!lim){
+        // Tarea vieja sin vencimiento: caemos al plazo de su rutina desde que se creo.
+        var r=rs.find(function(x){return x.id===t.rutinaId;});
+        var base=t.delegatedAt?new Date(t.delegatedAt):null;
+        if(!base||isNaN(base.getTime())) return;
+        base.setHours(23,59,59,999);
+        base.setDate(base.getDate()+(r?(parseInt(r.dias,10)||0):0));
+        lim=base;
+      }
+      if(ahora<=lim) return;                 // todavia esta en plazo
+      t.archivada=true;
+      t.archivadaAt=new Date().toISOString();
+      t.incompleta=true;
+      t.motivoArchivo='Vencio sin hacerse';
+      n++;
+    });
+  });
+  if(n) save();
+  return n;
+}
+
 // Crea las tareas de las rutinas que corresponden. Devuelve cuantas cargo.
 function correrRutinas(){
   var rs=getRutinas();
@@ -4842,7 +4879,8 @@ function correrRutinas(){
       });
       if(repetida) return;
       var venc=new Date(hoy);
-      venc.setDate(venc.getDate()+(parseInt(r.dias,10)||3));
+      var _d=parseInt(r.dias,10); if(isNaN(_d)) _d=3;   // 0 es valido: vence hoy
+      venc.setDate(venc.getDate()+_d);
       var _tr={
         id:Date.now()+Math.floor(Math.random()*1000),
         text:r.texto, responsible:r.responsable||'', done:false,
@@ -4891,7 +4929,7 @@ function abrirRutinas(){
           +Array.from({length:28},function(_,j){ return '<option value="'+(j+1)+'"'+(String(r.monthDay)===String(j+1)?' selected':'')+'>dia '+(j+1)+'</option>'; }).join('')
           +'</select>':'')
         +'<span style="font-size:11px;color:var(--text3)">vence en</span>'
-        +'<input type="number" min="1" max="30" value="'+(r.dias||3)+'" oninput="_rutSet('+i+',\'dias\',this.value,true)" style="'+inp+';width:58px">'
+        +'<input type="number" min="0" max="30" value="'+(r.dias===0?0:(r.dias||3))+'" oninput="_rutSet('+i+',\'dias\',this.value,true)" style="'+inp+';width:58px" title="0 = vence hoy mismo">'
         +'<span style="font-size:11px;color:var(--text3)">dias</span>'
         +(eq.length?'<select onchange="_rutSet('+i+',\'responsable\',this.value)" style="'+inp+'">'
           +'<option value="">Sin responsable</option>'
@@ -4913,6 +4951,13 @@ function abrirRutinas(){
       +'Tareas que se repiten. Se cargan solas cuando abris el tracker el dia que toca. '
       +'Si un dia no lo abris, se crean la proxima vez que entres.</div>'
     +(filas||'<div style="font-size:12px;color:var(--text3);margin-bottom:12px">Todavia no hay rutinas.</div>')
+    +'<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;background:var(--bg3);border-radius:var(--radius);padding:9px 12px;margin-top:12px">'
+      +'<input type="checkbox"'+(rutAutoArchivar()?' checked':'')+' onchange="rutToggleAutoArchivar()" style="margin-top:2px">'
+      +'<span>Archivar sola la que vence sin hacerse'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;line-height:1.6">'
+      +'Pasado el vencimiento sale de la torre y queda en <b>Archivadas</b> marcada como incompleta. '
+      +'La proxima vez que toque la rutina se carga una nueva. Poner <b>0 dias</b> arriba para que venza el mismo dia.</div>'
+      +'</span></label>'
     +'<div id="rut-aviso" style="font-size:11.5px;color:var(--text3);margin:10px 0"></div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:14px">'
       +'<button class="btn btn-sm" onclick="_rutNueva()">Agregar rutina</button>'
@@ -20049,6 +20094,9 @@ async function arrancarConSesion(){
     _limpiarSyncsColgados();
     // Las alarmas se revisan solas de a un cliente por vez, sin abrir pestanas.
     try{ alBarridoStart(); }catch(e){}
+    // Primero se limpian las que vencieron sin hacerse: si hoy toca de nuevo,
+    // la nueva entra limpia en vez de encontrarse la vieja abierta.
+    try{ var _na=rutArchivarIncompletas(); if(_na&&typeof toast==='function') toast(_na+' tarea'+(_na>1?'s':'')+' de rutina vencida'+(_na>1?'s':'')+' archivada'+(_na>1?'s':'')); }catch(e){}
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
     // Las revisiones que quedaron sin responder pasado el plazo se archivan como
