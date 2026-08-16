@@ -16036,7 +16036,28 @@ function arArbol(){
       ctr =arDelta(arNum('ctrB'), arNum('ctrA')),
       cvr =arDelta(arNum('cvrB'), arNum('cvrA')),
       clos=arDelta(arNum('closB'),arNum('closA')),
-      cpa =arDelta(arNum('cpaB'), arNum('cpaA'));
+      cpa =arDelta(arNum('cpaB'), arNum('cpaA')),
+      cpm =arDelta(arNum('cpmB'), arNum('cpmA')),
+      ret50=arDelta(arNum('ret50B'),arNum('ret50A')),
+      lleg=arDelta(arNum('llegB'), arNum('llegA'));
+  var llegAbs=arNum('llegA');
+
+  // --- Fuga tecnica: los clicks no llegan a la landing ---
+  // Va antes que cualquier veredicto. Si se pierde la mitad de los clicks entre
+  // el anuncio y la pagina, todo lo de abajo (CVR, CPA) esta medido sobre una
+  // base rota y el arbol diagnosticaria creativo sobre un problema de servidor.
+  if((llegAbs!=null&&llegAbs<60)||(lleg!=null&&lleg<=-25)){
+    arEl('out').innerHTML=arBox('blocked','Fuga entre el anuncio y la landing','Los clicks no estan llegando a la pagina.',
+      '<p>'+(llegAbs!=null?('Solo el <b>'+llegAbs.toFixed(0)+'%</b> de los clicks registra vista de landing. '):'')
+      +(lleg!=null?('La llegada cayo <b>'+arFmt(lleg)+'</b> contra la base. '):'')
+      +'Lo normal ronda 80-90%: siempre se pierde algo por gente que cierra antes de que cargue.</p>'
+      +'<div class="ar-blk"><h4>Que mirar, en este orden</h4><p>1) Velocidad de carga en movil &mdash; cada segundo extra se lleva un porcentaje del trafico. '
+      +'2) El pixel dispara <i>landing_page_view</i>? Si se rompio el evento, la fuga es de medicion y no de gente. '
+      +'3) Redirecciones, consent banners o parametros UTM que rompen la URL. '
+      +'4) Enlaces distintos entre anuncios del mismo conjunto.</p>'
+      +'<p>Hasta que esto se resuelva, el CVR y el CPA de abajo no son comparables contra ninguna base.</p></div>');
+    return;
+  }
   if(hook==null&&hold==null&&ctr==null&&cvr==null){ toast('Carga al menos una metrica en las dos columnas'); return; }
 
   var ejec=arNum('ejec')||0, angs=arNum('angs')||0, frec=arNum('frec');
@@ -16046,9 +16067,12 @@ function arArbol(){
     trace+='<div class="r"><span class="k">'+n+(extra?' <span class="s">&mdash; '+extra+'</span>':'')
       +'</span><span class="v '+arCls(d,downBad!==false)+'">'+arFmt(d)+'</span></div>';
   };
-  add('Hook rate',hook);
+  if(cpm!=null) add('CPM',cpm,false,'precio de la atencion');
+  add('Hook rate 3s',hook);
+  if(ret50!=null) add('Retencion 50%',ret50,true,'el medio del video');
   add('Hold 15s',hold);
   add('CTR outbound',ctr);
+  if(lleg!=null||llegAbs!=null) add('Llegada a landing',lleg,true,(llegAbs!=null?llegAbs.toFixed(0)+'% de los clicks':'fuga tecnica'));
   add('CVR de landing',cvr,true,'confirmatorio del nivel 1');
   if(clos!=null) add('Tasa de cierre',clos);
   if(cpa!=null) add('CPA',cpa,false,'alarma, no diagnostico');
@@ -16090,15 +16114,18 @@ function arArbol(){
     }
   }
   else if(hookOk&&(holdDown||ctrDown)){
+    var _medio=(ret50!=null&&ret50<=-20)
+      ? '<p>La retencion al 50% cayo '+arFmt(ret50)+': la gente entra igual que antes pero abandona en el medio del video. Es exactamente donde rompe el angulo &mdash; el gancho sigue sirviendo, el argumento ya no.</p>'
+      : '';
     if(ejec>=3){
       kicker='Veredicto &middot; nivel 2'; title='Fatiga de angulo.';
       body='<p>El hook esta sano &mdash;el visual si frena el scroll&mdash; pero la gente no pasa del medio y no clickea. Rompe en el medio, no arriba. Y ya lanzaste '+ejec+' ejecuciones del mismo angulo sin recuperar.</p>'
-        +(ctrDown&&hookOk?'<p><b>CTR caido con hook rate normal es la combinacion exclusiva del nivel 2.</b> No aparece en ningun otro.</p>':'');
+        +(ctrDown&&hookOk?'<p><b>CTR caido con hook rate normal es la combinacion exclusiva del nivel 2.</b> No aparece en ningun otro.</p>':'')+_medio;
       bloque='<div class="ar-blk"><h4>Test de confirmacion</h4><p>Lanza un <b>angulo genuinamente distinto</b> sobre la misma oferta. Si el CPA se recupera, confirmado.</p></div>'
         +'<div class="ar-blk"><h4>La trampa</h4><p>El 80% de la gente cree que cambio de angulo cuando solo cambio el hook. Cambiar de angulo significa cambiar la <b>razon para comprar</b>: otro problema, otro mecanismo, otro nivel de consciencia del comprador. Si la promesa de fondo es la misma, seguis testeando ejecuciones del nivel 1 y vas a concluir mal.</p></div>';
     }else{
       kind='warn'; kicker='La firma dice nivel 2 &middot; falta el escalon'; title='Empeza por nivel 1 igual.';
-      body='<p>La caida rompe en el medio, que es la firma del angulo. Pero el nivel 2 exige &ge;3 ejecuciones distintas del mismo angulo, cada una con gasto &ge;3&times; tu CPA objetivo, y llevas '+ejec+'.</p><p>El escalado 1&rarr;2&rarr;3 pasa dentro de una misma muerte, no en loops separados: si el test de nivel 1 no recupera, no fracasaste &mdash; acabas de confirmar que era nivel 2.</p>';
+      body=_medio+'<p>La caida rompe en el medio, que es la firma del angulo. Pero el nivel 2 exige &ge;3 ejecuciones distintas del mismo angulo, cada una con gasto &ge;3&times; tu CPA objetivo, y llevas '+ejec+'.</p><p>El escalado 1&rarr;2&rarr;3 pasa dentro de una misma muerte, no en loops separados: si el test de nivel 1 no recupera, no fracasaste &mdash; acabas de confirmar que era nivel 2.</p>';
       bloque='<div class="ar-blk"><h4>Test de confirmacion</h4><p>Relanza mismo angulo y misma oferta con ejecucion nueva: otro hook visual, otros primeros 3 segundos, otro creador. 3-5 dias. Si el hook rate vuelve a &ge;85% de la base original, era nivel 1. Si no vuelve, subis a nivel 2 sin volver a empezar.</p></div>';
     }
   }
@@ -16119,6 +16146,11 @@ function arArbol(){
       body='<p>El CVR se movio '+arFmt(cvr)+': fuera del &plusmn;10% que confirma nivel 1, pero sin llegar al -25% que marca nivel 3. Zona gris.</p>';
       bloque='<div class="ar-blk"><h4>Que hacer</h4><p>Corre el test de nivel 1 igual &mdash;es el mas barato&mdash; pero medi el CVR en paralelo. Si el hook vuelve y el CVR sigue cayendo, tenes un problema aguas abajo que este arbol no cubre.</p></div>';
     }
+  }
+  else if(cpm!=null&&cpm>=20&&frec!=null&&frec>=2.5&&(hook==null||hook>-15)){
+    kind='warn'; kicker='Saturacion de audiencia'; title='No es el creativo: te esta subiendo el precio de la atencion.';
+    body='<p>El CPM subio '+arFmt(cpm)+' con frecuencia '+frec.toFixed(1)+' y el hook sostenido. Le estas pegando muchas veces a la misma gente y Meta te cobra mas caro cada impresion. El anuncio sigue funcionando: el pool se achico.</p>';
+    bloque='<div class="ar-blk"><h4>Que hacer</h4><p>Ampliar audiencia antes que tocar creativo: otra geo, lookalike mas amplio, quitar exclusiones viejas, o subir presupuesto en un conjunto con publico nuevo. Si al ampliar el CPM baja y el CPA se acomoda, era esto.</p><p>Cambiar el creativo aca te hace perder un ganador por un problema que no era suyo.</p></div>';
   }
   else{
     kind='warn'; kicker='Sin firma limpia'; title='Los numeros no dibujan ninguna de las tres firmas.';
@@ -16185,6 +16217,13 @@ function _arIns(row){
     landingViews:get('landing_page_view'),
     resultados:res,
     cpa:res>0?spend/res:null,
+    // Hook = vistas de 3 segundos. En 'actions', action_type 'video_view' ES la
+    // vista de 3s de Meta. video_play_actions cuenta autoplays y da ~95% de las
+    // impresiones: no distingue nada y hacia inutil la fila de hook.
+    views3s:get('video_view'),
+    ret25:vid('video_p25_watched_actions'),
+    ret50:vid('video_p50_watched_actions'),
+    ret75:vid('video_p75_watched_actions'),
     videoPlays:vid('video_play_actions'),
     thruPlays:(function(){
       var arr=row.video_thruplay_watched_actions; if(!arr||!arr.length) return 0;
@@ -16199,8 +16238,9 @@ async function arPedirVentana(c, nivel, rango){
   var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
   var lvl={camp:'campaign', adset:'adset', ad:'ad'}[nivel]||'campaign';
   var campos=['campaign_id','campaign_name','adset_id','adset_name','ad_id','ad_name',
-    'spend','impressions','clicks','ctr','cpm','frequency','actions',
-    'video_play_actions','video_thruplay_watched_actions'].join(',');
+    'spend','impressions','reach','clicks','ctr','cpc','cpm','frequency','actions',
+    'video_play_actions','video_thruplay_watched_actions',
+    'video_p25_watched_actions','video_p50_watched_actions','video_p75_watched_actions'].join(',');
   var url='https://graph.facebook.com/v19.0/'+actId+'/insights'
     +'?level='+lvl
     +'&time_range='+encodeURIComponent(JSON.stringify(rango))
@@ -16288,21 +16328,21 @@ async function arAuto(nivelForzado){
       e.value=(val==null||!isFinite(val))?'':String(Math.round(val*100)/100);
     };
     var pct=function(n,d){ return d>0?(n/d*100):null; };
-    set('hookA', pct(A.videoPlays,A.impressions));
-    set('holdA', pct(A.thruPlays,A.impressions));
-    set('ctrA',  A.ctr||null);
-    set('cvrA',  pct(A.resultados,A.landingViews));
-    set('cpaA',  A.cpa);
+    var llenar=function(suf,x){
+      if(!x) return;
+      set('cpm'+suf,  x.cpm||null);
+      set('hook'+suf, pct(x.views3s,x.impressions));
+      set('ret50'+suf,pct(x.ret50,x.videoPlays));
+      set('hold'+suf, pct(x.thruPlays,x.impressions));
+      set('ctr'+suf,  x.ctr||null);
+      set('lleg'+suf, pct(x.landingViews,x.clicks));
+      set('cvr'+suf,  pct(x.resultados,x.landingViews));
+      set('cpa'+suf,  x.cpa);
+    };
+    llenar('A',A); llenar('B',B);
     set('clicks',A.clicks);
     set('dias',  7);
     set('frec',  A.frequency||null);
-    if(B){
-      set('hookB', pct(B.videoPlays,B.impressions));
-      set('holdB', pct(B.thruPlays,B.impressions));
-      set('ctrB',  B.ctr||null);
-      set('cvrB',  pct(B.resultados,B.landingViews));
-      set('cpaB',  B.cpa);
-    }
 
     // --- Historial: lo unico que sigue viniendo del registro ---
     var h=arHistorialDe(c, A.nombre);
@@ -16310,7 +16350,9 @@ async function arAuto(nivelForzado){
 
     // --- Paso 0 derivado de los datos ---
     var d=function(b,a){ return (b==null||a==null||!b)?null:((a-b)/b*100); };
-    var dHook=d(pct(B&&B.videoPlays,B&&B.impressions), pct(A.videoPlays,A.impressions));
+    var dHook=d(pct(B&&B.views3s,B&&B.impressions), pct(A.views3s,A.impressions));
+    var dLleg=d(pct(B&&B.landingViews,B&&B.clicks), pct(A.landingViews,A.clicks));
+    var llegA=pct(A.landingViews,A.clicks);
     var dCtr =d(B&&B.ctr, A.ctr);
     var dCvr =d(pct(B&&B.resultados,B&&B.landingViews), pct(A.resultados,A.landingViews));
     var dCpa =d(B&&B.cpa, A.cpa);
@@ -16374,6 +16416,7 @@ async function arAuto(nivelForzado){
       +' &middot; atribucion: '+(atrib==='warn'?'sin backend confiable':(atrib==='bad'?'solo plataforma':'coherente'))+'.');
     _notas.push('<b>Lo unico que no se automatiza:</b> ejecuciones ('+h.ejec+') y angulos distintos ('+h.angs+') salen del registro, que se carga a mano. Meta no sabe que es un angulo. Con el registro vacio el arbol solo llega a su rama mas superficial.');
     if(!hayOtras) _notas.push('No hay otras campanas con gasto: el descarte de subasta no se pudo verificar.');
+    if(llegA!=null&&llegA<70) _notas.push('<span style="color:var(--redx)">Solo el '+Math.round(llegA)+'% de los clicks llega a registrar vista de landing. Antes de diagnosticar creativo, revisa velocidad de carga y pixel.</span>');
     var nota=arEl('auto-nota');
     if(nota){ nota.innerHTML=_notas.map(function(x){return '<div style="margin-bottom:3px">'+x+'</div>';}).join(''); nota.style.display='block'; }
 
@@ -16653,9 +16696,12 @@ function arShellHtml(c){
 
       +'<div class="ar-grid3" style="margin-top:16px">'
         +'<div class="fh">Metrica</div><div class="fh" id="ar-colB">Base (7 dias)</div><div class="fh">Ahora</div>'
-        +[['hook','Hook rate %','views 3s / impresiones'],
-          ['hold','Hold 15s %','views 15s / impresiones'],
+        +[['cpm','CPM','precio de la atencion &mdash; contexto, no diagnostico'],
+          ['hook','Hook rate %','vistas de 3s / impresiones'],
+          ['ret50','Retencion 50% ','llegan a la mitad / reproducciones'],
+          ['hold','Hold 15s %','ThruPlay / impresiones'],
           ['ctr','CTR outbound %',''],
+          ['lleg','Llegada a landing %','vistas de landing / clicks &mdash; fuga tecnica'],
           ['cvr','CVR de landing %','el confirmatorio del nivel 1'],
           ['clos','Tasa de cierre lead&rarr;venta %','opcional'],
           ['cpa','CPA','la alarma, nunca el diagnostico']].map(function(m){
