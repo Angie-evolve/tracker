@@ -7545,11 +7545,159 @@ function rvBuscar(c, periodo){
   for(var i=0;i<l.length;i++){ if(l[i].periodo===periodo) return l[i]; }
   return null;
 }
-// Clientes con el periodo actual sin responder
-function rvPendientes(){
-  return rvClientesConInforme().filter(function(c){
-    return !rvBuscar(c, rvPeriodoActual(rvFreqCliente(c.id)));
+// ---------- Registro permanente de informes y revisiones ----------
+// Las tareas se archivan y las revisiones se pueden borrar, asi que el historial
+// no puede depender de ellas. Este registro guarda un renglon por informe salido
+// y no se limpia nunca: es el que despues se lee por semana.
+function rvLog(){ if(!DB.revLog||typeof DB.revLog!=='object') DB.revLog={}; return DB.revLog; }
+function _rvKey(cid, per){ return String(cid)+'|'+per; }
+function rvLogEnviado(c, per, freq, cuando){
+  var L=rvLog(), k=_rvKey(c.id, per);
+  if(!L[k]) L[k]={ cliente:String(c.id), nombre:c.name, periodo:per, freq:freq,
+                   enviado:cuando||rvISO(new Date()) };
+  else if(!L[k].enviado) L[k].enviado=cuando||rvISO(new Date());
+  return L[k];
+}
+function rvLogRespondido(c, per, cuando){
+  var L=rvLog(), k=_rvKey(c.id, per);
+  if(!L[k]) L[k]={ cliente:String(c.id), nombre:c.name, periodo:per,
+                   freq:rvFreqCliente(c.id), enviado:per };
+  L[k].respondido=cuando||new Date().toISOString();
+  delete L[k].incompleta; delete L[k].incompletaAt;
+}
+function rvLogIncompleta(cid, per, cuando){
+  var L=rvLog(), k=_rvKey(cid, per);
+  if(L[k] && !L[k].respondido){
+    L[k].incompleta=true;
+    L[k].incompletaAt=cuando||new Date().toISOString();
+  }
+}
+// Se corre una sola vez: reconstruye el registro con lo que ya habia guardado,
+// asi el historial no arranca vacio.
+function rvLogSemilla(){
+  if(DB.revLogSeed) return 0;
+  var L=rvLog(), n=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.revisiones||[]).forEach(function(r){
+      if(!r||!r.periodo) return;
+      var k=_rvKey(c.id, r.periodo);
+      if(!L[k]){ L[k]={ cliente:String(c.id), nombre:c.name, periodo:r.periodo,
+                        freq:r.freq||'weekly', enviado:r.periodo }; n++; }
+      L[k].respondido=r.creadoAt||r.periodo;
+    });
+    (c.tasks||[]).forEach(function(t){
+      if(!t.revision||!t.revision.periodo) return;
+      var k=_rvKey(c.id, t.revision.periodo);
+      if(!L[k]){
+        L[k]={ cliente:String(c.id), nombre:c.name, periodo:t.revision.periodo,
+               freq:t.revision.freq||'weekly',
+               enviado:(t.revision.creada||(t.delegatedAt?rvISO(new Date(t.delegatedAt)):t.revision.periodo)) };
+        n++;
+      }
+      if(t.done && !L[k].respondido) L[k].respondido=t.doneAt||L[k].enviado;
+      if(t.archivada && t.incompleta && !L[k].respondido){ L[k].incompleta=true; L[k].incompletaAt=t.archivadaAt; }
+    });
   });
+  DB.revLogSeed=true;
+  save();
+  return n;
+}
+
+// El informe de este cliente, sale hoy? Sale del envio que lo cubre.
+function rvTocaHoy(clientId, ahora){
+  ahora=ahora||new Date();
+  var dow=((ahora.getDay()+6)%7)+1;              // lunes=1 ... domingo=7
+  var envios=(typeof getEnvios==='function')?getEnvios():[];
+  var id=String(clientId);
+  for(var i=0;i<envios.length;i++){
+    var e=envios[i]||{};
+    var todos=!e.clientes||!e.clientes.length;
+    if(!(todos||e.clientes.indexOf(id)>=0)) continue;
+    if(e.freq==='daily') return true;
+    if(e.freq==='custom') return (e.days||[]).indexOf(dow)>=0;
+    if(e.freq==='monthly') return ahora.getDate()===(parseInt(e.monthDay,10)||1);
+    // weekly y biweekly: el dia elegido. En biweekly no sabemos la paridad de la
+    // semana desde el tracker, asi que se toma como semanal (puede sobrar uno).
+    return dow===(parseInt(e.day,10)||1);
+  }
+  return false;
+}
+
+// Registra los informes que salen hoy. Corre siempre, aunque las tareas esten
+// apagadas: el historial no depende de esa opcion.
+function rvRegistrarEnvios(){
+  var hoy=rvISO(new Date()), n=0;
+  rvClientesConInforme().forEach(function(c){
+    if(!rvTocaHoy(c.id)) return;
+    var freq=rvFreqCliente(c.id);
+    var per=rvPeriodoActual(freq);
+    if(rvLog()[_rvKey(c.id, per)]) return;
+    rvLogEnviado(c, per, freq, hoy);
+    n++;
+  });
+  if(n) save();
+  return n;
+}
+
+// ---------- Lectura por semana ----------
+function _rvLunesDe(iso){
+  var p=String(iso||'').slice(0,10).split('-');
+  var d=new Date(Number(p[0])||1970, (Number(p[1])||1)-1, Number(p[2])||1);
+  if(isNaN(d.getTime())) return null;
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate()-((d.getDay()+6)%7));
+  return rvISO(d);
+}
+function rvSemanaActual(){ return _rvLunesDe(rvISO(new Date())); }
+// Renglones del registro agrupados por semana de envio, de la mas nueva a la mas vieja.
+function rvSemanas(){
+  var L=rvLog(), porSem={};
+  Object.keys(L).forEach(function(k){
+    var e=L[k]; if(!e||!e.enviado) return;
+    var sem=_rvLunesDe(e.enviado); if(!sem) return;
+    if(!porSem[sem]) porSem[sem]={ lunes:sem, enviados:0, revisados:0, incompletos:0, pendientes:0, items:[] };
+    var g=porSem[sem];
+    g.enviados++;
+    if(e.respondido) g.revisados++;
+    else if(e.incompleta) g.incompletos++;
+    else g.pendientes++;
+    g.items.push(e);
+  });
+  return Object.keys(porSem).sort().reverse().map(function(k){
+    porSem[k].items.sort(function(a,b){ return String(a.nombre||'').localeCompare(String(b.nombre||'')); });
+    return porSem[k];
+  });
+}
+function rvSemanaTexto(lunes){
+  var p=String(lunes).split('-');
+  var l=new Date(Number(p[0]), Number(p[1])-1, Number(p[2]));
+  var d=new Date(l); d.setDate(d.getDate()+6);
+  return rvFmtDia(l)+' al '+rvFmtDia(d);
+}
+// Renglones vivos de esta semana: lo que todavia se puede responder.
+function rvPendientesSemana(){
+  var sem=rvSemanaActual(), L=rvLog(), out=[];
+  Object.keys(L).forEach(function(k){
+    var e=L[k];
+    if(!e||!e.enviado||e.respondido||e.incompleta) return;
+    if(_rvLunesDe(e.enviado)!==sem) return;
+    out.push(e);
+  });
+  out.sort(function(a,b){ return String(a.nombre||'').localeCompare(String(b.nombre||'')); });
+  return out;
+}
+
+// Clientes con algo sin responder en la semana en curso. Sale del registro, no
+// del calendario: si hoy no salio informe, no hay nada pendiente que inventar.
+function rvPendientes(){
+  var vistos={}, out=[];
+  rvPendientesSemana().forEach(function(e){
+    if(vistos[e.cliente]) return;
+    var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(e.cliente); });
+    if(!c||c.archived) return;
+    vistos[e.cliente]=true; out.push(c);
+  });
+  return out;
 }
 function rvPendientesCount(){
   try{ return rvPendientes().length; }catch(e){ return 0; }
@@ -7841,6 +7989,7 @@ function rvGuardar(){
   }
   rvCerrarTarea(c, d.periodo);
   reg.frecuencia=d.frecuencia||'default';
+  rvLogRespondido(c, d.periodo);
   save();
   // Si cambio la rutina, se guarda y se empuja al Apps Script.
   if((d.frecuencia||'default')!==rvFrecActual(c.id)) rvAplicarFrecuencia(c, d.frecuencia);
@@ -7914,6 +8063,7 @@ function rvArchivarIncompletas(){
       t.archivadaAt=new Date().toISOString();
       t.incompleta=true;
       t.motivoArchivo='No se completo el informe en el plazo';
+      rvLogIncompleta(c.id, t.revision.periodo, t.archivadaAt);
       n++;
     });
   });
@@ -7935,9 +8085,11 @@ function rvTareaDe(c, periodo){
 function rvGenerarTareas(){
   if(!rvTareasActivas()) return 0;
   var creadas=0;
-  rvPendientes().forEach(function(c){
-    var freq=rvFreqCliente(c.id);
-    var per=rvPeriodoActual(freq);
+  rvPendientesSemana().forEach(function(reg){
+    var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(reg.cliente); });
+    if(!c||c.archived) return;
+    var freq=reg.freq||rvFreqCliente(c.id);
+    var per=reg.periodo;
     c.tasks=c.tasks||[];
     if(rvTareaDe(c, per)) return;             // ya esta cargada
     var hoyISO=rvISO(new Date());
@@ -7979,9 +8131,15 @@ function rvCerrarTarea(c, periodo){
     delete t.archivada; delete t.archivadaAt;
     delete t.incompleta; delete t.motivoArchivo;
   }
+  rvLogRespondido(c, periodo, t.doneAt);
 }
 
 // ---------- Panel en la torre de control ----------
+function rvToggleSemana(k){
+  S._rvSemAbiertas=S._rvSemAbiertas||{};
+  S._rvSemAbiertas[k]=!S._rvSemAbiertas[k];
+  showTickets();
+}
 function rvToggleDetalle(k){
   S._rvAbiertas=S._rvAbiertas||{};
   S._rvAbiertas[k]=!S._rvAbiertas[k];
@@ -8154,25 +8312,74 @@ function rvAprobacionesHtml(){
 }
 
 function rvPanelHtml(){
-  var pend=rvPendientes();
   var chip=function(txt, color, bg){
     return '<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:'+bg+';color:'+color+'">'+txt+'</span>';
   };
-  var pendHtml=pend.length
-    ? pend.map(function(c){
-        var f=rvFreqCliente(c.id), per=rvPeriodoActual(f);
+  var pendReg=rvPendientesSemana();
+  var pendHtml=pendReg.length
+    ? pendReg.map(function(e){
+        var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(e.cliente); });
+        if(!c) return '';
+        var f=e.freq||rvFreqCliente(c.id), per=e.periodo;
         return '<div style="display:flex;align-items:center;gap:12px;padding:12px 6px;border-top:1px solid var(--border)">'
           +'<span style="width:7px;height:7px;border-radius:50%;background:var(--amberx);flex-shrink:0"></span>'
           +'<div style="flex:1;min-width:0">'
             +'<div style="font-size:13px;color:var(--strong);font-weight:500">'+esc(c.name)+'</div>'
-            +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+rvFreqTexto(f)+' &middot; '+rvRangoTexto(f, per)+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+rvFreqTexto(f)+' &middot; '+rvRangoTexto(f, per)
+              +(e.enviado?' &middot; salio el '+rvFmtDia(new Date(e.enviado+'T00:00:00')):'')+'</div>'
           +'</div>'
           +'<button class="btn btn-sm" style="color:var(--text3)" onclick="rvCopiarLink('+c.id+',\''+per+'\')">Copiar link</button>'
           +'<button class="btn btn-sm btn-primary" onclick="rvAbrir('+c.id+',\''+per+'\',\'tracker\')">Responder</button>'
           +'</div>';
       }).join('')
     : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">'
-      +'Todas las revisiones del periodo estan respondidas.</div>';
+      +'Nada pendiente esta semana. Los informes que salgan van a aparecer aca.</div>';
+
+  // ---- Historial por semana: queda guardado para siempre ----
+  S._rvSemAbiertas=S._rvSemAbiertas||{};
+  var semanas=rvSemanas();
+  var semActual=rvSemanaActual();
+  var num=function(v,color){
+    return '<span style="font-size:12px;color:'+color+';font-weight:600">'+v+'</span>';
+  };
+  var semHtml=semanas.length
+    ? semanas.slice(0,26).map(function(g){
+        var abierta=!!S._rvSemAbiertas[g.lunes];
+        var esta=g.lunes===semActual;
+        var pct=g.enviados?Math.round(g.revisados/g.enviados*100):0;
+        return '<div style="border-top:1px solid var(--border)">'
+          +'<div style="display:flex;align-items:center;gap:12px;padding:11px 6px;cursor:pointer" onclick="rvToggleSemana(\''+g.lunes+'\')">'
+            +'<span style="font-size:9px;color:var(--text3);display:inline-block;transform:rotate('+(abierta?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
+            +'<div style="flex:1;min-width:0">'
+              +'<div style="font-size:12.5px;color:var(--strong)">'+rvSemanaTexto(g.lunes)
+                +(esta?' <span style="font-size:10px;color:var(--accent)">&middot; en curso</span>':'')+'</div>'
+              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'+pct+'% revisado</div>'
+            +'</div>'
+            +'<div style="display:flex;gap:14px;align-items:baseline;flex-shrink:0">'
+              +'<span style="font-size:10.5px;color:var(--text3)">'+num(g.enviados,'var(--text2)')+' enviados</span>'
+              +'<span style="font-size:10.5px;color:var(--text3)">'+num(g.revisados,'var(--accent)')+' revisados</span>'
+              +(g.incompletos?'<span style="font-size:10.5px;color:var(--text3)">'+num(g.incompletos,'var(--amberx)')+' incompletos</span>':'')
+              +(g.pendientes?'<span style="font-size:10.5px;color:var(--text3)">'+num(g.pendientes,'var(--text2)')+' sin responder</span>':'')
+            +'</div>'
+          +'</div>'
+          +(abierta
+            ? '<div style="padding:2px 6px 12px 21px">'
+              +g.items.map(function(e){
+                var est=e.respondido
+                  ? '<span style="color:var(--accent)">revisado</span>'
+                  : (e.incompleta?'<span style="color:var(--amberx)">incompleto</span>'
+                                 :'<span style="color:var(--text3)">sin responder</span>');
+                return '<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;font-size:11.5px;color:var(--text2)">'
+                  +'<span style="flex:1;min-width:0">'+esc(e.nombre||'')+'</span>'
+                  +'<span style="color:var(--text3)">'+rvRangoTexto(e.freq, e.periodo)+'</span>'
+                  +'<span style="flex:0 0 90px;text-align:right">'+est+'</span></div>';
+              }).join('')
+            +'</div>'
+            : '')
+        +'</div>';
+      }).join('')
+    : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">'
+      +'Todavia no hay semanas registradas.</div>';
 
   // Historial: todas las revisiones de todos los clientes, de la mas nueva a la mas vieja
   var todas=[];
@@ -8247,7 +8454,7 @@ function rvPanelHtml(){
     +rvAprobacionesHtml()
     +rvCambiosPanelHtml()
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">'
-      +titulo('Pendientes', pend.length+' de '+rvClientesConInforme().length+' clientes con informe')
+      +titulo('Pendientes de esta semana', pendReg.length+' sin responder &middot; semana del '+rvSemanaTexto(semActual))
       +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
         +'Cada informe que sale por mail abre su revision. Se responde aca, venga del mail, del WhatsApp o de esta pantalla.</div>'
       +'<label style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text2);cursor:pointer;margin-bottom:2px">'
@@ -8268,6 +8475,13 @@ function rvPanelHtml(){
           +'Si despues respondes esa revision, la tarea vuelve a contar como hecha.</div>'
         : '')
       +pendHtml
+    +'</div>'
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">'
+      +titulo('Historial por semana', semanas.length?(semanas.length+' semana'+(semanas.length===1?'':'s')+' registrada'+(semanas.length===1?'':'s')):'')
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+        +'Cada informe que sale queda anotado aca para siempre, con lo que paso despues. '
+        +'El lunes la lista de arriba arranca limpia y la semana que termino baja a este historial.</div>'
+      +semHtml
     +'</div>'
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
       +titulo('Respondidas', todas.length?(todas.length+' en total'):'')
@@ -20159,6 +20373,10 @@ async function arrancarConSesion(){
     try{ var _na=rutArchivarIncompletas(); if(_na&&typeof toast==='function') toast(_na+' tarea'+(_na>1?'s':'')+' de rutina vencida'+(_na>1?'s':'')+' archivada'+(_na>1?'s':'')); }catch(e){}
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
+    // El historial de informes se reconstruye una sola vez con lo que ya habia,
+    // y despues se registran los informes que salen hoy.
+    try{ rvLogSemilla(); }catch(e){}
+    try{ rvRegistrarEnvios(); }catch(e){}
     // Las revisiones que quedaron sin responder pasado el plazo se archivan como
     // incompletas antes de generar las nuevas, asi no se apilan en la torre.
     try{ var _ri=rvArchivarIncompletas(); if(_ri&&typeof toast==='function') toast(_ri+' revision'+(_ri>1?'es':'')+' sin completar archivada'+(_ri>1?'s':'')); }catch(e){}
