@@ -8033,39 +8033,50 @@ function rvSetGracia(v){
   save();
   showTickets();
 }
-// Ultimo dia que la tarea sigue siendo respondible.
-function _rvLimite(t){
-  var base=(t.revision&&t.revision.creada)||(t.delegatedAt?rvISO(new Date(t.delegatedAt)):null)||t.due;
-  if(!base) return null;
-  var p=String(base).slice(0,10).split('-');
+// Si paso el plazo y la revision nunca se respondio, la tarea se archiva sola
+// marcada como incompleta: queda en el historial pero sale de los pendientes.
+// Corre al abrir el tracker, junto con la generacion. Devuelve cuantas archivo.
+function _rvLimiteISO(iso){
+  var p=String(iso||'').slice(0,10).split('-');
   var d=new Date(Number(p[0]), (Number(p[1])||1)-1, Number(p[2])||1);
   if(isNaN(d.getTime())) return null;
   d.setHours(0,0,0,0);
   d.setDate(d.getDate()+rvGraciaDias());
   return d;
 }
-// Si paso el plazo y la revision nunca se respondio, la tarea se archiva sola
-// marcada como incompleta: queda en el historial pero sale de los pendientes.
-// Corre al abrir el tracker, junto con la generacion. Devuelve cuantas archivo.
+// El vencimiento se decide sobre el REGISTRO, no sobre la tarea. Si la tarea se
+// borro, se archivo a mano o nunca se creo (opcion apagada), el informe igual
+// vencio: antes esos renglones quedaban pendientes para siempre.
 function rvArchivarIncompletas(){
   var hoy=new Date(); hoy.setHours(0,0,0,0);
-  var n=0;
-  (DB.clients||[]).forEach(function(c){
-    (c.tasks||[]).forEach(function(t){
-      if(!t.revision||t.done||t.deleted||t.archivada) return;
-      // Si la revision se respondio por otra via, no es incompleta: se cierra.
-      if(typeof rvBuscar==='function' && rvBuscar(c, t.revision.periodo)){
-        t.done=true; t.doneAt=new Date().toISOString(); n++; return;
+  var L=rvLog(), n=0;
+  var buscarCli=function(id){ return (DB.clients||[]).find(function(x){ return String(x.id)===String(id); }); };
+  Object.keys(L).forEach(function(k){
+    var e=L[k];
+    if(!e||!e.enviado||e.respondido||e.incompleta) return;
+    var c=buscarCli(e.cliente);
+    // Respondida por otra via (mail, WhatsApp): no es incompleta, es hecha.
+    if(c && typeof rvBuscar==='function' && rvBuscar(c, e.periodo)){
+      rvLogRespondido(c, e.periodo);
+      var th=rvTareaDe(c, e.periodo);
+      if(th && !th.done){ th.done=true; th.doneAt=new Date().toISOString(); }
+      n++; return;
+    }
+    var lim=_rvLimiteISO(e.enviado);
+    if(!lim || hoy<=lim) return;              // todavia esta en plazo
+    e.incompleta=true;
+    e.incompletaAt=new Date().toISOString();
+    // Si quedo una tarea viva de ese periodo, se archiva junto con el renglon.
+    if(c){
+      var t=rvTareaDe(c, e.periodo);
+      if(t && !t.done && !t.archivada){
+        t.archivada=true;
+        t.archivadaAt=e.incompletaAt;
+        t.incompleta=true;
+        t.motivoArchivo='No se completo el informe en el plazo';
       }
-      var lim=_rvLimite(t);
-      if(!lim || hoy<=lim) return;   // todavia esta en plazo
-      t.archivada=true;
-      t.archivadaAt=new Date().toISOString();
-      t.incompleta=true;
-      t.motivoArchivo='No se completo el informe en el plazo';
-      rvLogIncompleta(c.id, t.revision.periodo, t.archivadaAt);
-      n++;
-    });
+    }
+    n++;
   });
   if(n) save();
   return n;
