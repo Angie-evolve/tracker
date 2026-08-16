@@ -6887,7 +6887,8 @@ function showTickets(){
     // texto de estado corto (va como meta gris, no como columna)
     let meta;
     const ST=_TK_ESTADOS[t.estado];
-    if(t.done){ var _pt=_tkProcTexto(t); meta=(t.doneAt&&t.delegatedAt)?('hecha en '+_tkDias(new Date(t.delegatedAt),new Date(t.doneAt))+' d'):'hecha'; if(_pt) meta+=' &middot; <span style=\"color:var(--bluex,#378add)\">'+_pt+' en proceso</span>'; }
+    if(t.archivada&&t.incompleta){ meta='<span style=\"color:var(--amberx)\">incompleta &mdash; no se respondio a tiempo</span>'; }
+    else if(t.done){ var _pt=_tkProcTexto(t); meta=(t.doneAt&&t.delegatedAt)?('hecha en '+_tkDias(new Date(t.delegatedAt),new Date(t.doneAt))+' d'):'hecha'; if(_pt) meta+=' &middot; <span style=\"color:var(--bluex,#378add)\">'+_pt+' en proceso</span>'; }
     else if(venc){ meta='<span style=\"color:var(--redx)\">vencida hace '+_tkDias(d,now)+' d</span>'; }
     else if(porVencer){ meta='<span style=\"color:var(--amberx)\">por vencer</span>'; }
     else if(t.estado==='proceso'&&t.procesoAt){ meta='en proceso &middot; <span style=\"color:var(--bluex,#378add)\">'+_tkProcTexto(t)+'</span>'; }
@@ -7813,6 +7814,54 @@ function rvToggleTareas(){
   showTickets();
 }
 
+// Dias de plazo antes de darla por incompleta. 0 = tiene el dia; a la manana
+// siguiente ya se archiva. Es tambien el vencimiento que se le pone a la tarea.
+function rvGraciaDias(){
+  var n=parseInt(DB.revGracia,10);
+  return isNaN(n)?0:Math.max(0,Math.min(30,n));
+}
+function rvSetGracia(v){
+  DB.revGracia=Math.max(0,Math.min(30,parseInt(v,10)||0));
+  save();
+  showTickets();
+}
+// Ultimo dia que la tarea sigue siendo respondible.
+function _rvLimite(t){
+  var base=(t.revision&&t.revision.creada)||(t.delegatedAt?rvISO(new Date(t.delegatedAt)):null)||t.due;
+  if(!base) return null;
+  var p=String(base).slice(0,10).split('-');
+  var d=new Date(Number(p[0]), (Number(p[1])||1)-1, Number(p[2])||1);
+  if(isNaN(d.getTime())) return null;
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate()+rvGraciaDias());
+  return d;
+}
+// Si paso el plazo y la revision nunca se respondio, la tarea se archiva sola
+// marcada como incompleta: queda en el historial pero sale de los pendientes.
+// Corre al abrir el tracker, junto con la generacion. Devuelve cuantas archivo.
+function rvArchivarIncompletas(){
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var n=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(!t.revision||t.done||t.deleted||t.archivada) return;
+      // Si la revision se respondio por otra via, no es incompleta: se cierra.
+      if(typeof rvBuscar==='function' && rvBuscar(c, t.revision.periodo)){
+        t.done=true; t.doneAt=new Date().toISOString(); n++; return;
+      }
+      var lim=_rvLimite(t);
+      if(!lim || hoy<=lim) return;   // todavia esta en plazo
+      t.archivada=true;
+      t.archivadaAt=new Date().toISOString();
+      t.incompleta=true;
+      t.motivoArchivo='No se completo el informe en el plazo';
+      n++;
+    });
+  });
+  if(n) save();
+  return n;
+}
+
 // La tarea abierta de un periodo, si existe
 function rvTareaDe(c, periodo){
   var l=c.tasks||[];
@@ -7832,13 +7881,14 @@ function rvGenerarTareas(){
     var per=rvPeriodoActual(freq);
     c.tasks=c.tasks||[];
     if(rvTareaDe(c, per)) return;             // ya esta cargada
-    var venc=new Date(); venc.setDate(venc.getDate()+2);
+    var hoyISO=rvISO(new Date());
+    var venc=new Date(); venc.setDate(venc.getDate()+rvGraciaDias());
     var resp=(typeof responsableDe==='function')?(responsableDe(c)||''):'';
     c.tasks.unshift({
       id:Date.now()+Math.floor(Math.random()*1000),
       text:'Revision del informe - '+rvRangoTexto(freq, per),
       responsible:resp, done:false,
-      source:'Revision', revision:{ periodo:per, freq:freq },
+      source:'Revision', revision:{ periodo:per, freq:freq, creada:hoyISO },
       due:rvISO(venc),
       delegated:true, delegatedAt:new Date().toISOString(),
       ticket:'#'+nextTicketFromApp()
@@ -7864,6 +7914,12 @@ function rvCerrarTarea(c, periodo){
   if(!t || t.done) return;
   t.done=true;
   t.doneAt=new Date().toISOString();
+  // Si se habia archivado por incompleta y despues la respondieron, vuelve a
+  // contar como hecha: no tiene sentido dejarla marcada como no completada.
+  if(t.archivada&&t.incompleta){
+    delete t.archivada; delete t.archivadaAt;
+    delete t.incompleta; delete t.motivoArchivo;
+  }
 }
 
 // ---------- Panel en la torre de control ----------
@@ -8139,7 +8195,19 @@ function rvPanelHtml(){
         +'<input type="checkbox"'+(rvTareasActivas()?' checked':'')+' onchange="rvToggleTareas()">'
         +'Cargarlas como tarea en cada cliente</label>'
       +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
-        +'Se cargan al abrir el tracker, con dos dias de plazo, y se cierran solas al responder.</div>'
+        +'Se cargan al abrir el tracker y se cierran solas al responder.</div>'
+      +(rvTareasActivas()
+        ? '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:11.5px;color:var(--text2);margin-bottom:4px">'
+          +'<span>Si no se responde, archivarla como incompleta</span>'
+          +'<select onchange="rvSetGracia(this.value)" style="padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:11.5px;font-family:inherit">'
+            +[[0,'al dia siguiente'],[1,'pasado 1 dia'],[2,'pasados 2 dias'],[3,'pasados 3 dias'],[7,'pasada 1 semana']]
+              .map(function(o){ return '<option value="'+o[0]+'"'+(rvGraciaDias()===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')
+          +'</select>'
+          +'</div>'
+          +'<div style="font-size:10.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+          +'Se archiva sola: sale de la torre y de los pendientes, queda en <b>Archivadas</b> marcada como incompleta. '
+          +'Si despues respondes esa revision, la tarea vuelve a contar como hecha.</div>'
+        : '')
       +pendHtml
     +'</div>'
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
@@ -19983,6 +20051,9 @@ async function arrancarConSesion(){
     try{ alBarridoStart(); }catch(e){}
     // Las rutinas se revisan al abrir: si un dia no entraste, se cargan ahora.
     try{ var _nr=correrRutinas(); if(_nr&&typeof toast==='function') toast(_nr+' tarea'+(_nr>1?'s':'')+' de rutina cargada'+(_nr>1?'s':'')); }catch(e){}
+    // Las revisiones que quedaron sin responder pasado el plazo se archivan como
+    // incompletas antes de generar las nuevas, asi no se apilan en la torre.
+    try{ var _ri=rvArchivarIncompletas(); if(_ri&&typeof toast==='function') toast(_ri+' revision'+(_ri>1?'es':'')+' sin completar archivada'+(_ri>1?'s':'')); }catch(e){}
     // Las revisiones pendientes tambien entran como tarea, con el mismo criterio.
     try{ var _rv=rvGenerarTareas(); if(_rv&&typeof toast==='function') toast(_rv+' revision'+(_rv>1?'es':'')+' pendiente'+(_rv>1?'s':'')+' cargada'+(_rv>1?'s':'')+' como tarea'); }catch(e){}
     if(!hubo){
