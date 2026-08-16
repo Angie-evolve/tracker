@@ -4766,6 +4766,40 @@ function quitarDelEquipo(mail){
 
 function getRutinas(){ return Array.isArray(DB.rutinas)?DB.rutinas:[]; }
 
+// A quien apunta una rutina: 'todos' | 'activas' (con campanas prendidas en Meta) | 'manual'.
+// Las rutinas viejas no tienen .modo: se deducen de si tenian lista fija de clientes.
+function _rutModoDe(r){
+  if(r&&r.modo) return r.modo;
+  return (r&&r.clientes&&r.clientes.length)?'manual':'todos';
+}
+// Criterio: al menos una campana con effective_status ACTIVE en el arbol sincronizado de Meta.
+// Ojo: una campana puede figurar ACTIVE y no gastar un peso (presupuesto mal seteado, en
+// revision, sin entrega). Este filtro mira estado, no gasto.
+function _cliCampanaActiva(c){
+  if(!c||c.archived) return false;
+  var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+  var camps=(al&&al.metaCampaigns)||[];
+  if(camps.length){
+    return camps.some(function(cp){ return String(cp.status||'').toUpperCase()==='ACTIVE'; });
+  }
+  // Todavia no sincronizamos el arbol de campanas: caemos al dato mas directo que hay,
+  // que es si hubo gasto en la ventana de 7 dias. Sin esto el cliente desaparece en silencio.
+  var roll=(c.liveLines||[]).find(function(l){return l.rolling;});
+  return !!(roll&&roll.metrics&&Number(roll.metrics.adSpent)>0);
+}
+function _rutClientesActivos(){
+  return DB.clients.filter(function(c){return !c.archived&&_cliCampanaActiva(c);});
+}
+function _rutCuantos(r){
+  var m=_rutModoDe(r);
+  if(m==='manual'){
+    var n=(r.clientes||[]).length;
+    return n+' cliente'+(n===1?'':'s')+' elegidos a mano';
+  }
+  if(m==='activas') return 'los que tienen campanas activas en Meta ('+_rutClientesActivos().length+' hoy)';
+  return 'todos los clientes';
+}
+
 function _hoyISO(d){
   d=d||new Date();
   return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
@@ -4789,9 +4823,16 @@ function correrRutinas(){
   var hoy=new Date(), creadas=0;
   rs.forEach(function(r){
     if(!_rutinaToca(r,hoy)) return;
-    var objetivo=(r.clientes&&r.clientes.length)
-      ? DB.clients.filter(function(c){ return !c.archived && r.clientes.indexOf(String(c.id))>=0; })
-      : DB.clients.filter(function(c){ return !c.archived; });
+    var _modo=_rutModoDe(r);
+    var objetivo;
+    if(_modo==='manual'){
+      objetivo=DB.clients.filter(function(c){ return !c.archived && (r.clientes||[]).indexOf(String(c.id))>=0; });
+    } else if(_modo==='activas'){
+      // Se recalcula en cada corrida: si el cliente pauso todo, ese dia no le entra la tarea.
+      objetivo=_rutClientesActivos();
+    } else {
+      objetivo=DB.clients.filter(function(c){ return !c.archived; });
+    }
     objetivo.forEach(function(c){
       c.tasks=c.tasks||[];
       // Red de seguridad: si ya existe la misma tarea de esta rutina sin cerrar,
@@ -4830,7 +4871,7 @@ function abrirRutinas(){
   var dias=['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
 
   var filas=rs.map(function(r,i){
-    var cuantos=(r.clientes&&r.clientes.length)?(r.clientes.length+' clientes'):'todos los clientes';
+    var cuantos=_rutCuantos(r);
     return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px;background:var(--bg3)'+(r.activa?'':';opacity:.55')+'">'
       +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">'
         +'<input type="checkbox" '+(r.activa?'checked':'')+' onchange="_rutSet('+i+',\'activa\',this.checked)" title="Activa">'
@@ -4890,7 +4931,7 @@ function _rutSet(i,campo,valor,sinRedibujar){
 function _rutNueva(){
   DB.rutinas=getRutinas();
   DB.rutinas.push({id:'r'+Date.now().toString().slice(-7), texto:'', freq:'weekly', day:1,
-                   monthDay:1, dias:3, clientes:[], responsable:'', activa:true});
+                   monthDay:1, dias:3, clientes:[], modo:'todos', responsable:'', activa:true});
   save(); abrirRutinas();
 }
 function _rutBorrar(i){
@@ -4904,38 +4945,67 @@ function _rutClientes(i){
   var rs=getRutinas(); var r=rs[i]; if(!r) return;
   var activos=DB.clients.filter(function(c){return !c.archived;})
     .sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
-  var todos=!r.clientes||!r.clientes.length;
+  var modo=_rutModoDe(r);
+  var conCamp=activos.filter(_cliCampanaActiva);
+  var manual=modo==='manual';
+  var opcion=function(v,titulo,detalle){
+    return '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer;margin-bottom:9px">'
+      +'<input type="radio" name="rut-modo" value="'+v+'"'+(modo===v?' checked':'')+' onchange="_rutModo('+i+',\''+v+'\')" style="margin-top:2px">'
+      +'<span>'+titulo
+        +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px;line-height:1.55">'+detalle+'</div>'
+      +'</span></label>';
+  };
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:420px;width:92%;max-height:80vh;overflow:auto">'
     +'<div style="font-size:14px;font-weight:600;color:var(--strong);margin-bottom:3px">A que clientes</div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">'+esc(r.texto||'(rutina sin nombre)')+'</div>'
-    +'<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer;margin-bottom:10px">'
-      +'<input type="checkbox" id="rut-todos" '+(todos?'checked':'')+' onchange="_rutTodos('+i+',this.checked)">Todos los clientes activos</label>'
-    +'<div id="rut-lista" style="display:'+(todos?'none':'block')+';max-height:280px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">'
+    +opcion('todos','Todos los clientes activos',
+        activos.length+' cliente'+(activos.length===1?'':'s')+' sin archivar, esten o no pautando.')
+    +opcion('activas','Solo con campanas activas en Meta',
+        '<b style="color:var(--text2)">'+conCamp.length+' de '+activos.length+'</b> ahora mismo. Se vuelve a mirar cada vez que corre la rutina. '
+        +'Mira el estado de la campana, no el gasto: una campana prendida sin entrega igual cuenta.')
+    +opcion('manual','Elegirlos a mano','Lista fija. No cambia sola aunque prendan o apaguen campanas.')
+    +'<div id="rut-preview" style="display:'+(modo==='activas'?'block':'none')+';font-size:11.5px;color:var(--text3);line-height:1.7;border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-top:2px">'
+      +(conCamp.length
+        ? conCamp.map(function(c){return esc(c.name);}).join(' &middot; ')
+        : '<span style="color:var(--redx)">Ninguno tiene campanas activas ahora mismo. Hoy esta rutina no cargaria ninguna tarea.</span>')
+    +'</div>'
+    +'<div id="rut-lista" style="display:'+(manual?'block':'none')+';max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">'
       +activos.map(function(c){
-        var m=todos||r.clientes.indexOf(String(c.id))>=0;
+        var m=manual&&(r.clientes||[]).indexOf(String(c.id))>=0;
+        var viva=_cliCampanaActiva(c);
         return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;color:var(--text2);cursor:pointer">'
-          +'<input type="checkbox" data-cli="'+c.id+'"'+(m?' checked':'')+' onchange="_rutMarcar('+i+')">'+esc(c.name)+'</label>';
+          +'<input type="checkbox" data-cli="'+c.id+'"'+(m?' checked':'')+' onchange="_rutMarcar('+i+')">'
+          +'<span style="width:6px;height:6px;border-radius:50%;flex:none;background:'+(viva?'var(--accent)':'var(--border2)')+'" '
+          +'title="'+(viva?'Con campanas activas en Meta':'Sin campanas activas')+'"></span>'
+          +esc(c.name)+'</label>';
       }).join('')
     +'</div>'
     +'<div style="display:flex;justify-content:flex-end;margin-top:14px">'
       +'<button class="btn btn-sm btn-primary" onclick="abrirRutinas()">Listo</button></div>'
     +'</div></div>';
 }
-function _rutTodos(i,marcado){
+function _rutModo(i,modo){
   var rs=getRutinas(); if(!rs[i]) return;
-  if(marcado){ rs[i].clientes=[]; save(); }
-  var l=document.getElementById('rut-lista'); if(l) l.style.display=marcado?'none':'block';
-  if(!marcado) _rutMarcar(i);
+  rs[i].modo=modo;
+  if(modo!=='manual'){
+    rs[i].clientes=[];
+  } else if(!rs[i].clientes||!rs[i].clientes.length){
+    // Al pasar a mano arrancamos con todos marcados, como hacia antes el checkbox.
+    rs[i].clientes=DB.clients.filter(function(c){return !c.archived;}).map(function(c){return String(c.id);});
+  }
+  save(); _rutClientes(i);
 }
+// Compat: rutinas guardadas antes del cambio pueden seguir llamando a esto.
+function _rutTodos(i,marcado){ _rutModo(i,marcado?'todos':'manual'); }
 function _rutMarcar(i){
   var rs=getRutinas(); if(!rs[i]) return;
   var ids=[];
   document.querySelectorAll('#rut-lista input[data-cli]').forEach(function(ch){
     if(ch.checked) ids.push(ch.getAttribute('data-cli'));
   });
-  rs[i].clientes=ids; save();
+  rs[i].clientes=ids; rs[i].modo='manual'; save();
 }
 
 function _rutCorrerAhora(){
