@@ -16135,6 +16135,282 @@ function arArbol(){
     +bloque+cerrar);
 }
 
+
+/* =================== DIAGNOSTICO AUTOMATICO ===================
+   El arbol original preguntaba todo. Los umbrales y los veredictos siguen
+   siendo los mismos -- ahi esta el valor y no se tocan. Lo que cambia es de
+   donde salen los numeros: en vez de tipearlos, se piden a Meta dos ventanas
+   de 7 dias (la movil y la anterior) y se completan solos, incluidos los
+   descartes del Paso 0 que se pueden derivar de los datos.
+   Lo que NO se puede automatizar esta marcado como tal en la salida: el
+   concepto de "angulo genuinamente distinto" es semantico y solo vive en el
+   registro que carga una persona. */
+
+function _arISO(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+// Dos ventanas moviles de 7 dias, pegadas y terminando ayer. Nunca se incluye
+// hoy: el dia en curso esta a medio gastar y ensucia las dos puntas.
+function arVentanas(){
+  var hasta=new Date(); hasta.setHours(0,0,0,0); hasta.setDate(hasta.getDate()-1);
+  var desde=new Date(hasta); desde.setDate(desde.getDate()-6);
+  var bHasta=new Date(desde); bHasta.setDate(bHasta.getDate()-1);
+  var bDesde=new Date(bHasta); bDesde.setDate(bDesde.getDate()-6);
+  return { ahora:{since:_arISO(desde), until:_arISO(hasta)},
+           base: {since:_arISO(bDesde), until:_arISO(bHasta)} };
+}
+
+// Extractor minimo: solo lo que el arbol necesita. Mismo criterio de alias que
+// usa syncMetaAds para no contar un lead varias veces.
+function _arIns(row){
+  var acts=row.actions||[];
+  var get=function(t){ var a=acts.find(function(x){return x.action_type===t;}); return a?(parseInt(a.value||0,10)||0):0; };
+  var mx=function(){ var m=0; for(var i=0;i<arguments.length;i++){ var v=get(arguments[i]); if(v>m) m=v; } return m; };
+  var vid=function(campo){
+    var arr=row[campo]; if(!arr||!arr.length) return 0;
+    var vv=arr.find(function(x){return x.action_type==='video_view';});
+    return parseFloat((vv||arr[0]).value||0)||0;
+  };
+  var leads=mx('lead','onsite_web_lead','onsite_conversion.lead_grouped',
+    'offsite_conversion.fb_pixel_lead','offsite_lead_add_20_s_calls','onsite_conversion.messaging_first_reply');
+  var purch=mx('purchase','offsite_conversion.fb_pixel_purchase','onsite_web_purchase');
+  var sched=(function(){ var m=0; acts.forEach(function(a){ if(/schedule/i.test(a.action_type||'')){ var v=parseInt(a.value||0,10)||0; if(v>m) m=v; } }); return m; })();
+  var res=purch||sched||leads||0;
+  var spend=parseFloat(row.spend||0)||0;
+  return {
+    spend:spend,
+    impressions:parseInt(row.impressions||0,10)||0,
+    clicks:parseInt(row.clicks||0,10)||0,
+    ctr:parseFloat(row.ctr||0)||0,
+    cpm:parseFloat(row.cpm||0)||0,
+    frequency:parseFloat(row.frequency||0)||0,
+    landingViews:get('landing_page_view'),
+    resultados:res,
+    cpa:res>0?spend/res:null,
+    videoPlays:vid('video_play_actions'),
+    thruPlays:(function(){
+      var arr=row.video_thruplay_watched_actions; if(!arr||!arr.length) return 0;
+      var vv=arr.find(function(x){return x.action_type==='video_view';});
+      return parseInt((vv||arr[0]).value||0,10)||0;
+    })()
+  };
+}
+
+// Una sola consulta por ventana, al nivel pedido. Devuelve filas ya normalizadas.
+async function arPedirVentana(c, nivel, rango){
+  var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
+  var lvl={camp:'campaign', adset:'adset', ad:'ad'}[nivel]||'campaign';
+  var campos=['campaign_id','campaign_name','adset_id','adset_name','ad_id','ad_name',
+    'spend','impressions','clicks','ctr','cpm','frequency','actions',
+    'video_play_actions','video_thruplay_watched_actions'].join(',');
+  var url='https://graph.facebook.com/v19.0/'+actId+'/insights'
+    +'?level='+lvl
+    +'&time_range='+encodeURIComponent(JSON.stringify(rango))
+    +'&fields='+encodeURIComponent(campos)
+    +'&limit=500&access_token='+encodeURIComponent(c.metaToken);
+  var r=await fetch(url);
+  var d=await r.json();
+  if(d.error) throw new Error(d.error.message||'Meta rechazo la consulta');
+  return (d.data||[]).map(function(row){
+    var id=lvl==='ad'?row.ad_id:(lvl==='adset'?row.adset_id:row.campaign_id);
+    var nom=lvl==='ad'?row.ad_name:(lvl==='adset'?row.adset_name:row.campaign_name);
+    var m=_arIns(row);
+    m.id=String(id||''); m.nombre=nom||String(id||'');
+    m.campId=String(row.campaign_id||'');
+    m.ctx=lvl==='ad'?(row.adset_name||row.campaign_name||''):(lvl==='adset'?(row.campaign_name||''):'');
+    return m;
+  });
+}
+
+// Ejecuciones y angulos: salen del registro que se carga a mano. Meta no sabe
+// que es un angulo, asi que esto no se puede derivar de la API.
+function arHistorialDe(c, nombre){
+  var regs=arCamps(c)||[];
+  var angulos={}, ejec=0;
+  var norm=function(s){ return String(s||'').toLowerCase().trim(); };
+  regs.forEach(function(r){
+    var ang=norm(r.angulo||r.angle||'');
+    if(ang) angulos[ang]=true;
+    // Una ejecucion cuenta si comparte angulo con lo que estamos mirando, o si
+    // el registro apunta al mismo item.
+    if(norm(r.campana||r.item||'')===norm(nombre)) ejec++;
+  });
+  return { ejec:ejec, angs:Object.keys(angulos).length, total:regs.length };
+}
+
+// Motor: pide, calcula, completa el formulario y corre el arbol de siempre.
+async function arAuto(nivelForzado){
+  var c=S._hojaCliente;
+  if(!c){ toast('Abri un cliente primero'); return; }
+  if(!c.metaToken||!c.metaAccountId){ toast('Este cliente no tiene Meta conectado','amber'); return; }
+  var nivel=nivelForzado||S.arbolNivel||'camp';
+  var est=arEl('auto-estado');
+  var decir=function(t,color){ if(est){ est.innerHTML=t; est.style.color=color||'var(--text3)'; est.style.display='block'; } };
+  var btn=arEl('auto-btn'); if(btn){ btn.disabled=true; btn.textContent='Consultando a Meta...'; }
+  decir('Pidiendo las dos ventanas de 7 dias...');
+
+  try{
+    var v=arVentanas();
+    var pares=await Promise.all([ arPedirVentana(c,nivel,v.ahora), arPedirVentana(c,nivel,v.base) ]);
+    var filasA=pares[0], filasB=pares[1];
+    if(!filasA.length){ decir('Meta no devolvio datos para los ultimos 7 dias ('+v.ahora.since+' al '+v.ahora.until+'). Si todo esta pausado, no hay nada que diagnosticar.','var(--amberx)'); return; }
+
+    // Campanas excluidas de la linea: se respetan como en el resto de la app.
+    var al=getActiveLine((c&&c.conversionLines)||[]);
+    var excl=((al&&al.excludedCampaigns)||[]).map(String);
+    var vivas=filasA.filter(function(f){ return excl.indexOf(f.campId)<0; });
+    if(!vivas.length){ decir('Todas las campanas con gasto estan excluidas de la linea de conversion.','var(--amberx)'); return; }
+
+    // El item a diagnosticar: el que mas gasto en la ventana movil. Es el que
+    // mas plata te cuesta si esta cansado.
+    var elegidoId=S.arbolAutoId;
+    var A=elegidoId?vivas.find(function(f){return f.id===elegidoId;}):null;
+    if(!A){ A=vivas.slice().sort(function(x,y){ return y.spend-x.spend; })[0]; }
+    S.arbolAutoId=A.id;
+    var B=filasB.find(function(f){ return f.id===A.id; })||null;
+
+    // --- Regimen: hay base propia solo si la ventana anterior gasto de verdad ---
+    var hayBase=!!(B&&B.spend>0&&B.impressions>0);
+    arPick().regimen=hayBase?'arbol':'calib';
+    var marcarOpt=function(grupo,val){
+      arPick()[grupo]=val;
+      var wrap=document.querySelector('#ar-panel-diag [data-grupo="'+grupo+'"]');
+      if(!wrap) return;
+      Array.prototype.forEach.call(wrap.querySelectorAll('.ar-opt'),function(b){
+        var on=b.getAttribute('data-val')===val;
+        b.className='ar-opt'+(on?(' on'+(val==='warn'?' warn':(val==='bad'?' bad':''))):'');
+      });
+    };
+    marcarOpt('regimen', hayBase?'arbol':'calib');
+    arRegimen();
+
+    // --- Completar las dos columnas ---
+    var set=function(id,val){
+      var e=arEl(id); if(!e) return;
+      e.value=(val==null||!isFinite(val))?'':String(Math.round(val*100)/100);
+    };
+    var pct=function(n,d){ return d>0?(n/d*100):null; };
+    set('hookA', pct(A.videoPlays,A.impressions));
+    set('holdA', pct(A.thruPlays,A.impressions));
+    set('ctrA',  A.ctr||null);
+    set('cvrA',  pct(A.resultados,A.landingViews));
+    set('cpaA',  A.cpa);
+    set('clicks',A.clicks);
+    set('dias',  7);
+    set('frec',  A.frequency||null);
+    if(B){
+      set('hookB', pct(B.videoPlays,B.impressions));
+      set('holdB', pct(B.thruPlays,B.impressions));
+      set('ctrB',  B.ctr||null);
+      set('cvrB',  pct(B.resultados,B.landingViews));
+      set('cpaB',  B.cpa);
+    }
+
+    // --- Historial: lo unico que sigue viniendo del registro ---
+    var h=arHistorialDe(c, A.nombre);
+    set('ejec', h.ejec); set('angs', h.angs);
+
+    // --- Paso 0 derivado de los datos ---
+    var d=function(b,a){ return (b==null||a==null||!b)?null:((a-b)/b*100); };
+    var dHook=d(pct(B&&B.videoPlays,B&&B.impressions), pct(A.videoPlays,A.impressions));
+    var dCtr =d(B&&B.ctr, A.ctr);
+    var dCvr =d(pct(B&&B.resultados,B&&B.landingViews), pct(A.resultados,A.landingViews));
+    var dCpa =d(B&&B.cpa, A.cpa);
+    var dSpend=d(B&&B.spend, A.spend);
+
+    // Subasta: CPM del resto de la cuenta, sin la campana del item.
+    var otras=function(filas){
+      return filas.filter(function(f){ return f.campId && f.campId!==A.campId && excl.indexOf(f.campId)<0; });
+    };
+    var cpmDe=function(filas){
+      var g=0,i=0; otras(filas).forEach(function(f){ g+=f.spend; i+=f.impressions; });
+      return i>0?(g/i*1000):null;
+    };
+    var cpmA=cpmDe(filasA), cpmB=cpmDe(filasB), dCpm=d(cpmB,cpmA);
+    var hayOtras=otras(filasA).length>0;
+    marcarOpt('p0_subasta', (dCpm!=null&&dCpm>=15)?'bad':'ok');
+
+    // Aguas abajo: anuncio plano y solo el CPA movido.
+    var plano=function(x){ return x==null||Math.abs(x)<=10; };
+    var soloCpa=plano(dHook)&&plano(dCtr)&&plano(dCvr)&&(dCpa!=null&&dCpa>=20);
+
+    // Shock de aprendizaje: salto de gasto fuerte entre ventanas (proxy de
+    // cambio de presupuesto) o conjuntos en fase de aprendizaje.
+    var aprendiendo=(c.metaPulso&&(c.metaPulso.aprendiendo>0))||false;
+    var shock=(dSpend!=null&&Math.abs(dSpend)>=25)||aprendiendo;
+    marcarOpt('p0_shock', shock?'bad':'ok');
+    // Un shock de presupuesto tambien aplana las metricas del anuncio y mueve el
+    // CPA. Si los dos dan positivo, el shock es la causa: marcar los dos haria
+    // que el arbol reporte "aguas abajo", que es el diagnostico equivocado.
+    marcarOpt('p0_abajo', (soloCpa&&!shock)?'bad':'ok');
+
+    // Atribucion: exige CPA de backend. Sin GHL no se puede afirmar nada, y el
+    // arbol ya tiene una opcion honesta para eso.
+    var backend=null;
+    try{
+      var opps=(c.ghl&&c.ghl.opportunities)||[];
+      if(opps.length){
+        var enRango=function(r){
+          return opps.filter(function(o){
+            var f=String(o.createdAt||o.dateAdded||'').slice(0,10);
+            return f>=r.since&&f<=r.until;
+          }).length;
+        };
+        var nA=enRango(v.ahora), nB=enRango(v.base);
+        if(nA>0&&nB>0) backend=d(B?B.spend/nB:null, A.spend/nA);
+      }
+    }catch(e){}
+    var atrib='warn';
+    if(backend!=null&&dCpa!=null){
+      atrib=(dCpa>=20&&backend<10)?'bad':'ok';
+    }
+    marcarOpt('p0_atrib', atrib);
+
+    // --- Correr el arbol de siempre ---
+    var _notas=[];
+    _notas.push('Ventana movil <b>'+v.ahora.since+' al '+v.ahora.until+'</b> contra base <b>'+v.base.since+' al '+v.base.until+'</b>.');
+    _notas.push('Item: <b>'+esc(A.nombre)+'</b>'+(A.ctx?' &middot; '+esc(A.ctx):'')+' &middot; nivel '+({camp:'campana',adset:'conjunto',ad:'anuncio'}[nivel])+'.');
+    if(!hayBase) _notas.push('<span style="color:var(--amberx)">Sin gasto en la ventana anterior: entra en regimen de calibracion, no de fatiga.</span>');
+    _notas.push('Paso 0 automatico &mdash; subasta: '+(dCpm==null?'sin otras campanas para comparar':(Math.round(dCpm)+'% de CPM en el resto de la cuenta'))
+      +' &middot; shock: '+(shock?'si':'no')+' &middot; aguas abajo: '+(soloCpa?'si':'no')
+      +' &middot; atribucion: '+(atrib==='warn'?'sin backend confiable':(atrib==='bad'?'solo plataforma':'coherente'))+'.');
+    _notas.push('<b>Lo unico que no se automatiza:</b> ejecuciones ('+h.ejec+') y angulos distintos ('+h.angs+') salen del registro, que se carga a mano. Meta no sabe que es un angulo. Con el registro vacio el arbol solo llega a su rama mas superficial.');
+    if(!hayOtras) _notas.push('No hay otras campanas con gasto: el descarte de subasta no se pudo verificar.');
+    var nota=arEl('auto-nota');
+    if(nota){ nota.innerHTML=_notas.map(function(x){return '<div style="margin-bottom:3px">'+x+'</div>';}).join(''); nota.style.display='block'; }
+
+    // Selector de item, por si el de mas gasto no es el que interesa
+    var sel=arEl('auto-sel');
+    if(sel){
+      sel.innerHTML=vivas.slice().sort(function(x,y){ return y.spend-x.spend; }).map(function(f){
+        return '<option value="'+esc(f.id)+'"'+(f.id===A.id?' selected':'')+'>'
+          +esc(f.nombre)+' &middot; $'+Math.round(f.spend)+'</option>';
+      }).join('');
+      sel.style.display='block';
+    }
+
+    decir('Listo: dos ventanas leidas, '+vivas.length+' items con gasto.','var(--accent)');
+    if(hayBase){ arArbol(); }
+    else {
+      // Calibracion necesita la vertical. Si no esta elegida, se toma B2B: es el
+      // caso de esta agencia y el usuario la puede cambiar y volver a correr.
+      if(!arPick().vertical){ marcarOpt('vertical','b2b'); }
+      arCalibracion();
+    }
+    var o=arEl('out'); if(o) o.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){
+    decir('No se pudo: '+esc(e.message||'error'),'var(--redx)');
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='Diagnosticar solo'; }
+  }
+}
+function arAutoItem(id){ S.arbolAutoId=id||null; arAuto(); }
+function arAutoNivel(k){
+  S.arbolNivel=k; S.arbolAutoId=null;
+  ['camp','adset','ad'].forEach(function(x){
+    var b=arEl('aniv-'+x); if(b) b.className=(x===k?'on':'');
+  });
+  arAuto();
+}
+
 function arLimpiar(){
   var p=arEl('panel-diag'); if(!p) return;
   Array.prototype.forEach.call(p.querySelectorAll('input'),function(i){ i.value=''; });
@@ -16268,9 +16544,11 @@ function arRenderReg(){
 
 /* ---------- shell ---------- */
 function _arOpts(grupo, items){
-  return '<div class="ar-opts">'+items.map(function(it){
+  // data-grupo/data-val: el diagnostico automatico marca estas mismas opciones
+  // sin simular clicks, asi la pantalla refleja lo que se decidio por datos.
+  return '<div class="ar-opts" data-grupo="'+grupo+'">'+items.map(function(it){
     var id=(grupo==='regimen'&&it[0]==='arbol')?' id="ar-opt-regimen-arbol"':'';
-    return '<button class="ar-opt"'+id+' onclick="arOpt(\''+grupo+'\',\''+it[0]+'\',event)">'+it[1]+'</button>';
+    return '<button class="ar-opt" data-val="'+it[0]+'"'+id+' onclick="arOpt(\''+grupo+'\',\''+it[0]+'\',event)">'+it[1]+'</button>';
   }).join('')+'</div>';
 }
 function _arQ(texto, why, grupo, items){
@@ -16311,9 +16589,27 @@ function arShellHtml(c){
       +'</div>'
     : '<span class="ar-note">Sincroniza Meta en Top of Funnel para poder precargar los numeros.</span>';
 
+  var anivBtn=function(k,l){ return '<button id="ar-aniv-'+k+'" class="'+(nivel===k?'on':'')+'" onclick="arAutoNivel(\''+k+'\')">'+l+'</button>'; };
+  var auto=hayMeta
+    ? '<div class="ar-step" style="border-color:var(--accent)">'
+      +'<div class="hd"><span class="n">AUTO</span><span class="t">Diagnostico sin preguntas</span></div><div class="bd">'
+      +'<p class="ar-note" style="margin-bottom:12px">Pide a Meta la ventana movil de 7 dias y la anterior, completa las dos columnas, '
+      +'resuelve los descartes que se pueden derivar de los datos y corre el arbol. '
+      +'Todo lo de abajo queda cargado y editable: si un numero no te cierra, lo pisas y volves a correr.</p>'
+      +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        +'<button class="btn btn-primary" id="ar-auto-btn" onclick="arAuto()">Diagnosticar solo</button>'
+        +'<div class="vh-seg">'+anivBtn('camp','Campana')+anivBtn('adset','Conjunto')+anivBtn('ad','Anuncio')+'</div>'
+        +'<select class="ar-sel" id="ar-auto-sel" style="display:none" onchange="arAutoItem(this.value)"></select>'
+      +'</div>'
+      +'<div id="ar-auto-estado" class="ar-note" style="display:none;margin-top:10px"></div>'
+      +'<div id="ar-auto-nota" class="ar-callout" style="display:none;margin-top:10px;line-height:1.65"></div>'
+      +'</div></div>'
+    : '';
+
   var diag='<div class="ar-eyebrow">Diagnostico en vivo</div>'
     +'<h2 class="ar-h2">Que se canso?</h2>'
     +'<p class="ar-lead">El arbol se dispara por senal, nunca por calendario. Si nada se salio de umbral, no hay nada que correr aca.</p>'
+    +auto
 
     +'<div class="ar-step"><div class="hd"><span class="n">REGIMEN</span><span class="t">Tenes linea base propia?</span></div><div class="bd">'
       +'<div class="ar-q" style="border-top:0;padding-top:0">'
