@@ -5710,9 +5710,10 @@ function integracionesAppHtml(){
       +'<span style="font-size:13.5px;font-weight:500;color:var(--strong)">'+o.name+'</span>'+pill(o.st)+'</div>'
       +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;flex:1">'+o.desc+'</div>'
       +(o.detail?'<div class="mono" style="font-size:11px;color:var(--text2)">'+o.detail+'</div>':'')
-      +((o.action||o.action2)?'<div style="display:flex;gap:6px;margin-top:2px">'
+      +((o.action||o.action2||o.action3)?'<div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">'
         +(o.action?'<button class="btn btn-sm" onclick="'+o.action+'">'+o.actionLabel+'</button>':'')
         +(o.action2?'<button class="btn btn-sm" onclick="'+o.action2+'" style="color:var(--text3)">'+o.action2Label+'</button>':'')
+        +(o.action3?'<button class="btn btn-sm" onclick="'+o.action3+'" style="color:var(--text3)">'+o.action3Label+'</button>':'')
         +'</div>':'')
     +'</div>';
   };
@@ -5769,6 +5770,8 @@ function integracionesAppHtml(){
       var _al=(typeof getDefaultAlarms==='function')?getDefaultAlarms():{email:'',rules:[]};
       var _alDest=normalizarEmails(_al.email);
       var _alAct=(_al.rules||[]).filter(function(r){return r.enabled;}).length;
+      // La primera vez se consulta al script para que la linea diga algo real.
+      if(S._eodEstado===undefined){ S._eodEstado=null; try{ eodCargarEstado('config'); }catch(e){} }
       var _eod=S._eodEstado||null;
 
       // Estado: verde solo si las dos patas estan listas. Si una sola anda,
@@ -5788,15 +5791,17 @@ function integracionesAppHtml(){
                                       :'<span style="color:var(--amberx)">sin destinatarios</span>'))
                 :'sin configurar'));
       _lineas.push('<b style="color:var(--text2);font-weight:500">Fin de dia</b> &middot; '
-        +(_eod?(_eod.activo?('todos los dias a las '+((_eod.hora<10?'0':'')+_eod.hora)+':00')
+        +(_eod?(_eod.activo?('todos los dias a las '+((_eod.hora<10?'0':'')+_eod.hora)+':00'
+                             +(_eod.apiListo?'':' &middot; <span style="color:var(--text3)">por plantilla</span>'))
                           :'apagado')
-              :'sin consultar'));
+              :'consultando...'));
 
       return card({name:'Notificaciones', st:_st,
         desc:'Todo lo que la app manda sola: el informe de cada cliente por mail, las alarmas cuando una metrica se sale de rango, y tu resumen de fin de dia por WhatsApp.',
         detail:_lineas.join('<br>'),
         action:'openWeeklyReportModal()', actionLabel:'Informes',
-        action2:'openDefaultAlarmsModal(null)', action2Label:'Alarmas'});
+        action2:'openDefaultAlarmsModal(null)', action2Label:'Alarmas',
+        action3:'eodModal()', action3Label:'Fin de dia'});
     })(),
 
     (function(){
@@ -9353,9 +9358,6 @@ async function wrPushSchedule(showToast){
   }
 }
 function openWeeklyReportModal(){
-  // La primera vez se pide el estado del end of day al script y se vuelve a
-  // dibujar. Sin esto el panel arranca en blanco aunque este configurado.
-  if(S._eodEstado===undefined){ S._eodEstado=null; try{ eodCargarEstado(); }catch(e){} }
   const pushed=localStorage.getItem('evold-report-pushed');
   const envios=getEnvios();
   const wa=getWaCfg();
@@ -9529,8 +9531,6 @@ function openWeeklyReportModal(){
       +'La ventana que cubre cada informe es movil: siempre termina el dia anterior al envio, '
       +'y es la misma que despues revisas en Revisiones.</div>'
     +'<div id="wr-envios">'+_wrTablaHtml(envios)+'</div>'
-    +eodPanelHtml()
-    +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
     +'<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
       +'<button class="btn btn-sm" onclick="wrAgregarEnvio()">Agregar envio</button>'
       +'<button class="btn btn-sm" onclick="wrPushEnvios(true)">Guardar solo los envios</button>'
@@ -9617,13 +9617,32 @@ function eodAutoEmpuje(){
 }
 
 // ---------- Panel del end of day ----------
-function eodPanelHtml(){
+// El resumen de fin de dia es su propia notificacion, al mismo nivel que los
+// informes y las alarmas. Antes vivia colgado abajo del modal de informes, que
+// es otra cosa: aquel manda al cliente, este te manda a vos.
+function eodModal(){
+  if(S._eodEstado===undefined||S._eodEstado===null){
+    S._eodEstado=S._eodEstado||null;
+    try{ eodCargarEstado(true); }catch(e){}
+  }
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:94%;max-height:84vh;overflow:auto">'
+      +eodPanelHtml(true)
+      +'<div class="modal-footer"><button class="btn btn-sm" onclick="closeModal()">Listo</button></div>'
+    +'</div></div>';
+}
+
+function eodPanelHtml(suelto){
   var e=(S._eodEstado)||{};
   var inp='padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit';
   var horas='';
   for(var i=0;i<24;i++) horas+='<option value="'+i+'"'+((e.hora==null?20:e.hora)===i?' selected':'')+'>'+(i<10?'0':'')+i+':00</option>';
-  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-top:14px">'
-    +'<div style="font-size:14px;font-weight:600;color:var(--strong);margin-bottom:3px">Resumen de fin de dia</div>'
+  var _ini=suelto
+    ? '<div><div class="modal-title">Resumen de fin de dia</div>'
+    : '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-top:14px">'
+      +'<div style="font-size:14px;font-weight:600;color:var(--strong);margin-bottom:3px">Resumen de fin de dia</div>';
+  return _ini
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
       +'Un mensaje por cliente, a tu WhatsApp. Telegrafico y para vos, no para el cliente. '
       +'Sale del gasto y rendimiento del dia, los cambios detectados en la estructura de Meta, '
@@ -9733,13 +9752,25 @@ async function eodAhora(){
   }catch(e){ _eodSal('No se pudo: '+e.message,'var(--redx)'); }
 }
 
-async function eodCargarEstado(){
+// Trae el estado del end of day y redibuja LO QUE ESTE ABIERTO. Antes siempre
+// redibujaba el modal de informes: ahora el panel vive en su propio modal y en
+// la tarjeta de Notificaciones, y redibujar el que no es tapaba la pantalla.
+var _eodPidiendo=false;
+async function eodCargarEstado(donde){
   var proxy=getGhlProxy&&getGhlProxy(); if(!proxy||!proxy.url) return;
+  if(_eodPidiendo) return;                 // una sola consulta a la vez
+  _eodPidiendo=true;
   try{
     var r=await proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)+'&action=eod_status')
       .then(function(x){return x.json();});
-    if(r&&r.ok){ S._eodEstado=r.eod; openWeeklyReportModal(); }
+    if(r&&r.ok){
+      S._eodEstado=r.eod;
+      if(donde===true||donde==='eod'){ if(document.querySelector('#eod-salida')) eodModal(); }
+      else if(typeof renderTab==='function' && S.tab==='integraciones'){ renderTab(); }
+      else if(typeof abrirConfigAgencia==='function' && document.getElementById('ag-sub-detalle')){ abrirConfigAgencia(); }
+    }
   }catch(e){}
+  finally{ _eodPidiendo=false; }
 }
 
 function weeklyReportDiag(){
