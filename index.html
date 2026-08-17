@@ -7675,24 +7675,31 @@ var EERR_MESES=['enero','febrero','marzo','abril','mayo','junio',
 // Cuando entro un cliente. No hay campo de alta, asi que se reconstruye: la
 // fecha de inicio del contrato es la mas fiel, despues la de firma, y como
 // ultimo recurso el id, que se genera con Date.now() al crearlo.
-function clienteAlta(c){
-  if(!c) return null;
+function _fecha(x){
+  if(!x) return null;
+  // signDate viene en DD/MM/YYYY del lector de contratos.
+  var mm=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(x));
+  var d=mm?new Date(+mm[3],+mm[2]-1,+mm[1]):new Date(x);
+  return isNaN(d.getTime())?null:d;
+}
+// Devuelve la fecha Y de donde salio. La fuente importa: el id del cliente dice
+// cuando se CARGO en la app, no cuando empezo a ser cliente. Si migraste diez
+// de una sentada, los diez figuran el mismo dia y eso no es un alta real.
+function clienteAltaInfo(c){
+  if(!c) return {fecha:null, fuente:null};
   var ct=c.contract||{};
-  var cand=c.altaAt||ct.startDate||ct.signDate||'';
-  if(cand){
-    // signDate viene en DD/MM/YYYY del lector de contratos.
-    var mm=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(cand));
-    var d=mm?new Date(+mm[3],+mm[2]-1,+mm[1]):new Date(cand);
-    if(!isNaN(d.getTime())) return d;
-  }
+  var d=_fecha(c.altaAt);        if(d) return {fecha:d, fuente:'manual'};
+  d=_fecha(ct.startDate);        if(d) return {fecha:d, fuente:'contrato'};
+  d=_fecha(ct.signDate);         if(d) return {fecha:d, fuente:'firma'};
   var n=Number(c.id);
-  // Un id chico no es una marca de tiempo: mejor no saber que inventar una fecha.
   if(isFinite(n)&&n>1000000000000){
     var di=new Date(n);
-    if(!isNaN(di.getTime())) return di;
+    if(!isNaN(di.getTime())) return {fecha:di, fuente:'app'};   // solo estimado
   }
-  return null;
+  return {fecha:null, fuente:null};
 }
+function clienteAlta(c){ return clienteAltaInfo(c).fecha; }
+function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // Clientes que entraron en ese mes.
 function eerrNuevos(anio, mes){
   return (DB.clients||[]).filter(function(c){
@@ -7965,6 +7972,24 @@ function eerrHtml(){
         }
         return out;
       })()
+    +(function(){
+        // Cuantas altas salen del id, o sea del dia que se cargo el cliente.
+        // Sin decirlo, "7 clientes en junio" se lee como un mes historico.
+        var est=(DB.clients||[]).filter(function(c){
+          var i=clienteAltaInfo(c);
+          return i.fecha && i.fuente==='app';
+        });
+        if(!est.length) return '';
+        return '<div style="font-size:11px;color:var(--text2);line-height:1.7;margin-bottom:10px;'
+          +'background:rgba(224,180,92,.07);border:1px solid rgba(224,180,92,.22);'
+          +'border-radius:var(--radius);padding:9px 12px">'
+          +'<b style="color:var(--amberx)">'+est.length+' fecha'+(est.length===1?'':'s')+' de alta estimada'
+          +(est.length===1?'':'s')+'</b>. Esos clientes no tienen fecha de contrato, asi que se usa el dia '
+          +'en que se cargaron en la app &mdash; si migraste varios juntos, van a figurar todos el mismo mes. '
+          +'Se corrige en la ficha del cliente, en <b>Cliente desde</b>: '
+          +est.slice(0,8).map(function(c){ return esc(c.name); }).join(', ')
+          +(est.length>8?' y '+(est.length-8)+' mas':'')+'.</div>';
+      })()
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
@@ -7972,10 +7997,21 @@ function eerrHtml(){
         +(function(){
             var tot=0;
             var tds=EERR_MESES.map(function(_,i){
-              var n=eerrNuevos(eerrAnio(), i).length; tot+=n;
-              var nom=eerrNuevos(eerrAnio(), i).map(function(c){ return c.name; }).join(', ');
-              return '<td style="'+cel+';color:'+(n?'var(--accent)':'var(--text3)')+';font-weight:'+(n?'600':'400')+'" '
-                +(nom?('title="'+esc(nom)+'"'):'')+'>'+(n||'&mdash;')+'</td>';
+              var lista=eerrNuevos(eerrAnio(), i);
+              var n=lista.length; tot+=n;
+              var fiables=lista.filter(clienteAltaFiable).length;
+              var estim=n-fiables;
+              // Un mes estimado no puede verse igual que uno confirmado: siete
+              // clientes el mismo mes suele ser el dia que se cargaron, no altas.
+              var tit=lista.map(function(c){
+                return c.name+(clienteAltaFiable(c)?'':' (estimado)');
+              }).join(', ');
+              var col=!n?'var(--text3)':(estim===n?'var(--text3)':'var(--accent)');
+              return '<td style="'+cel+';color:'+col+';font-weight:'+(n&&!estim?'600':'400')
+                +(estim===n&&n?';font-style:italic':'')+'" '
+                +(tit?('title="'+esc(tit)+'"'):'')+'>'+(n||'&mdash;')
+                +(estim&&estim!==n?'<span style="font-size:9px;color:var(--text3)"> ('+estim+'?)</span>':'')
+                +'</td>';
             }).join('');
             return '<tr><td style="'+rot+';color:var(--strong);font-weight:500">Clientes nuevos</td>'+tds
               +'<td style="'+cel+';color:var(--accent);font-weight:600">'+(tot||'&mdash;')+'</td></tr>';
@@ -8060,7 +8096,7 @@ function rentabilidadHtml(){
             ? esc(nuevosMes.map(function(c){ return c.name; }).join(', '))
             : 'Ninguno este mes')
           +'<br>'+nuevosAnio.length+' en '+hoy.getFullYear()
-          +(sinFecha?(' &middot; <span style="color:var(--amberx)">'+sinFecha+' sin fecha de alta</span>'):'')
+          +(sinFecha?(' &middot; <span style="color:var(--amberx)">'+sinFecha+' sin fecha</span>'):'')
         +'</div>'
       +'</div>'
       +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
@@ -12669,6 +12705,17 @@ function renderTab(){
         <div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <div style="font-size:12px;font-weight:500;color:var(--text)">Tipo de servicio</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--text3)">Cliente desde</span>
+            <input type="date" value="${(clienteAltaInfo(c).fecha&&clienteAltaFiable(c))?clienteAltaInfo(c).fecha.toISOString().slice(0,10):''}"
+              onchange="setClientFee(${c.id},'altaAt',this.value)"
+              style="font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
+            <span style="font-size:10.5px;color:${clienteAltaFiable(c)?'var(--text3)':'var(--amberx)'}">
+              ${clienteAltaFiable(c)
+                ? ({manual:'cargada a mano',contrato:'del inicio de contrato',firma:'de la firma del contrato'}[clienteAltaInfo(c).fuente]||'')
+                : 'estimada: es el dia que se cargo en la app'}
+            </span>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
             <button onclick="setClientServiceType(${c.id},'garantia')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${(c.serviceType||'garantia')==='garantia'?'background:rgba(29,158,117,0.15);border-color:var(--accent);color:var(--accent);font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Garantia</button>
