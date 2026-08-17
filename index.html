@@ -2878,6 +2878,31 @@ function setClientServiceType(clientId, type){
   renderTab();
 }
 
+// Un cliente mes a mes que sigue renovando no tiene fecha de fin: marcarlo asi
+// evita tener que corregir el "proximo pago" cada mes, que es como quedaban
+// vencidos y desaparecian de la proyeccion sin que nadie lo notara.
+function setRenuevaSolo(clientId, valor){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  c.renuevaSolo=!!valor;
+  save();
+  renderTab();
+}
+// La fecha del proximo pago que corresponde hoy. No se guarda pisada: se deriva,
+// asi el dato original queda intacto y no hay escrituras silenciosas.
+function proxPagoVigente(c){
+  var f=c&&c.nextPaymentDate;
+  if(!f) return '';
+  if(!c.renuevaSolo) return f;
+  var p=String(f).slice(0,10).split('-');
+  var d=new Date(Number(p[0]), Number(p[1])-1, Number(p[2])||1);
+  if(isNaN(d.getTime())) return f;
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var guarda=0;
+  while(d<hoy && guarda++<240){ d.setMonth(d.getMonth()+1); }
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
+
 function setClientFee(clientId, field, value){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -7657,6 +7682,8 @@ function _eerrHasta(c){
   // Ojo con la diferencia: la fecha FIN DE CONTRATO cubre ese mes; el PROXIMO
   // PAGO es plata que todavia no entro, asi que lo cubierto termina el mes
   // anterior. Contarlo igual sumaba un mes que nadie pago.
+  // Se renueva sola: no hay fin conocido, sigue contando indefinidamente.
+  if(c.renuevaSolo && !(c.contract&&c.contract.endDate)) return null;
   var fin=(c.contract&&c.contract.endDate)||'';
   var prox=c.nextPaymentDate||'';
   var f=fin||prox;
@@ -7840,7 +7867,8 @@ function eerrHtml(){
                 return esc(x.c.name)+' ('+MES[x.h.m]+' '+x.h.a
                   +(x.c.monthlyFee?(', '+_eerrPlata(parseFloat(x.c.monthlyFee))):'')+')';
               }).join(' &middot; ')
-            +'. Si renovaron, actualiza la fecha en su ficha; si se fueron, pasalos a no recurrentes.</div>';
+            +'. Si siguen mes a mes, abri su ficha y marca <b>&laquo;Se renueva sola&raquo;</b>: la fecha avanza sola '
+            +'y no vuelve a vencerse. Si se fueron, pasalos a no recurrentes.</div>';
         }
         if(vigentes.length){
           out+='<div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:10px;'
@@ -12528,10 +12556,20 @@ function renderTab(){
             </div>
             <div>
               <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Proximo pago</div>
-              <input type="date" id="next-payment-${c.id}" value="${c.nextPaymentDate||''}"
+              <input type="date" id="next-payment-${c.id}" value="${(c.renuevaSolo?proxPagoVigente(c):c.nextPaymentDate)||''}"
                 oninput="setClientFee(${c.id},'nextPaymentDate',this.value)"
                 onchange="setClientFee(${c.id},'nextPaymentDate',this.value)"
                 style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
+              <label style="display:flex;align-items:flex-start;gap:7px;margin-top:8px;font-size:11.5px;color:var(--text2);cursor:pointer">
+                <input type="checkbox" ${c.renuevaSolo?'checked':''} onchange="setRenuevaSolo(${c.id},this.checked)" style="margin-top:2px">
+                <span>Se renueva sola
+                  <div style="font-size:10.5px;color:var(--text3);margin-top:2px;line-height:1.55">
+                    ${c.renuevaSolo
+                      ? 'La fecha avanza sola y el cliente sigue contando en la proyeccion.'
+                      : 'Sin esto, cuando pasa la fecha el cliente sale de la proyeccion hasta que la actualices.'}
+                  </div>
+                </span>
+              </label>
             </div>`:''}
           </div>`}
         </div>
