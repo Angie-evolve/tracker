@@ -2006,7 +2006,12 @@ function toast(msg,color){
   el.classList.add('show');
   setTimeout(()=>el.classList.remove('show'),2500);
 }
-function closeModal(){document.getElementById('modal-root').innerHTML='';}
+function closeModal(){
+  // Cortar el refresco del hilo de comentarios: si queda vivo, sigue bajando de
+  // Supabase cada 20 segundos con el modal cerrado.
+  try{ if(typeof comCerrarRefresco==='function') comCerrarRefresco(); }catch(e){}
+  document.getElementById('modal-root').innerHTML='';
+}
 function toggleAd(header){
   const body=header.nextElementSibling;
   const isOpen=body.style.display!=='none';
@@ -6292,6 +6297,165 @@ function ticketSetEstado(cid,tid,val){
     try{ avisarEsperandoAprobacion(c, t); }catch(e){}
   }
 }
+
+/* ---------- Comentarios en tareas ----------
+   La conversacion sobre una tarea vivia en WhatsApp, mezclada con otras 200 y
+   sin forma de encontrarla despues. Aca queda pegada a la tarea: quien dijo que,
+   cuando, y sigue estando dentro de seis meses.
+
+   Se guardan en t.comentarios, o sea dentro del cliente: viajan por la misma
+   sincronizacion de Supabase que todo lo demas, sin tabla ni endpoint nuevo. */
+
+function _comLista(t){ return Array.isArray(t&&t.comentarios)?t.comentarios:[]; }
+function _comHace(iso){
+  if(!iso) return '';
+  var m=Math.floor((Date.now()-new Date(iso).getTime())/60000);
+  if(m<1) return 'recien';
+  if(m<60) return 'hace '+m+' min';
+  var h=Math.floor(m/60);
+  if(h<24) return 'hace '+h+' h';
+  var d=Math.floor(h/24);
+  if(d===1) return 'ayer';
+  if(d<7) return 'hace '+d+' d';
+  var f=new Date(iso);
+  return ('0'+f.getDate()).slice(-2)+'/'+('0'+(f.getMonth()+1)).slice(-2);
+}
+// Cuantos comentarios no vio esta persona. Se guarda por tarea y por usuario en
+// el navegador: no ensucia el dato compartido con estado de lectura.
+function _comLeidoKey(cid,tid){ return 'evold-com-leido-'+cid+'-'+tid; }
+function comSinLeer(c,t){
+  var lista=_comLista(t); if(!lista.length) return 0;
+  var ultimo=0;
+  try{ ultimo=parseInt(localStorage.getItem(_comLeidoKey(c.id,t.id))||'0',10)||0; }catch(e){}
+  return lista.filter(function(x){
+    return new Date(x.at).getTime()>ultimo && !soyYo(x.por);
+  }).length;
+}
+function comMarcarLeido(c,t){
+  try{ localStorage.setItem(_comLeidoKey(c.id,t.id), String(Date.now())); }catch(e){}
+}
+
+// Refresco mientras hay un hilo abierto. La app sincroniza al abrirse, no en
+// vivo: sin esto habria que recargar la pagina para ver una respuesta, que es
+// exactamente como se muere una conversacion.
+var _comTimer=null;
+function comAutoRefresco(cid,tid){
+  clearInterval(_comTimer);
+  _comTimer=setInterval(async function(){
+    var abierto=document.getElementById('com-hilo');
+    if(!abierto){ clearInterval(_comTimer); _comTimer=null; return; }
+    try{
+      var antes=(function(){
+        var c=(DB.clients||[]).find(function(x){return x.id===cid;});
+        var t=c&&(c.tasks||[]).find(function(x){return x.id===tid;});
+        return _comLista(t).length;
+      })();
+      await sbBajar();
+      var c2=(DB.clients||[]).find(function(x){return x.id===cid;});
+      var t2=c2&&(c2.tasks||[]).find(function(x){return x.id===tid;});
+      // Solo se redibuja si llego algo: redibujar siempre borraria lo que estas
+      // escribiendo en el campo.
+      if(t2 && _comLista(t2).length>antes){
+        var borrador=(document.getElementById('com-txt')||{}).value||'';
+        comModal(cid,tid);
+        var ta=document.getElementById('com-txt');
+        if(ta&&borrador){ ta.value=borrador; }
+      }
+    }catch(e){}
+  }, 20000);
+}
+function comCerrarRefresco(){ clearInterval(_comTimer); _comTimer=null; }
+
+function comModal(cid,tid){
+  var c=(DB.clients||[]).find(function(x){return x.id===cid;});
+  var t=c&&(c.tasks||[]).find(function(x){return x.id===tid;});
+  if(!t) return;
+  comMarcarLeido(c,t);
+  var lista=_comLista(t);
+  var hilo=lista.length
+    ? lista.map(function(m){
+        var mio=soyYo(m.por);
+        return '<div style="display:flex;flex-direction:column;align-items:'+(mio?'flex-end':'flex-start')+';margin-bottom:11px">'
+          +'<div style="font-size:10.5px;color:var(--text3);margin-bottom:3px">'
+            +esc(mio?'Vos':personaNombre(m.por))+' &middot; '+esc(_comHace(m.at))+'</div>'
+          +'<div style="max-width:82%;background:'+(mio?'rgba(29,158,117,0.10)':'var(--bg3)')+';'
+            +'border:1px solid '+(mio?'rgba(29,158,117,0.25)':'var(--border)')+';border-radius:var(--radius);'
+            +'padding:8px 11px;font-size:12.5px;color:var(--text);line-height:1.6;white-space:pre-wrap;word-break:break-word">'
+            +esc(m.texto)+'</div>'
+        +'</div>';
+      }).join('')
+    : '<div style="font-size:12px;color:var(--text3);padding:20px 2px;text-align:center">'
+      +'Todavia no hay comentarios. Lo que escribas aca queda pegado a la tarea.</div>';
+
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%;max-height:86vh;display:flex;flex-direction:column">'
+      +'<div style="font-size:14px;font-weight:600;color:var(--strong)">Comentarios</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:3px;margin-bottom:12px;line-height:1.5">'
+        +esc(c.name)+' &middot; '+esc(String(t.text||'').slice(0,110))+(t.ticket?(' '+esc(t.ticket)):'')+'</div>'
+      +'<div id="com-hilo" style="flex:1;overflow:auto;padding:4px 2px;border-top:1px solid var(--border);padding-top:12px">'+hilo+'</div>'
+      +'<div style="border-top:1px solid var(--border);padding-top:11px;margin-top:8px">'
+        +'<textarea id="com-txt" rows="2" placeholder="Escribi un comentario. Enter manda, Shift+Enter baja de linea." '
+          +'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:var(--radius);border:1px solid var(--border2);'
+          +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;resize:vertical" '
+          +'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();comEnviar('+cid+','+tid+');}"></textarea>'
+        +'<div style="display:flex;align-items:center;gap:9px;margin-top:8px">'
+          +'<span id="com-aviso" style="flex:1;font-size:10.5px;color:var(--text3)"></span>'
+          +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+          +'<button class="btn btn-sm btn-primary" onclick="comEnviar('+cid+','+tid+')">Comentar</button>'
+        +'</div>'
+      +'</div>'
+    +'</div></div>';
+  var h=document.getElementById('com-hilo'); if(h) h.scrollTop=h.scrollHeight;
+  var ta=document.getElementById('com-txt'); if(ta) ta.focus();
+  comAutoRefresco(cid,tid);
+}
+
+function comEnviar(cid,tid){
+  var ta=document.getElementById('com-txt');
+  var txt=(ta&&ta.value||'').trim();
+  if(!txt) return;
+  var c=(DB.clients||[]).find(function(x){return x.id===cid;});
+  var t=c&&(c.tasks||[]).find(function(x){return x.id===tid;});
+  if(!t) return;
+  t.comentarios=_comLista(t);
+  t.comentarios.push({ id:'c'+Date.now(), por:SB.email||'', texto:txt, at:new Date().toISOString() });
+  save();
+  comMarcarLeido(c,t);
+  comModal(cid,tid);
+  // Aviso al otro lado. Sin esto el comentario se queda esperando a que la otra
+  // persona abra la tarea por casualidad, que es como se muere un hilo.
+  try{ comAvisar(c,t,txt); }catch(e){}
+  if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+}
+
+// A quien avisar: al responsable de la tarea, o a quien comento antes. Nunca a
+// uno mismo.
+function comAvisar(c,t,txt){
+  if(!avisosTareaOn()) return;
+  var candidatos=[];
+  if(t.responsible) candidatos.push(t.responsible);
+  _comLista(t).forEach(function(m){ if(m.por) candidatos.push(m.por); });
+  var vistos={}, destinos=[];
+  candidatos.forEach(function(m){
+    var k=String(m).toLowerCase();
+    if(vistos[k]||soyYo(m)) return;
+    vistos[k]=true;
+    var n=telDe(m);
+    if(n) destinos.push(n);
+  });
+  if(!destinos.length) return;
+  var proxy=getGhlProxy(); if(!proxy.url) return;
+  var quien=personaNombre(SB.email||'')||'Alguien';
+  var msg=quien+' comento en '+((c&&c.name)||'una tarea')+': '
+    +String(t.text||'').slice(0,90)+'\n\n"'+txt.slice(0,180)+'"';
+  destinos.forEach(function(n){
+    proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=alert_msg&numero='+encodeURIComponent(n)
+      +'&texto='+encodeURIComponent(msg)).catch(function(){});
+  });
+}
+
 function toggleTicketMenu(cid,tid,btn){
   // Cierra cualquier menu abierto
   var prev=document.querySelector('.tk-menu'); var wasThis=prev&&prev.dataset.tid==String(tid);
@@ -6301,6 +6465,8 @@ function toggleTicketMenu(cid,tid,btn){
   t=t&&t.find(function(x){return x.id===tid;}); if(!t) return;
   var m=document.createElement('div'); m.className='tk-menu'; m.dataset.tid=tid;
   m.innerHTML=''
+    +'<div class="tk-menu-item" onclick="comModal('+cid+','+tid+')"><i class="ti ti-message"></i>Comentarios'
+      +(_comLista(t).length?(' <span style="color:var(--text3)">('+_comLista(t).length+')</span>'):'')+'</div>'
     +'<div class="tk-menu-item" onclick="ticketEditarModal('+cid+','+tid+')"><i class="ti ti-edit"></i>Editar tarea</div>'
     +'<div class="tk-menu-item" onclick="ticketArchivar('+cid+','+tid+')"><i class="ti ti-archive"></i>'
       +(t.archivada?'Desarchivar':'Archivar &mdash; no la vamos a hacer')+'</div>'
@@ -7395,6 +7561,15 @@ function showTickets(){
       +'</div>'
       +((t.revision&&!t.done)?'<button class=\"btn btn-sm\" style=\"flex-shrink:0;border-color:var(--accent);color:var(--accent)\" onclick=\"event.stopPropagation();rvAbrirTarea('+c.id+','+t.id+')\">Responder</button>':'')
       +chip
+      +(function(){
+          var n=_comLista(t).length, sinLeer=comSinLeer(c,t);
+          if(!n) return '<button class=\"btn btn-sm\" style=\"flex-shrink:0;color:var(--text3);opacity:.55\" '
+            +'title=\"Comentar\" onclick=\"event.stopPropagation();comModal('+c.id+','+t.id+')\">&#128172;</button>';
+          return '<button class=\"btn btn-sm\" style=\"flex-shrink:0;'
+            +(sinLeer?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'\" '
+            +'title=\"'+n+' comentario'+(n===1?'':'s')+'\" onclick=\"event.stopPropagation();comModal('+c.id+','+t.id+')\">'
+            +'&#128172; '+(sinLeer?sinLeer:n)+'</button>';
+        })()
       +'<span class=\"tk-pill\">'+esc(t.ticket||'-')+'</span>'
       +'<button class=\"tk-dots\" aria-label=\"Opciones\" onclick=\"event.stopPropagation();toggleTicketMenu('+c.id+','+t.id+',this)\">&#8942;</button>'
       +'</div>';
