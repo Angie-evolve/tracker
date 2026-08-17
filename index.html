@@ -7608,15 +7608,35 @@ function _rtEsfuerzo(c){
   });
   return {cerradas:cerradas, abiertas:abiertas, coment:coment};
 }
+// Un cliente por garantia no tiene abono mensual: tiene un valor de contrato y
+// una duracion. Mirar solo monthlyFee lo dejaba en "sin abono" cuando en
+// realidad el contrato dice cuanto paga y por cuanto tiempo.
+function rtMensual(c){
+  var fee=parseFloat(c.monthlyFee)||0;
+  if(fee) return {monto:fee, origen:'abono'};
+  var valor=parseFloat(c.contractValue)||0;
+  if(!valor) return {monto:0, origen:null};
+  var ct=c.contract||{};
+  var dias=parseFloat(ct.durationDays)||0;
+  if(!dias && ct.startDate && ct.endDate){
+    var d1=new Date(ct.startDate), d2=new Date(ct.endDate);
+    if(!isNaN(d1)&&!isNaN(d2)) dias=Math.round((d2-d1)/86400000);
+  }
+  var meses=dias?Math.max(1, Math.round(dias/30)):0;
+  if(!meses) return {monto:0, origen:'contrato-sin-plazo', valor:valor};
+  return {monto:valor/meses, origen:'contrato', valor:valor, meses:meses};
+}
+
 function _rtFilas(){
   return (DB.clients||[]).filter(function(c){ return !c.archived; })
     .map(function(c){
-      var fee=parseFloat(c.monthlyFee)||0;
+      var men=rtMensual(c);
+      var fee=men.monto;
       var e=_rtEsfuerzo(c);
       // Por tarea cerrada: lo unico que se puede dividir hoy. Dice cuanto te
       // rinde el abono contra el trabajo que se hizo, no cuanto ganas.
       var porTarea=e.cerradas?(fee/e.cerradas):null;
-      return {c:c, fee:fee, e:e, porTarea:porTarea};
+      return {c:c, fee:fee, men:men, e:e, porTarea:porTarea};
     })
     .sort(function(a,b){ return b.fee-a.fee; });
 }
@@ -7708,12 +7728,22 @@ function _eerrCubre(c, anio, mes){
   if(!h) return true;                       // sin fecha, no hay final conocido
   return (anio<h.a)||(anio===h.a&&mes<=h.m);
 }
-// Abonos comprometidos para ese mes.
+// Comprometido para ese mes. Entran los recurrentes por su abono y los de
+// garantia por el prorrateo del contrato: un contrato de 2400 en 3 meses son
+// 800 por mes reales, no cero.
 function eerrAbonosMes(anio, mes){
   return (DB.clients||[])
-    .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
+    .filter(function(c){ return !c.archived; })
+    .filter(function(c){
+      var esRec=(c.serviceType==='recurrente'||c.recurrente);
+      var tieneContrato=(parseFloat(c.contractValue)||0)>0;
+      return esRec||tieneContrato;
+    })
     .filter(function(c){ return _eerrCubre(c, anio, mes); })
-    .reduce(function(s,c){ return s+(parseFloat(c.monthlyFee)||0); },0);
+    .reduce(function(s,c){
+      var m=(typeof rtMensual==='function')?rtMensual(c).monto:(parseFloat(c.monthlyFee)||0);
+      return s+(m||0);
+    },0);
 }
 // El MRR de hoy, para los textos.
 function eerrAbonos(){
@@ -7724,7 +7754,10 @@ function eerrAbonos(){
 // que el ingreso baja en noviembre.
 function eerrVencen(){
   return (DB.clients||[])
-    .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
+    .filter(function(c){
+      if(c.archived) return false;
+      return (c.serviceType==='recurrente'||c.recurrente)||((parseFloat(c.contractValue)||0)>0);
+    })
     .map(function(c){ return {c:c, h:_eerrHasta(c)}; })
     .filter(function(x){ return x.h; })
     .sort(function(a,b){ return (a.h.a*12+a.h.m)-(b.h.a*12+b.h.m); });
@@ -7865,7 +7898,8 @@ function eerrHtml(){
             +' con la fecha vencida</b> y por eso no entra'+(vencidos.length===1?'':'n')+' en la proyeccion: '
             +vencidos.map(function(x){
                 return esc(x.c.name)+' ('+MES[x.h.m]+' '+x.h.a
-                  +(x.c.monthlyFee?(', '+_eerrPlata(parseFloat(x.c.monthlyFee))):'')+')';
+                  +((typeof rtMensual==='function'&&rtMensual(x.c).monto)
+                     ?(', '+_eerrPlata(rtMensual(x.c).monto)+'/mes'):'')+')';
               }).join(' &middot; ')
             +'. Si siguen mes a mes, abri su ficha y marca <b>&laquo;Se renueva sola&raquo;</b>: la fecha avanza sola '
             +'y no vuelve a vencerse. Si se fueron, pasalos a no recurrentes.</div>';
@@ -7878,7 +7912,8 @@ function eerrHtml(){
             +vigentes.map(function(x){
                 return esc(x.c.name)+' hasta '+MES[x.h.m]+' '+x.h.a
                   +(x.h.porPago?' (ultimo mes pago)':'')
-                  +(x.c.monthlyFee?(' &middot; '+_eerrPlata(parseFloat(x.c.monthlyFee))):'');
+                  +((typeof rtMensual==='function'&&rtMensual(x.c).monto)
+                     ?(' &middot; '+_eerrPlata(rtMensual(x.c).monto)+'/mes'):'');
               }).join(' &middot; ')
             +'.</div>';
         }
@@ -7924,8 +7959,17 @@ function rentabilidadHtml(){
           +'onclick="selectClient('+c.id+');S.tab=\'ficha\';renderClient()">'
           +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
             +esc(c.name)+'</span>'
-          +'<span style="width:110px;flex:none;text-align:right;font-size:12.5px;color:'
-            +(f.fee?'var(--text)':'var(--amberx)')+'">'+(f.fee?(_rtPlata(f.fee)+'<span style="font-size:10px;color:var(--text3)">/mes</span>'):'sin abono')+'</span>'
+          +'<span style="width:130px;flex:none;text-align:right;font-size:12.5px;color:'
+            +(f.fee?'var(--text)':'var(--amberx)')+'">'
+            +(f.fee
+              ? (_rtPlata(f.fee)+'<span style="font-size:10px;color:var(--text3)">/mes</span>'
+                 +(f.men.origen==='contrato'
+                   ? '<div style="font-size:9.5px;color:var(--text3)">'+_rtPlata(f.men.valor)+' en '+f.men.meses+' meses</div>'
+                   : ''))
+              : (f.men.origen==='contrato-sin-plazo'
+                 ? '<span title="Hay valor de contrato pero no duracion">sin plazo</span>'
+                 : 'sin monto'))
+            +'</span>'
           +'<span style="width:96px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'
             +f.e.cerradas+' cerradas</span>'
           +'<span style="width:86px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'
@@ -7962,14 +8006,14 @@ function rentabilidadHtml(){
       +'<div style="display:flex;gap:12px;padding:8px 4px 6px;font-size:10px;color:var(--text3);'
         +'text-transform:uppercase;letter-spacing:.06em">'
         +'<span style="flex:1">Cliente</span>'
-        +'<span style="width:110px;text-align:right">Abono</span>'
+        +'<span style="width:130px;text-align:right">Por mes</span>'
         +'<span style="width:96px;text-align:right">30 dias</span>'
         +'<span style="width:86px;text-align:right">Pendientes</span>'
         +'<span style="width:104px;text-align:right">Por tarea</span>'
       +'</div>'
       +cuerpo
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:11px;line-height:1.6">'
-        +'El abono se carga en la ficha de cada cliente. '
+        +'Sale del abono mensual, o del valor de contrato dividido por su duracion cuando es por garantia. '
         +'&laquo;Por tarea&raquo; divide el abono por las tareas cerradas en 30 dias: sirve para comparar '
         +'clientes entre si, no para saber si uno deja plata.</div>'
     +'</div>';
