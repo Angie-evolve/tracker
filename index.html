@@ -2242,6 +2242,32 @@ function aprobQuien(){
 function setAprobQuien(mail){
   try{ localStorage.setItem('evold-aviso-aprob-mail', mail||''); }catch(e){}
 }
+// Prueba del aviso sin tener que mover una tarea de verdad. Dice exactamente
+// que falta cuando no sale, en vez de fallar en silencio como hacia hasta ahora.
+async function aprobProbar(){
+  var d=document.getElementById('aprob-aviso');
+  var decir=function(t,c){ if(d){ d.innerHTML=t; d.style.color=c||'var(--text3)'; } };
+  if(!aprobOn()){ decir('El aviso esta apagado.','var(--amberx)'); return; }
+  var mail=aprobQuien();
+  if(!mail){ decir('Falta elegir a quien avisar.','var(--amberx)'); return; }
+  var num=telDe(mail);
+  if(!num){ decir(esc(personaNombre(mail))+' no tiene telefono cargado en Personas.','var(--amberx)'); return; }
+  if(typeof soyYo==='function' && soyYo(mail)){
+    decir('Sos vos: los avisos no se mandan a uno mismo. Elegi a otra persona para probar.','var(--amberx)'); return;
+  }
+  var proxy=getGhlProxy();
+  if(!proxy.url){ decir('Falta configurar el proxy de GHL.','var(--amberx)'); return; }
+  decir('Mandando a '+esc(num)+'...');
+  try{
+    var r=await proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=alert_msg&numero='+encodeURIComponent(num)
+      +'&texto='+encodeURIComponent('Prueba: aca te van a llegar los avisos de tareas que esperan tu aprobacion.'))
+      .then(function(x){return x.json();});
+    decir(r&&r.ok ? ('Enviado a '+esc(num)+'.') : ('No salio: '+esc((r&&r.error)||'sin respuesta')),
+          (r&&r.ok)?'var(--accent)':'var(--redx)');
+  }catch(e){ decir('Error: '+esc(e.message),'var(--redx)'); }
+}
+
 function avisarEsperandoAprobacion(c, t){
   if(!aprobOn()) return;
   var mail=aprobQuien();
@@ -4077,10 +4103,17 @@ async function procesarEntrega(){
     if(!arr.length){ if(err) err.textContent='No pude asociarlo a ninguna tarea. Revisa que el nombre del cliente o la tarea aparezca en el mensaje.'; if(btn){btn.disabled=false;btn.textContent='Detectar y registrar';} return; }
     var aplicadas=0;
     arr.forEach(function(m){
-      var found=null;
-      DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(String(t.id)===String(m.id)){ found=t; } }); });
+      var found=null, cliFound=null;
+      DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(String(t.id)===String(m.id)){ found=t; cliFound=c; } }); });
       if(!found) return;
+      var _previo=found.estado||'';
       found.estado=(m.estado==='finalizada')?'finalizada':'revision';
+      // La mayoria de las tareas llega a "esperando aprobacion" por aca, no por
+      // el desplegable: si el aviso no sale tambien desde este camino, no sale
+      // casi nunca.
+      if(found.estado==='revision' && _previo!=='revision'){
+        try{ avisarEsperandoAprobacion(cliFound, found); }catch(e){}
+      }
       if(found.estado==='finalizada'){ found.done=true; found.doneAt=new Date().toISOString(); }
       found.attachments=found.attachments||[];
       (m.links||[]).forEach(function(l){
@@ -4472,9 +4505,14 @@ function _convAplicarEntregas(entregas){
     if(!(e.ticket||(e.links&&e.links.length)||e.descripcion)) return;
     var num=String(e.ticket||'').replace(/[^0-9]/g,'');
     var found=null;
-    if(num){ DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(!t.done&&!t.deleted&&String(t.ticket||'').replace(/[^0-9]/g,'')===num) found=t; }); }); }
+    var cliFound=null;
+    if(num){ DB.clients.forEach(function(c){ (c.tasks||[]).forEach(function(t){ if(!t.done&&!t.deleted&&String(t.ticket||'').replace(/[^0-9]/g,'')===num){ found=t; cliFound=c; } }); }); }
     if(found){
+      var _prev=found.estado||'';
       found.estado=(e.estado==='finalizada')?'finalizada':'revision';
+      if(found.estado==='revision' && _prev!=='revision'){
+        try{ avisarEsperandoAprobacion(cliFound, found); }catch(e2){}
+      }
       if(found.estado==='finalizada'){ found.done=true; found.doneAt=new Date().toISOString(); }
       _adjuntar(found,e.links); found.entregaAt=new Date().toISOString(); aplicadas++;
     } else {
@@ -4487,6 +4525,8 @@ function _convAplicarEntregas(entregas){
         estado:(e.estado==='finalizada')?'finalizada':'revision', ticket:'#'+nextTicketFromApp(), entregaAt:new Date().toISOString() };
       if(nt.estado==='finalizada'){ nt.done=true; nt.doneAt=new Date().toISOString(); }
       _adjuntar(nt,e.links); cli.tasks.unshift(nt); creadas++;
+      // Nace directamente esperando aprobacion: tambien hay que avisar.
+      if(nt.estado==='revision'){ try{ avisarEsperandoAprobacion(cli, nt); }catch(e3){} }
     }
   });
   if(aplicadas||creadas){ save(); if(S.view==='tickets') showTickets(); }
@@ -5510,8 +5550,10 @@ function abrirRepartoClientes(){
               }).join('')
           +'</select>'
           +(personas().filter(function(p){ return p.tel; }).length
-            ? '' : '<span style="font-size:10.5px;color:var(--amberx)">Nadie tiene telefono cargado en Personas.</span>')
+            ? '<button class="btn btn-sm" style="font-size:10px;padding:2px 9px" onclick="event.preventDefault();event.stopPropagation();aprobProbar()">Probar</button>'
+            : '<span style="font-size:10.5px;color:var(--amberx)">Nadie tiene telefono cargado en Personas.</span>')
           +'</div>'
+          +'<div id="aprob-aviso" style="font-size:10.5px;margin-top:6px;color:var(--text3)"></div>'
         : '')
       +'</span></label>'
     +'<div id="rc-aviso" style="font-size:11.5px;margin-bottom:10px"></div>'
@@ -9765,9 +9807,37 @@ function rvEsperandoAprobacion(){
   return out.sort(function(a,b){ return String(a.r.creadoAt||'').localeCompare(String(b.r.creadoAt||'')); });
 }
 
+// Tareas paradas esperando tu OK. Es otra cosa que las revisiones de informe,
+// pero desde afuera son lo mismo: algo que no avanza hasta que decidas. Tenerlas
+// en dos paneles distintos con el mismo titulo hacia que los numeros no cerraran.
+function tareasEsperandoAprobacion(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    (c.tasks||[]).forEach(function(t){
+      if(t.done||t.deleted||t.archivada) return;
+      if(t.estado==='revision') out.push({c:c, t:t});
+    });
+  });
+  return out;
+}
+
 function rvAprobacionesHtml(){
   var lista=rvEsperandoAprobacion();
-  if(!lista.length) return '';
+  var tareas=tareasEsperandoAprobacion();
+  if(!lista.length&&!tareas.length) return '';
+  var filasT=tareas.map(function(x){
+    return '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid rgba(240,168,48,0.2)">'
+      +'<span style="font-size:12.5px;color:var(--strong);width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.c.name)+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text2);line-height:1.55">'+esc(String(x.t.text||'').slice(0,150))
+        +'<span style="font-size:10.5px;color:var(--text3)"> &middot; tarea '+esc(x.t.ticket||'')
+        +(x.t.responsible?(' &middot; la entrego '+esc(personaNombre(x.t.responsible))):'')+'</span></span>'
+      +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" '
+        +'onclick="comModal('+x.c.id+','+x.t.id+')" title="Comentar sin aprobar">Comentar</button>'
+      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" '
+        +'onclick="setTicketEstado('+x.c.id+','+x.t.id+',\'revisada\')">Aprobar</button>'
+      +'</div>';
+  }).join('');
   var filas=lista.map(function(x){
     return '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid rgba(240,168,48,0.2)">'
       +'<span style="font-size:12.5px;color:var(--strong);width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.c.name)+'</span>'
@@ -9775,11 +9845,17 @@ function rvAprobacionesHtml(){
       +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="rvAprobar('+x.c.id+',\''+x.r.id+'\')">Aprobar</button>'
       +'</div>';
   }).join('');
+  var total=lista.length+tareas.length;
   return '<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);'
     +'border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:14px">'
     +'<div style="font-size:10px;font-weight:600;color:var(--amberx);text-transform:uppercase;letter-spacing:0.07em">'
-      +lista.length+' espera'+(lista.length===1?'':'n')+' tu aprobacion</div>'
-    +filas+'</div>';
+      +total+' espera'+(total===1?'':'n')+' tu aprobacion'
+      +(tareas.length&&lista.length
+        ? '<span style="color:var(--text3);font-weight:400"> &middot; '+tareas.length+' tarea'+(tareas.length===1?'':'s')
+          +' y '+lista.length+' revision'+(lista.length===1?'':'es')+'</span>'
+        : '')
+    +'</div>'
+    +filasT+filas+'</div>';
 }
 
 // Una fila de revision respondida, con sus chips y su detalle desplegable.
