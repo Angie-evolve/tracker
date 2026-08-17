@@ -787,6 +787,7 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
       <div class="torre-sub" id="torre-sub">
         <div class="torre-sub-item" data-k="tickets" onclick="irTorre('tickets')">Tickets</div>
         <div class="torre-sub-item" data-k="actividad" onclick="irTorre('actividad')">Actividad</div>
+        <div class="torre-sub-item" data-k="rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
       </div>
       <div class="nav-head-row" style="margin-top:6px">
         <div class="nav-label">Clientes</div>
@@ -7511,6 +7512,116 @@ function verRecargar(){
   location.reload(true);
 }
 
+
+/* ---------- Rentabilidad ----------
+   Muestra lo que entra por cliente. El lado del costo todavia no existe: no se
+   registran horas ni costo de equipo, asi que la pantalla lo dice en vez de
+   restar un numero inventado. Sin costos esto es facturacion, no rentabilidad,
+   y conviene que se lea asi hasta que haya con que restar. */
+
+function _rtPlata(n){
+  var v=Math.round(Number(n)||0);
+  return '$'+v.toLocaleString('es-AR');
+}
+// Esfuerzo del ultimo mes: tareas cerradas y todavia abiertas. No es costo, es
+// una pista de donde se va el trabajo.
+function _rtEsfuerzo(c){
+  var desde=new Date(); desde.setDate(desde.getDate()-30);
+  var cerradas=0, abiertas=0, coment=0;
+  (c.tasks||[]).forEach(function(t){
+    if(t.deleted) return;
+    if(t.done){ if(t.doneAt&&new Date(t.doneAt)>=desde) cerradas++; }
+    else if(!t.archivada) abiertas++;
+    coment+=(Array.isArray(t.comentarios)?t.comentarios.length:0);
+  });
+  return {cerradas:cerradas, abiertas:abiertas, coment:coment};
+}
+function _rtFilas(){
+  return (DB.clients||[]).filter(function(c){ return !c.archived; })
+    .map(function(c){
+      var fee=parseFloat(c.monthlyFee)||0;
+      var e=_rtEsfuerzo(c);
+      // Por tarea cerrada: lo unico que se puede dividir hoy. Dice cuanto te
+      // rinde el abono contra el trabajo que se hizo, no cuanto ganas.
+      var porTarea=e.cerradas?(fee/e.cerradas):null;
+      return {c:c, fee:fee, e:e, porTarea:porTarea};
+    })
+    .sort(function(a,b){ return b.fee-a.fee; });
+}
+
+function rentabilidadHtml(){
+  var filas=_rtFilas();
+  var mrr=filas.reduce(function(s,f){ return s+f.fee; },0);
+  var sinMonto=filas.filter(function(f){ return !f.fee; }).length;
+  var totalCerradas=filas.reduce(function(s,f){ return s+f.e.cerradas; },0);
+
+  var kpi=function(rot,val,pie,color){
+    return '<div style="flex:1;min-width:150px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em">'+rot+'</div>'
+      +'<div style="font-size:23px;color:'+(color||'var(--strong)')+';margin-top:5px;font-weight:500">'+val+'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'+pie+'</div>'
+    +'</div>';
+  };
+
+  var cuerpo=filas.length
+    ? filas.map(function(f){
+        var c=f.c;
+        return '<div style="display:flex;align-items:center;gap:12px;padding:11px 4px;border-top:1px solid var(--border);cursor:pointer" '
+          +'onclick="selectClient('+c.id+');S.tab=\'ficha\';renderClient()">'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            +esc(c.name)+'</span>'
+          +'<span style="width:110px;flex:none;text-align:right;font-size:12.5px;color:'
+            +(f.fee?'var(--text)':'var(--amberx)')+'">'+(f.fee?(_rtPlata(f.fee)+'<span style="font-size:10px;color:var(--text3)">/mes</span>'):'sin abono')+'</span>'
+          +'<span style="width:96px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'
+            +f.e.cerradas+' cerradas</span>'
+          +'<span style="width:86px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'
+            +f.e.abiertas+' abiertas</span>'
+          +'<span style="width:104px;flex:none;text-align:right;font-size:11.5px;color:'
+            +(f.porTarea?'var(--text2)':'var(--text3)')+'">'
+            +(f.porTarea?(_rtPlata(f.porTarea)+' / tarea'):'&mdash;')+'</span>'
+        +'</div>';
+      }).join('')
+    : '<div style="padding:24px 4px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">No hay clientes activos.</div>';
+
+  return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
+      +kpi('Ingreso recurrente', _rtPlata(mrr), filas.length+' cliente'+(filas.length===1?'':'s')
+           +(sinMonto?(' &middot; '+sinMonto+' sin abono cargado'):''))
+      +kpi('Tareas cerradas', String(totalCerradas), 'ultimos 30 dias, todos los clientes')
+      +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
+      +kpi('Margen', '&mdash;', 'necesita el costo', 'var(--text3)')
+    +'</div>'
+
+    // El aviso va arriba de la tabla, no al pie: si esta abajo, alguien lee los
+    // numeros como margen y toma una decision con eso.
+    +'<div style="background:rgba(216,90,48,0.06);border:1px solid rgba(216,90,48,0.22);border-radius:var(--radius-lg);'
+      +'padding:12px 15px;margin-bottom:18px;font-size:11.5px;color:var(--text2);line-height:1.65">'
+      +'<b style="color:var(--strong)">Esto todavia es facturacion, no rentabilidad.</b> '
+      +'Falta el lado del costo: no se registran horas por cliente ni costo del equipo, '
+      +'asi que no hay con que restar. Las columnas de tareas son una pista de donde se va el trabajo, '
+      +'no una medida de plata.'
+    +'</div>'
+
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px">'
+        +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Por cliente</span>'
+        +'<span style="font-size:11px;color:var(--text3)">ordenado por abono</span>'
+      +'</div>'
+      +'<div style="display:flex;gap:12px;padding:8px 4px 6px;font-size:10px;color:var(--text3);'
+        +'text-transform:uppercase;letter-spacing:.06em">'
+        +'<span style="flex:1">Cliente</span>'
+        +'<span style="width:110px;text-align:right">Abono</span>'
+        +'<span style="width:96px;text-align:right">30 dias</span>'
+        +'<span style="width:86px;text-align:right">Pendientes</span>'
+        +'<span style="width:104px;text-align:right">Por tarea</span>'
+      +'</div>'
+      +cuerpo
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:11px;line-height:1.6">'
+        +'El abono se carga en la ficha de cada cliente. '
+        +'&laquo;Por tarea&raquo; divide el abono por las tareas cerradas en 30 dias: sirve para comparar '
+        +'clientes entre si, no para saber si uno deja plata.</div>'
+    +'</div>';
+}
+
 function irTorre(k){
   S.torreVista=k||'mirador';
   collapseSidebar();
@@ -7846,7 +7957,7 @@ function showTickets(){
     +'<div class="content">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:3px">'
     +'<div style="font-size:17px;font-weight:600;color:var(--strong)">'
-      +({mirador:'Mirador',tickets:'Tickets',actividad:'Actividad'}[_torre]||'Mirador')+'</div>'
+      +({mirador:'Mirador',tickets:'Tickets',actividad:'Actividad',rentabilidad:'Rentabilidad'}[_torre]||'Mirador')+'</div>'
     +'<div style="display:flex;align-items:center;gap:12px">'
     +'<span style="font-size:11px;color:var(--text3)">'+_tkUltimaAct(tickets)+'</span>'
     +'<button class="btn btn-sm btn-primary" onclick="actualizarTodo()" title="Sincroniza llamadas de Fathom y escanea conversaciones de WhatsApp">Actualizar</button>'
@@ -7874,6 +7985,7 @@ function showTickets(){
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
+      :(_torre==='rentabilidad'?rentabilidadHtml()
       :(_torre==='actividad'?_actividadHtml():(''
     +progresoHtml
     // El periodo tambien se esconde detras del embudo: son cinco botones que se
@@ -7915,7 +8027,7 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>')))))
+        +'</div>'))))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
