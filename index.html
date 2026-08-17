@@ -2220,6 +2220,131 @@ function avisarTareaAsignada(c, t){
     +'&texto='+encodeURIComponent(txt)).catch(function(){});
 }
 
+/* ---------- Personas del equipo ----------
+   DB.equipo era una lista de mails sueltos. Ahora cada mail puede tener nombre
+   y telefono en DB.personas, y esos datos se ofrecen en todos los campos donde
+   antes habia que tipearlos de nuevo (destinatario del informe, aviso de
+   WhatsApp, resumen de fin de dia).
+   equipo() sigue devolviendo mails: hay varios lugares que dependen de eso. */
+function personas(){
+  var det={};
+  (DB.personas||[]).forEach(function(p){
+    if(p&&p.email) det[String(p.email).toLowerCase()]=p;
+  });
+  return equipo().map(function(mail){
+    var d=det[String(mail).toLowerCase()]||{};
+    return { email:mail, nombre:d.nombre||'', tel:d.tel||'' };
+  });
+}
+function personaDe(mail){
+  if(!mail) return null;
+  var k=String(mail).toLowerCase();
+  return personas().find(function(p){ return p.email.toLowerCase()===k; })||null;
+}
+// Nombre para mostrar: el nombre si lo cargaron, si no el mail.
+function personaNombre(mail){
+  var p=personaDe(mail);
+  return (p&&p.nombre)?p.nombre:(mail||'');
+}
+function personaGuardar(mailOriginal, mail, nombre, tel){
+  mail=String(mail||'').trim();
+  if(!mail){ if(typeof toast==='function') toast('Falta el mail'); return false; }
+  DB.equipo=Array.isArray(DB.equipo)?DB.equipo:[];
+  DB.personas=Array.isArray(DB.personas)?DB.personas:[];
+  var kOrig=String(mailOriginal||'').toLowerCase(), k=mail.toLowerCase();
+  // Si cambio el mail, se reemplaza en las dos listas y en los clientes que lo
+  // tenian como responsable: si no, ese cliente queda apuntando a nadie.
+  if(kOrig&&kOrig!==k){
+    DB.equipo=DB.equipo.filter(function(e){ return String(e).toLowerCase()!==kOrig; });
+    DB.personas=DB.personas.filter(function(p){ return String(p.email||'').toLowerCase()!==kOrig; });
+    (DB.clients||[]).forEach(function(c){ if(c.owner&&c.owner.toLowerCase()===kOrig) c.owner=mail; });
+  }
+  if(!DB.equipo.some(function(e){ return String(e).toLowerCase()===k; })) DB.equipo.push(mail);
+  DB.personas=DB.personas.filter(function(p){ return String(p.email||'').toLowerCase()!==k; });
+  DB.personas.push({ email:mail, nombre:String(nombre||'').trim(), tel:String(tel||'').trim() });
+  save();
+  return true;
+}
+function personaBorrar(mail){
+  var k=String(mail||'').toLowerCase();
+  var usados=(DB.clients||[]).filter(function(c){ return c.owner&&c.owner.toLowerCase()===k; }).length;
+  if(usados&&!confirm(usados+' cliente'+(usados>1?'s':'')+' tiene'+(usados>1?'n':'')+' a esta persona como responsable. Se van a quedar sin responsable. Seguir?')) return;
+  DB.equipo=(DB.equipo||[]).filter(function(e){ return String(e).toLowerCase()!==k; });
+  DB.personas=(DB.personas||[]).filter(function(p){ return String(p.email||'').toLowerCase()!==k; });
+  (DB.clients||[]).forEach(function(c){ if(c.owner&&c.owner.toLowerCase()===k) c.owner=''; });
+  save();
+  personasModal();
+}
+// Listas para autocompletar: se enganchan a los campos con list="..."
+function personasDatalist(id, campo){
+  var vals=personas().map(function(p){
+    var v=(campo==='tel')?p.tel:p.email;
+    if(!v) return '';
+    var et=p.nombre?(p.nombre+(campo==='tel'?'':'')):'';
+    return '<option value="'+esc(v)+'"'+(et?(' label="'+esc(et)+'"'):'')+'>';
+  }).filter(Boolean).join('');
+  return vals?('<datalist id="'+id+'">'+vals+'</datalist>'):'';
+}
+
+// Alta y edicion de personas. Es el unico lugar donde se cargan mail y numero:
+// el resto de la app los ofrece desde aca.
+function personasModal(){
+  var lista=personas();
+  var inp='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit';
+  var filas=lista.length
+    ? lista.map(function(p){
+        var clientes=(DB.clients||[]).filter(function(c){ return c.owner&&c.owner.toLowerCase()===p.email.toLowerCase(); }).length;
+        return '<div style="display:flex;align-items:center;gap:10px;padding:10px 2px;border-top:1px solid var(--border)">'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:12.5px;color:var(--strong)">'+esc(p.nombre||p.email)+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+esc(p.email)
+              +(p.tel?(' &middot; '+esc(p.tel)):' &middot; <span style="color:var(--amberx)">sin telefono</span>')
+              +(clientes?(' &middot; '+clientes+' cliente'+(clientes>1?'s':'')):'')+'</div>'
+          +'</div>'
+          +'<button class="btn btn-sm" onclick="personasEditar(\''+esc(p.email)+'\')">Editar</button>'
+          +'<button class="btn btn-sm" style="color:var(--redx)" onclick="personaBorrar(\''+esc(p.email)+'\')">Quitar</button>'
+        +'</div>';
+      }).join('')
+    : '<div style="font-size:12px;color:var(--text3);padding:16px 2px;border-top:1px solid var(--border)">Todavia no hay nadie cargado.</div>';
+
+  var ed=S._personaEdit;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:540px;width:94%;max-height:82vh;overflow:auto">'
+      +'<div class="modal-title">Personas</div>'
+      +'<div class="modal-sub">Nombre, mail y telefono de cada uno. Se cargan una vez aca y despues '
+        +'se eligen en el informe, en los avisos y en el reparto de clientes.</div>'
+      +filas
+      +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-top:14px">'
+        +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">'
+          +(ed?'Editar':'Agregar persona')+'</div>'
+        +'<div style="display:flex;flex-direction:column;gap:8px">'
+          +'<input id="pe-nombre" placeholder="Nombre" value="'+esc((ed&&ed.nombre)||'')+'" style="'+inp+'">'
+          +'<input id="pe-mail" type="email" placeholder="mail@ejemplo.com" value="'+esc((ed&&ed.email)||'')+'" style="'+inp+'">'
+          +'<input id="pe-tel" type="tel" placeholder="+54 9 11 ..." value="'+esc((ed&&ed.tel)||'')+'" style="'+inp+'">'
+        +'</div>'
+        +'<div style="display:flex;gap:8px;margin-top:11px">'
+          +'<button class="btn btn-sm btn-primary" onclick="personasGuardarForm()">'+(ed?'Guardar':'Agregar')+'</button>'
+          +(ed?'<button class="btn btn-sm" onclick="S._personaEdit=null;personasModal()">Cancelar</button>':'')
+        +'</div>'
+      +'</div>'
+      +'<div class="modal-footer"><button class="btn btn-sm" onclick="S._personaEdit=null;closeModal()">Listo</button></div>'
+    +'</div></div>';
+}
+function personasEditar(mail){
+  S._personaEdit=personaDe(mail)||{email:mail,nombre:'',tel:''};
+  personasModal();
+}
+function personasGuardarForm(){
+  var v=function(id){ var e=document.getElementById(id); return e?e.value:''; };
+  var orig=(S._personaEdit&&S._personaEdit.email)||'';
+  if(personaGuardar(orig, v('pe-mail'), v('pe-nombre'), v('pe-tel'))){
+    S._personaEdit=null;
+    personasModal();
+    if(typeof toast==='function') toast('Persona guardada');
+  }
+}
+
 function equipo(){
   var set={};
   if(SB.email) set[SB.email.toLowerCase()]=SB.email;
@@ -5706,7 +5831,21 @@ function integracionesAppHtml(){
           ?(conDuenio+' de '+activos+' asignados'+(sin?(' &middot; '+sin+' sin responsable'):'')
             +(eq.length>1?(' &middot; '+eq.length+' personas'):''))
           :'Sin clientes activos',
-        action:'abrirRepartoClientes()', actionLabel:'Repartir'});
+        action:'abrirRepartoClientes()', actionLabel:'Repartir',
+        action2:'personasModal()', action2Label:'Personas'});
+    })(),
+    (function(){
+      // Personas del equipo. Es la libreta de la que salen todos los mails y
+      // numeros del resto de la app, para no tipearlos de nuevo en cada lugar.
+      var ps=personas();
+      var completos=ps.filter(function(p){ return p.nombre&&p.tel; }).length;
+      return card({name:'Personas', st:ps.length?(completos===ps.length?'ok':'partial'):'no',
+        desc:'Nombre, mail y telefono del equipo. Se cargan una vez aca y despues se eligen en el informe, en los avisos por WhatsApp y en el reparto de clientes.',
+        detail:ps.length
+          ?(ps.length+' persona'+(ps.length===1?'':'s')
+            +(completos===ps.length?' &middot; datos completos':(' &middot; '+(ps.length-completos)+' sin nombre o telefono')))
+          :'Nadie cargado',
+        action:'personasModal()', actionLabel:ps.length?'Editar':'Agregar'});
     })(),
     (function(){
       var cc=getCitasCfg();
@@ -9279,7 +9418,7 @@ function openWeeklyReportModal(){
 
     return '<div data-envio="'+e.id+'" style="padding:12px 2px 4px">'
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-        +'<input type="email" id="env-mail-'+e.id+'" value="'+esc(e.email||'')+'" placeholder="destinatario@email.com" oninput="wrEnviosChanged()" '
+        +'<input type="email" id="env-mail-'+e.id+'" list="wr-mails" value="'+esc(e.email||'')+'" placeholder="destinatario@email.com" oninput="wrEnviosChanged()" '
         +'style="flex:1;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px">'
         +'<button class="btn btn-sm" onclick="wrProbarEnvio(\''+e.id+'\')" title="Manda un solo informe a este destinatario">Probar</button>'
         +(envios.length>1?'<button class="btn btn-sm" style="color:var(--redx)" onclick="wrBorrarEnvio(\''+e.id+'\')">Quitar</button>':'')
@@ -9309,7 +9448,7 @@ function openWeeklyReportModal(){
         +'</div>'
       +'</div>'
       +'<div style="display:flex;gap:7px;align-items:center;margin-bottom:11px">'
-        +'<input type="tel" id="env-wa-'+e.id+'" value="'+esc(e.whatsapp||'')+'" placeholder="WhatsApp de aviso (opcional)" oninput="wrEnviosChanged()" '
+        +'<input type="tel" id="env-wa-'+e.id+'" list="wr-tels" value="'+esc(e.whatsapp||'')+'" placeholder="WhatsApp de aviso (opcional)" oninput="wrEnviosChanged()" '
         +'style="flex:1;padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px">'
         // Cada envio prueba su propio numero: con varios cargados, un boton
         // unico que probaba el primero no servia para verificar el resto.
@@ -9340,6 +9479,7 @@ function openWeeklyReportModal(){
       +'de cada cliente (Meta + GHL) y lo manda solo, sin abrir el tracker. '
       +'La ventana que cubre cada informe es movil: siempre termina el dia anterior al envio, '
       +'y es la misma que despues revisas en Revisiones.</div>'
+    +personasDatalist('wr-mails','email')+personasDatalist('wr-tels','tel')
     +'<div id="wr-envios">'+_wrTablaHtml(envios)+'</div>'
     +eodPanelHtml()
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
@@ -9445,7 +9585,8 @@ function eodPanelHtml(){
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
       +'<span style="font-size:12px;color:var(--text3)">A las</span>'
       +'<select id="eod-hora" style="'+inp+'">'+horas+'</select>'
-      +'<input type="tel" id="eod-numero" placeholder="+54 9 11 ..." value="'+esc(e.numero||'')+'" style="'+inp+';flex:1;min-width:170px">'
+      +'<input type="tel" id="eod-numero" list="eod-tels" placeholder="+54 9 11 ..." value="'+esc(e.numero||'')+'" style="'+inp+';flex:1;min-width:170px">'
+      +personasDatalist('eod-tels','tel')
     +'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
       +'<input type="password" id="eod-apikey" placeholder="'+(e.apiListo?'Clave de Claude ya cargada':'Clave de la API de Claude (sk-ant-...)')+'" style="'+inp+';flex:1;min-width:240px">'
