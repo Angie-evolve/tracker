@@ -8322,6 +8322,63 @@ function rvAprobacionesHtml(){
     +filas+'</div>';
 }
 
+// Una fila de revision respondida, con sus chips y su detalle desplegable.
+// Se usa en dos lados: en las de esta semana y dentro de cada semana del
+// historial. Antes estaba escrita inline y por eso el historial solo podia
+// mostrar el nombre y el estado, sin las respuestas.
+function rvFilaRespondida(c, r, chip){
+  var k=c.id+':'+r.id;
+        var abierta=!!S._rvAbiertas[k];
+        var det=function(t, v){
+          return v ? '<div style="margin-top:9px"><div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">'+t+'</div>'
+            +'<div style="font-size:12.5px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(v)+'</div></div>' : '';
+        };
+        return '<div style="border-top:1px solid var(--border);padding:12px 6px">'
+          +'<div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="rvToggleDetalle(\''+k+'\')">'
+            +'<span style="font-size:9px;color:var(--text3);display:inline-block;transform:rotate('+(abierta?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
+            +'<div style="flex:1;min-width:0">'
+              +'<div style="font-size:12.5px;color:var(--strong)">'+esc(c.name)
+                +' <span style="color:var(--text3);font-weight:400">&middot; '+rvRangoTexto(r.freq, r.periodo)+'</span></div>'
+              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
+                +(r.autor?esc(r.autor)+' &middot; ':'')
+                +(r.creadoAt?new Date(r.creadoAt).toLocaleDateString('es-AR'):'')
+                +' &middot; desde '+esc(r.via||'tracker')+'</div>'
+            +'</div>'
+            +(r.error&&r.error.hubo
+              ? chip('Error','var(--redx)','rgba(216,90,48,0.14)')
+              : chip('Sin errores','var(--accent)','rgba(29,158,117,0.12)'))
+            +(r.mejora&&r.mejora.hubo
+              ? chip('Mejora','var(--amberx)','rgba(240,168,48,0.14)')
+              : chip('Sin mejoras','var(--text3)','var(--bg3)'))
+            +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
+              ? chip('Espera aprobacion','var(--amberx)','rgba(240,168,48,0.2)')
+              : '')
+            +((r.aprobacion&&r.aprobacion.necesita&&r.aprobacion.resuelto)
+              ? chip('Aprobado','var(--accent)','rgba(29,158,117,0.12)')
+              : '')
+            +((r.informe&&r.informe.hubo)
+              ? chip('Informe con error','var(--redx)','rgba(216,90,48,0.14)')
+              : '')
+          +'</div>'
+          +(abierta
+            ? '<div style="padding:6px 0 2px 21px">'
+              +det('Cual fue el error', r.error&&r.error.cual)
+              +det('Como quedo solucionado', r.error&&r.error.solucion)
+              +det('Pruebas que se hicieron', r.error&&r.error.pruebas)
+              +det('Por que la mejora', r.mejora&&r.mejora.porque)
+              +rvCambiosHtml(c, r)
+              +det('Que hay que aprobar', r.aprobacion&&r.aprobacion.que)
+              +det('Error en el informe', r.informe&&r.informe.cual)
+              +'<div style="display:flex;gap:8px;margin-top:12px">'
+                +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
+                  ?'<button class="btn btn-sm btn-primary" onclick="rvAprobar('+c.id+',\''+r.id+'\')">Marcar como aprobado</button>':'')
+                +'<button class="btn btn-sm" onclick="rvAbrir('+c.id+',\''+r.periodo+'\',\'tracker\')">Editar</button>'
+                +'<button class="btn btn-sm" style="color:var(--redx)" onclick="rvBorrar('+c.id+',\''+r.id+'\')">Eliminar</button>'
+              +'</div></div>'
+            : '')
+          +'</div>';
+}
+
 function rvPanelHtml(){
   var chip=function(txt, color, bg){
     return '<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:'+bg+';color:'+color+'">'+txt+'</span>';
@@ -8374,16 +8431,21 @@ function rvPanelHtml(){
             +'</div>'
           +'</div>'
           +(abierta
-            ? '<div style="padding:2px 6px 12px 21px">'
+            ? '<div style="padding:2px 6px 12px 14px">'
               +g.items.map(function(e){
-                var est=e.respondido
-                  ? '<span style="color:var(--accent)">revisado</span>'
-                  : (e.incompleta?'<span style="color:var(--amberx)">incompleto</span>'
-                                 :'<span style="color:var(--text3)">sin responder</span>');
-                return '<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;font-size:11.5px;color:var(--text2)">'
+                // Si esa revision se respondio, se muestra la fila completa con
+                // sus chips y el detalle desplegable. Es el contenido que antes
+                // vivia en un listado aparte y duplicaba las semanas.
+                var cli=(DB.clients||[]).find(function(x){ return String(x.id)===String(e.cliente); });
+                var rr=cli?rvBuscar(cli, e.periodo):null;
+                if(cli&&rr) return rvFilaRespondida(cli, rr, chip);
+                var est=e.incompleta
+                  ? '<span style="color:var(--amberx)">incompleto</span>'
+                  : '<span style="color:var(--text3)">sin responder</span>';
+                return '<div style="display:flex;gap:10px;align-items:baseline;padding:8px 0;font-size:11.5px;color:var(--text2);border-top:1px solid var(--border)">'
                   +'<span style="flex:1;min-width:0">'+esc(e.nombre||'')+'</span>'
                   +'<span style="color:var(--text3)">'+rvRangoTexto(e.freq, e.periodo)+'</span>'
-                  +'<span style="flex:0 0 90px;text-align:right">'+est+'</span></div>';
+                  +'<span style="flex:0 0 100px;text-align:right">'+est+'</span></div>';
               }).join('')
             +'</div>'
             : '')
@@ -8400,60 +8462,17 @@ function rvPanelHtml(){
   todas.sort(function(a,b){ return String(b.r.creadoAt||'').localeCompare(String(a.r.creadoAt||'')); });
 
   S._rvAbiertas=S._rvAbiertas||{};
-  var histHtml=todas.length
-    ? todas.slice(0,40).map(function(x){
-        var r=x.r, c=x.c, k=c.id+':'+r.id;
-        var abierta=!!S._rvAbiertas[k];
-        var det=function(t, v){
-          return v ? '<div style="margin-top:9px"><div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">'+t+'</div>'
-            +'<div style="font-size:12.5px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(v)+'</div></div>' : '';
-        };
-        return '<div style="border-top:1px solid var(--border);padding:12px 6px">'
-          +'<div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="rvToggleDetalle(\''+k+'\')">'
-            +'<span style="font-size:9px;color:var(--text3);display:inline-block;transform:rotate('+(abierta?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
-            +'<div style="flex:1;min-width:0">'
-              +'<div style="font-size:12.5px;color:var(--strong)">'+esc(c.name)
-                +' <span style="color:var(--text3);font-weight:400">&middot; '+rvRangoTexto(r.freq, r.periodo)+'</span></div>'
-              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
-                +(r.autor?esc(r.autor)+' &middot; ':'')
-                +(r.creadoAt?new Date(r.creadoAt).toLocaleDateString('es-AR'):'')
-                +' &middot; desde '+esc(r.via||'tracker')+'</div>'
-            +'</div>'
-            +(r.error&&r.error.hubo
-              ? chip('Error','var(--redx)','rgba(216,90,48,0.14)')
-              : chip('Sin errores','var(--accent)','rgba(29,158,117,0.12)'))
-            +(r.mejora&&r.mejora.hubo
-              ? chip('Mejora','var(--amberx)','rgba(240,168,48,0.14)')
-              : chip('Sin mejoras','var(--text3)','var(--bg3)'))
-            +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
-              ? chip('Espera aprobacion','var(--amberx)','rgba(240,168,48,0.2)')
-              : '')
-            +((r.aprobacion&&r.aprobacion.necesita&&r.aprobacion.resuelto)
-              ? chip('Aprobado','var(--accent)','rgba(29,158,117,0.12)')
-              : '')
-            +((r.informe&&r.informe.hubo)
-              ? chip('Informe con error','var(--redx)','rgba(216,90,48,0.14)')
-              : '')
-          +'</div>'
-          +(abierta
-            ? '<div style="padding:6px 0 2px 21px">'
-              +det('Cual fue el error', r.error&&r.error.cual)
-              +det('Como quedo solucionado', r.error&&r.error.solucion)
-              +det('Pruebas que se hicieron', r.error&&r.error.pruebas)
-              +det('Por que la mejora', r.mejora&&r.mejora.porque)
-              +rvCambiosHtml(c, r)
-              +det('Que hay que aprobar', r.aprobacion&&r.aprobacion.que)
-              +det('Error en el informe', r.informe&&r.informe.cual)
-              +'<div style="display:flex;gap:8px;margin-top:12px">'
-                +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
-                  ?'<button class="btn btn-sm btn-primary" onclick="rvAprobar('+c.id+',\''+r.id+'\')">Marcar como aprobado</button>':'')
-                +'<button class="btn btn-sm" onclick="rvAbrir('+c.id+',\''+r.periodo+'\',\'tracker\')">Editar</button>'
-                +'<button class="btn btn-sm" style="color:var(--redx)" onclick="rvBorrar('+c.id+',\''+r.id+'\')">Eliminar</button>'
-              +'</div></div>'
-            : '')
-          +'</div>';
-      }).join('')
-    : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">Todavia no hay revisiones respondidas.</div>';
+  // Las respondidas de ESTA semana. Las de semanas anteriores viven en el
+  // historial de arriba: antes se listaban las dos veces.
+  var semAhora=rvSemanaActual();
+  var deEstaSemana=todas.filter(function(x){
+    var f=x.r.creadoAt||x.r.periodo;
+    return f && _rvLunesDe(f)===semAhora;
+  });
+  var histHtml=deEstaSemana.length
+    ? deEstaSemana.map(function(x){ return rvFilaRespondida(x.c, x.r, chip); }).join('')
+    : '<div style="padding:26px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">'
+      +'Todavia no respondiste ninguna esta semana. Las anteriores estan en el historial.</div>';
 
   var titulo=function(t, sub){
     return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px">'
@@ -8495,7 +8514,7 @@ function rvPanelHtml(){
       +semHtml
     +'</div>'
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
-      +titulo('Respondidas', todas.length?(todas.length+' en total'):'')
+      +titulo('Respondidas esta semana', deEstaSemana.length?(deEstaSemana.length+' de '+todas.length+' en total'):'')
       +histHtml
     +'</div>'
     +'<div style="font-size:10.5px;color:var(--text3);margin-top:12px;line-height:1.6">'
