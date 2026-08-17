@@ -7646,11 +7646,44 @@ function eerrSet(m, campo, valor){
   }
 }
 
-// Abonos del mes: los recurrentes activos. Es el unico ingreso que la app sabe.
-function eerrAbonos(){
+// Hasta cuando esta comprometido este cliente. La fecha de fin de contrato
+// manda; si no hay, el proximo pago es lo ultimo confirmado. Sin ninguna de las
+// dos no hay nada que indique un final y se toma como abierto.
+function _eerrHasta(c){
+  var f=(c.contract&&c.contract.endDate)||c.nextPaymentDate||'';
+  if(!f) return null;
+  var p=String(f).slice(0,10).split('-');
+  if(p.length<2) return null;
+  var a=Number(p[0]), m=Number(p[1])-1;
+  return (isFinite(a)&&isFinite(m))?{a:a,m:m}:null;
+}
+// Ese mes, este cliente sigue comprometido? Proyectar mas alla de lo pactado
+// convierte una hipotesis de renovacion en ingreso asegurado.
+function _eerrCubre(c, anio, mes){
+  var h=_eerrHasta(c);
+  if(!h) return true;                       // sin fecha, no hay final conocido
+  return (anio<h.a)||(anio===h.a&&mes<=h.m);
+}
+// Abonos comprometidos para ese mes.
+function eerrAbonosMes(anio, mes){
   return (DB.clients||[])
     .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
+    .filter(function(c){ return _eerrCubre(c, anio, mes); })
     .reduce(function(s,c){ return s+(parseFloat(c.monthlyFee)||0); },0);
+}
+// El MRR de hoy, para los textos.
+function eerrAbonos(){
+  var h=new Date();
+  return eerrAbonosMes(h.getFullYear(), h.getMonth());
+}
+// Quienes se caen de la proyeccion y cuando: hay que poder ver de donde sale
+// que el ingreso baja en noviembre.
+function eerrVencen(){
+  return (DB.clients||[])
+    .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
+    .map(function(c){ return {c:c, h:_eerrHasta(c)}; })
+    .filter(function(x){ return x.h; })
+    .sort(function(a,b){ return (a.h.a*12+a.h.m)-(b.h.a*12+b.h.m); });
 }
 // Un mes ya pasado no se puede completar con los abonos de HOY: la cartera era
 // otra. Rellenar hacia atras multiplicaba el MRR actual por doce y daba un
@@ -7672,7 +7705,7 @@ function eerrEsFuturo(m){
 function eerrIngreso(m){
   var v=eerrVal(m,'ingresos');
   if(v!=null) return v;
-  return eerrEsPasado(m)?null:eerrAbonos();
+  return eerrEsPasado(m)?null:eerrAbonosMes(eerrAnio(), m);
 }
 function eerrEsProyectado(m){
   return eerrVal(m,'ingresos')==null && !eerrEsPasado(m);
@@ -7722,7 +7755,7 @@ function eerrHtml(){
     var total=0;
     var tds=EERR_MESES.map(function(_,i){
       var v=eerrVal(i,campo); total+=(v||0);
-      var ph=(campo==='ingresos'&&!eerrEsPasado(i))?String(Math.round(eerrAbonos())):'—';
+      var ph=(campo==='ingresos'&&!eerrEsPasado(i))?String(Math.round(eerrAbonosMes(eerrAnio(),i))):'—';
       return '<td style="'+cel+';padding:2px 3px">'
         +'<input value="'+(v==null?'':v)+'" placeholder="'+ph+'" inputmode="numeric" '
         +'onchange="eerrSet('+i+',\''+campo+'\',this.value)" '
@@ -7770,9 +7803,23 @@ function eerrHtml(){
       +'</select>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-      +'Los meses <b>desde este en adelante</b> se estiman con los abonos de hoy ('+_eerrPlata(eerrAbonos())+'/mes) '
-      +'y se muestran en gris cursiva. Los meses ya pasados quedan vacios: la cartera era otra y estimarlos hacia atras '
-      +'daria un historico que nunca ocurrio. Escribi el cobro real de cada mes para reemplazarlos.</div>'
+      +'Los meses <b>desde este en adelante</b> se estiman con los abonos comprometidos, en gris cursiva. '
+      +'Los pasados quedan vacios: la cartera era otra. Escribi el cobro real de cada mes para reemplazarlos.</div>'
+    +(function(){
+        // De donde sale que el ingreso baja en tal mes. Sin esto, la proyeccion
+        // se achica y no se entiende por que.
+        var v=eerrVencen(); if(!v.length) return '';
+        var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+        return '<div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:10px;'
+          +'background:var(--bg3);border-radius:var(--radius);padding:9px 12px">'
+          +'<b style="color:var(--text2)">La proyeccion baja</b> cuando termina lo pactado. Despues de esa fecha '
+          +'la renovacion es una hipotesis, no un ingreso: '
+          +v.map(function(x){
+              return esc(x.c.name)+' hasta '+MES[x.h.m]+' '+x.h.a
+                +(x.c.monthlyFee?(' ('+_eerrPlata(parseFloat(x.c.monthlyFee))+')'):'');
+            }).join(' &middot; ')
+          +'.</div>';
+      })()
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
