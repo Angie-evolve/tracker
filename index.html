@@ -9674,6 +9674,7 @@ function eodPanelHtml(suelto){
       +'La clave se guarda en el Apps Script, nunca en esta pagina: si estuviera aca seria publica. '
       +'Sin clave el resumen sale igual, armado por plantilla. Cuesta menos de un dolar por mes.'
     +'</div>'
+    +_eodClientesHtml(e)
     +'<div id="eod-salida" style="display:none;white-space:pre-wrap;font-size:12px;color:var(--text2);line-height:1.6;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;margin-top:11px"></div>'
     +(e.ultimo?'<div style="font-size:10.5px;color:var(--text3);margin-top:9px">Ultima corrida: '
       +new Date(e.ultimo.at).toLocaleString('es-AR')+' &middot; '+e.ultimo.enviados+' enviados'
@@ -9681,6 +9682,95 @@ function eodPanelHtml(suelto){
       +(e.ultimo.fallados?' &middot; <span style="color:var(--redx)">'+e.ultimo.fallados+' fallaron</span>':'')+'</div>':'')
   +'</div>';
 }
+// A que clientes le llega el resumen. Tres modos:
+//  - owner: los de una persona. Sale del reparto de clientes, no hay lista que
+//    mantener: si manana te asignan uno nuevo, entra solo.
+//  - activas: los que tengan campanas prendidas en Meta. Lo resuelve el Apps
+//    Script cada noche, no se congela al guardar.
+//  - manual: los que elijas a mano.
+function _eodModo(e){ return (e&&e.modo)||'manual'; }
+function _eodClientesHtml(e){
+  var modo=_eodModo(e);
+  var elegidos=(e&&e.clientes)||[];
+  var activos=(DB.clients||[]).filter(function(c){ return !c.archived; })
+    .sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+  var conGhl=activos.filter(function(c){ return c.ghlToken&&c.ghlLocation; });
+
+  var opcion=function(v,titulo,detalle){
+    return '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer;margin-bottom:8px">'
+      +'<input type="radio" name="eod-modo" value="'+v+'"'+(modo===v?' checked':'')+' onchange="eodSetModo(\''+v+'\')" style="margin-top:2px">'
+      +'<span>'+titulo+'<div style="font-size:10.5px;color:var(--text3);margin-top:2px;line-height:1.55">'+detalle+'</div></span></label>';
+  };
+
+  // Modo owner: una pastilla por persona con clientes asignados.
+  var porOwner={};
+  conGhl.forEach(function(c){ var o=(c.owner||'').toLowerCase(); if(o) porOwner[o]=(porOwner[o]||0)+1; });
+  var duenios=Object.keys(porOwner);
+  var chipsOwner=duenios.length
+    ? duenios.map(function(o){
+        var on=(S._eodOwner||'').toLowerCase()===o;
+        return '<button class="btn btn-sm" onclick="eodSetOwner(\''+esc(o)+'\')" '
+          +'style="border-color:'+(on?'var(--accent)':'var(--border2)')+';color:'+(on?'var(--accent)':'var(--text3)')+'">'
+          +esc(personaNombre(o))+' ('+porOwner[o]+')</button>';
+      }).join('')
+    : '<span style="font-size:11.5px;color:var(--amberx)">Nadie tiene clientes asignados. Se reparte en Configuracion &rarr; Reparto de clientes.</span>';
+
+  var chipsCli=conGhl.map(function(c){
+    var on=elegidos.indexOf(String(c.id))>=0;
+    return '<label style="display:inline-flex;align-items:center;border:1px solid '+(on?'var(--accent)':'var(--border2)')+';'
+      +'border-radius:20px;padding:4px 11px;font-size:11.5px;cursor:pointer;'
+      +'background:'+(on?'rgba(29,158,117,0.10)':'transparent')+';color:'+(on?'var(--accent)':'var(--text3)')+'">'
+      +'<input type="checkbox" data-eodcli="'+c.id+'"'+(on?' checked':'')+' onchange="eodMarcarCliente()" '
+      +'style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">'
+      +esc(c.name)+'</label>';
+  }).join('');
+
+  return '<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:13px">'
+    +'<div style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:9px">Sobre que clientes</div>'
+    +opcion('owner','Los de una persona','Sale del reparto de clientes. Si te asignan uno nuevo, entra solo.')
+    +opcion('activas','Los que tengan campanas activas','Se decide cada noche: si un cliente no gasto ni movio nada, esa noche no llega su resumen.')
+    +opcion('manual','Los que yo elija','Lista fija.')
+    +(modo==='owner'
+      ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">'+chipsOwner+'</div>'
+      : '')
+    +(modo==='manual'
+      ? '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">'
+        +(chipsCli||'<span style="font-size:11.5px;color:var(--text3)">No hay clientes con GHL conectado.</span>')
+        +'</div>'
+      : '')
+    +(modo==='activas'
+      ? '<div style="font-size:10.5px;color:var(--text3);margin-top:4px;line-height:1.6">'
+        +'Cuenta como movimiento: gasto del dia, un anuncio o conjunto nuevo, algo apagado, '
+        +'cambio de presupuesto, leads o tareas cerradas.</div>'
+      : '')
+  +'</div>';
+}
+function eodSetModo(m){
+  S._eodEstado=S._eodEstado||{};
+  S._eodEstado.modo=m;
+  eodModal();
+}
+function eodSetOwner(mail){
+  S._eodOwner=mail;
+  // En modo owner la lista se resuelve aca y se manda ya resuelta: el script no
+  // sabe quien es responsable de que cliente.
+  var ids=(DB.clients||[]).filter(function(c){
+    return !c.archived&&c.ghlToken&&c.ghlLocation&&(c.owner||'').toLowerCase()===String(mail).toLowerCase();
+  }).map(function(c){ return String(c.id); });
+  S._eodEstado=S._eodEstado||{};
+  S._eodEstado.clientes=ids;
+  eodModal();
+}
+function eodMarcarCliente(){
+  var ids=[];
+  document.querySelectorAll('[data-eodcli]').forEach(function(ch){
+    if(ch.checked) ids.push(ch.getAttribute('data-eodcli'));
+  });
+  S._eodEstado=S._eodEstado||{};
+  S._eodEstado.clientes=ids;
+  eodModal();
+}
+
 function _eodKeyLocal(){
   try{ return localStorage.getItem('evold-anthropic-key')||''; }catch(e){ return ''; }
 }
@@ -9703,8 +9793,22 @@ async function eodGuardar(){
     +'&activo='+(document.getElementById('eod-activo').checked?'1':'0')
     +'&hora='+enc(document.getElementById('eod-hora').value)
     +'&numero='+enc(document.getElementById('eod-numero').value.trim());
+  var st=S._eodEstado||{};
+  q+='&modo='+enc(_eodModo(st))
+   +'&clientes='+enc(JSON.stringify(st.clientes||[]));
   var k=document.getElementById('eod-apikey').value.trim();
   if(k) q+='&apiKey='+enc(k);
+  // Un mail en el campo del telefono es un error silencioso: GHL rechaza el
+  // envio y el resumen no llega nunca sin que nadie se entere.
+  var num=document.getElementById('eod-numero').value.trim();
+  if(num&&num.indexOf('@')>=0){
+    _eodSal('Eso es un mail, no un telefono. El aviso sale por WhatsApp y necesita un numero.','var(--redx)');
+    return;
+  }
+  if(num&&!/[0-9]{6,}/.test(num.replace(/[^0-9]/g,''))){
+    _eodSal('Ese numero parece incompleto. Poné el numero con codigo de pais.','var(--amberx)');
+    return;
+  }
   _eodSal('Guardando...');
   try{
     var r=await proxyFetch(q).then(function(x){return x.json();});
@@ -9748,6 +9852,7 @@ async function eodAhora(){
       .then(function(x){return x.json();});
     if(!r.ok){ _eodSal('No se pudo: '+(r.error||'error'),'var(--redx)'); return; }
     _eodSal(r.enviados+' enviados'+(r.conIA?' ('+r.conIA+' por Claude)':' (por plantilla)')
+      +(r.saltados?' &middot; '+r.saltados+' sin movimiento hoy':'')
       +(r.fallados?' &middot; '+r.fallados+' fallaron':''),'var(--accent)');
   }catch(e){ _eodSal('No se pudo: '+e.message,'var(--redx)'); }
 }
