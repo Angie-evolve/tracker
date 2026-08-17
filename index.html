@@ -6366,6 +6366,177 @@ function comAutoRefresco(cid,tid){
 }
 function comCerrarRefresco(){ clearInterval(_comTimer); _comTimer=null; }
 
+
+/* ---------- Bienvenida del dia ----------
+   Se muestra una vez por dia y por persona, la primera vez que abre la app.
+   Se guarda en el navegador de cada uno: es una preferencia de esa sesion, no
+   un dato compartido. Efecto conocido: si entra desde la compu y el telefono,
+   la ve dos veces.
+
+   El anillo mide MINUTOS ACTIVOS, no "pestana abierta": solo suma cuando la
+   pestana esta visible y hubo teclado o mouse hace menos de dos minutos. Sin
+   eso, dejar el tracker abierto mientras se edita un video contaria cuatro
+   horas de foco que nunca existieron. */
+
+var _FOCO={ultAct:Date.now(), timer:null};
+function _focoKey(){ return 'evold-foco-'+(SB.email||'x')+'-'+rvISO(new Date()); }
+function focoMin(){
+  try{ return Math.round((parseInt(localStorage.getItem(_focoKey())||'0',10)||0)/60); }
+  catch(e){ return 0; }
+}
+function focoArrancar(){
+  if(_FOCO.timer) return;
+  ['mousemove','keydown','click','scroll'].forEach(function(ev){
+    document.addEventListener(ev, function(){ _FOCO.ultAct=Date.now(); }, {passive:true});
+  });
+  _FOCO.timer=setInterval(function(){
+    if(document.hidden) return;                          // pestana de fondo no cuenta
+    if(Date.now()-_FOCO.ultAct > 120000) return;         // dos minutos quieto tampoco
+    try{
+      var k=_focoKey();
+      var v=(parseInt(localStorage.getItem(k)||'0',10)||0)+15;
+      localStorage.setItem(k, String(v));
+    }catch(e){}
+  }, 15000);
+}
+
+function _bvKey(){ return 'evold-bienvenida-'+(SB.email||'x'); }
+function bienvenidaPendiente(){
+  try{ return localStorage.getItem(_bvKey())!==rvISO(new Date()); }catch(e){ return false; }
+}
+function bienvenidaVista(){
+  try{ localStorage.setItem(_bvKey(), rvISO(new Date())); }catch(e){}
+}
+
+var BV_FRASES=[
+  'Lo que se mide mejora. Lo que se revisa, mejora rapido.',
+  'Un dia bien empezado se defiende solo.',
+  'Primero lo que esta trabado, despues lo que esta comodo.',
+  'La constancia le gana al arranque.',
+  'Terminar una vale mas que empezar tres.',
+  'Los numeros no mienten, pero hay que ir a buscarlos.',
+  'Hoy tambien cuenta.'
+];
+// Una frase por dia, no por recarga: si cambia cada vez que refrescas, deja de
+// sentirse como el saludo del dia y pasa a ser ruido.
+function _bvFrase(){
+  var d=new Date();
+  var n=d.getFullYear()*372+d.getMonth()*31+d.getDate();
+  return BV_FRASES[n%BV_FRASES.length];
+}
+function _bvSaludo(){
+  var h=new Date().getHours();
+  if(h<6)  return 'Buenas noches';
+  if(h<13) return 'Buen dia';
+  if(h<20) return 'Buenas tardes';
+  return 'Buenas noches';
+}
+// Las tareas de esta persona. El responsable a veces esta guardado como mail y
+// a veces como nombre, asi que se compara contra los dos.
+function _bvMias(){
+  var mail=(SB.email||'').toLowerCase();
+  var nom=(personaNombre(SB.email||'')||'').toLowerCase();
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    (c.tasks||[]).forEach(function(t){
+      if(t.done||t.deleted||t.archivada) return;
+      var r=String(t.responsible||'').toLowerCase();
+      if(!r || r===mail || (nom&&r===nom)) out.push({c:c,t:t});
+    });
+  });
+  return out;
+}
+function _bvDatos(){
+  var mias=_bvMias();
+  var hoy=new Date();
+  var vencen=mias.filter(function(x){
+    var d=_dueEnd(x.t.due);
+    return d && d<=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate(),23,59,59);
+  }).length;
+  var alarmas=0;
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    try{ alarmas+=(alarmStatus(c).breached||0); }catch(e){}
+  });
+  var coment=0;
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    (c.tasks||[]).forEach(function(t){
+      if(t.done||t.deleted) return;
+      try{ coment+=comSinLeer(c,t); }catch(e){}
+    });
+  });
+  var informes=0;
+  try{
+    var hoyISO=rvISO(new Date()), L=rvLog();
+    informes=Object.keys(L).filter(function(k){ return L[k]&&L[k].enviado===hoyISO; }).length;
+  }catch(e){}
+  return { tareas:mias.length, vencen:vencen, alarmas:alarmas, coment:coment, informes:informes };
+}
+
+function bienvenidaMostrar(){
+  var d=_bvDatos();
+  var min=focoMin();
+  // El arco se llena sobre 120 minutos: mas que eso ya no dice nada nuevo.
+  var pct=Math.min(1, min/120);
+  var circ=2*Math.PI*52;
+  var off=circ*(1-pct);
+  var hh=new Date();
+  var hora=(hh.getHours()<10?'0':'')+hh.getHours()+':'+(hh.getMinutes()<10?'0':'')+hh.getMinutes();
+
+  var dato=function(n,txt,color){
+    if(!n) return '';
+    return '<span style="font-size:12px;color:#9ea2a9"><b style="color:'+(color||'#fff')+';font-weight:500">'+n+'</b> '+txt+'</span>';
+  };
+  var linea=[
+    dato(d.tareas, d.tareas===1?'tarea':'tareas'),
+    dato(d.alarmas, d.alarmas===1?'alarma':'alarmas','#e0b45c'),
+    dato(d.coment, d.coment===1?'comentario':'comentarios','#4ecfa0')
+  ].filter(Boolean).join('<span style="color:#4e5259;margin:0 8px">&middot;</span>');
+
+  var el=document.createElement('div');
+  el.id='bv-overlay';
+  el.style.cssText='position:fixed;inset:0;z-index:9997;display:flex;flex-direction:column;'
+    +'align-items:center;justify-content:center;gap:14px;padding:24px;cursor:pointer;'
+    +'background:linear-gradient(165deg,#1c2723 0%,#131c18 45%,#0d0f12 100%);'
+    +'opacity:0;transition:opacity .35s ease';
+  el.innerHTML=''
+    +'<div style="position:relative;width:150px;height:150px;display:flex;align-items:center;justify-content:center">'
+      +'<svg width="150" height="150" viewBox="0 0 120 120" style="position:absolute" aria-hidden="true">'
+        +'<circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="2"/>'
+        +'<circle cx="60" cy="60" r="52" fill="none" stroke="#1D9E75" stroke-width="2" stroke-linecap="round" '
+          +'stroke-dasharray="'+circ.toFixed(0)+'" stroke-dashoffset="'+off.toFixed(0)+'" transform="rotate(-90 60 60)"/>'
+      +'</svg>'
+      +'<div style="text-align:center">'
+        +'<div style="font-size:34px;color:#fff;font-weight:300;line-height:1;letter-spacing:-.02em">'+hora+'</div>'
+        +'<div style="font-size:9px;color:#7d8189;text-transform:uppercase;letter-spacing:.09em;margin-top:5px">'
+          +(min?(min+' min activos hoy'):'recien empezas')+'</div>'
+      +'</div>'
+    +'</div>'
+    +'<div style="font-size:19px;color:#e4e6e9;font-weight:400">'+esc(_bvSaludo())+', '+esc(personaNombre(SB.email||'')||'')+'.</div>'
+    +'<div style="font-size:12px;color:#7d8189;font-style:italic;text-align:center;max-width:320px;line-height:1.6">'
+      +esc(_bvFrase())+'</div>'
+    +(linea
+      ? '<div style="margin-top:6px;display:flex;align-items:center;flex-wrap:wrap;justify-content:center">'+linea+'</div>'
+      : '<div style="margin-top:6px;font-size:12px;color:#6f737a">No tenes nada pendiente. Buen dia para adelantar.</div>')
+    +(d.vencen?'<div style="font-size:11px;color:#e0b45c">'+d.vencen+' vence'+(d.vencen===1?'':'n')+' hoy</div>':'')
+    +(d.informes?'<div style="font-size:10.5px;color:#5f636a">'+d.informes+' informe'+(d.informes===1?'':'s')+' salieron esta manana</div>':'')
+    +'<div style="position:absolute;bottom:26px;font-size:10.5px;color:#4e5259">Tocá en cualquier lado para entrar</div>';
+  document.body.appendChild(el);
+  requestAnimationFrame(function(){ el.style.opacity='1'; });
+
+  var cerrar=function(){
+    bienvenidaVista();
+    el.style.opacity='0';
+    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 350);
+    document.removeEventListener('keydown', porTecla);
+  };
+  var porTecla=function(){ cerrar(); };
+  el.addEventListener('click', cerrar);
+  document.addEventListener('keydown', porTecla);
+}
+
 function comModal(cid,tid){
   var c=(DB.clients||[]).find(function(x){return x.id===cid;});
   var t=c&&(c.tasks||[]).find(function(x){return x.id===tid;});
@@ -21900,6 +22071,12 @@ async function arrancarConSesion(){
   try{ _volvio=_posRestaurar(); }catch(e){ _volvio=false; }
   if(!_volvio) showTickets();
   bootListo();
+  // La bienvenida va DESPUES de bootListo: si sale antes, se superpone con el
+  // faro de carga y se ven las dos pantallas encimadas.
+  try{
+    focoArrancar();
+    if(bienvenidaPendiente()) setTimeout(bienvenidaMostrar, 420);
+  }catch(e){}
   // Un link de revision en la URL manda mas que la posicion guardada: si te
   // mandaron ahi desde el mail, ahi tenes que terminar.
   try{ rvAbrirDesdeLink(); }catch(e){}
