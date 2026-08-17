@@ -7652,10 +7652,30 @@ function eerrAbonos(){
     .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
     .reduce(function(s,c){ return s+(parseFloat(c.monthlyFee)||0); },0);
 }
-// Ingresos del mes: lo cargado a mano, o los abonos si no cargaron nada.
+// Un mes ya pasado no se puede completar con los abonos de HOY: la cartera era
+// otra. Rellenar hacia atras multiplicaba el MRR actual por doce y daba un
+// historico que nunca ocurrio. Los meses pasados sin dato quedan vacios.
+function eerrEsPasado(m){
+  var hoy=new Date(), a=eerrAnio();
+  if(a<hoy.getFullYear()) return true;
+  if(a>hoy.getFullYear()) return false;
+  return m<hoy.getMonth();
+}
+function eerrEsFuturo(m){
+  var hoy=new Date(), a=eerrAnio();
+  if(a>hoy.getFullYear()) return true;
+  if(a<hoy.getFullYear()) return false;
+  return m>hoy.getMonth();
+}
+// Ingresos del mes: lo cargado a mano. Si no hay nada cargado, solo se estima
+// del mes actual en adelante, y eso se marca como proyeccion en la tabla.
 function eerrIngreso(m){
   var v=eerrVal(m,'ingresos');
-  return (v==null)?eerrAbonos():v;
+  if(v!=null) return v;
+  return eerrEsPasado(m)?null:eerrAbonos();
+}
+function eerrEsProyectado(m){
+  return eerrVal(m,'ingresos')==null && !eerrEsPasado(m);
 }
 function eerrGastos(m, tipo){
   return EERR_CATS.filter(function(c){ return !tipo||c.tipo===tipo; })
@@ -7663,6 +7683,12 @@ function eerrGastos(m, tipo){
 }
 function eerrResultado(m){
   var ing=eerrIngreso(m), gas=eerrGastos(m);
+  // Sin ingreso cargado no hay resultado que mostrar: un cashflow de -gastos
+  // sobre un mes sin datos se lee como perdida y no lo es.
+  if(ing==null){
+    if(!gas) return { ingreso:null, gastos:0, neto:null, margen:null, bruto:null, margenBruto:null };
+    return { ingreso:null, gastos:gas, neto:null, margen:null, bruto:null, margenBruto:null };
+  }
   return { ingreso:ing, gastos:gas, neto:ing-gas,
            margen: ing>0?((ing-gas)/ing*100):null,
            bruto: ing-eerrGastos(m,'var'),
@@ -7696,8 +7722,9 @@ function eerrHtml(){
     var total=0;
     var tds=EERR_MESES.map(function(_,i){
       var v=eerrVal(i,campo); total+=(v||0);
+      var ph=(campo==='ingresos'&&!eerrEsPasado(i))?String(Math.round(eerrAbonos())):'—';
       return '<td style="'+cel+';padding:2px 3px">'
-        +'<input value="'+(v==null?'':v)+'" placeholder="&mdash;" inputmode="numeric" '
+        +'<input value="'+(v==null?'':v)+'" placeholder="'+ph+'" inputmode="numeric" '
         +'onchange="eerrSet('+i+',\''+campo+'\',this.value)" '
         +'style="width:100%;min-width:62px;text-align:right;font-size:11.5px;padding:4px 6px;'
         +'border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);'
@@ -7713,8 +7740,12 @@ function eerrHtml(){
     var tds=EERR_MESES.map(function(_,i){
       var v=fn(i);
       if(typeof v==='number'&&!opts.pct) total+=v;
-      var col=opts.color||(typeof v==='number'&&v<0?'var(--redx)':'var(--text)');
-      return '<td style="'+cel+';color:'+col+(opts.fuerte?';font-weight:600':'')+'">'
+      // Proyectado se ve distinto: si un numero estimado se ve igual que uno
+      // real, en dos semanas nadie recuerda cual era cual.
+      var proy=eerrEsProyectado(i);
+      var col=opts.color||(typeof v==='number'&&v<0?'var(--redx)':(proy?'var(--text3)':'var(--text)'));
+      return '<td style="'+cel+';color:'+col+(opts.fuerte&&!proy?';font-weight:600':'')
+        +(proy?';font-style:italic':'')+'" '+(proy?'title="Proyectado con los abonos de hoy"':'')+'>'
         +(opts.pct?_eerrPct(v):_eerrPlata(v))+'</td>';
     }).join('');
     return '<tr style="'+(opts.borde?'border-top:1px solid var(--border)':'')+'">'
@@ -7739,8 +7770,9 @@ function eerrHtml(){
       +'</select>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-      +'Los ingresos arrancan con la suma de los abonos ('+_eerrPlata(eerrAbonos())+'/mes). '
-      +'Pisalos escribiendo el cobro real. Los gastos se cargan a mano: una celda vacia es un dato que falta, no un cero.</div>'
+      +'Los meses <b>desde este en adelante</b> se estiman con los abonos de hoy ('+_eerrPlata(eerrAbonos())+'/mes) '
+      +'y se muestran en gris cursiva. Los meses ya pasados quedan vacios: la cartera era otra y estimarlos hacia atras '
+      +'daria un historico que nunca ocurrio. Escribi el cobro real de cada mes para reemplazarlos.</div>'
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
