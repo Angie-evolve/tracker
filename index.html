@@ -7592,6 +7592,174 @@ function _rtFilas(){
     .sort(function(a,b){ return b.fee-a.fee; });
 }
 
+
+/* ---------- EERR de la agencia ----------
+   Misma estructura del archivo de finanzas: ingresos, gastos por categoria,
+   cashflow y margen, mes a mes.
+
+   Lo unico que se completa solo son los ingresos por abono: salen de los
+   clientes recurrentes que ya estan cargados. Todo el resto se carga a mano,
+   porque no existe en ninguna parte de la app. Cada celda editable esta en
+   blanco hasta que alguien la llena: no se estima nada. */
+
+var EERR_CATS=[
+  {k:'equipoDelivery', n:'Equipo Delivery', tipo:'var'},
+  {k:'equipoPropio',   n:'Equipo Propio',   tipo:'fijo'},
+  {k:'equipoVentas',   n:'Equipo Ventas',   tipo:'var'},
+  {k:'infra',          n:'Infraestructura Digital', tipo:'fijo'},
+  {k:'alquiler',       n:'Alquiler',        tipo:'fijo'},
+  {k:'ads',            n:'ADS',             tipo:'fijo'},
+  {k:'comisiones',     n:'Comisiones',      tipo:'var'},
+  {k:'formacion',      n:'Formacion / Consultoria', tipo:'fijo'},
+  {k:'deudas',         n:'Pago Deudas',     tipo:'fijo'},
+  {k:'otros',          n:'Otros Gastos',    tipo:'fijo'}
+];
+var EERR_MESES=['enero','febrero','marzo','abril','mayo','junio',
+                'julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+function eerrAnio(){ return S._eerrAnio||new Date().getFullYear(); }
+function eerrSetAnio(a){ S._eerrAnio=parseInt(a,10)||new Date().getFullYear(); showTickets(); }
+function _eerrDatos(){
+  if(!DB.eerr||typeof DB.eerr!=='object') DB.eerr={};
+  return DB.eerr;
+}
+function _eerrMesKey(m){ return eerrAnio()+'-'+('0'+(m+1)).slice(-2); }
+function eerrVal(m, campo){
+  var d=_eerrDatos()[_eerrMesKey(m)];
+  var v=d?d[campo]:null;
+  return (v===''||v==null)?null:(Number(v)||0);
+}
+function eerrSet(m, campo, valor){
+  var D=_eerrDatos(), k=_eerrMesKey(m);
+  D[k]=D[k]||{};
+  var t=String(valor).trim();
+  if(t==='') delete D[k][campo]; else D[k][campo]=Number(t.replace(/[^0-9.\-]/g,''))||0;
+  save();
+  // Redibuja para actualizar totales y margenes. Se conserva el foco: sin esto,
+  // cargar doce meses seguidos obliga a volver a hacer click en cada celda.
+  var act=document.activeElement;
+  var marca=act&&act.getAttribute&&act.getAttribute('onchange');
+  showTickets();
+  if(marca){
+    var nuevo=document.querySelector('[onchange="'+marca.replace(/"/g,'\\"')+'"]');
+    if(nuevo&&nuevo.focus) nuevo.focus();
+  }
+}
+
+// Abonos del mes: los recurrentes activos. Es el unico ingreso que la app sabe.
+function eerrAbonos(){
+  return (DB.clients||[])
+    .filter(function(c){ return !c.archived && (c.serviceType==='recurrente'||c.recurrente); })
+    .reduce(function(s,c){ return s+(parseFloat(c.monthlyFee)||0); },0);
+}
+// Ingresos del mes: lo cargado a mano, o los abonos si no cargaron nada.
+function eerrIngreso(m){
+  var v=eerrVal(m,'ingresos');
+  return (v==null)?eerrAbonos():v;
+}
+function eerrGastos(m, tipo){
+  return EERR_CATS.filter(function(c){ return !tipo||c.tipo===tipo; })
+    .reduce(function(s,c){ return s+(eerrVal(m,c.k)||0); },0);
+}
+function eerrResultado(m){
+  var ing=eerrIngreso(m), gas=eerrGastos(m);
+  return { ingreso:ing, gastos:gas, neto:ing-gas,
+           margen: ing>0?((ing-gas)/ing*100):null,
+           bruto: ing-eerrGastos(m,'var'),
+           margenBruto: ing>0?((ing-eerrGastos(m,'var'))/ing*100):null };
+}
+
+function _eerrPlata(n){
+  if(n==null) return '&mdash;';
+  var v=Math.round(n);
+  return (v<0?'-$':'$')+Math.abs(v).toLocaleString('es-AR');
+}
+function _eerrPct(n){ return n==null?'&mdash;':(n.toFixed(1)+'%'); }
+
+function eerrHtml(){
+  var anio=eerrAnio();
+  var hoyMes=(new Date().getFullYear()===anio)?new Date().getMonth():11;
+  var cel='padding:6px 8px;text-align:right;font-size:11.5px;white-space:nowrap';
+  var rot='padding:6px 10px;text-align:left;font-size:11.5px;color:var(--text2);position:sticky;left:0;background:var(--bg2);z-index:1';
+
+  var enc='<tr><th style="'+rot+';font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">'
+    +anio+'</th>'
+    +EERR_MESES.map(function(m,i){
+      return '<th style="'+cel+';font-size:10px;text-transform:uppercase;letter-spacing:.05em;'
+        +'color:'+(i===hoyMes?'var(--accent)':'var(--text3)')+'">'+m.slice(0,3)+'</th>';
+    }).join('')
+    +'<th style="'+cel+';font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text2)">Total</th></tr>';
+
+  // Fila editable: la celda vacia se ve vacia. Poner 0 por defecto haria pensar
+  // que ese gasto es cero cuando en realidad no se cargo.
+  var filaEdit=function(campo, nombre, sangria){
+    var total=0;
+    var tds=EERR_MESES.map(function(_,i){
+      var v=eerrVal(i,campo); total+=(v||0);
+      return '<td style="'+cel+';padding:2px 3px">'
+        +'<input value="'+(v==null?'':v)+'" placeholder="&mdash;" inputmode="numeric" '
+        +'onchange="eerrSet('+i+',\''+campo+'\',this.value)" '
+        +'style="width:100%;min-width:62px;text-align:right;font-size:11.5px;padding:4px 6px;'
+        +'border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);'
+        +'font-family:inherit" onfocus="this.style.borderColor=\'var(--border2)\';this.style.background=\'var(--bg3)\'" '
+        +'onblur="this.style.borderColor=\'transparent\';this.style.background=\'transparent\'"></td>';
+    }).join('');
+    return '<tr><td style="'+rot+(sangria?';padding-left:22px':'')+'">'+nombre+'</td>'+tds
+      +'<td style="'+cel+';color:var(--text2)">'+(total?_eerrPlata(total):'&mdash;')+'</td></tr>';
+  };
+  var filaCalc=function(nombre, fn, opts){
+    opts=opts||{};
+    var total=0;
+    var tds=EERR_MESES.map(function(_,i){
+      var v=fn(i);
+      if(typeof v==='number'&&!opts.pct) total+=v;
+      var col=opts.color||(typeof v==='number'&&v<0?'var(--redx)':'var(--text)');
+      return '<td style="'+cel+';color:'+col+(opts.fuerte?';font-weight:600':'')+'">'
+        +(opts.pct?_eerrPct(v):_eerrPlata(v))+'</td>';
+    }).join('');
+    return '<tr style="'+(opts.borde?'border-top:1px solid var(--border)':'')+'">'
+      +'<td style="'+rot+(opts.fuerte?';color:var(--strong);font-weight:500':'')+'">'+nombre+'</td>'+tds
+      +'<td style="'+cel+';color:var(--text2)'+(opts.fuerte?';font-weight:600':'')+'">'
+      +(opts.pct?'&mdash;':_eerrPlata(total))+'</td></tr>';
+  };
+  var seccion=function(t){
+    return '<tr><td colspan="14" style="padding:13px 10px 5px;font-size:10px;text-transform:uppercase;'
+      +'letter-spacing:.08em;color:var(--text3);position:sticky;left:0;background:var(--bg2)">'+t+'</td></tr>';
+  };
+
+  var anios=[];
+  for(var a=new Date().getFullYear()+1;a>=new Date().getFullYear()-3;a--) anios.push(a);
+
+  return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:18px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Estado de resultados</span>'
+      +'<select onchange="eerrSetAnio(this.value)" style="padding:4px 9px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px;font-family:inherit">'
+        +anios.map(function(x){ return '<option value="'+x+'"'+(x===anio?' selected':'')+'>'+x+'</option>'; }).join('')
+      +'</select>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Los ingresos arrancan con la suma de los abonos ('+_eerrPlata(eerrAbonos())+'/mes). '
+      +'Pisalos escribiendo el cobro real. Los gastos se cargan a mano: una celda vacia es un dato que falta, no un cero.</div>'
+    +'<div style="overflow-x:auto">'
+      +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
+        +'<thead>'+enc+'</thead><tbody>'
+        +seccion('Ingresos')
+        +filaEdit('ingresos','Ingresos totales')
+        +filaEdit('otrosIngresos','Otros ingresos', true)
+        +filaCalc('Ingreso neto', function(i){ return eerrIngreso(i)+(eerrVal(i,'otrosIngresos')||0); }, {fuerte:true, borde:true})
+        +seccion('Gastos')
+        +EERR_CATS.map(function(c){ return filaEdit(c.k, c.n, true); }).join('')
+        +filaCalc('Total gastos', function(i){ return eerrGastos(i); }, {fuerte:true, borde:true})
+        +seccion('Resultado')
+        +filaCalc('Cashflow', function(i){ return eerrResultado(i).neto; }, {fuerte:true})
+        +filaCalc('Rentabilidad', function(i){ return eerrResultado(i).margen; }, {pct:true, color:'var(--text2)'})
+        +filaCalc('Margen bruto', function(i){ return eerrResultado(i).margenBruto; }, {pct:true, color:'var(--text3)'})
+      +'</tbody></table>'
+    +'</div>'
+  +'</div>';
+}
+
 function rentabilidadHtml(){
   var filas=_rtFilas();
   var tira=(typeof _overviewMetricsHtml==='function')?_overviewMetricsHtml('comercial'):'';
@@ -7627,6 +7795,7 @@ function rentabilidadHtml(){
     : '<div style="padding:24px 4px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">No hay clientes activos.</div>';
 
   return tira
+    +eerrHtml()
     +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
       +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
       +kpi('Margen', '&mdash;', 'necesita el costo', 'var(--text3)')
