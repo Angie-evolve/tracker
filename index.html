@@ -7672,6 +7672,46 @@ var EERR_CATS=[
 var EERR_MESES=['enero','febrero','marzo','abril','mayo','junio',
                 'julio','agosto','septiembre','octubre','noviembre','diciembre'];
 
+// Cuando entro un cliente. No hay campo de alta, asi que se reconstruye: la
+// fecha de inicio del contrato es la mas fiel, despues la de firma, y como
+// ultimo recurso el id, que se genera con Date.now() al crearlo.
+function clienteAlta(c){
+  if(!c) return null;
+  var ct=c.contract||{};
+  var cand=c.altaAt||ct.startDate||ct.signDate||'';
+  if(cand){
+    // signDate viene en DD/MM/YYYY del lector de contratos.
+    var mm=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(cand));
+    var d=mm?new Date(+mm[3],+mm[2]-1,+mm[1]):new Date(cand);
+    if(!isNaN(d.getTime())) return d;
+  }
+  var n=Number(c.id);
+  // Un id chico no es una marca de tiempo: mejor no saber que inventar una fecha.
+  if(isFinite(n)&&n>1000000000000){
+    var di=new Date(n);
+    if(!isNaN(di.getTime())) return di;
+  }
+  return null;
+}
+// Clientes que entraron en ese mes.
+function eerrNuevos(anio, mes){
+  return (DB.clients||[]).filter(function(c){
+    var d=clienteAlta(c);
+    return d && d.getFullYear()===anio && d.getMonth()===mes;
+  });
+}
+function eerrNuevosAnio(anio){
+  return (DB.clients||[]).filter(function(c){
+    var d=clienteAlta(c);
+    return d && d.getFullYear()===anio;
+  });
+}
+// Cuantos no se pueden ubicar en el tiempo: sin esto, un cero se lee como
+// "no entro nadie" cuando en realidad falta el dato.
+function eerrSinFechaAlta(){
+  return (DB.clients||[]).filter(function(c){ return !c.archived && !clienteAlta(c); }).length;
+}
+
 function eerrAnio(){ return S._eerrAnio||new Date().getFullYear(); }
 function eerrSetAnio(a){ S._eerrAnio=parseInt(a,10)||new Date().getFullYear(); showTickets(); }
 function _eerrDatos(){
@@ -7928,6 +7968,18 @@ function eerrHtml(){
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
+        +seccion('Clientes')
+        +(function(){
+            var tot=0;
+            var tds=EERR_MESES.map(function(_,i){
+              var n=eerrNuevos(eerrAnio(), i).length; tot+=n;
+              var nom=eerrNuevos(eerrAnio(), i).map(function(c){ return c.name; }).join(', ');
+              return '<td style="'+cel+';color:'+(n?'var(--accent)':'var(--text3)')+';font-weight:'+(n?'600':'400')+'" '
+                +(nom?('title="'+esc(nom)+'"'):'')+'>'+(n||'&mdash;')+'</td>';
+            }).join('');
+            return '<tr><td style="'+rot+';color:var(--strong);font-weight:500">Clientes nuevos</td>'+tds
+              +'<td style="'+cel+';color:var(--accent);font-weight:600">'+(tot||'&mdash;')+'</td></tr>';
+          })()
         +seccion('Ingresos')
         +filaEdit('ingresos','Ingresos totales')
         +filaEdit('otrosIngresos','Otros ingresos', true)
@@ -7989,12 +8041,33 @@ function rentabilidadHtml(){
       }).join('')
     : '<div style="padding:24px 4px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">No hay clientes activos.</div>';
 
-  return tira
-    +eerrHtml()
-    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
+  var hoy=new Date();
+  var nuevosMes=eerrNuevos(hoy.getFullYear(), hoy.getMonth());
+  var nuevosAnio=eerrNuevosAnio(hoy.getFullYear());
+  var sinFecha=eerrSinFechaAlta();
+  var MESN=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+            'septiembre','octubre','noviembre','diciembre'];
+
+  return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
+      +'<div style="flex:1;min-width:230px;background:var(--bg2);border:1px solid var(--border);'
+        +'border-radius:var(--radius-lg);padding:16px 18px">'
+        +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em">'
+          +'Clientes nuevos &middot; '+MESN[hoy.getMonth()]+'</div>'
+        +'<div style="font-size:38px;line-height:1.1;margin-top:6px;font-weight:500;color:'
+          +(nuevosMes.length?'var(--accent)':'var(--text3)')+'">'+nuevosMes.length+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.6">'
+          +(nuevosMes.length
+            ? esc(nuevosMes.map(function(c){ return c.name; }).join(', '))
+            : 'Ninguno este mes')
+          +'<br>'+nuevosAnio.length+' en '+hoy.getFullYear()
+          +(sinFecha?(' &middot; <span style="color:var(--amberx)">'+sinFecha+' sin fecha de alta</span>'):'')
+        +'</div>'
+      +'</div>'
       +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
       +kpi('Margen', '&mdash;', 'necesita el costo', 'var(--text3)')
     +'</div>'
+    +tira
+    +eerrHtml()
 
     // El aviso va arriba de la tabla, no al pie: si esta abajo, alguien lee los
     // numeros como margen y toma una decision con eso.
@@ -13369,7 +13442,9 @@ async function createClient(){
   }
   const ci=DB.clients.length%COLORS.length;
   DB.clients.push({
-    id:Date.now(),name,industry,
+    // Fecha de alta explicita: hasta ahora se deducia del id, que funciona pero
+    // se rompe si algun dia cambia como se generan.
+    id:Date.now(), altaAt:new Date().toISOString(), name,industry,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
     monthlyLeads:0,monthlyBudget:0,avgCPL:0,conversionLines:[],
