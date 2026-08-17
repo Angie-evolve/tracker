@@ -8903,8 +8903,13 @@ function describeEnvio(e){
 }
 
 // Lee del DOM todos los envios dibujados
+// Lee del DOM los envios que estan dibujados y los mezcla con los guardados.
+// Ahora que solo se expande uno, armar la lista SOLO con el DOM borraria los
+// otros: quedarian fuera del array y se perderian al guardar.
 function wrLeerEnvios(){
-  var out=[];
+  var previos=getEnvios();
+  var out=previos.map(function(e){ return Object.assign({}, e); });
+  var porId={}; out.forEach(function(e,i){ porId[String(e.id)]=i; });
   var cajas=document.querySelectorAll('[data-envio]');
   for(var i=0;i<cajas.length;i++){
     var id=cajas[i].getAttribute('data-envio');
@@ -8918,7 +8923,7 @@ function wrLeerEnvios(){
     var diasCustom=[];
     var chkD=cajas[i].querySelectorAll('input[type=checkbox][data-dow]');
     for(var k=0;k<chkD.length;k++){ if(chkD[k].checked) diasCustom.push(parseInt(chkD[k].getAttribute('data-dow'),10)); }
-    out.push({
+    var leido={
       id:id, email:(g('env-mail')||'').trim(),
       freq:g('env-freq')||'weekly',
       day:parseInt(g('env-day')||'1',10),
@@ -8928,9 +8933,16 @@ function wrLeerEnvios(){
       hour:parseInt(g('env-hour')!==null?g('env-hour'):'10',10),
       whatsapp:(g('env-wa')||'').trim(),
       clientes:clientes   // vacio = todos
-    });
+    };
+    if(porId[String(id)]!==undefined) out[porId[String(id)]]=leido;
+    else out.push(leido);
   }
   return out;
+}
+// Abre un envio y cierra el anterior.
+function wrToggleEnvio(id){
+  S._wrAbierto=(S._wrAbierto===id)?null:id;
+  openWeeklyReportModal();
 }
 
 function wrEnviosChanged(){
@@ -8997,12 +9009,15 @@ function getWaCfg(){
 
 function wrAgregarEnvio(){
   var envios=wrLeerEnvios();
-  envios.push({ id:'e'+Date.now().toString().slice(-6), email:'', freq:'weekly',
-                day:1, monthDay:1, days:[1,3,5], cover:7, hour:10, clientes:[] });
+  var nuevo={ id:'e'+Date.now().toString().slice(-6), email:'', freq:'weekly',
+              day:1, monthDay:1, days:[1,3,5], cover:7, hour:10, clientes:[] };
+  envios.push(nuevo);
   setEnvios(envios);
+  S._wrAbierto=nuevo.id;   // si no, aparece una fila vacia y no se ve donde escribir
   openWeeklyReportModal();
 }
 function wrBorrarEnvio(id){
+  if(S._wrAbierto===id) S._wrAbierto=null;
   var envios=wrLeerEnvios().filter(function(e){ return e.id!==id; });
   if(!envios.length){ toast('Tiene que quedar al menos un envio','amber'); return; }
   setEnvios(envios);
@@ -9194,6 +9209,50 @@ function openWeeklyReportModal(){
   const lblStyle='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
   const opt=function(v,txt,cur){ return '<option value="'+v+'"'+(String(v)===String(cur)?' selected':'')+'>'+txt+'</option>'; };
 
+  // Los envios se listan como tabla y se expande solo el que estas editando.
+  // Con tres envios abiertos a la vez habia que scrollear dos pantallas para
+  // llegar al ultimo, y la lista de clientes tenia scroll propio adentro del
+  // scroll del modal.
+  const _wrTablaHtml=function(lista){
+    if(!lista.length) return '<div style="font-size:12px;color:var(--text3);padding:14px 2px">Todavia no hay envios.</div>';
+    var col=function(t,w,al){
+      return '<span style="'+(w?('width:'+w+';flex:none;'):'flex:1;min-width:0;')+'text-align:'+(al||'left')+';'
+        +'font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em">'+t+'</span>';
+    };
+    var cuando=function(e){
+      var h=(e.hour<10?'0':'')+e.hour+':00';
+      if(e.freq==='daily') return 'Todos '+h;
+      if(e.freq==='custom'){
+        var d=(e.days||[]).slice().sort(function(a,b){return a-b;})
+          .map(function(n){ return (WR_DAYS[n-1]||'').slice(0,3); });
+        return (d.length?d.join(' '):'sin dias')+' '+h;
+      }
+      if(e.freq==='monthly') return 'Dia '+(e.monthDay||1)+' '+h;
+      return (WR_DAYS[(e.day||1)-1]||'').slice(0,3)+' '+h;
+    };
+    return '<div style="display:flex;gap:9px;padding:0 2px 8px;border-bottom:1px solid var(--border)">'
+        +col('Destinatario')+col('Cuando','92px')+col('Clientes','62px','right')+'<span style="width:16px;flex:none"></span>'
+      +'</div>'
+      +lista.map(function(e,idx){
+        var abierto=S._wrAbierto===e.id;
+        var n=(e.clientes&&e.clientes.length)?e.clientes.length:clientsOk.length;
+        var sinDias=(e.freq==='custom'&&!(e.days||[]).length);
+        var fila='<div style="display:flex;align-items:center;gap:9px;padding:11px 2px;cursor:pointer;'
+            +(abierto?'':'border-bottom:1px solid var(--border)')+'" onclick="wrToggleEnvio(\''+e.id+'\')">'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            +esc(e.email||'(sin mail)')+'</span>'
+          +'<span style="width:92px;flex:none;font-size:11.5px;color:'+(sinDias?'var(--amberx)':'var(--text3)')+'">'
+            +(sinDias?'sin dias':esc(cuando(e)))+'</span>'
+          +'<span style="width:62px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'+n+'</span>'
+          +'<span style="width:16px;flex:none;font-size:9px;color:var(--text3);'
+            +'transform:rotate('+(abierto?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
+        +'</div>';
+        return abierto
+          ? fila+'<div style="border-bottom:1px solid var(--border);padding-bottom:12px">'+tarjeta(e,idx)+'</div>'
+          : fila;
+      }).join('');
+  };
+
   const tarjeta=function(e,idx){
     const horas=(function(){ var o=''; for(var h=0;h<24;h++){ o+=opt(h,(h<10?'0':'')+h+':00',e.hour); } return o; })();
     const dias=WR_DAYS.map(function(d,i){ return opt(i+1,d,e.day); }).join('');
@@ -9268,7 +9327,7 @@ function openWeeklyReportModal(){
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
       +'Cada envio tiene su destinatario, sus clientes y su horario. El Apps Script arma el informe '
       +'de cada cliente (Meta + GHL) y lo manda solo, sin abrir el tracker.</div>'
-    +'<div id="wr-envios">'+envios.map(tarjeta).join('')+'</div>'
+    +'<div id="wr-envios">'+_wrTablaHtml(envios)+'</div>'
     +eodPanelHtml()
     +'<div style="height:1px;background:var(--border);margin:14px 0"></div>'
     +'<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
