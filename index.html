@@ -2163,16 +2163,28 @@ function registrarEnEquipo(){
 // ---------- Telefonos del equipo ----------
 // Se guardan en DB (viajan por Supabase) para que las dos vean lo mismo. Sirven
 // para avisarle a alguien cuando le asignan una tarea.
+// El telefono ahora vive en DB.personas, que es donde se carga. DB.telefonos es
+// el almacen viejo: se sigue leyendo para no perder lo que ya estaba, pero
+// Personas manda. Tener el mismo dato en dos lados hacia que el aviso dijera
+// "no tiene telefono" con el telefono cargado a la vista.
 function telDe(mail){
   if(!mail) return '';
-  var t=DB.telefonos||{};
-  return t[String(mail).toLowerCase()]||'';
+  var k=String(mail).toLowerCase();
+  var p=(DB.personas||[]).find(function(x){ return String(x&&x.email||'').toLowerCase()===k; });
+  if(p&&p.tel) return p.tel;
+  return (DB.telefonos||{})[k]||'';
 }
+// Escribe en los dos: en personas, que es la fuente, y en el viejo por si algo
+// quedo leyendolo directo.
 function setTelEquipo(mail, valor){
-  DB.telefonos=DB.telefonos||{};
   var k=String(mail).toLowerCase();
   var v=String(valor||'').trim();
+  DB.telefonos=DB.telefonos||{};
   if(v) DB.telefonos[k]=v; else delete DB.telefonos[k];
+  DB.personas=Array.isArray(DB.personas)?DB.personas:[];
+  var p=DB.personas.find(function(x){ return String(x&&x.email||'').toLowerCase()===k; });
+  if(p) p.tel=v;
+  else if(v) DB.personas.push({email:mail, nombre:'', tel:v});
   save();
   if(typeof abrirRepartoClientes==='function') abrirRepartoClientes();
 }
@@ -2353,7 +2365,12 @@ function personaGuardar(mailOriginal, mail, nombre, tel){
   }
   if(!DB.equipo.some(function(e){ return String(e).toLowerCase()===k; })) DB.equipo.push(mail);
   DB.personas=DB.personas.filter(function(p){ return String(p.email||'').toLowerCase()!==k; });
-  DB.personas.push({ email:mail, nombre:String(nombre||'').trim(), tel:String(tel||'').trim() });
+  var telLimpio=String(tel||'').trim();
+  DB.personas.push({ email:mail, nombre:String(nombre||'').trim(), tel:telLimpio });
+  // Espejo en el almacen viejo: hay codigo que todavia lo lee directo.
+  DB.telefonos=DB.telefonos||{};
+  if(telLimpio) DB.telefonos[k]=telLimpio; else delete DB.telefonos[k];
+  if(kOrig&&kOrig!==k) delete DB.telefonos[kOrig];
   save();
   return true;
 }
