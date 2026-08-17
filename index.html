@@ -2657,7 +2657,7 @@ function _cierresDe(cl, dias){
   }).length;
 }
 
-function _overviewMetricsHtml(){
+function _overviewMetricsHtml(_ovDonde){
   var _base=activeClients();
   var DIAS_CIERRE=30;
   // Activo = no archivado. Antes pedia una linea de conversion corriendo hoy, y
@@ -2686,33 +2686,38 @@ function _overviewMetricsHtml(){
   var _plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
   var _nom=function(cl,extra){ return esc(cl.name)+(extra?(' \u00b7 '+extra):''); };
 
+  // El Mirador dice "lo que hay que mirar hoy". Contratos y facturacion no son
+  // eso: viven en Rentabilidad, que es donde se los va a buscar.
+  if(_ovDonde==='comercial'){
+    return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
+      +_ovCard('Contrato vigente', conGarantia.length, conGarantia.map(function(cl){
+          return _nom(cl, (cl.serviceType==='recurrente'||cl.recurrente)?'recurrencia activa'
+            :('vence '+((cl.contract&&cl.contract.endDate)||'-'))); }),
+               'Contrato con fin futuro o recurrencia activa.')
+      +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
+          return _nom(cl, cl.monthlyFee?(_plata(parseFloat(cl.monthlyFee))+'/mes'):'sin monto'); }),
+               'Clientes con servicio recurrente.')
+      +_ovCard('Ingresos recurrentes', _plata(mrr), recurrentes.map(function(cl){
+          return _nom(cl, cl.monthlyFee?_plata(parseFloat(cl.monthlyFee)):'sin monto cargado'); }),
+               'Suma de los abonos mensuales.', 'var(--accent)')
+      +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
+          return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
+               'Valor de contrato de los clientes por garantia.', 'var(--accent)')
+      +_ovCard('Contrato vencido activo', vencidoActivo.length, vencidoActivo.map(function(cl){
+          return _nom(cl, 'vencio '+((cl.contract&&cl.contract.endDate)||'-')); }),
+               'Sin archivar pero con el contrato ya vencido.', '#BA7517', 'rgba(186,117,23,0.08)', 'rgba(186,117,23,0.2)')
+    +'</div>';
+  }
+
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
     +_ovCard('Clientes activos', activos.length, activos.map(function(cl){ return _nom(cl); }),
              'Todos los que no estan archivados.')
-    +_ovCard('Contrato vigente', conGarantia.length, conGarantia.map(function(cl){
-        return _nom(cl, (cl.serviceType==='recurrente'||cl.recurrente)?'recurrencia activa'
-          :('vence '+((cl.contract&&cl.contract.endDate)||'-'))); }),
-             'Contrato con fin futuro o recurrencia activa.')
-    +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
-        return _nom(cl, verPlata()?(cl.monthlyFee?(_plata(parseFloat(cl.monthlyFee))+'/mes'):'sin monto'):''); }),
-             'Clientes con servicio recurrente.')
-    +(verPlata()
-      ? _ovCard('Ingresos recurrentes', _plata(mrr), recurrentes.map(function(cl){
-          return _nom(cl, cl.monthlyFee?_plata(parseFloat(cl.monthlyFee)):'sin monto cargado'); }),
-               'Suma de los abonos mensuales.', 'var(--accent)')
-        +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
-          return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
-               'Valor de contrato de los clientes por garantia.', 'var(--accent)')
-      : '')
     +_ovCard('Sin cierres &middot; 30d', enRiesgo.length, enRiesgo.map(function(cl){
         return _nom(cl, ((cl.ghl.opportunities||[]).length)+' oportunidades, ninguna ganada'); }),
              'Con GHL conectado y sin ninguna oportunidad ganada en 30 dias.', 'var(--redx)', 'rgba(216,90,48,0.08)', 'rgba(216,90,48,0.2)')
     +_ovCard('Con cierres &middot; 30d', paraEscalar.length, paraEscalar.map(function(cl){
         var n=_cierresDe(cl,DIAS_CIERRE); return _nom(cl, n+' cierre'+(n===1?'':'s')); }),
              'Cerraron al menos una oportunidad en los ultimos 30 dias.', 'var(--accent)', 'rgba(29,158,117,0.08)', 'rgba(29,158,117,0.2)')
-    +_ovCard('Contrato vencido activo', vencidoActivo.length, vencidoActivo.map(function(cl){
-        return _nom(cl, 'vencio '+((cl.contract&&cl.contract.endDate)||'-')); }),
-             'Sin archivar pero con el contrato ya vencido.', '#BA7517', 'rgba(186,117,23,0.08)', 'rgba(186,117,23,0.2)')
     +'</div>';
 }
 
@@ -7589,6 +7594,7 @@ function _rtFilas(){
 
 function rentabilidadHtml(){
   var filas=_rtFilas();
+  var tira=(typeof _overviewMetricsHtml==='function')?_overviewMetricsHtml('comercial'):'';
   var mrr=filas.reduce(function(s,f){ return s+f.fee; },0);
   var sinMonto=filas.filter(function(f){ return !f.fee; }).length;
   var totalCerradas=filas.reduce(function(s,f){ return s+f.e.cerradas; },0);
@@ -7621,9 +7627,8 @@ function rentabilidadHtml(){
       }).join('')
     : '<div style="padding:24px 4px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">No hay clientes activos.</div>';
 
-  return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
-      +kpi('Ingreso recurrente', _rtPlata(mrr), filas.length+' cliente'+(filas.length===1?'':'s')
-           +(sinMonto?(' &middot; '+sinMonto+' sin abono cargado'):''))
+  return tira
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
       +kpi('Tareas cerradas', String(totalCerradas), 'ultimos 30 dias, todos los clientes')
       +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
       +kpi('Margen', '&mdash;', 'necesita el costo', 'var(--text3)')
