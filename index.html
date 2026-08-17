@@ -729,7 +729,40 @@ body,.mono,[style*="var(--mono)"]{font-variant-numeric:tabular-nums}
 table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular-nums}
 </style>
 </head>
+<style>
+@keyframes bootOnda{0%{transform:scale(.72);opacity:.55}100%{transform:scale(1.35);opacity:0}}
+@keyframes bootHaz{to{transform:rotate(360deg)}}
+@keyframes bootOla{0%,100%{transform:translateX(0)}50%{transform:translateX(2px)}}
+.boot-onda{transform-origin:75px 75px;animation:bootOnda 2.4s ease-out infinite}
+.boot-haz{transform-origin:20px 8px;animation:bootHaz 3.4s linear infinite}
+.boot-ola{animation:bootOla 2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.boot-onda,.boot-haz,.boot-ola{animation:none}.boot-onda{opacity:.28}}
+</style>
+
 <body>
+
+<div id="boot-loader" style="position:fixed;inset:0;z-index:9998;background:#0d0f12;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;pointer-events:none">
+  <div style="position:relative;width:150px;height:150px;display:flex;align-items:center;justify-content:center">
+    <svg width="150" height="150" viewBox="0 0 150 150" style="position:absolute" aria-hidden="true">
+      <circle cx="75" cy="75" r="38" fill="none" stroke="#1D9E75" stroke-width="2" class="boot-onda"/>
+      <circle cx="75" cy="75" r="38" fill="none" stroke="#1D9E75" stroke-width="2" class="boot-onda" style="animation-delay:.8s"/>
+      <circle cx="75" cy="75" r="38" fill="none" stroke="#1D9E75" stroke-width="2" class="boot-onda" style="animation-delay:1.6s"/>
+    </svg>
+    <svg width="40" height="40" viewBox="0 0 32 32" fill="none" role="img" aria-label="Cargando">
+      <g class="boot-haz"><path d="M20 8 L2 2 L2 14 Z" fill="#4ecfa0" opacity=".22"/></g>
+      <path d="M18.6 10.6h2.8l1 10.4h-4.8z" fill="#ededed"/>
+      <rect x="18" y="9.4" width="4" height="1.3" rx=".4" fill="#c4c4c4"/>
+      <rect x="18.9" y="6.2" width="2.4" height="3.2" rx=".4" fill="#4ecfa0"/>
+      <path d="M18.7 6.2h2.8M20 4.4v1.8" stroke="#c4c4c4" stroke-width="1.1" stroke-linecap="round"/>
+      <path d="M15.4 21c1.6-.8 3.2-1.2 4.8-1.2s3.2.4 4.8 1.2l-1 2h-7.6z" fill="#5a5f66"/>
+      <g class="boot-ola">
+        <path d="M2 25c2-1 3.6-1 5.6 0s3.6 1 5.6 0 3.6-1 5.6 0 3.6 1 5.6 0 3.6-1 5.6 0" stroke="#4ecfa0" stroke-width="1.3" opacity=".45" stroke-linecap="round"/>
+        <path d="M2 28c2-1 3.6-1 5.6 0s3.6 1 5.6 0 3.6-1 5.6 0 3.6 1 5.6 0 3.6-1 5.6 0" stroke="#4ecfa0" stroke-width="1.1" opacity=".25" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+  <div id="boot-texto" style="font-size:12px;color:#7a7e86;letter-spacing:.02em">Abriendo</div>
+</div>
 
 <div class="app">
   <div class="sidebar" id="sidebar" onclick="expandirSidebarSiPlegada(event)">
@@ -817,7 +850,107 @@ const DEFAULT = {clients:[{
   ]
 }]};
 
+// ---------- Pantalla de carga ----------
+// El HTML arranca con un esqueleto tapando todo. La barra de arriba avanza por
+// paso real, no por tiempo: si se queda en un tramo, ahi esta el cuello.
+function bootPaso(nombre, texto){
+  try{
+    var t=document.getElementById('boot-texto');
+    if(t&&texto) t.textContent=texto;
+  }catch(e){}
+}
+function bootListo(){
+  try{
+    bootPaso('listo');
+    var l=document.getElementById('boot-loader');
+    if(!l) return;
+    l.style.transition='opacity .28s ease';
+    l.style.opacity='0';
+    setTimeout(function(){ if(l&&l.parentNode) l.parentNode.removeChild(l); }, 300);
+  }catch(e){}
+}
+// Red de seguridad: si algo falla y nadie llama a bootListo, el esqueleto no
+// puede quedarse tapando la app para siempre.
+setTimeout(function(){ if(document.getElementById('boot-loader')) bootListo(); }, 12000);
+
 let S = {view:'tickets', clientId:null, tab:'embudo', metricsView:'historico', collapsedCols:{}};
+
+// ---------- Volver donde estabas ----------
+// Recargar la pagina tiraba siempre a la torre. Se guarda solo la posicion
+// (que pantalla, que cliente, que pestana, cuanto scroll), nunca datos: si algo
+// de esto queda viejo o apunta a un cliente borrado, se descarta y arranca
+// normal. Vale mas perder el lugar que romper el arranque.
+var _POS_KEY='evold-pos';
+function _posGuardar(){
+  try{
+    var el=document.querySelector('.main')||document.scrollingElement||document.documentElement;
+    localStorage.setItem(_POS_KEY, JSON.stringify({
+      at:Date.now(),
+      view:S.view, clientId:S.clientId, clientView:S.clientView, tab:S.tab,
+      hoja:S._hoja, ventasTab:S.ventasTab, arbolTab:S.arbolTab,
+      metricsView:S.metricsView, tkFiltro:S.tkFiltro,
+      scroll:(el&&el.scrollTop)||window.scrollY||0
+    }));
+  }catch(e){}
+}
+function _posLeer(){
+  try{
+    var d=JSON.parse(localStorage.getItem(_POS_KEY)||'null');
+    if(!d) return null;
+    // Mas de 12 horas no es "donde estaba", es otro dia de trabajo.
+    if(Date.now()-(d.at||0) > 12*3600000) return null;
+    return d;
+  }catch(e){ return null; }
+}
+// Devuelve true si pudo restaurar. Se llama despues de cargar DB.
+function _posRestaurar(){
+  var d=_posLeer(); if(!d) return false;
+  try{
+    if(d.view==='client'){
+      var c=(DB.clients||[]).find(function(x){ return x.id===d.clientId; });
+      if(!c||c.archived) return false;              // lo borraron o archivaron
+      S.clientId=d.clientId; S.view='client';
+      S.clientView=d.clientView||'ficha';
+      S.tab=d.tab||'embudo';
+      if(d.hoja) S._hoja=d.hoja;
+      if(d.ventasTab) S.ventasTab=d.ventasTab;
+      if(d.arbolTab) S.arbolTab=d.arbolTab;
+      if(d.metricsView) S.metricsView=d.metricsView;
+      renderSidebar(); renderClient();
+      _posScroll(d.scroll);
+      return true;
+    }
+    if(d.view==='tickets'){
+      if(d.tkFiltro) S.tkFiltro=d.tkFiltro;
+      S.view='tickets';
+      showTickets();
+      _posScroll(d.scroll);
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+function _posScroll(y){
+  if(!y) return;
+  // El contenido se dibuja en varias pasadas (Meta, GHL, graficos), asi que se
+  // reintenta un rato antes de rendirse. Si no llega a esa altura, queda arriba.
+  var intentos=0;
+  var poner=function(){
+    var el=document.querySelector('.main')||document.scrollingElement||document.documentElement;
+    if(el){
+      var max=el.scrollHeight-el.clientHeight;
+      if(max>=y-40 || intentos>12){ el.scrollTop=Math.min(y,max); return; }
+      el.scrollTop=Math.min(y,max);
+    }
+    if(intentos++<12) setTimeout(poner,120);
+  };
+  setTimeout(poner,60);
+}
+// Se guarda al salir y cada tanto mientras se navega, sin acoplarse a cada
+// funcion de render.
+window.addEventListener('beforeunload', _posGuardar);
+window.addEventListener('visibilitychange', function(){ if(document.hidden) _posGuardar(); });
+setInterval(_posGuardar, 5000);
 
 function toggleLineAdsets(lineId){
   S.openAdsets=S.openAdsets||{};
@@ -20923,16 +21056,28 @@ async function arrancarConSesion(){
   }
   // Huellas de partida, asi el primer save() no reenvia todo de nuevo
   (DB.clients||[]).forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
-  renderSidebar(); showTickets();
+  bootPaso('pintado','Dibujando');
+  renderSidebar();
+  // Volver donde estabas. Si no hay posicion guardada, esta vieja, o el cliente
+  // ya no existe, cae a la torre como siempre.
+  var _volvio=false;
+  try{ _volvio=_posRestaurar(); }catch(e){ _volvio=false; }
+  if(!_volvio) showTickets();
+  bootListo();
+  // Un link de revision en la URL manda mas que la posicion guardada: si te
+  // mandaron ahi desde el mail, ahi tenes que terminar.
   try{ rvAbrirDesdeLink(); }catch(e){}
   try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
 }
 
 (function iniciar(){
+  bootPaso('inicio','Abriendo');
   sbCargarSesion();
   if(SB.token){
-    arrancarConSesion().catch(function(){ pantallaLogin('La sesion vencio.'); });
+    bootPaso('sesion','Trayendo tus datos');
+    arrancarConSesion().catch(function(){ bootListo(); pantallaLogin('La sesion vencio.'); });
   }else{
+    bootListo();          // el login se dibuja solo, no hay nada que esperar
     pantallaLogin('');
   }
 })();
