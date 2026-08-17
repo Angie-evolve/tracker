@@ -787,7 +787,7 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
       <div class="torre-sub" id="torre-sub">
         <div class="torre-sub-item" data-k="tickets" onclick="irTorre('tickets')">Tickets</div>
         <div class="torre-sub-item" data-k="actividad" onclick="irTorre('actividad')">Actividad</div>
-        <div class="torre-sub-item" data-k="rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
+        <div class="torre-sub-item" data-k="rentabilidad" id="nav-rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
       </div>
       <div class="nav-head-row" style="margin-top:6px">
         <div class="nav-label">Clientes</div>
@@ -2266,6 +2266,32 @@ function avisarEsperandoAprobacion(c, t){
    antes habia que tipearlos de nuevo (destinatario del informe, aviso de
    WhatsApp, resumen de fin de dia).
    equipo() sigue devolviendo mails: hay varios lugares que dependen de eso. */
+/* ---------- Quien ve la plata ----------
+   Los abonos de cada cliente solo los ve quien este en esta lista. Es una
+   puerta, no una caja fuerte: sbBajar() se trae todos los clientes completos
+   para cualquiera que este logueado, asi que el dato igual esta en el navegador
+   de todos. Tapa lo accidental, no lo intencional. Para que sea real hay que
+   sacar el fee del JSON del cliente y ponerle una politica en Supabase. */
+function verPlata(){
+  var lista=Array.isArray(DB.rentAcceso)?DB.rentAcceso:null;
+  // Sin lista todavia: la ve quien esta usando la app. Al guardar Personas por
+  // primera vez queda fijada y deja de ser automatico.
+  if(!lista) return true;
+  var mio=(SB.email||'').toLowerCase();
+  return lista.some(function(m){ return String(m).toLowerCase()===mio; });
+}
+function setVerPlata(mail, puede){
+  var lista=Array.isArray(DB.rentAcceso)?DB.rentAcceso.slice():[SB.email||''];
+  var k=String(mail).toLowerCase();
+  lista=lista.filter(function(m){ return String(m).toLowerCase()!==k; });
+  if(puede) lista.push(mail);
+  // Nunca dejar la lista vacia: si no, nadie puede volver a entrar a habilitarse.
+  if(!lista.length) lista=[SB.email||mail];
+  DB.rentAcceso=lista;
+  save();
+  personasModal();
+}
+
 function personas(){
   var det={};
   (DB.personas||[]).forEach(function(p){
@@ -2341,6 +2367,15 @@ function personasModal(){
               +(p.tel?(' &middot; '+esc(p.tel)):' &middot; <span style="color:var(--amberx)">sin telefono</span>')
               +(clientes?(' &middot; '+clientes+' cliente'+(clientes>1?'s':'')):'')+'</div>'
           +'</div>'
+          +(function(){
+              var puede=!Array.isArray(DB.rentAcceso)||DB.rentAcceso.some(function(m){
+                return String(m).toLowerCase()===p.email.toLowerCase(); });
+              return '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:'
+                +(puede?'var(--accent)':'var(--text3)')+';cursor:pointer;white-space:nowrap" '
+                +'title="Ve los abonos, el LTV y la pestana Rentabilidad">'
+                +'<input type="checkbox"'+(puede?' checked':'')+' onchange="setVerPlata(\''+esc(p.email)+'\',this.checked)">'
+                +'plata</label>';
+            })()
           +'<button class="btn btn-sm" onclick="personasEditar(\''+esc(p.email)+'\')">Editar</button>'
           +'<button class="btn btn-sm" style="color:var(--redx)" onclick="personaBorrar(\''+esc(p.email)+'\')">Quitar</button>'
         +'</div>';
@@ -2353,7 +2388,8 @@ function personasModal(){
     +'<div class="modal" style="max-width:540px;width:94%;max-height:82vh;overflow:auto">'
       +'<div class="modal-title">Personas</div>'
       +'<div class="modal-sub">Nombre, mail y telefono de cada uno. Se cargan una vez aca y despues '
-        +'se eligen en el informe, en los avisos y en el reparto de clientes.</div>'
+        +'se eligen en el informe, en los avisos y en el reparto de clientes.<br>'
+        +'<b>plata</b>: ve los abonos, el LTV y la pestana Rentabilidad.</div>'
       +filas
       +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-top:14px">'
         +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">'
@@ -2658,14 +2694,16 @@ function _overviewMetricsHtml(){
           :('vence '+((cl.contract&&cl.contract.endDate)||'-'))); }),
              'Contrato con fin futuro o recurrencia activa.')
     +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
-        return _nom(cl, cl.monthlyFee?(_plata(parseFloat(cl.monthlyFee))+'/mes'):'sin monto'); }),
+        return _nom(cl, verPlata()?(cl.monthlyFee?(_plata(parseFloat(cl.monthlyFee))+'/mes'):'sin monto'):''); }),
              'Clientes con servicio recurrente.')
-    +_ovCard('Ingresos recurrentes', _plata(mrr), recurrentes.map(function(cl){
-        return _nom(cl, cl.monthlyFee?_plata(parseFloat(cl.monthlyFee)):'sin monto cargado'); }),
-             'Suma de los abonos mensuales.', 'var(--accent)')
-    +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
-        return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
-             'Valor de contrato de los clientes por garantia.', 'var(--accent)')
+    +(verPlata()
+      ? _ovCard('Ingresos recurrentes', _plata(mrr), recurrentes.map(function(cl){
+          return _nom(cl, cl.monthlyFee?_plata(parseFloat(cl.monthlyFee)):'sin monto cargado'); }),
+               'Suma de los abonos mensuales.', 'var(--accent)')
+        +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
+          return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
+               'Valor de contrato de los clientes por garantia.', 'var(--accent)')
+      : '')
     +_ovCard('Sin cierres &middot; 30d', enRiesgo.length, enRiesgo.map(function(cl){
         return _nom(cl, ((cl.ghl.opportunities||[]).length)+' oportunidades, ninguna ganada'); }),
              'Con GHL conectado y sin ninguna oportunidad ganada en 30 dias.', 'var(--redx)', 'rgba(216,90,48,0.08)', 'rgba(216,90,48,0.2)')
@@ -2730,7 +2768,7 @@ function _clientListHtml(){
     var sub2='', money='';
     if(c.serviceType==='recurrente'||c.recurrente){
       sub2=c.nextPaymentDate?('próx. pago '+c.nextPaymentDate):'';
-      money=c.monthlyFee?('$'+parseFloat(c.monthlyFee).toLocaleString()+'/mes'):'';
+      money=(verPlata()&&c.monthlyFee)?('$'+parseFloat(c.monthlyFee).toLocaleString()+'/mes'):'';
     } else {
       var line=getActiveLine(c.conversionLines||[]);
       sub2=(line&&line.dateEnd)?('vence '+line.dateEnd):'';
@@ -2794,7 +2832,7 @@ function _showOverviewOLD(){
           var sub2='', money='';
           if(c.serviceType==='recurrente'||c.recurrente){
             sub2=c.nextPaymentDate?('próx. pago '+c.nextPaymentDate):'';
-            money=c.monthlyFee?('$'+parseFloat(c.monthlyFee).toLocaleString()+'/mes'):'';
+            money=(verPlata()&&c.monthlyFee)?('$'+parseFloat(c.monthlyFee).toLocaleString()+'/mes'):'';
           } else {
             var line=getActiveLine(c.conversionLines||[]);
             sub2=(line&&line.dateEnd)?('vence '+line.dateEnd):'';
@@ -7628,6 +7666,13 @@ function irTorre(k){
   showTickets();
 }
 function _torreSubVisible(){
+  // La pestana de Rentabilidad se esconde para quien no tenga acceso. La vista
+  // igual chequea por su cuenta: esconder el link no alcanza si alguien vuelve
+  // con una posicion guardada apuntando ahi.
+  try{
+    var r=document.getElementById('nav-rentabilidad');
+    if(r) r.style.display=verPlata()?'':'none';
+  }catch(e){}
   var sub=document.getElementById('torre-sub');
   var it=document.getElementById('nav-tickets');
   if(!sub||!it) return;
@@ -7985,7 +8030,7 @@ function showTickets(){
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
-      :(_torre==='rentabilidad'?rentabilidadHtml()
+      :(_torre==='rentabilidad'?(verPlata()?rentabilidadHtml():_torreVacio('Rentabilidad','Esta seccion no esta habilitada para tu usuario.'))
       :(_torre==='actividad'?_actividadHtml():(''
     +progresoHtml
     // El periodo tambien se esconde detras del embudo: son cinco botones que se
@@ -12168,6 +12213,10 @@ function renderTab(){
             <button onclick="setClientServiceType(${c.id},'recurrente')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='recurrente'?'background:rgba(55,138,221,0.15);border-color:#378ADD;color:#378ADD;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Recurrente</button>
             <button onclick="setClientServiceType(${c.id},'one-time')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='one-time'?'background:rgba(186,117,23,0.15);border-color:#BA7517;color:#BA7517;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">One-time</button>
           </div>
+          ${!verPlata()?`
+          <div style="font-size:11px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:9px 11px;margin-top:4px;line-height:1.6">
+            Los montos de este cliente no estan habilitados para tu usuario.
+          </div>`:`
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
             <div>
               <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Valor del contrato</div>
@@ -12197,7 +12246,7 @@ function renderTab(){
                 onchange="setClientFee(${c.id},'nextPaymentDate',this.value)"
                 style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
             </div>`:''}
-          </div>
+          </div>`}
         </div>
 
         ${contract.driveUrl||contract.fileName?`
