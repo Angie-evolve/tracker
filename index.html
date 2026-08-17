@@ -2671,7 +2671,11 @@ function _overviewMetricsHtml(_ovDonde){
     return end&&end>=now;
   });
   var recurrentes=_base.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
-  var mrr=recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
+  // Mismo criterio que el estado de resultados: solo lo comprometido para este
+  // mes. Si no, la tarjeta dice un numero y la tabla de abajo dice otro.
+  var mrr=(typeof eerrAbonos==='function')
+    ? eerrAbonos()
+    : recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
   var conLtv=activos.filter(function(cl){
     return (cl.serviceType==='garantia'||!cl.serviceType) && (parseFloat(cl.contractValue)||0)>0;
   });
@@ -7650,12 +7654,25 @@ function eerrSet(m, campo, valor){
 // manda; si no hay, el proximo pago es lo ultimo confirmado. Sin ninguna de las
 // dos no hay nada que indique un final y se toma como abierto.
 function _eerrHasta(c){
-  var f=(c.contract&&c.contract.endDate)||c.nextPaymentDate||'';
+  // Ojo con la diferencia: la fecha FIN DE CONTRATO cubre ese mes; el PROXIMO
+  // PAGO es plata que todavia no entro, asi que lo cubierto termina el mes
+  // anterior. Contarlo igual sumaba un mes que nadie pago.
+  var fin=(c.contract&&c.contract.endDate)||'';
+  var prox=c.nextPaymentDate||'';
+  var f=fin||prox;
   if(!f) return null;
   var p=String(f).slice(0,10).split('-');
   if(p.length<2) return null;
   var a=Number(p[0]), m=Number(p[1])-1;
-  return (isFinite(a)&&isFinite(m))?{a:a,m:m}:null;
+  if(!isFinite(a)||!isFinite(m)) return null;
+  if(!fin && prox){ m-=1; if(m<0){ m=11; a-=1; } }
+  return {a:a, m:m, porPago:!fin};
+}
+// La fecha ya paso: o renovo y nadie la actualizo, o se fue. La app no lo sabe.
+function _eerrVencida(c){
+  var h=_eerrHasta(c); if(!h) return false;
+  var hoy=new Date();
+  return (h.a<hoy.getFullYear())||(h.a===hoy.getFullYear()&&h.m<hoy.getMonth());
 }
 // Ese mes, este cliente sigue comprometido? Proyectar mas alla de lo pactado
 // convierte una hipotesis de renovacion en ingreso asegurado.
@@ -7806,19 +7823,38 @@ function eerrHtml(){
       +'Los meses <b>desde este en adelante</b> se estiman con los abonos comprometidos, en gris cursiva. '
       +'Los pasados quedan vacios: la cartera era otra. Escribi el cobro real de cada mes para reemplazarlos.</div>'
     +(function(){
-        // De donde sale que el ingreso baja en tal mes. Sin esto, la proyeccion
-        // se achica y no se entiende por que.
-        var v=eerrVencen(); if(!v.length) return '';
         var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-        return '<div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:10px;'
-          +'background:var(--bg3);border-radius:var(--radius);padding:9px 12px">'
-          +'<b style="color:var(--text2)">La proyeccion baja</b> cuando termina lo pactado. Despues de esa fecha '
-          +'la renovacion es una hipotesis, no un ingreso: '
-          +v.map(function(x){
-              return esc(x.c.name)+' hasta '+MES[x.h.m]+' '+x.h.a
-                +(x.c.monthlyFee?(' ('+_eerrPlata(parseFloat(x.c.monthlyFee))+')'):'');
-            }).join(' &middot; ')
-          +'.</div>';
+        var v=eerrVencen();
+        var vencidos=v.filter(function(x){ return _eerrVencida(x.c); });
+        var vigentes=v.filter(function(x){ return !_eerrVencida(x.c); });
+        var out='';
+        // Una fecha ya pasada saca al cliente de la proyeccion. Si eso ocurre en
+        // silencio, el ingreso queda subestimado y nadie sabe por que.
+        if(vencidos.length){
+          out+='<div style="font-size:11px;color:var(--text2);line-height:1.7;margin-bottom:8px;'
+            +'background:rgba(216,90,48,0.07);border:1px solid rgba(216,90,48,0.22);'
+            +'border-radius:var(--radius);padding:9px 12px">'
+            +'<b style="color:var(--redx)">'+vencidos.length+' cliente'+(vencidos.length===1?'':'s')
+            +' con la fecha vencida</b> y por eso no entra'+(vencidos.length===1?'':'n')+' en la proyeccion: '
+            +vencidos.map(function(x){
+                return esc(x.c.name)+' ('+MES[x.h.m]+' '+x.h.a
+                  +(x.c.monthlyFee?(', '+_eerrPlata(parseFloat(x.c.monthlyFee))):'')+')';
+              }).join(' &middot; ')
+            +'. Si renovaron, actualiza la fecha en su ficha; si se fueron, pasalos a no recurrentes.</div>';
+        }
+        if(vigentes.length){
+          out+='<div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:10px;'
+            +'background:var(--bg3);border-radius:var(--radius);padding:9px 12px">'
+            +'<b style="color:var(--text2)">La proyeccion baja</b> cuando termina lo pactado. Despues de esa fecha '
+            +'la renovacion es una hipotesis, no un ingreso: '
+            +vigentes.map(function(x){
+                return esc(x.c.name)+' hasta '+MES[x.h.m]+' '+x.h.a
+                  +(x.h.porPago?' (ultimo mes pago)':'')
+                  +(x.c.monthlyFee?(' &middot; '+_eerrPlata(parseFloat(x.c.monthlyFee))):'');
+              }).join(' &middot; ')
+            +'.</div>';
+        }
+        return out;
       })()
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
