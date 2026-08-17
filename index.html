@@ -2220,6 +2220,40 @@ function avisarTareaAsignada(c, t){
     +'&texto='+encodeURIComponent(txt)).catch(function(){});
 }
 
+// Aviso cuando una tarea entra a Esperando aprobacion. Es un evento, no un
+// umbral: no tiene sentido esperar al barrido de alarmas cada 2 minutos, porque
+// lo que importa es destrabarla ahora. Va a quien tenga que aprobar, que casi
+// nunca es el mismo que la hizo.
+function aprobOn(){
+  try{ return localStorage.getItem('evold-aviso-aprob')==='1'; }catch(e){ return false; }
+}
+function setAprobOn(v){
+  try{ localStorage.setItem('evold-aviso-aprob', v?'1':'0'); }catch(e){}
+}
+function aprobQuien(){
+  try{ return localStorage.getItem('evold-aviso-aprob-mail')||''; }catch(e){ return ''; }
+}
+function setAprobQuien(mail){
+  try{ localStorage.setItem('evold-aviso-aprob-mail', mail||''); }catch(e){}
+}
+function avisarEsperandoAprobacion(c, t){
+  if(!aprobOn()) return;
+  var mail=aprobQuien();
+  var num=mail?telDe(mail):'';
+  if(!num) return;                                   // sin telefono no hay a donde
+  // Si el que la mando a aprobar es el mismo que aprueba, no se avisa solo.
+  if(typeof soyYo==='function' && soyYo(mail)) return;
+  var proxy=getGhlProxy();
+  if(!proxy.url) return;
+  var txt='Esperando aprobacion en '+((c&&c.name)||'un cliente')+': '
+    +String((t&&t.text)||'').slice(0,200)
+    +((t&&t.responsible)?(' - la entrego '+personaNombre(t.responsible)):'')
+    +((t&&t.ticket)?(' '+t.ticket):'');
+  proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+    +'&action=alert_msg&numero='+encodeURIComponent(num)
+    +'&texto='+encodeURIComponent(txt)).catch(function(){});
+}
+
 /* ---------- Personas del equipo ----------
    DB.equipo era una lista de mails sueltos. Ahora cada mail puede tener nombre
    y telefono en DB.personas, y esos datos se ofrecen en todos los campos donde
@@ -3836,7 +3870,10 @@ function setTicketEstado(clientId,taskId,estado){
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
   // Al pasar a revision es cuando existe algo para revisar: se pide el entregable
   // en el momento, que es cuando se tiene a mano. Despues nadie vuelve a cargarlo.
-  if(estado==='revision' && previo!=='revision') pedirEntregables(clientId, taskId);
+  if(estado==='revision' && previo!=='revision'){
+    pedirEntregables(clientId, taskId);
+    try{ avisarEsperandoAprobacion(c, t); }catch(e){}
+  }
 }
 
 // Cartel para enganchar links o notas de entrega a una tarea.
@@ -5377,6 +5414,28 @@ function abrirRepartoClientes(){
       +'<span>Avisar por mensaje cuando le asignan una tarea'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;line-height:1.6">Le llega a quien queda como responsable, si tiene telefono cargado abajo. No te avisa de las tuyas.</div>'
       +'</span></label>'
+    +'<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;background:var(--bg3);border-radius:var(--radius);padding:9px 12px;margin-bottom:12px">'
+      +'<input type="checkbox"'+(aprobOn()?' checked':'')+' onchange="setAprobOn(this.checked);abrirRepartoClientes()" style="margin-top:2px">'
+      +'<span>Avisarme cuando una tarea pase a <b>Esperando aprobacion</b>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;line-height:1.6">'
+        +'Sale en el momento, no espera al barrido de alarmas: lo que importa es destrabarla. '
+        +'Dice de que cliente es, que tarea y quien la entrego.</div>'
+      +(aprobOn()
+        ? '<div style="display:flex;align-items:center;gap:7px;margin-top:8px;flex-wrap:wrap">'
+          +'<span style="font-size:11px;color:var(--text3)">Avisar a</span>'
+          +'<select onchange="setAprobQuien(this.value);abrirRepartoClientes()" onclick="event.stopPropagation()" '
+            +'style="padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:11.5px;font-family:inherit">'
+            +'<option value="">Elegi a quien</option>'
+            +personas().filter(function(p){ return p.tel; }).map(function(p){
+                return '<option value="'+esc(p.email)+'"'+(aprobQuien().toLowerCase()===p.email.toLowerCase()?' selected':'')+'>'
+                  +esc(p.nombre||p.email)+'</option>';
+              }).join('')
+          +'</select>'
+          +(personas().filter(function(p){ return p.tel; }).length
+            ? '' : '<span style="font-size:10.5px;color:var(--amberx)">Nadie tiene telefono cargado en Personas.</span>')
+          +'</div>'
+        : '')
+      +'</span></label>'
     +'<div id="rc-aviso" style="font-size:11.5px;margin-bottom:10px"></div>'
     +(filas||'<div style="font-size:12px;color:var(--text3)">No hay clientes activos.</div>')
     +'<div style="font-size:11px;color:var(--text3);margin-top:12px">'
@@ -6226,7 +6285,10 @@ function ticketSetEstado(cid,tid,val){
   save(); showTickets();
   // Mismo cartel que en la pestana del cliente: el entregable se pide cuando se
   // entra a revision, no despues.
-  if(val==='revision' && previo!=='revision') pedirEntregables(cid,tid);
+  if(val==='revision' && previo!=='revision'){
+    pedirEntregables(cid,tid);
+    try{ avisarEsperandoAprobacion(c, t); }catch(e){}
+  }
 }
 function toggleTicketMenu(cid,tid,btn){
   // Cierra cualquier menu abierto
