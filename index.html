@@ -12405,6 +12405,7 @@ function _adTramo(dias){
 // Una pieza de video sin transcripcion esta a medias: de la captura salio el copy
 // escrito, pero lo que se dice hablado es donde vive el angulo real.
 function _adFaltaGuion(a){
+  if(a.src==='nuestro') return false;   // el texto de Meta ya suele ser el guion
   var f=String(a.formato||'').toLowerCase();
   return (f==='reel'||f==='vsl') && !String(a.guion||'').trim();
 }
@@ -12992,15 +12993,84 @@ function _ourTexto(cr){
   }
   return String(cr.body||'');
 }
+// Titular. Los dinamicos traen varias versiones rotando: se guardan todas, porque
+// dos headlines distintos sobre el mismo cuerpo suelen ser dos angulos distintos.
 function _ourTitulo(cr){
   if(!cr) return '';
   var afs=cr.asset_feed_spec;
-  if(afs&&Array.isArray(afs.titles)&&afs.titles.length) return String(afs.titles[0].text||'');
+  if(afs&&Array.isArray(afs.titles)&&afs.titles.length){
+    var ts=afs.titles.map(function(t){return String(t.text||'').trim();}).filter(Boolean);
+    if(ts.length) return ts.join('\n---\n');
+  }
   var oss=cr.object_story_spec;
   if(oss&&oss.link_data&&oss.link_data.name) return String(oss.link_data.name);
   return String(cr.title||'');
 }
+// Descripcion: la linea chica debajo del titular en los anuncios de link.
+function _ourDesc(cr){
+  if(!cr) return '';
+  var afs=cr.asset_feed_spec;
+  if(afs&&Array.isArray(afs.descriptions)&&afs.descriptions.length){
+    var ds=afs.descriptions.map(function(d){return String(d.text||'').trim();}).filter(Boolean);
+    if(ds.length) return ds.join('\n---\n');
+  }
+  var oss=cr.object_story_spec;
+  if(oss&&oss.link_data&&oss.link_data.description) return String(oss.link_data.description);
+  return String(cr.link_description||'');
+}
+// Boton. Dice mucho de la temperatura a la que le habla el anuncio: no es lo
+// mismo "Mas informacion" que "Reservar ahora".
+function _ourCta(cr){
+  if(!cr) return '';
+  var afs=cr.asset_feed_spec;
+  if(afs&&Array.isArray(afs.call_to_action_types)&&afs.call_to_action_types.length)
+    return afs.call_to_action_types.join(', ');
+  var oss=cr.object_story_spec;
+  if(oss){
+    if(oss.link_data&&oss.link_data.call_to_action&&oss.link_data.call_to_action.type) return String(oss.link_data.call_to_action.type);
+    if(oss.video_data&&oss.video_data.call_to_action&&oss.video_data.call_to_action.type) return String(oss.video_data.call_to_action.type);
+  }
+  return '';
+}
+// A donde manda: separa los que van a landing de los que abren WhatsApp o form.
+function _ourDestino(cr){
+  if(!cr) return '';
+  var afs=cr.asset_feed_spec;
+  if(afs&&Array.isArray(afs.link_urls)&&afs.link_urls.length) return String(afs.link_urls[0].website_url||'');
+  var oss=cr.object_story_spec;
+  if(oss){
+    if(oss.link_data&&oss.link_data.link) return String(oss.link_data.link);
+    if(oss.video_data&&oss.video_data.call_to_action&&oss.video_data.call_to_action.value&&oss.video_data.call_to_action.value.link)
+      return String(oss.video_data.call_to_action.value.link);
+  }
+  return '';
+}
+// Nombre legible del boton, que en la API viene en mayusculas y en ingles.
+var _CTA_ES={LEARN_MORE:'Mas informacion',SIGN_UP:'Registrarse',SHOP_NOW:'Comprar ahora',BOOK_TRAVEL:'Reservar',
+  CONTACT_US:'Contactanos',GET_QUOTE:'Pedir presupuesto',SUBSCRIBE:'Suscribirse',APPLY_NOW:'Postularse',
+  DOWNLOAD:'Descargar',MESSAGE_PAGE:'Enviar mensaje',WHATSAPP_MESSAGE:'Enviar WhatsApp',GET_OFFER:'Ver oferta',
+  SEE_MORE:'Ver mas',WATCH_MORE:'Ver mas video',DONATE_NOW:'Donar',CALL_NOW:'Llamar ahora',GET_STARTED:'Empezar'};
+function _ctaNombre(k){
+  return String(k||'').split(',').map(function(x){
+    x=x.trim(); return _CTA_ES[x]||x.replace(/_/g,' ').toLowerCase();
+  }).filter(Boolean).join(', ');
+}
 function _ourActivo(a){ return String(a.estado||'').toUpperCase()==='ACTIVE'; }
+// El guion ya lo cargan en la tabla de anuncios de Ventas, indexado por el mismo
+// id de Meta. Se lee de ahi: tener dos lugares para el mismo texto garantiza que
+// uno de los dos quede viejo.
+function _ourGuion(c,a){
+  var g=(c.adScriptsByAd&&c.adScriptsByAd[a.id]&&c.adScriptsByAd[a.id].guion)||'';
+  return g||String(a.guion||'');
+}
+function _ourSetGuion(c,a,txt){
+  txt=String(txt||'').trim();
+  if(!c.adScriptsByAd) c.adScriptsByAd={};
+  var prev=c.adScriptsByAd[a.id]||{};
+  if(!txt && !prev.notas){ delete c.adScriptsByAd[a.id]; }
+  else { c.adScriptsByAd[a.id]={guion:txt, notas:prev.notas||'', updatedAt:new Date().toISOString()}; }
+  a.guion='';   // se deja de duplicar aca
+}
 // Dias al aire: hasta hoy si sigue corriendo, congelado en la ultima sync si ya
 // se pauso. Un anuncio pausado no sigue sumando antiguedad.
 function _ourDias(a){
@@ -13026,8 +13096,8 @@ async function sincronizarNuestrosAds(clientId){
   var btn=document.getElementById('our-sync');
   if(btn){ btn.disabled=true; btn.textContent='Sincronizando...'; }
   var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
-  var campos='id,name,effective_status,created_time,'
-    +'creative{id,body,title,object_story_spec,asset_feed_spec},'
+  var campos='id,name,effective_status,created_time,preview_shareable_link,'
+    +'creative{id,body,title,link_description,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
   var url='https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
     +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
@@ -13046,15 +13116,21 @@ async function sincronizarNuestrosAds(clientId){
         var ins=(ad.insights&&ad.insights.data&&ad.insights.data[0])||null;
         var prev=previos[id]||{};
         var texto=_ourTexto(ad.creative);
-        // Si el copy cambio, la lectura vieja ya no aplica: se limpia para que no
-        // quede un angulo describiendo un anuncio que ya no dice eso.
-        var cambio=prev.texto!==undefined && prev.texto!==texto;
+        var titulo=_ourTitulo(ad.creative), desc=_ourDesc(ad.creative);
+        // Si cambio cualquier parte del creativo, la lectura vieja ya no aplica:
+        // se limpia para que no quede un angulo describiendo algo que ya no dice.
+        // El titular cuenta tanto como el cuerpo: ahi suele estar el angulo.
+        var cambio=(prev.texto!==undefined && prev.texto!==texto)
+          || (prev.titulo!==undefined && prev.titulo!==titulo)
+          || (prev.desc!==undefined && prev.desc!==desc);
         nuevos.push({
           id:id, nombre:ad.name||'', estado:ad.effective_status||'',
           creado:ad.created_time||prev.creado||'', vistoAl:hoy,
           gasto:ins?parseFloat(ins.spend||0):(prev.gasto||0),
-          texto:texto, titulo:_ourTitulo(ad.creative),
-          guion:prev.guion||'',
+          texto:texto, titulo:titulo, desc:desc,
+          cta:_ourCta(ad.creative), destino:_ourDestino(ad.creative),
+          thumb:(ad.creative&&ad.creative.thumbnail_url)||'', preview:ad.preview_shareable_link||'',
+          guion:'',
           angulo:cambio?'':(prev.angulo||''), promesa:cambio?'':(prev.promesa||''),
           dolor:cambio?'':(prev.dolor||''), formato:prev.formato||'',
           eje:cambio?'':(prev.eje||''), notas:cambio?'':(prev.notas||''),
@@ -13086,10 +13162,14 @@ async function analizarNuestroAd(adId, silencioso){
   var apiKey='';
   try{ apiKey=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
   if(!apiKey){ if(!silencioso){ toast('Falta la API key de Anthropic','red'); openAnthropicKeyModal(); } return false; }
-  var material=(a.titulo?('TITULO: '+a.titulo+'\n'):'')
-    +(a.texto?('COPY ESCRITO:\n'+a.texto+'\n'):'')
-    +(a.guion?('\nLO QUE SE DICE HABLADO:\n'+a.guion+'\n'):'');
-  if(!material.trim()){ if(!silencioso) toast('Este anuncio no tiene copy para leer','red'); return false; }
+  var gu=_ourGuion(c,a);
+  var material=(a.titulo?('TITULAR'+(a.titulo.indexOf('---')>=0?' (varias versiones rotando)':'')+': '+a.titulo+'\n'):'')
+    +(a.desc?('DESCRIPCION: '+a.desc+'\n'):'')
+    +(a.cta?('BOTON: '+_ctaNombre(a.cta)+'\n'):'')
+    +(a.destino?('MANDA A: '+a.destino+'\n'):'')
+    +(a.texto?('\nTEXTO DEL ANUNCIO (puede ser un copy corto o el guion hablado entero, fijate cual es):\n'+a.texto+'\n'):'')
+    +(gu?('\nGUION DEL ANUNCIO:\n'+gu+'\n'):'');
+  if(!material.trim()){ if(!silencioso) toast('Este anuncio no tiene texto ni guion para leer','red'); return false; }
   var cp=getContentPlan(c);
   var ejes=cp.ejes.map(function(e){return '- '+e.n;}).join('\n');
   var prompt='Sos un estratega de Meta Ads. Analizas un anuncio PROPIO de la cuenta "'+(c.name||'')+'" '
@@ -13104,7 +13184,11 @@ async function analizarNuestroAd(adId, silencioso){
     +'- dolor: el problema o deseo del que parte, una linea.\n'
     +'- formato: reel, estatico, carrusel, vsl u otro. Si no se puede saber por el texto, poné otro.\n'
     +'- eje: copia EXACTO uno de los ejes de la lista. Vacio si ninguno encaja.\n'
-    +'- notas: una linea. Vacio si no hay nada util que decir.\n\n'
+    +'- notas: una linea. Vacio si no hay nada util que decir.\n'
+    +'- El TITULAR suele condensar el angulo mejor que el cuerpo: si hay varias versiones rotando, '
+    +'usa la que mejor represente el conjunto y mencionalo en notas si apuntan a angulos distintos.\n'
+    +'- El BOTON y el destino indican la temperatura: "Mas informacion" es descubrimiento, '
+    +'"Reservar" o "WhatsApp" es intencion. Tenelo en cuenta para el eje.\n\n'
     +'Responde SOLO con un JSON valido, sin markdown:\n'
     +'{"angulo":"","promesa":"","dolor":"","formato":"","eje":"","notas":""}';
   try{
@@ -13137,7 +13221,7 @@ async function analizarNuestroAd(adId, silencioso){
 
 async function analizarNuestrosPendientes(){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
-  var pend=getNuestrosAds(c).filter(function(a){ return !a.angulo && (a.texto||a.titulo); });
+  var pend=getNuestrosAds(c).filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); });
   if(!pend.length){ toast('No hay anuncios sin leer'); return; }
   var btn=document.getElementById('our-analizar');
   var ok=0;
@@ -13155,6 +13239,7 @@ function abrirNuestroAd(adId){
   var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
   var cp=getContentPlan(c);
   var sn=_ourSenal(a);
+  var gu=_ourGuion(c,a);
   var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
   var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
   var fmts=['','reel','estatico','carrusel','vsl','otro'];
@@ -13165,16 +13250,30 @@ function abrirNuestroAd(adId){
     +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:16px">'
       +'<span class="pill '+sn.pill+'" style="font-size:10px">'+sn.label+'</span>'
       +(a.gasto?'<span class="pill pill-gray" style="font-size:10px">'+Math.round(a.gasto)+' gastados</span>':'')
+      +(a.preview?'<a href="'+esc(a.preview)+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none">Ver en Meta &rarr;</a>':'')
       +'<span style="font-size:11px;color:var(--text3)">viene de Meta, no se edita aca</span>'
     +'</div>'
     +(a.copyCambio?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:12px">El copy cambio desde la ultima lectura. Volve a analizarlo.</div>':'')
-    +(a.titulo?'<div style="margin-bottom:11px"><div style="'+lbl+'">Titulo</div>'
-      +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px">'+esc(a.titulo)+'</div></div>':'')
-    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Copy del anuncio</div>'
+    +(a.titulo?'<div style="margin-bottom:11px"><div style="'+lbl+'">Titular'+((a.titulo.indexOf('---')>=0)?'<span style="color:var(--text3)"> &middot; varias versiones rotando</span>':'')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;white-space:pre-wrap;line-height:1.5">'+esc(a.titulo)+'</div></div>':'')
+    +(a.desc?'<div style="margin-bottom:11px"><div style="'+lbl+'">Descripcion</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;white-space:pre-wrap;line-height:1.5">'+esc(a.desc)+'</div></div>':'')
+    +((a.cta||a.destino)?'<div style="display:flex;gap:10px;margin-bottom:11px;flex-wrap:wrap">'
+      +(a.cta?'<div style="flex:1;min-width:150px"><div style="'+lbl+'">Boton</div>'
+        +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px">'+esc(_ctaNombre(a.cta))+'</div></div>':'')
+      +(a.destino?'<div style="flex:1;min-width:150px;overflow:hidden"><div style="'+lbl+'">Manda a</div>'
+        +'<div style="font-size:11.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(String(a.destino).replace(/^https?:\/\//,''))+'</div></div>':'')
+      +'</div>':'')
+    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Texto del anuncio<span style="color:var(--text3)"> &middot; esto es lo que se analiza</span></div>'
       +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:9px 11px;line-height:1.55;max-height:150px;overflow-y:auto;white-space:pre-wrap">'
       +(a.texto?esc(a.texto):'<span style="color:var(--text3)">Sin copy de texto. Puede ser un anuncio que apoya todo en el video.</span>')+'</div></div>'
-    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Transcripcion del video'+(!a.guion?' <span style="color:var(--amberx)">&middot; la API no la da</span>':'')+'</div>'
-      +'<textarea id="our-guion" rows="4" placeholder="Si es video, pega aca lo que se dice hablado" style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.guion||'')+'</textarea></div>'
+    +'<div style="margin-bottom:11px">'
+      +(gu?'':'<div id="our-guion-link" onclick="document.getElementById(\'our-guion-box\').style.display=\'block\';this.style.display=\'none\'" '
+        +'style="font-size:11.5px;color:var(--accent);cursor:pointer">Sumar el guion de este anuncio</div>')
+      +'<div id="our-guion-box" style="display:'+(gu?'block':'none')+'">'
+        +'<div style="'+lbl+'">Guion<span style="color:var(--text3)"> &middot; el mismo que cargas en Ventas</span></div>'
+        +'<textarea id="our-guion" rows="4" placeholder="Lo que se dice en el video" style="'+inp+';resize:vertical;line-height:1.55">'+esc(gu)+'</textarea>'
+      +'</div></div>'
     +'<button class="btn btn-sm" id="our-uno" style="width:100%;justify-content:center;margin-bottom:16px" onclick="analizarNuestroAdDesdeModal(\''+a.id+'\')">Analizar con IA</button>'
     +'<div style="height:1px;background:var(--border);margin-bottom:14px"></div>'
     +'<div style="display:flex;flex-direction:column;gap:11px">'
@@ -13207,7 +13306,7 @@ function abrirNuestroAd(adId){
 async function analizarNuestroAdDesdeModal(adId){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
   var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
-  a.guion=((document.getElementById('our-guion')||{}).value||'').trim();
+  _ourSetGuion(c,a,((document.getElementById('our-guion')||{}).value||''));
   var btn=document.getElementById('our-uno');
   if(btn){ btn.disabled=true; btn.textContent='Leyendo...'; }
   var ok=await analizarNuestroAd(adId,false);
@@ -13219,7 +13318,8 @@ function guardarNuestroAd(adId){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
   var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
   var g=function(id){var e=document.getElementById(id); return e?String(e.value||'').trim():'';};
-  a.guion=g('our-guion'); a.angulo=g('our-angulo'); a.promesa=g('our-promesa');
+  _ourSetGuion(c,a,g('our-guion'));
+  a.angulo=g('our-angulo'); a.promesa=g('our-promesa');
   a.dolor=g('our-dolor'); a.formato=g('our-formato'); a.eje=g('our-eje'); a.notas=g('our-notas');
   if(a.angulo) a.copyCambio=false;
   save(); closeModal();
@@ -13235,7 +13335,7 @@ function nuestrosAdsHtml(c){
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Nuestros anuncios</div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">Los que corren en la cuenta de '+esc(c.name||'este cliente')+'. El estado y el tiempo al aire los da Meta, no hay que verificarlos a mano.</div></div>';
   if(conectado){
-    var pend=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo); }).length;
+    var pend=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); }).length;
     h+='<span style="display:flex;gap:7px;flex-shrink:0">'
       +(pend?'<button class="btn btn-sm" id="our-analizar" onclick="analizarNuestrosPendientes()">Leer los que faltan</button>':'')
       +'<button class="btn btn-sm btn-primary" id="our-sync" onclick="sincronizarNuestrosAds('+c.id+')">Sincronizar con Meta</button>'
@@ -13258,9 +13358,11 @@ function nuestrosAdsHtml(c){
     return (_ourDias(y)||0)-(_ourDias(x)||0);
   });
   var act=ads.filter(_ourActivo).length;
-  var sinLeer=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo); }).length;
+  var sinLeer=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); }).length;
+  var conGuion=ads.filter(function(a){ return !!_ourGuion(c,a); }).length;
   h+='<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
     +act+' activo'+(act===1?'':'s')+' de '+ads.length
+    +(conGuion?(' &middot; '+conGuion+' con guion cargado'):'')
     +(sinLeer?(' &middot; <span style="color:var(--amberx)">'+sinLeer+' sin leer</span>'):'')
     +'</div>';
   h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
@@ -13275,6 +13377,7 @@ function nuestrosAdsHtml(c){
         +'<span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">'
           +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
           +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
+          +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">con guion</span>':'')
           +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio</span>':'')
         +'</span>'
       +'</span>'
