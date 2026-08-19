@@ -13096,11 +13096,21 @@ async function sincronizarNuestrosAds(clientId){
   var btn=document.getElementById('our-sync');
   if(btn){ btn.disabled=true; btn.textContent='Sincronizando...'; }
   var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
-  var campos='id,name,effective_status,created_time,preview_shareable_link,'
-    +'creative{id,body,title,link_description,thumbnail_url,object_story_spec,asset_feed_spec},'
+  // La descripcion NO se pide como campo del creativo: no existe suelto, vive
+  // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
+  // reintenta con el set minimo antes de darse por vencido: perder el sync entero
+  // por un campo opcional seria peor que perder ese campo.
+  var camposFull='id,name,effective_status,created_time,preview_shareable_link,'
+    +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
-  var url='https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
-    +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
+  var camposMin='id,name,effective_status,created_time,'
+    +'creative{id,body,title,object_story_spec},'
+    +'insights.date_preset(maximum).limit(1){spend}';
+  var _armar=function(campos){
+    return 'https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
+      +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
+  };
+  var url=_armar(camposFull), reintento=false;
   var ads=getNuestrosAds(c);
   var previos={}; ads.forEach(function(a){ previos[a.id]=a; });
   var hoy=new Date().toISOString().slice(0,10);
@@ -13109,7 +13119,14 @@ async function sincronizarNuestrosAds(clientId){
     while(url && pags<6){
       var res=await fetch(url);
       var d=await res.json();
-      if(d.error) throw new Error(d.error.message||'Meta rechazo la consulta');
+      if(d.error){
+        var msj=d.error.message||'Meta rechazo la consulta';
+        // Campo que esta version de la API no reconoce: bajamos a lo minimo.
+        if(!reintento && !nuevos.length && /nonexisting field|#100/i.test(msj)){
+          reintento=true; url=_armar(camposMin); pags=0; continue;
+        }
+        throw new Error(msj);
+      }
       (d.data||[]).forEach(function(ad){
         var id=String(ad.id);
         vistos[id]=true;
