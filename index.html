@@ -13119,11 +13119,25 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19e');   // para saber que version cargo el navegador
-  var camposFull='id,name,effective_status,created_time,preview_shareable_link,'
+  console.log('[tracker] mercado build 2026-08-19g');   // para saber que version cargo el navegador
+  // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
+  // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
+  // con angulos que no son nuestros. Se respeta la misma exclusion que usa
+  // Top of Funnel, asi no hay dos verdades sobre que campanas cuentan.
+  var _al=getActiveLine(c.conversionLines||[]);
+  var _excl=((_al&&_al.excludedCampaigns)||[]).map(String);
+  var _conocidas=((_al&&_al.metaCampaigns)||[]).map(function(x){return String(x.id);});
+  var _incluida=function(campId){
+    campId=String(campId||'');
+    if(!campId) return true;                       // sin dato: no lo escondemos
+    if(_excl.indexOf(campId)>=0) return false;     // excluida a mano
+    if(_conocidas.length && _conocidas.indexOf(campId)<0) return false;  // no es de las nuestras
+    return true;
+  };
+  var camposFull='id,name,effective_status,created_time,campaign_id,campaign{name},preview_shareable_link,'
     +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
-  var camposMin='id,name,effective_status,created_time,'
+  var camposMin='id,name,effective_status,created_time,campaign_id,'
     +'creative{id,body,title,object_story_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
   var _armar=function(campos){
@@ -13134,7 +13148,7 @@ async function sincronizarNuestrosAds(clientId){
   var ads=getNuestrosAds(c);
   var previos={}; ads.forEach(function(a){ previos[a.id]=a; });
   var hoy=new Date().toISOString().slice(0,10);
-  var nuevos=[], vistos={}, pags=0, err='';
+  var nuevos=[], vistos={}, pags=0, err='', fuera=0;
   try{
     while(url && pags<6){
       var res=await fetch(url);
@@ -13148,6 +13162,7 @@ async function sincronizarNuestrosAds(clientId){
         throw new Error(msj);
       }
       (d.data||[]).forEach(function(ad){
+        if(!_incluida(ad.campaign_id)){ fuera++; return; }
         var id=String(ad.id);
         vistos[id]=true;
         var ins=(ad.insights&&ad.insights.data&&ad.insights.data[0])||null;
@@ -13163,6 +13178,7 @@ async function sincronizarNuestrosAds(clientId){
         nuevos.push({
           id:id, nombre:ad.name||'', estado:ad.effective_status||'',
           creado:ad.created_time||prev.creado||'', vistoAl:hoy,
+          campId:String(ad.campaign_id||''), campana:(ad.campaign&&ad.campaign.name)||prev.campana||'',
           gasto:ins?parseFloat(ins.spend||0):(prev.gasto||0),
           texto:texto, titulo:titulo, desc:desc,
           cta:_ourCta(ad.creative), destino:_ourDestino(ad.creative),
@@ -13188,7 +13204,7 @@ async function sincronizarNuestrosAds(clientId){
   save();
   if(S.tab==='mercado') renderTab();
   var act=nuevos.filter(_ourActivo).length;
-  toast(nuevos.length+' anuncios ('+act+' activos)');
+  toast(nuevos.length+' anuncios ('+act+' activos)'+(fuera?', '+fuera+' fuera de las campanas incluidas':''));
 }
 
 // Lee el copy de un anuncio nuestro igual que el de la competencia. Se hace de a
@@ -13385,6 +13401,19 @@ function guardarNuestroAd(adId){
   toast('Guardado');
 }
 
+// Los anuncios que quedaron de un sync anterior, cuando todavia se traia la
+// cuenta entera, se van solos en el proximo sync. Hasta entonces se avisa.
+function _ourAjenos(c){
+  var al=getActiveLine(c.conversionLines||[]);
+  var conocidas=((al&&al.metaCampaigns)||[]).map(function(x){return String(x.id);});
+  var excl=((al&&al.excludedCampaigns)||[]).map(String);
+  if(!conocidas.length && !excl.length) return 0;
+  return getNuestrosAds(c).filter(function(a){
+    var id=String(a.campId||'');
+    if(!id) return false;
+    return excl.indexOf(id)>=0 || (conocidas.length && conocidas.indexOf(id)<0);
+  }).length;
+}
 function nuestrosAdsHtml(c){
   var ads=getNuestrosAds(c);
   var conectado=!!(c.metaToken&&c.metaAccountId);
@@ -13421,6 +13450,11 @@ function nuestrosAdsHtml(c){
   var conGuion=ads.filter(function(a){ return !!_ourGuion(c,a); }).length;
   // Sin texto no es lo mismo que sin leer: no se arregla apretando el boton.
   var sinTexto=ads.filter(function(a){ return !a.angulo && !_ourLegible(c,a); }).length;
+  var ajenos=_ourAjenos(c);
+  if(ajenos){
+    h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:10px">'
+      +'Hay '+ajenos+' anuncio'+(ajenos>1?'s':'')+' de campanas que no gestionas, de una sincronizacion vieja. Volve a sincronizar para sacarlos.</div>';
+  }
   h+='<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
     +act+' activo'+(act===1?'':'s')+' de '+ads.length
     +(conGuion?(' &middot; '+conGuion+' con guion cargado'):'')
@@ -13440,7 +13474,8 @@ function nuestrosAdsHtml(c){
       +'<span style="min-width:0">'
         +'<span style="display:block;font-size:12.5px;color:var(--strong);line-height:1.35;word-break:break-word">'
           +(a.angulo?esc(a.angulo):'<span style="color:var(--text3)">Sin leer</span>')+'</span>'
-        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px;word-break:break-word">'+esc(a.nombre||'')+'</span>'
+        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px;word-break:break-word">'
+          +esc(a.nombre||'')+(a.campana?('<span style="color:var(--text3);opacity:0.75"> &middot; '+esc(a.campana)+'</span>'):'')+'</span>'
         +'<span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">'
           +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
           +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
@@ -14332,8 +14367,7 @@ function renderTab(){
     const metaToken=c.metaToken||'';
     const metaAccountId=c.metaAccountId||'';
     const metaDays=activeLine.metaDays||30;
-    el.innerHTML=adsSubNav()+metaAvisosHtml(c)+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <div style="font-size:13px;font-weight:500;color:var(--strong)">Linea activa: <span style="color:var(--accent)">${activeLine.version}</span></div>
+    el.innerHTML=adsSubNav()+metaAvisosHtml(c)+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${metaToken&&metaAccountId?`
           <select id="meta-days-select" onchange="changeMetaDays(${c.id},this.value)" style="font-size:11px;padding:4px 8px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer">
