@@ -1253,7 +1253,7 @@ async function fetchMetaSpendPeriod(clientId,period){
     }
     insSpec+='.breakdowns(country).limit(500)';
     const fields='id,'+insSpec+'{spend,actions}';
-    let url='https://graph.facebook.com/v19.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&limit=200&access_token='+c.metaToken;
+    let url='https://graph.facebook.com/v25.0/'+actId+'/campaigns?fields='+encodeURIComponent(fields)+'&limit=200&access_token='+c.metaToken;
     let spend=0, views=0, pages=0;
     const byCamp={};
     const vByCamp={};
@@ -1305,7 +1305,7 @@ async function fetchMetaSpendPeriod(clientId,period){
       else { insSpecAd='insights.date_preset(maximum)'; }
       insSpecAd+='.limit(1)';
       const fieldsAd='id,name,campaign_id,'+insSpecAd+'{spend,actions}';
-      let urlAd='https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(fieldsAd)+'&limit=300&access_token='+c.metaToken;
+      let urlAd='https://graph.facebook.com/v25.0/'+actId+'/ads?fields='+encodeURIComponent(fieldsAd)+'&limit=300&access_token='+c.metaToken;
       let pagesAd=0;
       while(urlAd && pagesAd<8){
         const resAd=await fetch(urlAd);
@@ -1350,7 +1350,7 @@ async function _computeLiveMetrics(c,line,startDate,endDate){
       // Pedimos los insights desglosados por anuncio: en la misma llamada vienen los nombres
       // de campana, adset y anuncio, que antes se cargaban a mano en la linea de conversion.
       const campos='spend,impressions,clicks,actions,campaign_name,adset_name,ad_name';
-      const url='https://graph.facebook.com/v19.0/'+actId+'/insights'
+      const url='https://graph.facebook.com/v25.0/'+actId+'/insights'
         +'?level=ad&time_range='+encodeURIComponent(timeRange)
         +'&fields='+encodeURIComponent(campos)
         +'&access_token='+c.metaToken+'&limit=500';
@@ -7217,7 +7217,7 @@ async function mpTraer(clientId){
   // Los conjuntos se piden a nivel cuenta, no campana por campana: una sola llamada.
   var campos='name,effective_status,campaign_id,learning_stage_info,'
     +'insights.date_preset(last_3d){spend,actions,impressions}';
-  var url='https://graph.facebook.com/v19.0/'+actId+'/adsets?fields='+encodeURIComponent(campos)
+  var url='https://graph.facebook.com/v25.0/'+actId+'/adsets?fields='+encodeURIComponent(campos)
     +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
   try{
     var r=await fetch(url);
@@ -12967,6 +12967,129 @@ function capImportar(){
   toast(n+(n>1?' piezas importadas':' pieza importada'));
 }
 
+// ---- Metricas verificables del anuncio ----
+// Todo lo de aca sale medido de Meta, no leido por IA. El angulo es una lectura
+// nuestra y puede estar mal; el hold rate no.
+function _mNum(v){ var n=parseFloat(v); return isNaN(n)?0:n; }
+// Los campos de video vienen como lista de acciones, no como numero suelto.
+function _mAccion(arr){
+  if(!Array.isArray(arr)||!arr.length) return 0;
+  var t=0; arr.forEach(function(a){ t+=_mNum(a.value); });
+  return t;
+}
+function _mActionVal(actions, tipo){
+  if(!Array.isArray(actions)) return 0;
+  var t=0;
+  actions.forEach(function(a){ if(a.action_type===tipo) t+=_mNum(a.value); });
+  return t;
+}
+// Extrae de un bloque insights lo que vamos a guardar por anuncio.
+function _ourMetricas(ins){
+  if(!ins) return null;
+  var imp=_mNum(ins.impressions);
+  var plays=_mAccion(ins.video_play_actions);          // reproducciones (arranques)
+  var thru=_mAccion(ins.video_thruplay_watched_actions);
+  var p25=_mAccion(ins.video_p25_watched_actions);
+  var p50=_mAccion(ins.video_p50_watched_actions);
+  var p75=_mAccion(ins.video_p75_watched_actions);
+  var p100=_mAccion(ins.video_p100_watched_actions);
+  var m={
+    imp:imp, alcance:_mNum(ins.reach), frec:_mNum(ins.frequency),
+    ctr:_mNum(ins.ctr), ctrUnico:_mNum(ins.unique_ctr), ctrLink:_mNum(ins.inline_link_click_ctr),
+    cpc:_mNum(ins.cpc), cpm:_mNum(ins.cpm),
+    leads:_mActionVal(ins.actions,'lead')||_mActionVal(ins.actions,'onsite_conversion.lead_grouped'),
+    rQual:ins.quality_ranking||'', rEng:ins.engagement_rate_ranking||'', rConv:ins.conversion_rate_ranking||'',
+    plays:plays, thru:thru, p25:p25, p50:p50, p75:p75, p100:p100,
+    tProm:_mAccion(ins.video_avg_time_watched_actions),
+    esVideo:!!(plays||thru||p25)
+  };
+  // Hook rate: de los que vieron el anuncio, cuantos arrancaron el video.
+  // Mide si el primer frame frena el scroll.
+  m.hook = imp ? (plays/imp*100) : null;
+  // Hold rate: de los que arrancaron, cuantos se quedaron hasta el ThruPlay.
+  // Mide si el guion sostiene. Sin arranques no se puede calcular.
+  m.hold = plays ? (thru/plays*100) : null;
+  // Retencion al final sobre el primer cuarto: donde se cae la gente.
+  m.finish = p25 ? (p100/p25*100) : null;
+  return m;
+}
+// Las diagnosticas vienen como texto. Se traducen y se colorean.
+var _RANK_ES={
+  above_average:{n:'sobre el promedio', p:'pill-green'},
+  average:{n:'en el promedio', p:'pill-gray'},
+  below_average_10_percent:{n:'bajo el promedio (10%)', p:'pill-amber'},
+  below_average_20_percent:{n:'bajo el promedio (20%)', p:'pill-amber'},
+  below_average_35_percent:{n:'bajo el promedio (35%)', p:'pill-red'},
+  unknown:{n:'sin dato', p:'pill-gray'}
+};
+function _rankPill(v, etiqueta){
+  if(!v) return '';
+  var k=String(v).toLowerCase();
+  var r=_RANK_ES[k]||{n:k.replace(/_/g,' '), p:'pill-gray'};
+  if(k==='unknown') return '';
+  return '<span class="pill '+r.p+'" style="font-size:9.5px">'+etiqueta+': '+r.n+'</span>';
+}
+// Meta no calcula las diagnosticas por debajo de 500 impresiones. Decirlo evita
+// que un anuncio chico parezca "sin evaluar" por un error nuestro.
+function _rankFalta(m){ return !!(m && m.imp>0 && m.imp<500); }
+function _pct(v,d){ return (v===null||v===undefined)?'—':(v.toFixed(d===undefined?1:d)+'%'); }
+
+// Bloque de metricas para la ficha del anuncio.
+function _ourMetricasHtml(a){
+  var m=a.met;
+  if(!m||!m.imp){
+    return '<div style="font-size:11.5px;color:var(--text3);line-height:1.55">Sin impresiones en el historico: no hay metricas para mostrar.</div>';
+  }
+  var fila=function(l,v,sub){
+    return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="font-size:11.5px;color:var(--text3)">'+l+'</span>'
+      +'<span style="font-size:12.5px;color:var(--text);text-align:right">'+v
+      +(sub?'<span style="display:block;font-size:10px;color:var(--text3);margin-top:1px">'+sub+'</span>':'')+'</span></div>';
+  };
+  var h='<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 18px">';
+  h+=fila('Impresiones', m.imp.toLocaleString('es-AR'));
+  h+=fila('Frecuencia', m.frec?m.frec.toFixed(2):'—');
+  h+=fila('CTR', _pct(m.ctr,2));
+  h+=fila('CTR en enlace', _pct(m.ctrLink,2));
+  if(m.esVideo){
+    h+=fila('Hook rate', _pct(m.hook), 'arrancaron el video sobre impresiones');
+    h+=fila('Hold rate', _pct(m.hold), 'llegaron al ThruPlay sobre los que arrancaron');
+    h+=fila('Llegaron al final', _pct(m.finish), 'sobre los que pasaron el primer cuarto');
+    h+=fila('Tiempo promedio', m.tProm?(Math.round(m.tProm)+'s'):'—');
+  }
+  h+='</div>';
+  var rk=_rankPill(m.rQual,'calidad')+_rankPill(m.rEng,'interaccion')+_rankPill(m.rConv,'conversion');
+  h+='<div style="margin-top:12px">';
+  if(rk){
+    h+='<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Contra los que compiten por la misma audiencia</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+rk+'</div>';
+  }else if(_rankFalta(m)){
+    h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55">Meta no calcula los rankings de relevancia por debajo de 500 impresiones. Este anuncio tiene '+m.imp.toLocaleString('es-AR')+'.</div>';
+  }else{
+    h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55">Meta todavia no devolvio los rankings de relevancia para este anuncio.</div>';
+  }
+  h+='</div>';
+  return h;
+}
+// Resumen corto para la fila de la lista: lo que se lee de un vistazo.
+function _ourMetricasPills(a){
+  var m=a.met; if(!m||!m.imp) return '';
+  var out='';
+  if(m.esVideo && m.hold!==null){
+    var p=(m.hold>=25?'pill-green':m.hold>=12?'pill-amber':'pill-gray');
+    out+='<span class="pill '+p+'" style="font-size:9.5px">hold '+_pct(m.hold,0)+'</span>';
+  }
+  if(m.esVideo && m.hook!==null){
+    out+='<span class="pill pill-gray" style="font-size:9.5px">hook '+_pct(m.hook,0)+'</span>';
+  }
+  var k=String(m.rConv||'').toLowerCase();
+  if(k&&k!=='unknown'){
+    var r=_RANK_ES[k]||{p:'pill-gray'};
+    out+='<span class="pill '+r.p+'" style="font-size:9.5px">conversion '+(k==='above_average'?'&#9650;':k==='average'?'=':'&#9660;')+'</span>';
+  }
+  return out;
+}
+
 // ---- Nuestros anuncios: los que corren en la cuenta del cliente ----
 // A diferencia de los de la competencia, estos no hay que verificarlos a mano:
 // Meta nos dice si siguen activos, asi que el tiempo al aire no se pudre solo.
@@ -13150,21 +13273,31 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19j');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19k');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
   // Top of Funnel, asi no hay dos verdades sobre que campanas cuentan.
   var _f=_ourFiltroCamp(c);
   var _incluida=function(campId){ return _f.ok(campId); };
+  // Metricas verificables a nivel anuncio. Los tres rankings son las "ad relevance
+  // diagnostics": Meta no las calcula por debajo de 500 impresiones, asi que en
+  // anuncios chicos vienen vacias y eso es correcto, no un error.
+  // Ojo: las metricas de 10 segundos se dieron de baja en enero de 2026; el hold
+  // rate se calcula con ThruPlay.
+  var _ins='spend,impressions,reach,frequency,clicks,inline_link_clicks,ctr,unique_ctr,'
+    +'inline_link_click_ctr,cpc,cpm,actions,'
+    +'quality_ranking,engagement_rate_ranking,conversion_rate_ranking,'
+    +'video_play_actions,video_thruplay_watched_actions,video_avg_time_watched_actions,'
+    +'video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
   var camposFull='id,name,effective_status,created_time,campaign_id,campaign{name},preview_shareable_link,'
     +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
-    +'insights.date_preset(maximum).limit(1){spend}';
+    +'insights.date_preset(maximum).limit(1){'+_ins+'}';
   var camposMin='id,name,effective_status,created_time,campaign_id,'
     +'creative{id,body,title,object_story_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
   var _armar=function(campos){
-    return 'https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
+    return 'https://graph.facebook.com/v25.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
       +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
   };
   var url=_armar(camposFull), reintento=false;
@@ -13203,6 +13336,7 @@ async function sincronizarNuestrosAds(clientId){
           creado:ad.created_time||prev.creado||'', vistoAl:hoy,
           campId:String(ad.campaign_id||''), campana:(ad.campaign&&ad.campaign.name)||prev.campana||'',
           gasto:ins?parseFloat(ins.spend||0):(prev.gasto||0),
+          met:_ourMetricas(ins)||prev.met||null,
           texto:texto, titulo:titulo, desc:desc,
           cta:_ourCta(ad.creative), destino:_ourDestino(ad.creative),
           thumb:(ad.creative&&ad.creative.thumbnail_url)||'', preview:ad.preview_shareable_link||'',
@@ -13360,6 +13494,10 @@ function abrirNuestroAd(adId){
       +(a.preview?'<a href="'+esc(a.preview)+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none">Ver en Meta &rarr;</a>':'')
       +'<span style="font-size:11px;color:var(--text3)">viene de Meta, no se edita aca</span>'
     +'</div>'
+    +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;margin-bottom:14px">'
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:7px">Lo que dice Meta</div>'
+      +_ourMetricasHtml(a)
+    +'</div>'
     +(a.copyCambio?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:12px">El copy cambio desde la ultima lectura. La lectura de abajo es la vieja: volve a analizarlo o corregila a mano.</div>':'')
     +(a.titulo?'<div style="margin-bottom:11px"><div style="'+lbl+'">Titular'+((a.titulo.indexOf('---')>=0)?'<span style="color:var(--text3)"> &middot; varias versiones rotando</span>':'')+'</div>'
       +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;white-space:pre-wrap;line-height:1.5">'+esc(a.titulo)+'</div></div>':'')
@@ -13504,6 +13642,7 @@ function nuestrosAdsHtml(c){
           +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
           +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
           +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">con guion</span>':'')
+          +_ourMetricasPills(a)
           +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio &middot; revisar</span>':'')
           +(a.enMeta===false?'<span class="pill pill-gray" style="font-size:9.5px">ya no esta en Meta</span>':'')
           +(!a.angulo&&!_ourLegible(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">sin texto</span>':'')
@@ -19706,7 +19845,7 @@ async function arPedirVentana(c, nivel, rango){
     'spend','impressions','reach','clicks','ctr','cpc','cpm','frequency','actions',
     'video_play_actions','video_thruplay_watched_actions',
     'video_p25_watched_actions','video_p50_watched_actions','video_p75_watched_actions'].join(',');
-  var url='https://graph.facebook.com/v19.0/'+actId+'/insights'
+  var url='https://graph.facebook.com/v25.0/'+actId+'/insights'
     +'?level='+lvl
     +'&time_range='+encodeURIComponent(JSON.stringify(rango))
     +'&fields='+encodeURIComponent(campos)
@@ -20381,7 +20520,7 @@ async function fetchMetaMensual(clientId){
   const desde=new Date(hoy.getFullYear(), hoy.getMonth()-11, 1);
   const tr='{"since":"'+isoDate(desde)+'","until":"'+isoDate(hoy)+'"}';
   const campos='campaign_id,spend,impressions,clicks,actions';
-  var url='https://graph.facebook.com/v19.0/act_'+c.metaAccountId+'/insights'
+  var url='https://graph.facebook.com/v25.0/act_'+c.metaAccountId+'/insights'
     +'?level=campaign&time_increment=monthly'
     +'&time_range='+encodeURIComponent(tr)
     +'&fields='+encodeURIComponent(campos)
@@ -22851,7 +22990,7 @@ async function syncMetaAds(clientId){
     // Moneda de la cuenta publicitaria. Meta la devuelve en el objeto de la cuenta,
     // asi que no hay que adivinarla mirando la magnitud de los numeros.
     try{
-      var accResp=await fetch('https://graph.facebook.com/v19.0/'+actId
+      var accResp=await fetch('https://graph.facebook.com/v25.0/'+actId
         +'?fields=currency,name,timezone_name&access_token='+token);
       var accData=await accResp.json();
       if(accData && accData.currency){
@@ -22866,7 +23005,7 @@ async function syncMetaAds(clientId){
       +',video_thruplay_watched_actions,cost_per_thruplay,video_play_actions,video_avg_time_watched_actions'
       +',video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
     var fieldsStr='id,name,status,effective_status,issues_info,objective,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
-    var url='https://graph.facebook.com/v19.0/'+actId+'/campaigns'
+    var url='https://graph.facebook.com/v25.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
       +'&access_token='+token
       +'&limit=50';
@@ -22882,7 +23021,7 @@ async function syncMetaAds(clientId){
     for(var ci=0;ci<campaigns.length;ci++){
       try{
         var adsetFieldsStr='id,name,status,effective_status,issues_info,learning_stage_info,daily_budget,lifetime_budget,targeting,optimization_goal,bid_strategy,insights.time_range('+timeRange+'){'+insFields+'}';
-        var adsetUrl='https://graph.facebook.com/v19.0/'+campaigns[ci].id+'/adsets'
+        var adsetUrl='https://graph.facebook.com/v25.0/'+campaigns[ci].id+'/adsets'
           +'?fields='+encodeURIComponent(adsetFieldsStr)
           +'&access_token='+token
           +'&limit=20';
@@ -22894,7 +23033,7 @@ async function syncMetaAds(clientId){
         for(var ai=0;ai<adsets.length;ai++){
           try{
             var adsFieldsStr='id,name,status,effective_status,issues_info,created_time,updated_time,creative{id,name,thumbnail_url,url_tags,object_story_spec{link_data{link}}},insights.time_range('+timeRange+'){'+insFields+'}';
-            var adsUrl='https://graph.facebook.com/v19.0/'+adsets[ai].id+'/ads'
+            var adsUrl='https://graph.facebook.com/v25.0/'+adsets[ai].id+'/ads'
               +'?fields='+encodeURIComponent(adsFieldsStr)
               +'&access_token='+token
               +'&limit=20';
@@ -22923,7 +23062,7 @@ async function syncMetaAds(clientId){
             // Fetch preview URL for each ad
             for(var di=0;di<adsList.length;di++){
               try{
-                var prevUrl='https://graph.facebook.com/v19.0/'+adsList[di].id+'/previews'
+                var prevUrl='https://graph.facebook.com/v25.0/'+adsList[di].id+'/previews'
                   +'?ad_format=DESKTOP_FEED_STANDARD'
                   +'&access_token='+token;
                 var prevResp=await fetch(prevUrl);
