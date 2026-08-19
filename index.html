@@ -12402,6 +12402,12 @@ function _adTramo(dias){
   if(dias>=21)    return {k:'medio',n:dias+' dias al aire',p:'pill-amber'};
   return {k:'test',n:dias+' dias al aire',p:'pill-gray'};
 }
+// Una pieza de video sin transcripcion esta a medias: de la captura salio el copy
+// escrito, pero lo que se dice hablado es donde vive el angulo real.
+function _adFaltaGuion(a){
+  var f=String(a.formato||'').toLowerCase();
+  return (f==='reel'||f==='vsl') && !String(a.guion||'').trim();
+}
 // La senal unificada, para poder contar "lo que ya probo que funciona" mezclando
 // las dos fuentes sin comparar peras con manzanas.
 function _adSenal(a){
@@ -12457,15 +12463,18 @@ function abrirAnunciosRef(refIdx){
         ? 'Pega el copy o el guion de cada anuncio que te llame la atencion. La fecha de inicio esta en la tarjeta de la Ad Library.'
         : 'Pega el guion o el texto de cada pieza que quieras estudiar. Marca las que se despegaron del promedio de la cuenta.')
       +'</div></div>'
-      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="abrirAnuncio('+refIdx+',null)">Agregar '+esc(P.uno)+'</button>'
+      +'<span style="display:flex;gap:7px;flex-shrink:0">'
+      +'<button class="btn btn-sm" onclick="abrirCapturaAds('+refIdx+')">Leer captura</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="abrirAnuncio('+refIdx+',null)">Agregar '+esc(P.uno)+'</button>'
+      +'</span>'
     +'</div>';
   if(!ads.length){
     h+='<div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--radius);padding:28px 20px;text-align:center">'
       +'<div style="font-size:12.5px;color:var(--text2)">Todavia no cargaste '+esc(P.varios)+' de esta cuenta.</div>'
       +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">'
       +(tipo==='pauta'
-        ? 'Empeza por los que lleven mas tiempo corriendo: son los que ya probaron que funcionan.'
-        : 'Empeza por las que hayan reventado: las que claramente rindieron mas que el resto de la cuenta.')
+        ? 'Lo mas rapido: sacale una captura a la Ad Library y toca "Leer captura".'
+        : 'Lo mas rapido: sacale una captura al perfil y toca "Leer captura".')
       +'</div></div>';
   }else{
     h+='<div style="display:flex;flex-direction:column;gap:8px">';
@@ -12488,6 +12497,7 @@ function abrirAnunciosRef(refIdx){
           +'<span class="pill '+sn.pill+'" style="font-size:10px">'+sn.label+'</span>'
           +(Number(a.variantes)>1?'<span class="pill pill-blue" style="font-size:10px">'+Number(a.variantes)+' variantes</span>':'')
           +(a.formato?'<span class="pill pill-gray" style="font-size:10px">'+esc(a.formato)+'</span>':'')
+          +(_adFaltaGuion(a)?'<span class="pill pill-amber" style="font-size:10px">falta el guion</span>':'')
           +(eje?'<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text3)"><span style="width:6px;height:6px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
         +'</div>'
       +'</div>';
@@ -12542,6 +12552,8 @@ function abrirAnuncio(refIdx, adId){
     +cab
     +'<div style="margin-bottom:11px"><div style="'+lbl+'">'+(src==='pauta'?'Copy o guion del anuncio':'Guion o texto de la pieza')+'</div>'
       +'<textarea id="ad-texto" rows="6" placeholder="'+(src==='pauta'?'Pega el texto del anuncio o la transcripcion del reel':'Pega la transcripcion del reel o el copy del posteo')+'" style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.texto||'')+'</textarea></div>'
+    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Transcripcion del video'+(_adFaltaGuion(a)?' <span style="color:var(--amberx)">&middot; pendiente</span>':'')+'</div>'
+      +'<textarea id="ad-guion" rows="4" placeholder="Lo que se dice hablado. Sin esto, de un video solo estamos leyendo el copy." style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.guion||'')+'</textarea></div>'
     +'<button class="btn btn-sm" id="ad-analizar" style="width:100%;justify-content:center;margin-bottom:16px" onclick="analizarAnuncioIA()">Analizar con IA</button>'
     +'<div style="height:1px;background:var(--border);margin-bottom:14px"></div>'
     +'<div id="ad-lectura" style="display:flex;flex-direction:column;gap:11px">'
@@ -12582,7 +12594,7 @@ function guardarAnuncio(){
   if(!texto && !g('ad-angulo')){ toast('Pega el texto o escribi el angulo','red'); return; }
   var chk=document.getElementById('ad-dest');
   var obj={src:d.src||_refTipo(r), fecha:g('ad-fecha'), variantes:g('ad-var'), views:g('ad-views'),
-    destacado:!!(chk&&chk.checked), link:g('ad-link'), texto:texto, angulo:g('ad-angulo'),
+    destacado:!!(chk&&chk.checked), link:g('ad-link'), texto:texto, guion:g('ad-guion'), angulo:g('ad-angulo'),
     promesa:g('ad-promesa'), dolor:g('ad-dolor'), formato:g('ad-formato'), eje:g('ad-eje'), notas:g('ad-notas')};
   if(d.adId){
     var a=ads.filter(function(x){return x.id===d.adId;})[0];
@@ -12619,7 +12631,9 @@ async function analizarAnuncioIA(){
   try{ apiKey=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
   if(!apiKey){ toast('Falta la API key de Anthropic','red'); openAnthropicKeyModal(); return; }
   var texto=((document.getElementById('ad-texto')||{}).value||'').trim();
-  if(!texto){ toast('Pega primero el copy o el guion','red'); return; }
+  var guion=((document.getElementById('ad-guion')||{}).value||'').trim();
+  if(!texto&&!guion){ toast('Pega primero el copy o el guion','red'); return; }
+  var material=(texto?('COPY ESCRITO:\n'+texto+'\n\n'):'')+(guion?('LO QUE SE DICE HABLADO:\n'+guion+'\n'):'');
   var btn=document.getElementById('ad-analizar');
   if(btn){ btn.disabled=true; btn.textContent='Leyendo el anuncio...'; }
   var cp=getContentPlan(c);
@@ -12636,7 +12650,7 @@ async function analizarAnuncioIA(){
   var prompt='Sos un estratega de contenido y Meta Ads. Analizas material de un referente que mira una agencia para su cliente "'+(c.name||'')+'".\n\n'
     +'=== EJES DE COMUNICACION DEL CLIENTE ===\n'+ejes+'\n\n'
     +ctx
-    +texto.slice(0,4000)+'\n\n'
+    +material.slice(0,5000)+'\n\n'
     +'Reglas:\n'
     +'- angulo: 3 a 7 palabras. NOMBRA el enfoque, no lo copies del material. Ej: "miedo a viajar solo por primera vez", no "vivi la aventura de tu vida".\n'
     +'- promesa: el resultado concreto que ofrece, una linea. Si no hay promesa explicita, dejalo vacio. No la inventes: mucho contenido organico no promete nada y esta bien.\n'
@@ -12672,6 +12686,222 @@ async function analizarAnuncioIA(){
     toast('No pude analizarlo: '+e.message,'red');
   }
   if(btn){ btn.disabled=false; btn.textContent='Analizar con IA'; }
+}
+
+// ---- Lectura de capturas: varios anuncios de una sola pasada ----
+// La Ad Library muestra varias tarjetas juntas, asi que cargarlas de a una es el
+// cuello de botella real. La captura entra como imagen a la API y sale una lista
+// para revisar antes de importar. Lo que la captura NO puede dar es el guion
+// hablado de un video: eso queda marcado como pendiente para pegarlo despues.
+function _capMaxLado(){ return 1568; } // por encima de esto la API reescala igual
+
+// Reduce la imagen antes de mandarla: una captura de pantalla completa pesa varios
+// MB y no aporta detalle util por encima del ancho que la API ya usa.
+function _imgABase64(file){
+  return new Promise(function(res,rej){
+    var fr=new FileReader();
+    fr.onerror=function(){ rej(new Error('No pude leer '+file.name)); };
+    fr.onload=function(){
+      var img=new Image();
+      img.onerror=function(){ rej(new Error(file.name+' no parece una imagen')); };
+      img.onload=function(){
+        var m=_capMaxLado(), w=img.width, h=img.height;
+        var k=Math.min(1, m/Math.max(w,h));
+        var cv=document.createElement('canvas');
+        cv.width=Math.round(w*k); cv.height=Math.round(h*k);
+        var cx=cv.getContext('2d');
+        cx.fillStyle='#fff'; cx.fillRect(0,0,cv.width,cv.height);
+        cx.drawImage(img,0,0,cv.width,cv.height);
+        var url=cv.toDataURL('image/jpeg',0.85);
+        res({media_type:'image/jpeg', data:url.split(',')[1], nombre:file.name});
+      };
+      img.src=fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+function abrirCapturaAds(refIdx){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var r=getMercadoRefs(c)[refIdx]; if(!r) return;
+  var tipo=_refTipo(r), P=_refPal(tipo);
+  window._capState={refIdx:refIdx, imgs:[], res:null};
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">Leer una captura</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px;line-height:1.55">'
+    +(tipo==='pauta'
+      ? 'Suma capturas de la Ad Library de '+esc(r.name||('@'+(r.handle||'')))+'. Saco cada anuncio que se vea entero, con su fecha de inicio y su copy.'
+      : 'Suma capturas del perfil o de las piezas de '+esc(r.name||('@'+(r.handle||'')))+'. Saco cada pieza que se vea entera, con su alcance si esta a la vista.')
+    +'</div>'
+    +'<input id="cap-file" type="file" accept="image/*" multiple onchange="capElegirArchivos(this.files)" style="display:none">'
+    +'<div id="cap-zona" onclick="document.getElementById(\'cap-file\').click()" '
+      +'style="background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--radius);padding:26px 20px;text-align:center;cursor:pointer">'
+      +'<div style="font-size:12.5px;color:var(--text2)">Elegi una o varias capturas</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px">Hasta 4 por vez. Que se lea el texto de cada tarjeta.</div>'
+    +'</div>'
+    +'<div id="cap-out" style="margin-top:14px"></div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn btn-sm" onclick="abrirAnunciosRef('+refIdx+')">Volver</button>'
+      +'<button class="btn btn-sm btn-primary" id="cap-leer" disabled onclick="leerCapturaAds()">Leer captura</button>'
+    +'</div></div></div>';
+}
+
+function capElegirArchivos(files){
+  var st=window._capState; if(!st) return;
+  var arr=[].slice.call(files||[]).slice(0,4);
+  st.imgs=[]; st.res=null;
+  var zona=document.getElementById('cap-zona');
+  var btn=document.getElementById('cap-leer');
+  var out=document.getElementById('cap-out'); if(out) out.innerHTML='';
+  if(!arr.length){ if(btn) btn.disabled=true; return; }
+  if(zona) zona.innerHTML='<div style="font-size:12.5px;color:var(--text2)">Preparando '+arr.length+' captura'+(arr.length>1?'s':'')+'...</div>';
+  Promise.all(arr.map(_imgABase64)).then(function(imgs){
+    st.imgs=imgs;
+    if(zona) zona.innerHTML='<div style="font-size:12.5px;color:var(--text)">'+imgs.length+' captura'+(imgs.length>1?'s':'')+' lista'+(imgs.length>1?'s':'')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px">'+imgs.map(function(x){return esc(x.nombre);}).join(' &middot; ')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:7px">Toca para cambiarlas</div>';
+    if(btn) btn.disabled=false;
+  }).catch(function(e){
+    if(zona) zona.innerHTML='<div style="font-size:12.5px;color:var(--redx)">'+esc(e.message)+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px">Toca para elegir otra</div>';
+    if(btn) btn.disabled=true;
+  });
+}
+
+async function leerCapturaAds(){
+  var st=window._capState; if(!st||!st.imgs.length) return;
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var r=getMercadoRefs(c)[st.refIdx]; if(!r) return;
+  var tipo=_refTipo(r);
+  var apiKey='';
+  try{ apiKey=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
+  if(!apiKey){ toast('Falta la API key de Anthropic','red'); openAnthropicKeyModal(); return; }
+  var btn=document.getElementById('cap-leer');
+  var out=document.getElementById('cap-out');
+  if(btn){ btn.disabled=true; btn.textContent='Leyendo...'; }
+  if(out) out.innerHTML='<div style="font-size:12px;color:var(--text3)">Mirando la captura. Puede tardar unos segundos.</div>';
+  var cp=getContentPlan(c);
+  var ejes=cp.ejes.map(function(e){return '- '+e.n;}).join('\n');
+  var hoy=new Date().toISOString().slice(0,10);
+  var instr=(tipo==='pauta'
+    ? 'Estas mirando capturas de la Biblioteca de Anuncios de Meta de la cuenta '+(r.handle?('@'+r.handle):(r.name||''))+'.\n'
+      +'Sacame CADA anuncio distinto que se vea completo. Ignora los que estan cortados por el borde de la captura.\n'
+      +'La fecha de inicio aparece como "Se empezo a publicar el DD de MES de AAAA". Pasala a formato AAAA-MM-DD.\n'
+      +'Si dice que usa varias versiones de la creatividad, poné cuantas en "variantes".\n'
+    : 'Estas mirando capturas de contenido organico de Instagram de la cuenta '+(r.handle?('@'+r.handle):(r.name||''))+'.\n'
+      +'Sacame CADA pieza distinta que se vea completa. Ignora las que estan cortadas por el borde.\n'
+      +'Si se ve la fecha de publicacion, pasala a AAAA-MM-DD. Si se ven vistas o reproducciones, poné el numero en "views".\n')
+    +'Hoy es '+hoy+'.\n';
+  var prompt=instr+'\n'
+    +'=== EJES DE COMUNICACION DEL CLIENTE "'+(c.name||'')+'" ===\n'+ejes+'\n\n'
+    +'Para cada pieza devolve:\n'
+    +'- texto: el copy tal como aparece escrito. Transcribilo, no lo resumas.\n'
+    +'- esVideo: true si es un video o reel, false si es imagen fija o carrusel.\n'
+    +'- fecha: AAAA-MM-DD o vacio si no se ve.\n'
+    +'- variantes: numero de versiones activas, o vacio.\n'
+    +'- views: numero de vistas si esta a la vista, o vacio.\n'
+    +'- formato: reel, estatico, carrusel, vsl u otro.\n'
+    +'- angulo: 3 a 7 palabras. NOMBRA el enfoque, no lo copies. Ej: "miedo a viajar solo por primera vez".\n'
+    +'- promesa: el resultado concreto que ofrece, una linea. Vacio si no promete nada. No la inventes.\n'
+    +'- dolor: el problema o deseo del que parte, una linea.\n'
+    +'- eje: copia EXACTO uno de los ejes de la lista, el que mas se parece. Vacio si ninguno encaja.\n'
+    +'- notas: maximo 2 lineas, que nos sirve replicar o evitar. Concreto.\n\n'
+    +'Si el texto de una pieza se ve cortado o ilegible, igual incluila con lo que se lea y dejalo asi. '
+    +'No inventes copy que no este en la imagen.\n\n'
+    +'Responde SOLO con un JSON array valido, sin markdown:\n'
+    +'[{"texto":"","esVideo":false,"fecha":"","variantes":"","views":"","formato":"","angulo":"","promesa":"","dolor":"","eje":"","notas":""}]';
+  var content=st.imgs.map(function(im){
+    return {type:'image', source:{type:'base64', media_type:im.media_type, data:im.data}};
+  });
+  content.push({type:'text', text:prompt});
+  try{
+    var res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,messages:[{role:'user',content:content}]})
+    });
+    var d=await res.json();
+    if(d.error) throw new Error(d.error.message);
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+    var ini=txt.indexOf('['), fin=txt.lastIndexOf(']');
+    if(ini<0||fin<=ini) throw new Error('La respuesta vino incompleta'+(d.stop_reason==='max_tokens'?' (corto por limite de tokens): proba con menos capturas por vez':''));
+    var arr=JSON.parse(txt.slice(ini,fin+1));
+    if(!Array.isArray(arr)||!arr.length) throw new Error('No encontre piezas legibles en la captura');
+    st.res=arr;
+    capRenderRevision();
+  }catch(e){
+    if(out) out.innerHTML='<div style="font-size:12px;color:var(--redx);line-height:1.6">'+esc(e.message)+'</div>';
+  }
+  if(btn){ btn.disabled=false; btn.textContent='Leer captura'; }
+}
+
+// Revision antes de importar: la lectura de una captura se equivoca mas que la de
+// un texto pegado, asi que nada entra sin que lo mires.
+function capRenderRevision(){
+  var st=window._capState; if(!st||!st.res) return;
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var r=getMercadoRefs(c)[st.refIdx];
+  var tipo=_refTipo(r);
+  var out=document.getElementById('cap-out'); if(!out) return;
+  var h='<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:9px">'
+    +'Encontre '+st.res.length+(st.res.length>1?' piezas':' pieza')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:8px;max-height:330px;overflow-y:auto">';
+  st.res.forEach(function(a,i){
+    var vid=!!a.esVideo;
+    h+='<label style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer">'
+      +'<input type="checkbox" id="cap-chk-'+i+'" checked style="margin-top:3px;accent-color:var(--green);flex-shrink:0">'
+      +'<span style="min-width:0;flex:1">'
+        +'<span style="display:block;font-size:12.5px;color:var(--strong);line-height:1.35">'+esc(a.angulo||'Sin angulo')+'</span>'
+        +(a.texto?'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:4px">'+esc(String(a.texto).slice(0,150))+(String(a.texto).length>150?'...':'')+'</span>':'')
+        +'<span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px">'
+          +(a.fecha?'<span class="pill pill-gray" style="font-size:10px">'+esc(a.fecha)+'</span>':'<span class="pill pill-gray" style="font-size:10px">sin fecha</span>')
+          +(Number(a.variantes)>1?'<span class="pill pill-blue" style="font-size:10px">'+Number(a.variantes)+' variantes</span>':'')
+          +(a.views?'<span class="pill pill-gray" style="font-size:10px">'+esc(String(a.views))+' vistas</span>':'')
+          +(vid?'<span class="pill pill-amber" style="font-size:10px">video &middot; falta el guion</span>':'')
+        +'</span>'
+      +'</span></label>';
+  });
+  h+='</div>';
+  var vids=st.res.filter(function(a){return a.esVideo;}).length;
+  if(vids){
+    h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:11px">'
+      +vids+(vids>1?' son videos':' es video')+'. La captura solo da el copy escrito: abri cada uno despues y pega la transcripcion para que el analisis sirva de algo.</div>';
+  }
+  h+='<button class="btn btn-sm btn-primary" style="width:100%;justify-content:center;margin-top:12px" onclick="capImportar()">Importar seleccionadas</button>';
+  out.innerHTML=h;
+}
+
+function capImportar(){
+  var st=window._capState; if(!st||!st.res) return;
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var r=getMercadoRefs(c)[st.refIdx]; if(!r) return;
+  var tipo=_refTipo(r);
+  var ads=getAnunciosRef(r);
+  var cp=getContentPlan(c);
+  var n=0;
+  st.res.forEach(function(a,i){
+    var chk=document.getElementById('cap-chk-'+i);
+    if(chk&&!chk.checked) return;
+    var ejeId='';
+    if(a.eje){
+      var m=cp.ejes.filter(function(e){return _adNorm(e.n)===_adNorm(a.eje);})[0];
+      if(m) ejeId=m.id;
+    }
+    var fmt=String(a.formato||'').toLowerCase();
+    if(['reel','estatico','carrusel','vsl','otro'].indexOf(fmt)<0) fmt=a.esVideo?'reel':'';
+    ads.push({id:_adId(), src:tipo, fecha:String(a.fecha||''), variantes:String(a.variantes||''),
+      views:String(a.views||''), destacado:false, link:'', texto:String(a.texto||''), guion:'',
+      angulo:String(a.angulo||''), promesa:String(a.promesa||''), dolor:String(a.dolor||''),
+      formato:fmt, eje:ejeId, notas:String(a.notas||''), deCaptura:true});
+    n++;
+  });
+  if(!n){ toast('No seleccionaste ninguna','red'); return; }
+  save();
+  if(S.tab==='mercado') renderTab();
+  abrirAnunciosRef(st.refIdx);
+  toast(n+(n>1?' piezas importadas':' pieza importada'));
 }
 
 // ---- Mapa de angulos: la lectura que solo aparece cruzando competidores ----
