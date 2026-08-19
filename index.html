@@ -12444,7 +12444,7 @@ function _adTodos(c){
   // Los nuestros entran al mapa pero como fuente aparte: si contaran para
   // "saturado", el mapa diria que un angulo lo valida el mercado cuando en
   // realidad lo estamos diciendo nosotros solos.
-  getNuestrosAds(c).forEach(function(a){
+  _ourVisibles(c).forEach(function(a){
     out.push({ad:{src:'nuestro', angulo:a.angulo, promesa:a.promesa, dolor:a.dolor,
       formato:a.formato, eje:a.eje, texto:a.texto, guion:a.guion, id:a.id, _our:a},
       ref:{name:'Nosotros'}, refIdx:-1});
@@ -12976,6 +12976,38 @@ function getNuestrosAds(c){
   if(!Array.isArray(c.ourAds)) c.ourAds=[];
   return c.ourAds;
 }
+// Que campanas contamos: las mismas que Top of Funnel. Se resuelve aca una vez
+// para que el sync, la lista y el mapa usen exactamente el mismo criterio.
+function _ourFiltroCamp(c){
+  var al=getActiveLine(c.conversionLines||[]);
+  var excl=((al&&al.excludedCampaigns)||[]).map(String);
+  var conocidas=((al&&al.metaCampaigns)||[]).map(function(x){return String(x.id);});
+  return {
+    hayConfig:!!(excl.length||conocidas.length),
+    ok:function(campId){
+      campId=String(campId||'');
+      if(!campId) return true;                     // sin dato: no alcanza para descartarlo
+      if(excl.indexOf(campId)>=0) return false;
+      if(conocidas.length && conocidas.indexOf(campId)<0) return false;
+      return true;
+    }
+  };
+}
+// Los que se muestran y se cuentan. Filtrar tambien al leer evita que una
+// sincronizacion vieja siga mostrando campanas ajenas hasta que alguien
+// se acuerde de volver a sincronizar.
+function _ourVisibles(c){
+  var f=_ourFiltroCamp(c);
+  if(!f.hayConfig) return getNuestrosAds(c);
+  return getNuestrosAds(c).filter(function(a){ return f.ok(a.campId); });
+}
+// Anuncios guardados antes de que se registrara la campana: no se pueden filtrar
+// y son los que ensucian la lista.
+function _ourSinCamp(c){
+  var f=_ourFiltroCamp(c);
+  if(!f.hayConfig) return 0;
+  return getNuestrosAds(c).filter(function(a){ return !a.campId; }).length;
+}
 // El copy vive en distintos lugares segun como se armo el anuncio: link ads
 // viejos, videos, y los dinamicos de Advantage+ que traen varias versiones.
 function _ourTexto(cr){
@@ -13119,21 +13151,13 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19g');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19i');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
   // Top of Funnel, asi no hay dos verdades sobre que campanas cuentan.
-  var _al=getActiveLine(c.conversionLines||[]);
-  var _excl=((_al&&_al.excludedCampaigns)||[]).map(String);
-  var _conocidas=((_al&&_al.metaCampaigns)||[]).map(function(x){return String(x.id);});
-  var _incluida=function(campId){
-    campId=String(campId||'');
-    if(!campId) return true;                       // sin dato: no lo escondemos
-    if(_excl.indexOf(campId)>=0) return false;     // excluida a mano
-    if(_conocidas.length && _conocidas.indexOf(campId)<0) return false;  // no es de las nuestras
-    return true;
-  };
+  var _f=_ourFiltroCamp(c);
+  var _incluida=function(campId){ return _f.ok(campId); };
   var camposFull='id,name,effective_status,created_time,campaign_id,campaign{name},preview_shareable_link,'
     +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
@@ -13162,16 +13186,16 @@ async function sincronizarNuestrosAds(clientId){
         throw new Error(msj);
       }
       (d.data||[]).forEach(function(ad){
-        if(!_incluida(ad.campaign_id)){ fuera++; return; }
+        if(!_incluida(ad.campaign_id)) fuera++;   // se guarda igual, la vista lo esconde
         var id=String(ad.id);
         vistos[id]=true;
         var ins=(ad.insights&&ad.insights.data&&ad.insights.data[0])||null;
         var prev=previos[id]||{};
         var texto=_ourTexto(ad.creative);
         var titulo=_ourTitulo(ad.creative), desc=_ourDesc(ad.creative);
-        // Si cambio cualquier parte del creativo, la lectura vieja ya no aplica:
-        // se limpia para que no quede un angulo describiendo algo que ya no dice.
-        // El titular cuenta tanto como el cuerpo: ahi suele estar el angulo.
+        // Si cambio el creativo, la lectura vieja queda sospechosa, pero NO se
+        // borra: se marca para revisar. Borrarla automaticamente tira trabajo
+        // que costo una llamada a la API y una revision humana.
         var cambio=(prev.texto!==undefined && prev.texto!==texto)
           || (prev.titulo!==undefined && prev.titulo!==titulo)
           || (prev.desc!==undefined && prev.desc!==desc);
@@ -13184,10 +13208,10 @@ async function sincronizarNuestrosAds(clientId){
           cta:_ourCta(ad.creative), destino:_ourDestino(ad.creative),
           thumb:(ad.creative&&ad.creative.thumbnail_url)||'', preview:ad.preview_shareable_link||'',
           guion:'',
-          angulo:cambio?'':(prev.angulo||''), promesa:cambio?'':(prev.promesa||''),
-          dolor:cambio?'':(prev.dolor||''), formato:prev.formato||'',
-          eje:cambio?'':(prev.eje||''), notas:cambio?'':(prev.notas||''),
-          copyCambio:cambio||!!prev.copyCambio&&cambio
+          angulo:prev.angulo||'', promesa:prev.promesa||'',
+          dolor:prev.dolor||'', formato:prev.formato||'',
+          eje:prev.eje||'', notas:prev.notas||'',
+          copyCambio:cambio||!!prev.copyCambio
         });
       });
       url=(d.paging&&d.paging.next)||'';
@@ -13199,12 +13223,25 @@ async function sincronizarNuestrosAds(clientId){
     toast('No pude leer los anuncios: '+err,'red');
     return;
   }
-  // Los que ya no vuelven de Meta (borrados) se van; los pausados siguen viniendo.
+  // Lo que Meta no devolvio esta vez: puede estar borrado, o puede ser un corte
+  // de pagina o un error puntual. Si tiene analisis o guion encima, se conserva
+  // marcado en vez de tirarse: rehacer ese trabajo cuesta mas que guardar la fila.
+  var conservados=0;
+  ads.forEach(function(a){
+    if(vistos[a.id]) return;
+    var tieneTrabajo=!!(a.angulo||a.promesa||a.dolor||a.notas||_ourGuion(c,a));
+    if(!tieneTrabajo) return;                  // sin nada encima, se deja ir
+    a.enMeta=false;                            // ya no vuelve de la cuenta
+    nuevos.push(a); conservados++;
+  });
+  nuevos.forEach(function(a){ if(vistos[a.id]) a.enMeta=true; });
   c.ourAds=nuevos;
   save();
   if(S.tab==='mercado') renderTab();
   var act=nuevos.filter(_ourActivo).length;
-  toast(nuevos.length+' anuncios ('+act+' activos)'+(fuera?', '+fuera+' fuera de las campanas incluidas':''));
+  toast(nuevos.length+' anuncios ('+act+' activos)'
+    +(fuera?', '+fuera+' de campanas que no gestionas':'')
+    +(conservados?', '+conservados+' conservados con su analisis':''));
 }
 
 // Lee el copy de un anuncio nuestro igual que el de la competencia. Se hace de a
@@ -13279,8 +13316,8 @@ function _ourLegible(c,a){ return !!(a.texto||a.titulo||a.desc||_ourGuion(c,a));
 // Una cuenta vieja junta decenas de pausados sin gasto que no aportan nada al
 // mapa, y leerlos todos cuesta una llamada cada uno.
 function _ourPendientes(c){
-  return getNuestrosAds(c)
-    .filter(function(a){ return !a.angulo && _ourLegible(c,a); })
+  return _ourVisibles(c)
+    .filter(function(a){ return (!a.angulo||a.copyCambio) && _ourLegible(c,a); })
     .sort(function(x,y){
       var ax=_ourActivo(x)?1:0, ay=_ourActivo(y)?1:0;
       if(ax!==ay) return ay-ax;
@@ -13324,7 +13361,7 @@ function abrirNuestroAd(adId){
       +(a.preview?'<a href="'+esc(a.preview)+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none">Ver en Meta &rarr;</a>':'')
       +'<span style="font-size:11px;color:var(--text3)">viene de Meta, no se edita aca</span>'
     +'</div>'
-    +(a.copyCambio?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:12px">El copy cambio desde la ultima lectura. Volve a analizarlo.</div>':'')
+    +(a.copyCambio?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:12px">El copy cambio desde la ultima lectura. La lectura de abajo es la vieja: volve a analizarlo o corregila a mano.</div>':'')
     +(a.titulo?'<div style="margin-bottom:11px"><div style="'+lbl+'">Titular'+((a.titulo.indexOf('---')>=0)?'<span style="color:var(--text3)"> &middot; varias versiones rotando</span>':'')+'</div>'
       +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;white-space:pre-wrap;line-height:1.5">'+esc(a.titulo)+'</div></div>':'')
     +(a.desc?'<div style="margin-bottom:11px"><div style="'+lbl+'">Descripcion</div>'
@@ -13401,21 +13438,8 @@ function guardarNuestroAd(adId){
   toast('Guardado');
 }
 
-// Los anuncios que quedaron de un sync anterior, cuando todavia se traia la
-// cuenta entera, se van solos en el proximo sync. Hasta entonces se avisa.
-function _ourAjenos(c){
-  var al=getActiveLine(c.conversionLines||[]);
-  var conocidas=((al&&al.metaCampaigns)||[]).map(function(x){return String(x.id);});
-  var excl=((al&&al.excludedCampaigns)||[]).map(String);
-  if(!conocidas.length && !excl.length) return 0;
-  return getNuestrosAds(c).filter(function(a){
-    var id=String(a.campId||'');
-    if(!id) return false;
-    return excl.indexOf(id)>=0 || (conocidas.length && conocidas.indexOf(id)<0);
-  }).length;
-}
 function nuestrosAdsHtml(c){
-  var ads=getNuestrosAds(c);
+  var ads=_ourVisibles(c);
   var conectado=!!(c.metaToken&&c.metaAccountId);
   var h='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>'
     +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">'
@@ -13450,10 +13474,11 @@ function nuestrosAdsHtml(c){
   var conGuion=ads.filter(function(a){ return !!_ourGuion(c,a); }).length;
   // Sin texto no es lo mismo que sin leer: no se arregla apretando el boton.
   var sinTexto=ads.filter(function(a){ return !a.angulo && !_ourLegible(c,a); }).length;
-  var ajenos=_ourAjenos(c);
-  if(ajenos){
+  var sinCamp=_ourSinCamp(c);
+  if(sinCamp){
     h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:10px">'
-      +'Hay '+ajenos+' anuncio'+(ajenos>1?'s':'')+' de campanas que no gestionas, de una sincronizacion vieja. Volve a sincronizar para sacarlos.</div>';
+      +'Hay '+sinCamp+' anuncio'+(sinCamp>1?'s':'')+' de una sincronizacion vieja, sin campana registrada: no los puedo filtrar. '
+      +'Toca "Sincronizar con Meta" y quedan solo los de las campanas que gestionas.</div>';
   }
   h+='<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
     +act+' activo'+(act===1?'':'s')+' de '+ads.length
@@ -13480,7 +13505,8 @@ function nuestrosAdsHtml(c){
           +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
           +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
           +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">con guion</span>':'')
-          +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio</span>':'')
+          +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio &middot; revisar</span>':'')
+          +(a.enMeta===false?'<span class="pill pill-gray" style="font-size:9.5px">ya no esta en Meta</span>':'')
           +(!a.angulo&&!_ourLegible(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">sin texto</span>':'')
         +'</span>'
       +'</span>'
