@@ -13119,7 +13119,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19d');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19e');   // para saber que version cargo el navegador
   var camposFull='id,name,effective_status,created_time,preview_shareable_link,'
     +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
@@ -13256,19 +13256,37 @@ async function analizarNuestroAd(adId, silencioso){
   }
 }
 
+// Un anuncio se puede leer si tiene algo escrito. Los que no tienen nada no se
+// intentan: gastarian una llamada para devolver vacio.
+function _ourLegible(c,a){ return !!(a.texto||a.titulo||a.desc||_ourGuion(c,a)); }
+// Orden de lectura: primero lo que esta al aire, despues lo que mas gasto tuvo.
+// Una cuenta vieja junta decenas de pausados sin gasto que no aportan nada al
+// mapa, y leerlos todos cuesta una llamada cada uno.
+function _ourPendientes(c){
+  return getNuestrosAds(c)
+    .filter(function(a){ return !a.angulo && _ourLegible(c,a); })
+    .sort(function(x,y){
+      var ax=_ourActivo(x)?1:0, ay=_ourActivo(y)?1:0;
+      if(ax!==ay) return ay-ax;
+      return (Number(y.gasto)||0)-(Number(x.gasto)||0);
+    });
+}
+var OUR_TANDA=15;   // techo por tanda: mantiene la espera y el costo acotados
 async function analizarNuestrosPendientes(){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
-  var pend=getNuestrosAds(c).filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); });
-  if(!pend.length){ toast('No hay anuncios sin leer'); return; }
+  var pend=_ourPendientes(c);
+  if(!pend.length){ toast('No hay anuncios con texto sin leer'); return; }
+  var tanda=pend.slice(0,OUR_TANDA);
   var btn=document.getElementById('our-analizar');
   var ok=0;
-  for(var i=0;i<pend.length;i++){
-    if(btn){ btn.disabled=true; btn.textContent='Leyendo '+(i+1)+' de '+pend.length+'...'; }
-    if(await analizarNuestroAd(pend[i].id, true)) ok++;
+  for(var i=0;i<tanda.length;i++){
+    if(btn){ btn.disabled=true; btn.textContent='Leyendo '+(i+1)+' de '+tanda.length+'...'; }
+    if(await analizarNuestroAd(tanda[i].id, true)) ok++;
   }
-  if(btn){ btn.disabled=false; btn.textContent='Leer los que faltan'; }
+  if(btn) btn.disabled=false;
   if(S.tab==='mercado') renderTab();
-  toast(ok+' de '+pend.length+' analizados');
+  var quedan=pend.length-ok;
+  toast(quedan>0?(ok+' analizados, quedan '+quedan+': tocá de nuevo para seguir'):(ok+' analizados'));
 }
 
 function abrirNuestroAd(adId){
@@ -13375,9 +13393,10 @@ function nuestrosAdsHtml(c){
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Nuestros anuncios</div>'
     +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">Los que corren en la cuenta de '+esc(c.name||'este cliente')+'. El estado y el tiempo al aire los da Meta, no hay que verificarlos a mano.</div></div>';
   if(conectado){
-    var pend=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); }).length;
+    var pend=_ourPendientes(c).length;
     h+='<span style="display:flex;gap:7px;flex-shrink:0">'
-      +(pend?'<button class="btn btn-sm" id="our-analizar" onclick="analizarNuestrosPendientes()">Leer los que faltan</button>':'')
+      +(pend?'<button class="btn btn-sm" id="our-analizar" onclick="analizarNuestrosPendientes()">Leer '
+        +(pend>OUR_TANDA?(OUR_TANDA+' de '+pend):('los '+pend))+'</button>':'')
       +'<button class="btn btn-sm btn-primary" id="our-sync" onclick="sincronizarNuestrosAds('+c.id+')">Sincronizar con Meta</button>'
       +'</span>';
   }
@@ -13398,13 +13417,21 @@ function nuestrosAdsHtml(c){
     return (_ourDias(y)||0)-(_ourDias(x)||0);
   });
   var act=ads.filter(_ourActivo).length;
-  var sinLeer=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo||a.desc||_ourGuion(c,a)); }).length;
+  var sinLeer=_ourPendientes(c).length;
   var conGuion=ads.filter(function(a){ return !!_ourGuion(c,a); }).length;
+  // Sin texto no es lo mismo que sin leer: no se arregla apretando el boton.
+  var sinTexto=ads.filter(function(a){ return !a.angulo && !_ourLegible(c,a); }).length;
   h+='<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
     +act+' activo'+(act===1?'':'s')+' de '+ads.length
     +(conGuion?(' &middot; '+conGuion+' con guion cargado'):'')
     +(sinLeer?(' &middot; <span style="color:var(--amberx)">'+sinLeer+' sin leer</span>'):'')
+    +(sinTexto?(' &middot; '+sinTexto+' sin texto para leer'):'')
     +'</div>';
+  if(sinLeer>OUR_TANDA){
+    h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:10px">'
+      +'Se leen de a '+OUR_TANDA+', empezando por los activos y los que mas gastaron: cada uno es una llamada a la API. '
+      +'Los pausados sin gasto podes dejarlos sin leer, casi no mueven el mapa.</div>';
+  }
   h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
   orden.slice(0,20).forEach(function(a){
     var sn=_ourSenal(a);
@@ -13419,6 +13446,7 @@ function nuestrosAdsHtml(c){
           +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
           +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">con guion</span>':'')
           +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio</span>':'')
+          +(!a.angulo&&!_ourLegible(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">sin texto</span>':'')
         +'</span>'
       +'</span>'
       +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px;flex-shrink:0" onclick="abrirNuestroAd(\''+a.id+'\')">Abrir</button>'
