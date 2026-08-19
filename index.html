@@ -13473,7 +13473,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19n');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19o');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -17247,6 +17247,8 @@ function embudoHojasHtml(topHtml, c){
 
 function montarHojas(c){
   S._hojaCliente=c;
+  // Una sola vez por dia y por cliente, y solo si hay algo que decir.
+  setTimeout(function(){ try{ abrirAvisosDelDia(c); }catch(e){ console.warn('avisos del dia:',e); } }, 400);
   if(S._hoja==='informes'||!S._hoja) kickLiveRefresh(c); // solo se autoactualiza si esta a la vista           // lo necesita setHoja para dibujar el funnel
   S._hojaVentasMontada=null; // se rearma al volver a entrar a la pestana
   S._arbolMontado=null;      // el contenedor es nuevo: hay que redibujarlo
@@ -23053,10 +23055,10 @@ function metaAvisos(c){
   var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
   if(!al) return [];
   var out=[], vistos={};
-  var push=function(tipo,titulo,detalle,donde){
+  var push=function(tipo,titulo,detalle,donde,adId,accion){
     var k=tipo+'|'+titulo+'|'+donde;
     if(vistos[k]) return; vistos[k]=true;
-    out.push({tipo:tipo,titulo:titulo,detalle:detalle,donde:donde});
+    out.push({tipo:tipo,titulo:titulo,detalle:detalle,donde:donde,adId:adId||'',accion:accion||''});
   };
   (al.metaCampaigns||[]).forEach(function(cp){
     if((al.excludedCampaigns||[]).indexOf(cp.id)>=0) return;
@@ -23070,7 +23072,7 @@ function metaAvisos(c){
           : 'El conjunto todavia esta optimizando. Los numeros de estos dias no son representativos.',
         as.name);
       (as.ads||[]).forEach(function(ad){
-        (ad.issues||[]).forEach(function(i){ push('issue',i.titulo,i.detalle,ad.name); });
+        (ad.issues||[]).forEach(function(i){ push('issue',i.titulo,i.detalle,ad.name,ad.id); });
       });
     });
   });
@@ -23079,17 +23081,77 @@ function metaAvisos(c){
   var etiqueta=metaEtiqueta;
   movs.slice(0,8).forEach(function(mv){
     var cuando=Math.max(0,Math.floor((Date.now()-mv.ts)/86400000));
-    var det=esc(mv.ad)+(mv.detalle?' \u00b7 '+esc(mv.detalle):'')
+    var det=String(mv.ad||'')+(mv.detalle?' \u00b7 '+String(mv.detalle):'')
       +(cuando===0?' \u00b7 hoy':' \u00b7 hace '+cuando+' dia'+(cuando>1?'s':''));
-    push('mov',etiqueta(mv),det,mv.donde);
+    push('mov',etiqueta(mv),det,mv.donde,mv.adId||'');
   });
   // Sync viejo: no viene de Meta pero es igual de importante
   if(al.metaSyncAt){
     var dias=Math.floor((Date.now()-new Date(al.metaSyncAt).getTime())/86400000);
-    if(dias>=3) push('info','Datos desactualizados','Ultima sincronizacion hace '+dias+' dias. Sincroniza antes de tomar decisiones.','');
+    if(dias>=3) push('info','Datos desactualizados','Ultima sincronizacion hace '+dias+' dias.','','','sync');
   }
   return out;
 }
+// ---- Aviso del dia: los avisos de Meta al entrar por primera vez ----
+// Mismo lenguaje visual que el panel de abajo (encabezado en mayusculas, punto
+// de color, titulo y detalle), pero centrado y con la accion en cada aviso.
+// Se muestra una vez por dia POR CLIENTE: cada cuenta tiene sus propios avisos.
+function _avisosClave(){ return 'evold-avisos-dia'; }
+function _avisosVistos(){
+  try{ return JSON.parse(localStorage.getItem(_avisosClave())||'{}')||{}; }catch(e){ return {}; }
+}
+function _avisosMarcarVisto(clientId){
+  try{
+    var m=_avisosVistos();
+    m[String(clientId)]=new Date().toISOString().slice(0,10);
+    localStorage.setItem(_avisosClave(), JSON.stringify(m));
+  }catch(e){}
+}
+function _avisosYaVisto(clientId){
+  var m=_avisosVistos();
+  return m[String(clientId)]===new Date().toISOString().slice(0,10);
+}
+// El color del punto es el mismo criterio que ya usa el panel de abajo.
+function _avisoColor(t){
+  return t==='issue'?'var(--amberx)':t==='mov'?'#378add':'var(--text3)';
+}
+function abrirAvisosDelDia(c, forzar){
+  if(!c) return;
+  if(!forzar && _avisosYaVisto(c.id)) return;
+  var av=metaAvisos(c);
+  if(!av.length) return;   // sin avisos no se interrumpe: un cartel vacio entrena a cerrarlo sin leer
+  _avisosMarcarVisto(c.id);
+  var root=document.getElementById('modal-root'); if(!root) return;
+  var actId=c.metaAccountId||'';
+  var filas=av.slice(0,8).map(function(a){
+    var accion='';
+    if(a.accion==='sync'){
+      accion='<div onclick="closeModal();syncMetaAds('+c.id+')" style="font-size:12px;color:var(--accent);margin-top:5px;cursor:pointer">Sincronizar ahora &rarr;</div>';
+    }else if(a.adId){
+      accion='<div onclick="closeModal();openAdPreview(\'\',\''+_jsEsc(String(a.adId))+'\',\''+_jsEsc(String(actId))+'\')" style="font-size:12px;color:var(--accent);margin-top:5px;cursor:pointer">Ver en Meta &rarr;</div>';
+    }
+    return '<div style="display:flex;gap:9px;align-items:flex-start;padding:7px 0">'
+      +'<span style="width:5px;height:5px;border-radius:50%;background:'+_avisoColor(a.tipo)+';margin-top:7px;flex-shrink:0"></span>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:12.5px;color:var(--strong)">'+esc(a.titulo)
+        +(a.donde?' <span style="color:var(--text3);font-weight:400">&middot; '+esc(a.donde)+'</span>':'')+'</div>'
+        +(a.detalle?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:2px;word-break:break-word">'+esc(a.detalle)+'</div>':'')
+        +accion
+      +'</div></div>';
+  }).join('');
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:470px;width:92%;padding:20px 22px">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:13px">'
+        +'Avisos de Meta &middot; '+av.length+(c.name?(' &middot; '+esc(c.name)):'')+'</div>'
+      +filas
+      +(av.length>8?'<div style="font-size:11px;color:var(--text3);margin-top:6px">y '+(av.length-8)+' mas abajo</div>':'')
+      +'<div style="display:flex;justify-content:flex-end;border-top:1px solid var(--border);padding-top:14px;margin-top:16px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Entendido</button>'
+      +'</div>'
+    +'</div></div>';
+}
+
 function metaAvisosHtml(c){
   var av=metaAvisos(c);
   if(!av.length) return '';
