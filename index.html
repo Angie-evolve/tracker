@@ -12411,6 +12411,7 @@ function _adFaltaGuion(a){
 // La senal unificada, para poder contar "lo que ya probo que funciona" mezclando
 // las dos fuentes sin comparar peras con manzanas.
 function _adSenal(a){
+  if(a.src==='nuestro') return _ourSenal(a._our||a);
   if((a.src||'organico')==='pauta'){
     var t=_adTramo(_adDias(a.fecha));
     return {ok:t.k==='gana', label:t.n, pill:t.p};
@@ -12438,6 +12439,14 @@ function _adTodos(c){
     getAnunciosRef(r).forEach(function(a){
       out.push({ad:a, ref:r, refIdx:i});
     });
+  });
+  // Los nuestros entran al mapa pero como fuente aparte: si contaran para
+  // "saturado", el mapa diria que un angulo lo valida el mercado cuando en
+  // realidad lo estamos diciendo nosotros solos.
+  getNuestrosAds(c).forEach(function(a){
+    out.push({ad:{src:'nuestro', angulo:a.angulo, promesa:a.promesa, dolor:a.dolor,
+      formato:a.formato, eje:a.eje, texto:a.texto, guion:a.guion, id:a.id, _our:a},
+      ref:{name:'Nosotros'}, refIdx:-1});
   });
   return out;
 }
@@ -12958,6 +12967,327 @@ function capImportar(){
   toast(n+(n>1?' piezas importadas':' pieza importada'));
 }
 
+// ---- Nuestros anuncios: los que corren en la cuenta del cliente ----
+// A diferencia de los de la competencia, estos no hay que verificarlos a mano:
+// Meta nos dice si siguen activos, asi que el tiempo al aire no se pudre solo.
+// Lo que la API NO da es el guion hablado de un video: eso sigue siendo manual.
+function getNuestrosAds(c){
+  if(!Array.isArray(c.ourAds)) c.ourAds=[];
+  return c.ourAds;
+}
+// El copy vive en distintos lugares segun como se armo el anuncio: link ads
+// viejos, videos, y los dinamicos de Advantage+ que traen varias versiones.
+function _ourTexto(cr){
+  if(!cr) return '';
+  var afs=cr.asset_feed_spec;
+  if(afs&&Array.isArray(afs.bodies)&&afs.bodies.length){
+    var ts=afs.bodies.map(function(b){return String(b.text||'').trim();}).filter(Boolean);
+    if(ts.length) return ts.join('\n---\n');
+  }
+  var oss=cr.object_story_spec;
+  if(oss){
+    if(oss.link_data&&oss.link_data.message) return String(oss.link_data.message);
+    if(oss.video_data&&oss.video_data.message) return String(oss.video_data.message);
+    if(oss.photo_data&&oss.photo_data.caption) return String(oss.photo_data.caption);
+  }
+  return String(cr.body||'');
+}
+function _ourTitulo(cr){
+  if(!cr) return '';
+  var afs=cr.asset_feed_spec;
+  if(afs&&Array.isArray(afs.titles)&&afs.titles.length) return String(afs.titles[0].text||'');
+  var oss=cr.object_story_spec;
+  if(oss&&oss.link_data&&oss.link_data.name) return String(oss.link_data.name);
+  return String(cr.title||'');
+}
+function _ourActivo(a){ return String(a.estado||'').toUpperCase()==='ACTIVE'; }
+// Dias al aire: hasta hoy si sigue corriendo, congelado en la ultima sync si ya
+// se pauso. Un anuncio pausado no sigue sumando antiguedad.
+function _ourDias(a){
+  var d=_adDias(String(a.creado||'').slice(0,10));
+  if(d===null) return null;
+  if(_ourActivo(a)) return d;
+  var hasta=_adDias(String(a.vistoAl||'').slice(0,10));
+  if(hasta===null) return d;
+  return Math.max(0, d-hasta);
+}
+function _ourSenal(a){
+  var d=_ourDias(a);
+  if(!_ourActivo(a)) return {ok:false, label:(d!==null?('pausado tras '+d+' dias'):'pausado'), pill:'pill-gray'};
+  if(d===null)  return {ok:false, label:'activo', pill:'pill-blue'};
+  if(d>=60)     return {ok:true,  label:d+' dias al aire', pill:'pill-green'};
+  if(d>=21)     return {ok:false, label:d+' dias al aire', pill:'pill-amber'};
+  return {ok:false, label:d+' dias al aire', pill:'pill-gray'};
+}
+
+async function sincronizarNuestrosAds(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  if(!c.metaToken||!c.metaAccountId){ toast('Falta conectar Meta para este cliente','red'); return; }
+  var btn=document.getElementById('our-sync');
+  if(btn){ btn.disabled=true; btn.textContent='Sincronizando...'; }
+  var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
+  var campos='id,name,effective_status,created_time,'
+    +'creative{id,body,title,object_story_spec,asset_feed_spec},'
+    +'insights.date_preset(maximum).limit(1){spend}';
+  var url='https://graph.facebook.com/v19.0/'+actId+'/ads?fields='+encodeURIComponent(campos)
+    +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
+  var ads=getNuestrosAds(c);
+  var previos={}; ads.forEach(function(a){ previos[a.id]=a; });
+  var hoy=new Date().toISOString().slice(0,10);
+  var nuevos=[], vistos={}, pags=0, err='';
+  try{
+    while(url && pags<6){
+      var res=await fetch(url);
+      var d=await res.json();
+      if(d.error) throw new Error(d.error.message||'Meta rechazo la consulta');
+      (d.data||[]).forEach(function(ad){
+        var id=String(ad.id);
+        vistos[id]=true;
+        var ins=(ad.insights&&ad.insights.data&&ad.insights.data[0])||null;
+        var prev=previos[id]||{};
+        var texto=_ourTexto(ad.creative);
+        // Si el copy cambio, la lectura vieja ya no aplica: se limpia para que no
+        // quede un angulo describiendo un anuncio que ya no dice eso.
+        var cambio=prev.texto!==undefined && prev.texto!==texto;
+        nuevos.push({
+          id:id, nombre:ad.name||'', estado:ad.effective_status||'',
+          creado:ad.created_time||prev.creado||'', vistoAl:hoy,
+          gasto:ins?parseFloat(ins.spend||0):(prev.gasto||0),
+          texto:texto, titulo:_ourTitulo(ad.creative),
+          guion:prev.guion||'',
+          angulo:cambio?'':(prev.angulo||''), promesa:cambio?'':(prev.promesa||''),
+          dolor:cambio?'':(prev.dolor||''), formato:prev.formato||'',
+          eje:cambio?'':(prev.eje||''), notas:cambio?'':(prev.notas||''),
+          copyCambio:cambio||!!prev.copyCambio&&cambio
+        });
+      });
+      url=(d.paging&&d.paging.next)||'';
+      pags++;
+    }
+  }catch(e){ err=e.message; }
+  if(err){
+    if(btn){ btn.disabled=false; btn.textContent='Sincronizar con Meta'; }
+    toast('No pude leer los anuncios: '+err,'red');
+    return;
+  }
+  // Los que ya no vuelven de Meta (borrados) se van; los pausados siguen viniendo.
+  c.ourAds=nuevos;
+  save();
+  if(S.tab==='mercado') renderTab();
+  var act=nuevos.filter(_ourActivo).length;
+  toast(nuevos.length+' anuncios ('+act+' activos)');
+}
+
+// Lee el copy de un anuncio nuestro igual que el de la competencia. Se hace de a
+// uno o en tanda, pero solo sobre los que no tienen angulo todavia.
+async function analizarNuestroAd(adId, silencioso){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return false;
+  var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return false;
+  var apiKey='';
+  try{ apiKey=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
+  if(!apiKey){ if(!silencioso){ toast('Falta la API key de Anthropic','red'); openAnthropicKeyModal(); } return false; }
+  var material=(a.titulo?('TITULO: '+a.titulo+'\n'):'')
+    +(a.texto?('COPY ESCRITO:\n'+a.texto+'\n'):'')
+    +(a.guion?('\nLO QUE SE DICE HABLADO:\n'+a.guion+'\n'):'');
+  if(!material.trim()){ if(!silencioso) toast('Este anuncio no tiene copy para leer','red'); return false; }
+  var cp=getContentPlan(c);
+  var ejes=cp.ejes.map(function(e){return '- '+e.n;}).join('\n');
+  var prompt='Sos un estratega de Meta Ads. Analizas un anuncio PROPIO de la cuenta "'+(c.name||'')+'" '
+    +'para poder compararlo contra lo que hace el mercado.\n\n'
+    +'=== EJES DE COMUNICACION DEL CLIENTE ===\n'+ejes+'\n\n'
+    +'=== NUESTRO ANUNCIO'+(a.nombre?(' ('+a.nombre+')'):'')+' ===\n'
+    +'Corre en Meta Ads: le habla a trafico frio.\n'
+    +material.slice(0,5000)+'\n\n'
+    +'Reglas:\n'
+    +'- angulo: 3 a 7 palabras. NOMBRA el enfoque, no lo copies del anuncio.\n'
+    +'- promesa: el resultado concreto que ofrece, una linea. Vacio si no promete nada.\n'
+    +'- dolor: el problema o deseo del que parte, una linea.\n'
+    +'- formato: reel, estatico, carrusel, vsl u otro. Si no se puede saber por el texto, poné otro.\n'
+    +'- eje: copia EXACTO uno de los ejes de la lista. Vacio si ninguno encaja.\n'
+    +'- notas: una linea. Vacio si no hay nada util que decir.\n\n'
+    +'Responde SOLO con un JSON valido, sin markdown:\n'
+    +'{"angulo":"","promesa":"","dolor":"","formato":"","eje":"","notas":""}';
+  try{
+    var res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:900,messages:[{role:'user',content:prompt}]})
+    });
+    var d=await res.json();
+    if(d.error) throw new Error(d.error.message);
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini) throw new Error('respuesta incompleta');
+    var o=JSON.parse(txt.slice(ini,fin+1));
+    a.angulo=o.angulo||''; a.promesa=o.promesa||''; a.dolor=o.dolor||'';
+    a.notas=o.notas||''; a.copyCambio=false;
+    var fmt=String(o.formato||'').toLowerCase();
+    if(['reel','estatico','carrusel','vsl','otro'].indexOf(fmt)>=0) a.formato=fmt;
+    if(o.eje){
+      var m=cp.ejes.filter(function(e){return _adNorm(e.n)===_adNorm(o.eje);})[0];
+      a.eje=m?m.id:'';
+    }
+    save();
+    return true;
+  }catch(e){
+    if(!silencioso) toast('No pude analizarlo: '+e.message,'red');
+    return false;
+  }
+}
+
+async function analizarNuestrosPendientes(){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var pend=getNuestrosAds(c).filter(function(a){ return !a.angulo && (a.texto||a.titulo); });
+  if(!pend.length){ toast('No hay anuncios sin leer'); return; }
+  var btn=document.getElementById('our-analizar');
+  var ok=0;
+  for(var i=0;i<pend.length;i++){
+    if(btn){ btn.disabled=true; btn.textContent='Leyendo '+(i+1)+' de '+pend.length+'...'; }
+    if(await analizarNuestroAd(pend[i].id, true)) ok++;
+  }
+  if(btn){ btn.disabled=false; btn.textContent='Leer los que faltan'; }
+  if(S.tab==='mercado') renderTab();
+  toast(ok+' de '+pend.length+' analizados');
+}
+
+function abrirNuestroAd(adId){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
+  var cp=getContentPlan(c);
+  var sn=_ourSenal(a);
+  var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
+  var fmts=['','reel','estatico','carrusel','vsl','otro'];
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">'+esc(a.nombre||'Anuncio nuestro')+'</div>'
+    +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:16px">'
+      +'<span class="pill '+sn.pill+'" style="font-size:10px">'+sn.label+'</span>'
+      +(a.gasto?'<span class="pill pill-gray" style="font-size:10px">'+Math.round(a.gasto)+' gastados</span>':'')
+      +'<span style="font-size:11px;color:var(--text3)">viene de Meta, no se edita aca</span>'
+    +'</div>'
+    +(a.copyCambio?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:12px">El copy cambio desde la ultima lectura. Volve a analizarlo.</div>':'')
+    +(a.titulo?'<div style="margin-bottom:11px"><div style="'+lbl+'">Titulo</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px">'+esc(a.titulo)+'</div></div>':'')
+    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Copy del anuncio</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:9px 11px;line-height:1.55;max-height:150px;overflow-y:auto;white-space:pre-wrap">'
+      +(a.texto?esc(a.texto):'<span style="color:var(--text3)">Sin copy de texto. Puede ser un anuncio que apoya todo en el video.</span>')+'</div></div>'
+    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Transcripcion del video'+(!a.guion?' <span style="color:var(--amberx)">&middot; la API no la da</span>':'')+'</div>'
+      +'<textarea id="our-guion" rows="4" placeholder="Si es video, pega aca lo que se dice hablado" style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.guion||'')+'</textarea></div>'
+    +'<button class="btn btn-sm" id="our-uno" style="width:100%;justify-content:center;margin-bottom:16px" onclick="analizarNuestroAdDesdeModal(\''+a.id+'\')">Analizar con IA</button>'
+    +'<div style="height:1px;background:var(--border);margin-bottom:14px"></div>'
+    +'<div style="display:flex;flex-direction:column;gap:11px">'
+      +'<div><div style="'+lbl+'">Angulo</div>'
+        +'<input id="our-angulo" value="'+esc(a.angulo||'')+'" placeholder="Con que enfoque ataca" style="'+inp+'"></div>'
+      +'<div><div style="'+lbl+'">Promesa</div>'
+        +'<input id="our-promesa" value="'+esc(a.promesa||'')+'" placeholder="Que resultado ofrece" style="'+inp+'"></div>'
+      +'<div><div style="'+lbl+'">Dolor o deseo que toca</div>'
+        +'<input id="our-dolor" value="'+esc(a.dolor||'')+'" placeholder="De que problema o ganas parte" style="'+inp+'"></div>'
+      +'<div style="display:flex;gap:10px">'
+        +'<div style="flex:1"><div style="'+lbl+'">Formato</div>'
+          +'<select id="our-formato" style="'+inp+'">'
+          +fmts.map(function(f){return '<option value="'+f+'"'+(String(a.formato||'')===f?' selected':'')+'>'+(f||'sin definir')+'</option>';}).join('')
+          +'</select></div>'
+        +'<div style="flex:1"><div style="'+lbl+'">Eje</div>'
+          +'<select id="our-eje" style="'+inp+'">'
+          +'<option value="">sin asignar</option>'
+          +cp.ejes.map(function(e){return '<option value="'+e.id+'"'+(a.eje===e.id?' selected':'')+'>'+esc(e.n)+'</option>';}).join('')
+          +'</select></div>'
+      +'</div>'
+      +'<div><div style="'+lbl+'">Notas</div>'
+        +'<textarea id="our-notas" rows="2" style="'+inp+';resize:vertical">'+esc(a.notas||'')+'</textarea></div>'
+    +'</div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="guardarNuestroAd(\''+a.id+'\')">Guardar</button>'
+    +'</div></div></div>';
+}
+
+async function analizarNuestroAdDesdeModal(adId){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
+  a.guion=((document.getElementById('our-guion')||{}).value||'').trim();
+  var btn=document.getElementById('our-uno');
+  if(btn){ btn.disabled=true; btn.textContent='Leyendo...'; }
+  var ok=await analizarNuestroAd(adId,false);
+  if(btn){ btn.disabled=false; btn.textContent='Analizar con IA'; }
+  if(ok) abrirNuestroAd(adId);
+}
+
+function guardarNuestroAd(adId){
+  var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
+  var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
+  var g=function(id){var e=document.getElementById(id); return e?String(e.value||'').trim():'';};
+  a.guion=g('our-guion'); a.angulo=g('our-angulo'); a.promesa=g('our-promesa');
+  a.dolor=g('our-dolor'); a.formato=g('our-formato'); a.eje=g('our-eje'); a.notas=g('our-notas');
+  if(a.angulo) a.copyCambio=false;
+  save(); closeModal();
+  if(S.tab==='mercado') renderTab();
+  toast('Guardado');
+}
+
+function nuestrosAdsHtml(c){
+  var ads=getNuestrosAds(c);
+  var conectado=!!(c.metaToken&&c.metaAccountId);
+  var h='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">'
+    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Nuestros anuncios</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">Los que corren en la cuenta de '+esc(c.name||'este cliente')+'. El estado y el tiempo al aire los da Meta, no hay que verificarlos a mano.</div></div>';
+  if(conectado){
+    var pend=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo); }).length;
+    h+='<span style="display:flex;gap:7px;flex-shrink:0">'
+      +(pend?'<button class="btn btn-sm" id="our-analizar" onclick="analizarNuestrosPendientes()">Leer los que faltan</button>':'')
+      +'<button class="btn btn-sm btn-primary" id="our-sync" onclick="sincronizarNuestrosAds('+c.id+')">Sincronizar con Meta</button>'
+      +'</span>';
+  }
+  h+='</div>';
+  if(!conectado){
+    return h+'<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:28px 20px;text-align:center">'
+      +'<div style="font-size:12.5px;color:var(--text2)">Este cliente no tiene Meta conectado.</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Cargale el token y el ID de cuenta en la ficha del cliente y volve.</div></div>';
+  }
+  if(!ads.length){
+    return h+'<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:28px 20px;text-align:center">'
+      +'<div style="font-size:12.5px;color:var(--text2)">Todavia no trajimos los anuncios.</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Toca sincronizar: bajo el copy y el estado de cada uno.</div></div>';
+  }
+  var orden=ads.slice().sort(function(x,y){
+    var ax=_ourActivo(x)?1:0, ay=_ourActivo(y)?1:0;
+    if(ax!==ay) return ay-ax;
+    return (_ourDias(y)||0)-(_ourDias(x)||0);
+  });
+  var act=ads.filter(_ourActivo).length;
+  var sinLeer=ads.filter(function(a){ return !a.angulo && (a.texto||a.titulo); }).length;
+  h+='<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
+    +act+' activo'+(act===1?'':'s')+' de '+ads.length
+    +(sinLeer?(' &middot; <span style="color:var(--amberx)">'+sinLeer+' sin leer</span>'):'')
+    +'</div>';
+  h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
+  orden.slice(0,20).forEach(function(a){
+    var sn=_ourSenal(a);
+    var eje=_adEje(c,a.eje);
+    h+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:11px 16px;border-bottom:1px solid var(--border)'+(_ourActivo(a)?'':';opacity:0.55')+'">'
+      +'<span style="min-width:0">'
+        +'<span style="display:block;font-size:12.5px;color:var(--strong);line-height:1.35;word-break:break-word">'
+          +(a.angulo?esc(a.angulo):'<span style="color:var(--text3)">Sin leer</span>')+'</span>'
+        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px;word-break:break-word">'+esc(a.nombre||'')+'</span>'
+        +'<span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">'
+          +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
+          +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
+          +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio</span>':'')
+        +'</span>'
+      +'</span>'
+      +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px;flex-shrink:0" onclick="abrirNuestroAd(\''+a.id+'\')">Abrir</button>'
+    +'</div>';
+  });
+  h+='</div>';
+  if(orden.length>20){
+    h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Mostrando 20 de '+orden.length+'. El mapa de abajo los cuenta todos.</div>';
+  }
+  return h;
+}
+
 // Abrir un angulo cierra el anterior: la lectura util es una a la vez, y con
 // varios abiertos la lista deja de escanearse de un vistazo.
 function mapaToggleAngulo(k){
@@ -12972,8 +13302,10 @@ function mapaAngulosHtml(c){
   var todos=_adTodos(c);
   if(!todos.length) return '';
   var cp=getContentPlan(c);
-  var nPauta=todos.filter(function(t){return (t.ad.src||'organico')==='pauta';}).length;
-  var nOrg=todos.length-nPauta;
+  var nPauta=todos.filter(function(t){return t.ad.src==='pauta';}).length;
+  var nNuestro=todos.filter(function(t){return t.ad.src==='nuestro';}).length;
+  var nOrg=todos.length-nPauta-nNuestro;
+  var mercado=todos.filter(function(t){return t.ad.src!=='nuestro';});
   var probados=todos.filter(function(t){return _adSenal(t.ad).ok;});
 
   // Angulos por cuenta distinta: si dos cuentas independientes atacan lo mismo,
@@ -12981,11 +13313,14 @@ function mapaAngulosHtml(c){
   var porAngulo={};
   todos.forEach(function(t){
     var k=_adNorm(t.ad.angulo); if(!k) return;
-    if(!porAngulo[k]) porAngulo[k]={key:k, label:t.ad.angulo, refs:{}, nombres:{}, items:[], n:0, pauta:0, org:0, prob:0};
+    if(!porAngulo[k]) porAngulo[k]={key:k, label:t.ad.angulo, refs:{}, nombres:{}, items:[], n:0, pauta:0, org:0, nuestro:0, prob:0};
     porAngulo[k].items.push(t);
     porAngulo[k].nombres[t.ref.name||('@'+(t.ref.handle||''))]=true;
-    porAngulo[k].refs[t.refIdx]=true; porAngulo[k].n++;
-    if((t.ad.src||'organico')==='pauta') porAngulo[k].pauta++; else porAngulo[k].org++;
+    if(t.refIdx>=0) porAngulo[k].refs[t.refIdx]=true;   // solo cuentas del mercado
+    porAngulo[k].n++;
+    if(t.ad.src==='nuestro') porAngulo[k].nuestro++;
+    else if(t.ad.src==='pauta') porAngulo[k].pauta++;
+    else porAngulo[k].org++;
     if(_adSenal(t.ad).ok) porAngulo[k].prob++;
   });
   var angulos=Object.keys(porAngulo).map(function(k){
@@ -13005,7 +13340,7 @@ function mapaAngulosHtml(c){
 
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px">'
     +'<div class="metric-card"><div class="metric-label">Material observado</div><div class="metric-value">'+todos.length+'</div>'
-      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'+nOrg+' organico &middot; '+nPauta+' pago</div></div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'+nOrg+' organico &middot; '+nPauta+' pago'+(nNuestro?(' &middot; '+nNuestro+' nuestros'):'')+'</div></div>'
     +'<div class="metric-card"><div class="metric-label">Ya probaron que funcionan</div><div class="metric-value" style="color:var(--accent)">'+probados.length+'</div>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">60+ dias al aire o se despegaron</div></div>'
     +'<div class="metric-card"><div class="metric-label">Angulos distintos</div><div class="metric-value">'+angulos.length+'</div></div>'
@@ -13040,9 +13375,13 @@ function mapaAngulosHtml(c){
     h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
       +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Angulos en juego</div>';
     angulos.slice(0,14).forEach(function(a){
-      var fuente=(a.pauta&&a.org)?'<span class="pill pill-teal" style="font-size:10px">organico y pago</span>'
+      var mkt=a.pauta+a.org;
+      var fuente=(mkt?((a.pauta&&a.org)?'<span class="pill pill-teal" style="font-size:10px">organico y pago</span>'
         :a.pauta?'<span class="pill pill-blue" style="font-size:10px">solo pago</span>'
-        :'<span class="pill pill-gray" style="font-size:10px">solo organico</span>';
+        :'<span class="pill pill-gray" style="font-size:10px">solo organico</span>'):'')
+        +(a.nuestro?'<span class="pill pill-teal" style="font-size:10px">nosotros</span>':'')
+        +(a.nuestro&&!mkt?'<span class="pill pill-amber" style="font-size:10px">nadie mas lo usa</span>':'')
+        +(!a.nuestro&&mkt&&nNuestro?'<span class="pill pill-amber" style="font-size:10px">no lo usamos</span>':'');
       var nombres=Object.keys(a.nombres);
       var abierto=(S.mercadoAng===a.key);
       h+='<div style="border-bottom:1px solid var(--border)">'
@@ -13078,7 +13417,8 @@ function mapaAngulosHtml(c){
                 +(_adFaltaGuion(t.ad)?'<span class="pill pill-amber" style="font-size:9.5px">falta el guion</span>':'')
               +'</span>'
             +'</span>'
-            +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px;flex-shrink:0" onclick="event.stopPropagation();abrirAnuncio('+t.refIdx+',\''+t.ad.id+'\')">Abrir</button>'
+            +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px;flex-shrink:0" onclick="event.stopPropagation();'
+              +(t.refIdx<0?('abrirNuestroAd(\''+t.ad.id+'\')'):('abrirAnuncio('+t.refIdx+',\''+t.ad.id+'\')'))+'">Abrir</button>'
           +'</div>';
         });
         h+='</div>';
@@ -13090,6 +13430,29 @@ function mapaAngulosHtml(c){
       h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:12px">'
         +'Un angulo que solo aparece organico todavia no probo que aguante trafico frio: le habla a gente que ya conoce la cuenta. '
         +'Los que estan en las dos columnas son los mas seguros para llevar a pauta.</div>';
+    }
+    // La comparacion contra lo nuestro: el hueco entre lo que el mercado ya probo
+    // y lo que nosotros estamos diciendo es la lista de que testear proximo.
+    if(nNuestro){
+      var libres=angulos.filter(function(a){ return !a.nuestro && (a.pauta+a.org) && a.prob; });
+      var solos=angulos.filter(function(a){ return a.nuestro && !(a.pauta+a.org); });
+      if(libres.length||solos.length){
+        h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-top:16px">'
+          +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Nosotros contra el mercado</div>';
+        if(libres.length){
+          h+='<div style="padding:12px 16px;border-bottom:1px solid var(--border)">'
+            +'<div style="font-size:12px;color:var(--text);margin-bottom:5px">El mercado ya probo '+libres.length+' angulo'+(libres.length>1?'s':'')+' que no estamos usando</div>'
+            +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'+libres.slice(0,6).map(function(a){return esc(a.label);}).join(' &middot; ')+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Son los candidatos mas baratos de testear: alguien ya banco la prueba.</div></div>';
+        }
+        if(solos.length){
+          h+='<div style="padding:12px 16px;border-bottom:1px solid var(--border)">'
+            +'<div style="font-size:12px;color:var(--text);margin-bottom:5px">Estamos solos en '+solos.length+' angulo'+(solos.length>1?'s':'')+'</div>'
+            +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'+solos.slice(0,6).map(function(a){return esc(a.label);}).join(' &middot; ')+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Puede ser una ventaja real o puede ser que el mercado ya lo probo y lo descarto. Miralo contra el rendimiento de esos anuncios.</div></div>';
+        }
+        h+='</div>';
+      }
     }
   }
   return h;
@@ -14084,6 +14447,7 @@ function renderTab(){
         }).join('')
       +'</div>';
     }
+    html+=nuestrosAdsHtml(c);
     html+=mapaAngulosHtml(c);
     html+='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>';
     html+=calendarioContenidoHtml(c);
