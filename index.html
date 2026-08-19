@@ -13016,7 +13016,7 @@ function _ourDesc(cr){
   }
   var oss=cr.object_story_spec;
   if(oss&&oss.link_data&&oss.link_data.description) return String(oss.link_data.description);
-  return String(cr.link_description||'');
+  return '';
 }
 // Boton. Dice mucho de la temperatura a la que le habla el anuncio: no es lo
 // mismo "Mas informacion" que "Reservar ahora".
@@ -13056,15 +13056,34 @@ function _ctaNombre(k){
   }).filter(Boolean).join(', ');
 }
 function _ourActivo(a){ return String(a.estado||'').toUpperCase()==='ACTIVE'; }
-// El guion ya lo cargan en la tabla de anuncios de Ventas, indexado por el mismo
-// id de Meta. Se lee de ahi: tener dos lugares para el mismo texto garantiza que
-// uno de los dos quede viejo.
-function _ourGuion(c,a){
-  var g=(c.adScriptsByAd&&c.adScriptsByAd[a.id]&&c.adScriptsByAd[a.id].guion)||'';
-  return g||String(a.guion||'');
+// El guion se carga en Ventas, pero en DOS lugares distintos segun por donde se
+// entro: la tabla de anuncios lo guarda por id de Meta (adScriptsByAd) y el panel
+// que se abre al segmentar por anuncio lo guarda por nombre normalizado
+// (adScripts). Aca se leen los dos, si no la mitad de los guiones son invisibles.
+function _ourClaveNombre(a){ return _n(a.nombre||''); }
+function _ourGuionFuente(c,a){
+  var porId=(c.adScriptsByAd&&c.adScriptsByAd[a.id])||null;
+  if(porId&&porId.guion) return {donde:'id', reg:porId, guion:String(porId.guion)};
+  var k=_ourClaveNombre(a);
+  var porNombre=(k&&c.adScripts&&c.adScripts[k])||null;
+  if(porNombre&&porNombre.guion) return {donde:'nombre', reg:porNombre, guion:String(porNombre.guion)};
+  if(a.guion) return {donde:'local', reg:null, guion:String(a.guion)};
+  return {donde:'', reg:null, guion:''};
 }
+function _ourGuion(c,a){ return _ourGuionFuente(c,a).guion; }
+// Al escribir se respeta donde ya vivia, para no crear una segunda copia que
+// despues quede vieja. Si no existia en ningun lado, se guarda por id.
 function _ourSetGuion(c,a,txt){
   txt=String(txt||'').trim();
+  var f=_ourGuionFuente(c,a);
+  if(f.donde==='nombre'){
+    var k=_ourClaveNombre(a);
+    var pn=c.adScripts[k]||{};
+    if(!txt && !pn.notas){ delete c.adScripts[k]; }
+    else { c.adScripts[k]={guion:txt, notas:pn.notas||'', updatedAt:new Date().toISOString()}; }
+    a.guion='';
+    return;
+  }
   if(!c.adScriptsByAd) c.adScriptsByAd={};
   var prev=c.adScriptsByAd[a.id]||{};
   if(!txt && !prev.notas){ delete c.adScriptsByAd[a.id]; }
@@ -13100,6 +13119,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
+  console.log('[tracker] mercado build 2026-08-19d');   // para saber que version cargo el navegador
   var camposFull='id,name,effective_status,created_time,preview_shareable_link,'
     +'creative{id,body,title,thumbnail_url,object_story_spec,asset_feed_spec},'
     +'insights.date_preset(maximum).limit(1){spend}';
@@ -13256,7 +13276,7 @@ function abrirNuestroAd(adId){
   var a=getNuestrosAds(c).filter(function(x){return x.id===adId;})[0]; if(!a) return;
   var cp=getContentPlan(c);
   var sn=_ourSenal(a);
-  var gu=_ourGuion(c,a);
+  var gf=_ourGuionFuente(c,a), gu=gf.guion;
   var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
   var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
   var fmts=['','reel','estatico','carrusel','vsl','otro'];
@@ -13288,7 +13308,10 @@ function abrirNuestroAd(adId){
       +(gu?'':'<div id="our-guion-link" onclick="document.getElementById(\'our-guion-box\').style.display=\'block\';this.style.display=\'none\'" '
         +'style="font-size:11.5px;color:var(--accent);cursor:pointer">Sumar el guion de este anuncio</div>')
       +'<div id="our-guion-box" style="display:'+(gu?'block':'none')+'">'
-        +'<div style="'+lbl+'">Guion<span style="color:var(--text3)"> &middot; el mismo que cargas en Ventas</span></div>'
+        +'<div style="'+lbl+'">Guion<span style="color:var(--text3)"> &middot; '
+          +(gf.donde==='nombre'?'cargado en Ventas, en el panel del anuncio'
+            :gf.donde==='id'?'cargado en la tabla de anuncios de Ventas'
+            :'se guarda junto con los de Ventas')+'</span></div>'
         +'<textarea id="our-guion" rows="4" placeholder="Lo que se dice en el video" style="'+inp+';resize:vertical;line-height:1.55">'+esc(gu)+'</textarea>'
       +'</div></div>'
     +'<button class="btn btn-sm" id="our-uno" style="width:100%;justify-content:center;margin-bottom:16px" onclick="analizarNuestroAdDesdeModal(\''+a.id+'\')">Analizar con IA</button>'
