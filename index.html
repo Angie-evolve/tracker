@@ -12329,6 +12329,11 @@ function abrirRefMercado(idx){
       +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Instagram</div>'
         +'<input id="mr-url" value="'+esc(r.url||(r.handle?'@'+r.handle:''))+'" placeholder="@usuario o link" style="'+inp+'" '
         +'onkeydown="if(event.key===\'Enter\')guardarRefMercado('+arg+')"></div>'
+      +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Que miramos de esta cuenta</div>'
+        +'<select id="mr-tipo" style="'+inp+'">'
+        +'<option value="organico"'+(_refTipo(r)==='organico'?' selected':'')+'>Contenido organico (reels, posteos)</option>'
+        +'<option value="pauta"'+(_refTipo(r)==='pauta'?' selected':'')+'>Anuncios que pauta (Ad Library)</option>'
+        +'</select></div>'
       +'<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px">Nota (opcional)</div>'
         +'<textarea id="mr-note" rows="3" placeholder="Que nos interesa de esta cuenta" style="'+inp+';resize:vertical">'+esc(r.note||'')+'</textarea></div>'
     +'</div>'
@@ -12346,7 +12351,7 @@ function guardarRefMercado(idx){
   var note=((document.getElementById('mr-note')||{}).value||'').trim();
   var p=_igParse(raw);
   if(!name && !p.handle){ toast('Pone al menos el nombre o el link','red'); return; }
-  var obj={name:name, handle:p.handle, url:p.url, note:note};
+  var obj={name:name, handle:p.handle, url:p.url, note:note, tipo:(((document.getElementById('mr-tipo')||{}).value)||'organico')};
   if(idx===null||idx===undefined) refs.push(obj);
   else refs[idx]=Object.assign({},refs[idx]||{},obj);
   save(); closeModal();
@@ -12380,13 +12385,34 @@ function _adDias(f){
   var dias=Math.floor((Date.now()-d.getTime())/86400000);
   return dias<0?0:dias;
 }
-// Lectura del tiempo al aire. 60 dias es el corte para decir "esto convierte":
-// nadie sostiene presupuesto dos meses en algo que no le rinde.
+// Una cuenta se mira por lo que pauta o por lo que publica organico. Cambia el
+// material que se carga y, sobre todo, cambia la senal de que algo funciona:
+// en pauta es el tiempo al aire, en organico es haberse despegado del promedio.
+function _refTipo(r){ return (r&&r.tipo==='pauta')?'pauta':'organico'; }
+function _refPal(tipo){
+  return tipo==='pauta'
+    ? {uno:'anuncio', varios:'anuncios', boton:'Anuncios', vacio:'sin anuncios cargados'}
+    : {uno:'pieza',   varios:'piezas',   boton:'Piezas',   vacio:'sin piezas cargadas'};
+}
+// Lectura del tiempo al aire de un anuncio. 60 dias es el corte para decir "esto
+// convierte": nadie sostiene presupuesto dos meses en algo que no le rinde.
 function _adTramo(dias){
   if(dias===null) return {k:'sf',n:'Sin fecha',p:'pill-gray'};
   if(dias>=60)    return {k:'gana',n:dias+' dias al aire',p:'pill-green'};
   if(dias>=21)    return {k:'medio',n:dias+' dias al aire',p:'pill-amber'};
   return {k:'test',n:dias+' dias al aire',p:'pill-gray'};
+}
+// La senal unificada, para poder contar "lo que ya probo que funciona" mezclando
+// las dos fuentes sin comparar peras con manzanas.
+function _adSenal(a){
+  if((a.src||'organico')==='pauta'){
+    var t=_adTramo(_adDias(a.fecha));
+    return {ok:t.k==='gana', label:t.n, pill:t.p};
+  }
+  var v=Number(String(a.views||'').replace(/[^0-9]/g,''));
+  var txt=v?(v>=1000?(Math.round(v/100)/10+'k vistas'):(v+' vistas')):'Sin dato de alcance';
+  if(a.destacado) return {ok:true, label:(v?txt+' &middot; se despego':'Se despego del promedio'), pill:'pill-green'};
+  return {ok:false, label:txt, pill:'pill-gray'};
 }
 // Normaliza un angulo para poder agrupar los que dicen lo mismo con otras palabras.
 function _adNorm(s){
@@ -12414,28 +12440,37 @@ function _adTodos(c){
 function abrirAnunciosRef(refIdx){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
   var r=getMercadoRefs(c)[refIdx]; if(!r) return;
+  var tipo=_refTipo(r), P=_refPal(tipo);
   var ads=getAnunciosRef(r).slice().sort(function(x,y){
-    var dx=_adDias(x.fecha), dy=_adDias(y.fecha);
-    if(dx===null) return 1; if(dy===null) return -1;
-    return dy-dx;
+    var sx=_adSenal(x).ok?1:0, sy=_adSenal(y).ok?1:0;
+    if(sx!==sy) return sy-sx;
+    return String(y.fecha||'').localeCompare(String(x.fecha||''));
   });
-  var quien=r.name||('@'+(r.handle||''))||'este competidor';
+  var quien=r.name||('@'+(r.handle||''))||'este referente';
   var h=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:680px;width:94%">'
     +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px">'
-      +'<div><div class="modal-title" style="margin-bottom:3px">Anuncios de '+esc(quien)+'</div>'
-      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5">Pega el copy o el guion de cada anuncio que te llame la atencion. La fecha de inicio esta en la tarjeta de la Ad Library.</div></div>'
-      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="abrirAnuncio('+refIdx+',null)">Agregar anuncio</button>'
+      +'<div><div class="modal-title" style="margin-bottom:3px">'+esc(P.varios.charAt(0).toUpperCase()+P.varios.slice(1))+' de '+esc(quien)+'</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5">'
+      +(tipo==='pauta'
+        ? 'Pega el copy o el guion de cada anuncio que te llame la atencion. La fecha de inicio esta en la tarjeta de la Ad Library.'
+        : 'Pega el guion o el texto de cada pieza que quieras estudiar. Marca las que se despegaron del promedio de la cuenta.')
+      +'</div></div>'
+      +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="abrirAnuncio('+refIdx+',null)">Agregar '+esc(P.uno)+'</button>'
     +'</div>';
   if(!ads.length){
     h+='<div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--radius);padding:28px 20px;text-align:center">'
-      +'<div style="font-size:12.5px;color:var(--text2)">Todavia no cargaste anuncios de esta cuenta.</div>'
-      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Empeza por los que lleven mas tiempo corriendo: son los que ya probaron que funcionan.</div></div>';
+      +'<div style="font-size:12.5px;color:var(--text2)">Todavia no cargaste '+esc(P.varios)+' de esta cuenta.</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">'
+      +(tipo==='pauta'
+        ? 'Empeza por los que lleven mas tiempo corriendo: son los que ya probaron que funcionan.'
+        : 'Empeza por las que hayan reventado: las que claramente rindieron mas que el resto de la cuenta.')
+      +'</div></div>';
   }else{
     h+='<div style="display:flex;flex-direction:column;gap:8px">';
     ads.forEach(function(a){
-      var t=_adTramo(_adDias(a.fecha));
+      var sn=_adSenal(a);
       var eje=_adEje(c,a.eje);
       h+='<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px">'
         +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">'
@@ -12450,7 +12485,7 @@ function abrirAnunciosRef(refIdx){
           +'</span>'
         +'</div>'
         +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:9px">'
-          +'<span class="pill '+t.p+'" style="font-size:10px">'+t.n+'</span>'
+          +'<span class="pill '+sn.pill+'" style="font-size:10px">'+sn.label+'</span>'
           +(Number(a.variantes)>1?'<span class="pill pill-blue" style="font-size:10px">'+Number(a.variantes)+' variantes</span>':'')
           +(a.formato?'<span class="pill pill-gray" style="font-size:10px">'+esc(a.formato)+'</span>':'')
           +(eje?'<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text3)"><span style="width:6px;height:6px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
@@ -12469,28 +12504,44 @@ function abrirAnuncio(refIdx, adId){
   var c=DB.clients.find(function(x){return x.id===S.clientId;}); if(!c) return;
   var r=getMercadoRefs(c)[refIdx]; if(!r) return;
   var ads=getAnunciosRef(r);
+  var tipo=_refTipo(r), P=_refPal(tipo);
   var nuevo=(adId===null||adId===undefined);
-  var a=nuevo?{id:_adId(),fecha:'',variantes:'',texto:'',angulo:'',promesa:'',dolor:'',formato:'',eje:'',notas:''}
+  var a=nuevo?{id:_adId(),src:tipo,fecha:'',variantes:'',views:'',destacado:false,link:'',texto:'',angulo:'',promesa:'',dolor:'',formato:'',eje:'',notas:''}
              :ads.filter(function(x){return x.id===adId;})[0];
   if(!a) return;
-  window._adDraft={refIdx:refIdx, adId:nuevo?null:a.id};
+  window._adDraft={refIdx:refIdx, adId:nuevo?null:a.id, src:(a.src||tipo)};
+  var src=a.src||tipo;
   var cp=getContentPlan(c);
   var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
   var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
   var fmts=['','reel','estatico','carrusel','vsl','otro'];
+  var cab=src==='pauta'
+    ? '<div style="display:flex;gap:10px;margin-bottom:11px">'
+       +'<div style="flex:1"><div style="'+lbl+'">Fecha de inicio</div>'
+         +'<input id="ad-fecha" type="date" value="'+esc(a.fecha||'')+'" style="'+inp+'"></div>'
+       +'<div style="width:130px"><div style="'+lbl+'">Variantes activas</div>'
+         +'<input id="ad-var" type="number" min="1" value="'+esc(a.variantes||'')+'" placeholder="1" style="'+inp+'"></div>'
+      +'</div>'
+    : '<div style="display:flex;gap:10px;margin-bottom:11px">'
+       +'<div style="flex:1"><div style="'+lbl+'">Fecha de publicacion</div>'
+         +'<input id="ad-fecha" type="date" value="'+esc(a.fecha||'')+'" style="'+inp+'"></div>'
+       +'<div style="width:130px"><div style="'+lbl+'">Vistas</div>'
+         +'<input id="ad-views" value="'+esc(a.views||'')+'" placeholder="ej 84000" style="'+inp+'"></div>'
+      +'</div>'
+      +'<label style="display:flex;align-items:flex-start;gap:9px;margin-bottom:11px;cursor:pointer">'
+       +'<input id="ad-dest" type="checkbox"'+(a.destacado?' checked':'')+' style="margin-top:2px;accent-color:var(--green)">'
+       +'<span><span style="font-size:12.5px;color:var(--text)">Se despego del promedio de la cuenta</span>'
+       +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">Marcalo solo si rindio claramente mas que el resto de lo que publican. Es la unica senal de que el angulo funciono.</span></span></label>'
+      +'<div style="margin-bottom:11px"><div style="'+lbl+'">Link a la pieza (opcional)</div>'
+        +'<input id="ad-link" value="'+esc(a.link||'')+'" placeholder="https://instagram.com/reel/..." style="'+inp+'"></div>';
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:560px;width:94%">'
-    +'<div class="modal-title" style="margin-bottom:3px">'+(nuevo?'Nuevo anuncio':'Anuncio')+'</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px;line-height:1.5">De '+esc(r.name||('@'+(r.handle||''))||'este competidor')+'</div>'
-    +'<div style="display:flex;gap:10px;margin-bottom:11px">'
-      +'<div style="flex:1"><div style="'+lbl+'">Fecha de inicio</div>'
-        +'<input id="ad-fecha" type="date" value="'+esc(a.fecha||'')+'" style="'+inp+'"></div>'
-      +'<div style="width:130px"><div style="'+lbl+'">Variantes activas</div>'
-        +'<input id="ad-var" type="number" min="1" value="'+esc(a.variantes||'')+'" placeholder="1" style="'+inp+'"></div>'
-    +'</div>'
-    +'<div style="margin-bottom:11px"><div style="'+lbl+'">Copy o guion del anuncio</div>'
-      +'<textarea id="ad-texto" rows="6" placeholder="Pega el texto del anuncio o la transcripcion del reel" style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.texto||'')+'</textarea></div>'
+    +'<div class="modal-title" style="margin-bottom:3px">'+(nuevo?('Nuev'+(src==='pauta'?'o anuncio':'a pieza')):(src==='pauta'?'Anuncio':'Pieza'))+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:16px;line-height:1.5">De '+esc(r.name||('@'+(r.handle||''))||'este referente')+'</div>'
+    +cab
+    +'<div style="margin-bottom:11px"><div style="'+lbl+'">'+(src==='pauta'?'Copy o guion del anuncio':'Guion o texto de la pieza')+'</div>'
+      +'<textarea id="ad-texto" rows="6" placeholder="'+(src==='pauta'?'Pega el texto del anuncio o la transcripcion del reel':'Pega la transcripcion del reel o el copy del posteo')+'" style="'+inp+';resize:vertical;line-height:1.55">'+esc(a.texto||'')+'</textarea></div>'
     +'<button class="btn btn-sm" id="ad-analizar" style="width:100%;justify-content:center;margin-bottom:16px" onclick="analizarAnuncioIA()">Analizar con IA</button>'
     +'<div style="height:1px;background:var(--border);margin-bottom:14px"></div>'
     +'<div id="ad-lectura" style="display:flex;flex-direction:column;gap:11px">'
@@ -12498,8 +12549,8 @@ function abrirAnuncio(refIdx, adId){
         +'<input id="ad-angulo" value="'+esc(a.angulo||'')+'" placeholder="Con que enfoque ataca" style="'+inp+'"></div>'
       +'<div><div style="'+lbl+'">Promesa</div>'
         +'<input id="ad-promesa" value="'+esc(a.promesa||'')+'" placeholder="Que resultado ofrece" style="'+inp+'"></div>'
-      +'<div><div style="'+lbl+'">Dolor que ataca</div>'
-        +'<input id="ad-dolor" value="'+esc(a.dolor||'')+'" placeholder="De que problema parte" style="'+inp+'"></div>'
+      +'<div><div style="'+lbl+'">Dolor o deseo que toca</div>'
+        +'<input id="ad-dolor" value="'+esc(a.dolor||'')+'" placeholder="De que problema o ganas parte" style="'+inp+'"></div>'
       +'<div style="display:flex;gap:10px">'
         +'<div style="flex:1"><div style="'+lbl+'">Formato</div>'
           +'<select id="ad-formato" style="'+inp+'">'
@@ -12528,8 +12579,10 @@ function guardarAnuncio(){
   var ads=getAnunciosRef(r);
   var g=function(id){var e=document.getElementById(id); return e?String(e.value||'').trim():'';};
   var texto=g('ad-texto');
-  if(!texto && !g('ad-angulo')){ toast('Pega el texto del anuncio o escribi el angulo','red'); return; }
-  var obj={fecha:g('ad-fecha'), variantes:g('ad-var'), texto:texto, angulo:g('ad-angulo'),
+  if(!texto && !g('ad-angulo')){ toast('Pega el texto o escribi el angulo','red'); return; }
+  var chk=document.getElementById('ad-dest');
+  var obj={src:d.src||_refTipo(r), fecha:g('ad-fecha'), variantes:g('ad-var'), views:g('ad-views'),
+    destacado:!!(chk&&chk.checked), link:g('ad-link'), texto:texto, angulo:g('ad-angulo'),
     promesa:g('ad-promesa'), dolor:g('ad-dolor'), formato:g('ad-formato'), eje:g('ad-eje'), notas:g('ad-notas')};
   if(d.adId){
     var a=ads.filter(function(x){return x.id===d.adId;})[0];
@@ -12571,16 +12624,23 @@ async function analizarAnuncioIA(){
   if(btn){ btn.disabled=true; btn.textContent='Leyendo el anuncio...'; }
   var cp=getContentPlan(c);
   var ejes=cp.ejes.map(function(e){return '- '+e.n;}).join('\n');
+  var src=(d.src||_refTipo(r));
   var dias=_adDias(((document.getElementById('ad-fecha')||{}).value||''));
-  var prompt='Sos un estratega de Meta Ads. Analizas el anuncio de un competidor para una agencia que trabaja al cliente "'+(c.name||'')+'".\n\n'
+  var ctx=src==='pauta'
+    ? '=== ANUNCIO PAGO DE '+(r.handle?('@'+r.handle):(r.name||''))+' ===\n'
+      +(dias!==null?('Lleva '+dias+' dias al aire.\n'):'')
+      +'Es un anuncio que corre en Meta Ads: le habla a trafico frio, gente que no conoce la marca.\n'
+    : '=== PIEZA ORGANICA DE '+(r.handle?('@'+r.handle):(r.name||''))+' ===\n'
+      +'Es contenido organico de Instagram: le habla a gente que ya sigue la cuenta o que lo encuentra en el feed. '
+      +'No necesariamente vende: puede estar buscando guardado, comentario o autoridad.\n';
+  var prompt='Sos un estratega de contenido y Meta Ads. Analizas material de un referente que mira una agencia para su cliente "'+(c.name||'')+'".\n\n'
     +'=== EJES DE COMUNICACION DEL CLIENTE ===\n'+ejes+'\n\n'
-    +'=== ANUNCIO DEL COMPETIDOR '+(r.handle?('@'+r.handle):(r.name||''))+' ===\n'
-    +(dias!==null?('Lleva '+dias+' dias al aire.\n'):'')
+    +ctx
     +texto.slice(0,4000)+'\n\n'
     +'Reglas:\n'
-    +'- angulo: 3 a 7 palabras. NOMBRA el enfoque, no lo copies del anuncio. Ej: "miedo a quedarse afuera de la IA", no "transforma tu negocio hoy".\n'
-    +'- promesa: el resultado concreto que ofrece, una linea. Si no hay promesa explicita, dejalo vacio. No la inventes.\n'
-    +'- dolor: el problema del que parte, una linea.\n'
+    +'- angulo: 3 a 7 palabras. NOMBRA el enfoque, no lo copies del material. Ej: "miedo a viajar solo por primera vez", no "vivi la aventura de tu vida".\n'
+    +'- promesa: el resultado concreto que ofrece, una linea. Si no hay promesa explicita, dejalo vacio. No la inventes: mucho contenido organico no promete nada y esta bien.\n'
+    +'- dolor: el problema o el deseo del que parte, una linea.\n'
     +'- formato: uno de reel, estatico, carrusel, vsl, otro. Si el texto es un guion hablado es reel o vsl segun el largo.\n'
     +'- eje: copia EXACTO el nombre de uno de los ejes de la lista, el que mas se parece. Si ninguno encaja, vacio.\n'
     +'- notas: maximo 2 lineas, que nos sirve replicar o evitar. Concreto. Nada de elogios genericos ni "buen uso del storytelling".\n\n'
@@ -12621,19 +12681,23 @@ function mapaAngulosHtml(c){
   var todos=_adTodos(c);
   if(!todos.length) return '';
   var cp=getContentPlan(c);
-  var ganadores=todos.filter(function(t){ var d=_adDias(t.ad.fecha); return d!==null&&d>=60; });
+  var nPauta=todos.filter(function(t){return (t.ad.src||'organico')==='pauta';}).length;
+  var nOrg=todos.length-nPauta;
+  var probados=todos.filter(function(t){return _adSenal(t.ad).ok;});
 
-  // Angulos por competidor distinto: si dos cuentas independientes atacan lo mismo,
+  // Angulos por cuenta distinta: si dos cuentas independientes atacan lo mismo,
   // el angulo esta validado por el mercado y no por el gusto de un creativo.
   var porAngulo={};
   todos.forEach(function(t){
     var k=_adNorm(t.ad.angulo); if(!k) return;
-    if(!porAngulo[k]) porAngulo[k]={label:t.ad.angulo, refs:{}, n:0};
+    if(!porAngulo[k]) porAngulo[k]={label:t.ad.angulo, refs:{}, n:0, pauta:0, org:0, prob:0};
     porAngulo[k].refs[t.refIdx]=true; porAngulo[k].n++;
+    if((t.ad.src||'organico')==='pauta') porAngulo[k].pauta++; else porAngulo[k].org++;
+    if(_adSenal(t.ad).ok) porAngulo[k].prob++;
   });
   var angulos=Object.keys(porAngulo).map(function(k){
     var a=porAngulo[k]; a.cuentas=Object.keys(a.refs).length; return a;
-  }).sort(function(a,b){ return (b.cuentas-a.cuentas)||(b.n-a.n); });
+  }).sort(function(a,b){ return (b.cuentas-a.cuentas)||(b.prob-a.prob)||(b.n-a.n); });
 
   // Cobertura por eje. El valor esta en los ceros.
   var porEje=cp.ejes.map(function(e){
@@ -12644,18 +12708,20 @@ function mapaAngulosHtml(c){
 
   var h='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>'
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Mapa de angulos</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);margin:5px 0 14px;line-height:1.55">Lo que se ve cruzando todos los anuncios cargados: donde se amontona la competencia y de que no habla nadie.</div>';
+    +'<div style="font-size:11.5px;color:var(--text3);margin:5px 0 14px;line-height:1.55">Lo que se ve cruzando todo el material cargado: donde se amontona el mercado y de que no habla nadie.</div>';
 
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px">'
-    +'<div class="metric-card"><div class="metric-label">Anuncios observados</div><div class="metric-value">'+todos.length+'</div></div>'
-    +'<div class="metric-card"><div class="metric-label">Probados (60+ dias)</div><div class="metric-value" style="color:var(--accent)">'+ganadores.length+'</div></div>'
+    +'<div class="metric-card"><div class="metric-label">Material observado</div><div class="metric-value">'+todos.length+'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'+nOrg+' organico &middot; '+nPauta+' pago</div></div>'
+    +'<div class="metric-card"><div class="metric-label">Ya probaron que funcionan</div><div class="metric-value" style="color:var(--accent)">'+probados.length+'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">60+ dias al aire o se despegaron</div></div>'
     +'<div class="metric-card"><div class="metric-label">Angulos distintos</div><div class="metric-value">'+angulos.length+'</div></div>'
-    +'<div class="metric-card"><div class="metric-label">Ejes sin competencia</div><div class="metric-value"'+(huecos.length?' style="color:var(--amberx)"':'')+'>'+huecos.length+'</div></div>'
+    +'<div class="metric-card"><div class="metric-label">Ejes sin cubrir</div><div class="metric-value"'+(huecos.length?' style="color:var(--amberx)"':'')+'>'+huecos.length+'</div></div>'
     +'</div>';
 
   // Cobertura por eje
   h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:16px">'
-    +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Que ejes ataca la competencia</div>';
+    +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Que ejes toca el mercado</div>';
   porEje.forEach(function(x){
     var pct=Math.round((x.n/maxEje)*100);
     h+='<div style="display:flex;align-items:center;gap:14px;padding:11px 16px;border-bottom:1px solid var(--border)">'
@@ -12664,14 +12730,14 @@ function mapaAngulosHtml(c){
       +'<span style="flex:1;height:6px;background:var(--bg4);border-radius:3px;overflow:hidden;min-width:60px">'
         +(x.n?'<span style="display:block;height:100%;width:'+pct+'%;background:'+esc(x.e.c)+';opacity:0.75;border-radius:3px"></span>':'')
       +'</span>'
-      +(x.n?'<span style="font-size:11.5px;color:var(--text2);width:80px;text-align:right;flex-shrink:0">'+x.n+' anuncio'+(x.n>1?'s':'')+'</span>'
+      +(x.n?'<span style="font-size:11.5px;color:var(--text2);width:80px;text-align:right;flex-shrink:0">'+x.n+' pieza'+(x.n>1?'s':'')+'</span>'
            :'<span class="pill pill-amber" style="font-size:10px;flex-shrink:0">hueco</span>')
       +'</div>';
   });
   h+='</div>';
   if(huecos.length){
     h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--amberx);line-height:1.55;margin-bottom:16px">'
-      +'Nadie esta hablando desde '+huecos.map(function(x){return esc(x.e.n).toLowerCase();}).join(', ')+'. Puede ser una oportunidad o puede ser que ese eje no venda en este mercado: miralo contra los angulos que si estan corriendo hace meses.</div>';
+      +'Nadie esta hablando desde '+huecos.map(function(x){return esc(x.e.n).toLowerCase();}).join(', ')+'. Puede ser una oportunidad o puede ser que ese eje no funcione en este mercado: miralo contra los angulos que si estan probados.</div>';
   }
 
   // Angulos, ordenados por cuantas cuentas distintas los usan
@@ -12679,13 +12745,23 @@ function mapaAngulosHtml(c){
     h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
       +'<div style="padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Angulos en juego</div>';
     angulos.slice(0,14).forEach(function(a){
+      var fuente=(a.pauta&&a.org)?'<span class="pill pill-teal" style="font-size:10px">organico y pago</span>'
+        :a.pauta?'<span class="pill pill-blue" style="font-size:10px">solo pago</span>'
+        :'<span class="pill pill-gray" style="font-size:10px">solo organico</span>';
       h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 16px;border-bottom:1px solid var(--border)">'
         +'<span style="font-size:12.5px;color:var(--text);line-height:1.4;word-break:break-word">'+esc(a.label)+'</span>'
-        +'<span style="flex-shrink:0;display:flex;align-items:center;gap:8px">'
-        +(a.cuentas>1?'<span class="pill pill-red" style="font-size:10px">saturado &middot; '+a.cuentas+' cuentas</span>':'<span style="font-size:11px;color:var(--text3)">1 cuenta</span>')
+        +'<span style="flex-shrink:0;display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end">'
+        +(a.prob?'<span class="pill pill-green" style="font-size:10px">'+a.prob+' probado'+(a.prob>1?'s':'')+'</span>':'')
+        +fuente
+        +(a.cuentas>1?'<span class="pill pill-red" style="font-size:10px">'+a.cuentas+' cuentas</span>':'')
         +'</span></div>';
     });
     h+='</div>';
+    if(nOrg&&nPauta){
+      h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:12px">'
+        +'Un angulo que solo aparece organico todavia no probo que aguante trafico frio: le habla a gente que ya conoce la cuenta. '
+        +'Los que estan en las dos columnas son los mas seguros para llevar a pauta.</div>';
+    }
   }
   return h;
 }
@@ -13655,7 +13731,8 @@ function renderTab(){
           const h=r.handle||_igParse(r.url||'').handle;
           const u=r.url||(h?'https://instagram.com/'+h:'');
           const ads=getAnunciosRef(r);
-          const gan=ads.filter(function(a){var d=_adDias(a.fecha); return d!==null&&d>=60;}).length;
+          const tipo=_refTipo(r), P=_refPal(tipo);
+          const gan=ads.filter(function(a){return _adSenal(a).ok;}).length;
           return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;display:flex;flex-direction:column;gap:7px">'
             +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
               +'<span style="font-size:13.5px;font-weight:500;color:var(--strong);line-height:1.3;word-break:break-word">'+esc(r.name||h||'Sin nombre')+'</span>'
@@ -13663,13 +13740,16 @@ function renderTab(){
                 +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px" onclick="abrirRefMercado('+i+')">Editar</button>'
                 +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px;color:var(--text3)" onclick="borrarRefMercado('+i+')">Borrar</button>'
               +'</span></div>'
-            +(u?'<a href="'+esc(u)+'" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);text-decoration:none;word-break:break-all">@'+esc(h)+'</a>':'')
+            +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+              +(u?'<a href="'+esc(u)+'" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);text-decoration:none;word-break:break-all">@'+esc(h)+'</a>':'')
+              +'<span class="pill '+(tipo==='pauta'?'pill-blue':'pill-gray')+'" style="font-size:10px">'+(tipo==='pauta'?'pauta':'organico')+'</span>'
+            +'</div>'
             +(r.note?'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;white-space:pre-wrap">'+esc(r.note)+'</div>':'')
             +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;padding-top:9px;border-top:1px solid var(--border)">'
               +'<span style="font-size:11.5px;color:'+(ads.length?'var(--text2)':'var(--text3)')+'">'
-                +(ads.length?(ads.length+' anuncio'+(ads.length>1?'s':'')+(gan?' &middot; <span style="color:var(--accent)">'+gan+' probado'+(gan>1?'s':'')+'</span>':'')):'sin anuncios cargados')
+                +(ads.length?(ads.length+' '+(ads.length>1?P.varios:P.uno)+(gan?' &middot; <span style="color:var(--accent)">'+gan+' probad'+(tipo==='pauta'?'o':'a')+(gan>1?'s':'')+'</span>':'')):P.vacio)
               +'</span>'
-              +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px;flex-shrink:0" onclick="abrirAnunciosRef('+i+')">Anuncios</button>'
+              +'<button class="btn btn-sm" style="padding:3px 9px;font-size:11px;flex-shrink:0" onclick="abrirAnunciosRef('+i+')">'+P.boton+'</button>'
             +'</div>'
           +'</div>';
         }).join('')
