@@ -2364,7 +2364,8 @@ function avisarLuzVerde(c, t){
 
 function avisarEsperandoAprobacion(c, t){
   if(!aprobOn()) return;
-  var mail=aprobQuien();
+  // Primero el revisor asignado en la tarea; el de configuracion es el respaldo.
+  var mail=_respMail((t&&t.aprobador)||'')||aprobQuien();
   var num=mail?telDe(mail):'';
   if(!num) return;                                   // sin telefono no hay a donde
   // Si el que la mando a aprobar es el mismo que aprueba, no se avisa solo.
@@ -4111,6 +4112,7 @@ function pedirEntregables(clientId, taskId){
     +'<div style="font-size:11px;color:var(--text3);margin:14px 0 5px">Notas para quien revisa <span style="color:var(--text3)">&middot; van al hilo de la tarea</span></div>'
     +'<textarea id="pe-notas" placeholder="Que mirar, que qued\u00f3 pendiente, con que tuviste dudas" '
       +'style="'+inp+';height:76px;line-height:1.6"></textarea>'
+    +_peRevisorCampo(c,t)
     +'<div id="pe-aviso" style="font-size:11.5px;color:var(--amberx);margin-top:8px"></div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px">'
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="closeModal()">Ahora no</button>'
@@ -4121,6 +4123,35 @@ function pedirEntregables(clientId, taskId){
 
 // Separa cada linea en link + titulo. El titulo es lo que sobra a los costados
 // del link; si no hay nada, se cae a la etiqueta por dominio de siempre.
+// Quien tiene que aprobar. Antes la aprobacion no quedaba asignada a nadie: el
+// aviso salia a una persona fija de configuracion y en el tablero no se veia de
+// quien dependia destrabar la tarea.
+function _peRevisorCampo(c,t){
+  var est='width:100%;box-sizing:border-box;padding:9px 11px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit';
+  var lista=[];
+  try{ lista=personas()||[]; }catch(e){}
+  if(!lista.length) return '';
+  var resp=_respMail((t&&t.responsible)||'');
+  // Preferencia: el que ya estaba puesto, el aprobador de configuracion, el
+  // duenio del cliente, y por ultimo cualquiera que no sea quien entrega.
+  var pref=_respMail((t&&t.aprobador)||'') || (typeof aprobQuien==='function'?aprobQuien():'') || ((c&&c.owner)||'');
+  var ok=function(m){ return m && lista.some(function(p){return String(p.email).toLowerCase()===String(m).toLowerCase();}); };
+  if(!ok(pref) || String(pref).toLowerCase()===String(resp).toLowerCase()){
+    var otro=lista.filter(function(p){ return String(p.email).toLowerCase()!==String(resp).toLowerCase(); })[0];
+    pref=otro?otro.email:(lista[0].email);
+  }
+  return '<div style="margin-top:14px"><div style="font-size:11px;color:var(--text3);margin-bottom:5px">Quien revisa</div>'
+    +'<select id="pe-revisor" style="'+est+'">'
+    +lista.map(function(p){
+      var etq=p.nombre||p.email;
+      return '<option value="'+esc(p.email)+'"'+(String(p.email).toLowerCase()===String(pref).toLowerCase()?' selected':'')+'>'
+        +esc(etq)+(p.tel?'':' (sin telefono)')+'</option>';
+    }).join('')
+    +'</select>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px;line-height:1.5">Le llega el aviso y queda visible en la tarea.</div></div>';
+}
+
 function _peLinea(linea){
   var m=String(linea||'').match(/https?:\/\/[^\s<>"']+/);
   if(!m) return null;
@@ -4140,6 +4171,8 @@ function guardarEntregables(clientId, taskId){
     if(av) av.textContent='No pusiste nada. Si todavia no hay entregable, cerra con "Ahora no".';
     return;
   }
+  var rev=((document.getElementById('pe-revisor')||{}).value||'').trim();
+  if(rev) t.aprobador=rev;
   t.attachments=t.attachments||[];
   var nuevos=0, sinLink=[];
   crudo.split(/\n+/).forEach(function(linea){
@@ -8591,7 +8624,9 @@ function showTickets(){
       +'<span class=\"tk-check\" onclick=\"toggleTask('+c.id+','+t.id+','+(t.done?'false':'true')+')\" role=\"checkbox\" aria-checked=\"'+(t.done?'true':'false')+'\">'+_check+'</span>'
       +'<div style=\"flex:1;min-width:0\">'
       +'<div class=\"tk-txt\">'+seguir+esc(t.text||'')+'</div>'
-      +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(personaNombre(t.responsible||'Ashy'))+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta+'</div>'
+      +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(personaNombre(t.responsible||'Ashy'))+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta
+      +((t.estado==='revision'&&t.aprobador)?' &middot; <span style=\"color:var(--amberx)\">revisa '+esc(personaNombre(t.aprobador))+'</span>':'')
+      +'</div>'
       +tkAdjuntosHtml(t, 240)
       +'</div>'
       +((t.revision&&!t.done)?'<button class=\"btn btn-sm\" style=\"flex-shrink:0;border-color:var(--accent);color:var(--accent)\" onclick=\"event.stopPropagation();rvAbrirTarea('+c.id+','+t.id+')\">Responder</button>':'')
@@ -13625,7 +13660,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-20f');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-20g');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -21868,6 +21903,8 @@ function renderTaskRow(t, clientId){
   var pb='font-size:11px;padding:2px 8px;border-radius:20px;';
   var meta='';
   if(t.responsible) meta+='<span style="'+pb+'background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)" title="'+esc(t.responsible)+'">'+esc(personaNombre(t.responsible))+'</span> ';
+  // De quien depende destrabarla: sin esto, "Esperando aprobacion" no decia de quien.
+  if(t.estado==='revision'&&t.aprobador) meta+='<span style="'+pb+'background:rgba(240,168,48,0.12);border:0.5px solid rgba(240,168,48,0.3);color:var(--amberx)" title="Tiene que aprobarla">revisa '+esc(personaNombre(t.aprobador))+'</span> ';
   if(t.due) meta+='<span style="'+pb+(isOverdue?'background:rgba(216,90,48,0.12);border:0.5px solid rgba(216,90,48,0.4);color:var(--redx)':'background:var(--bg3);border:0.5px solid var(--border);color:var(--text2)')+'">'+esc(t.due)+(isOverdue?' - vencida':'')+'</span> ';
   if(t.delegated&&t.delegatedStatus) meta+='<span style="'+pb+statusPillStyle(t.delegatedStatus)+'">'+esc(t.delegatedStatus)+'</span>';
   var _procTxt=_tkProcTexto(t);
