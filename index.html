@@ -13234,130 +13234,7 @@ function _cfgEvento(as){
   return {evento:'', pixel:po.pixel_id||'', custom:false};
 }
 
-async function sincronizarConfigMeta(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
-  if(!c.metaToken||!c.metaAccountId){ toast('Falta conectar Meta para este cliente','red'); return; }
-  var btn=document.getElementById('cfg-sync');
-  if(btn){ btn.disabled=true; btn.textContent='Leyendo la cuenta...'; }
-  var actId=String(c.metaAccountId).indexOf('act_')===0?c.metaAccountId:('act_'+c.metaAccountId);
-  var f=_ourFiltroCamp(c);
-  var camps={}, sets=[], err='';
-  try{
-    // 1. Campanas: objetivo y si el presupuesto vive aca (Advantage+ de presupuesto)
-    var uc='https://graph.facebook.com/v25.0/'+actId+'/campaigns?fields='
-      +encodeURIComponent('id,name,objective,effective_status,daily_budget,lifetime_budget,bid_strategy,special_ad_categories')
-      +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
-    var p=0;
-    while(uc&&p<5){
-      var rc=await fetch(uc); var dc=await rc.json();
-      if(dc.error) throw new Error(dc.error.message);
-      (dc.data||[]).forEach(function(x){ camps[String(x.id)]=x; });
-      uc=(dc.paging&&dc.paging.next)||''; p++;
-    }
-    // 2. Conjuntos: optimizacion, geo, Advantage y evento de conversion
-    var us='https://graph.facebook.com/v25.0/'+actId+'/adsets?fields='
-      +encodeURIComponent('id,name,campaign_id,effective_status,optimization_goal,billing_event,bid_strategy,'
-        +'daily_budget,lifetime_budget,promoted_object,attribution_spec,targeting{geo_locations,excluded_geo_locations,'
-        +'age_min,age_max,genders,publisher_platforms,targeting_optimization,targeting_automation}')
-      +'&limit=200&access_token='+encodeURIComponent(c.metaToken);
-    var q=0;
-    while(us&&q<5){
-      var rs=await fetch(us); var ds=await rs.json();
-      if(ds.error) throw new Error(ds.error.message);
-      (ds.data||[]).forEach(function(as){
-        if(!f.ok(as.campaign_id)) return;      // mismas campanas que el resto
-        var camp=camps[String(as.campaign_id)]||{};
-        var geo=_cfgGeo(as.targeting);
-        var ev=_cfgEvento(as);
-        var t=as.targeting||{};
-        sets.push({
-          id:String(as.id), nombre:as.name||'', estado:as.effective_status||'',
-          campId:String(as.campaign_id||''), campana:camp.name||'',
-          objCamp:_cfgEs(_OBJ_ES,camp.objective), objCampRaw:camp.objective||'',
-          optim:_cfgEs(_OPT_ES,as.optimization_goal), optimRaw:as.optimization_goal||'',
-          facturacion:_cfgEs(_OPT_ES,as.billing_event),
-          puja:as.bid_strategy||camp.bid_strategy||'',
-          geo:geo.texto, geoExcluye:geo.excluye,
-          edad:(t.age_min||t.age_max)?((t.age_min||18)+'-'+(t.age_max||65)):'',
-          plataformas:Array.isArray(t.publisher_platforms)?t.publisher_platforms.join(', '):'',
-          advantage:_cfgAdvantage(as,camp),
-          evento:ev.evento, pixel:ev.pixel, eventoCustom:ev.custom,
-          presupuesto:as.daily_budget?(Math.round(as.daily_budget/100)+'/dia')
-            :as.lifetime_budget?(Math.round(as.lifetime_budget/100)+' total')
-            :(camp.daily_budget||camp.lifetime_budget)?'en la campana':''
-        });
-      });
-      us=(ds.paging&&ds.paging.next)||''; q++;
-    }
-  }catch(e){ err=e.message; }
-  if(btn){ btn.disabled=false; btn.textContent='Leer configuracion'; }
-  if(err){ toast('No pude leer la configuracion: '+err,'red'); return; }
-  c.metaConfig={ at:new Date().toISOString(), sets:sets };
-  save();
-  _refrescarMercado();
-  toast(sets.length+' conjuntos leidos');
-}
 
-function configMetaHtml(c){
-  var cfg=c.metaConfig||null;
-  var conectado=!!(c.metaToken&&c.metaAccountId);
-  var h='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>'
-    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">'
-    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">Como esta armada la cuenta</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">Objetivo, optimizacion, geo, automatizaciones y evento de conversion de cada conjunto. Explica los numeros de arriba.</div></div>'
-    +(conectado?'<button class="btn btn-sm" id="cfg-sync" style="flex-shrink:0" onclick="sincronizarConfigMeta('+c.id+')">'+(cfg?'Actualizar':'Leer configuracion')+'</button>':'')
-    +'</div>';
-  if(!conectado) return h+'<div style="font-size:11.5px;color:var(--text3)">Sin Meta conectado.</div>';
-  if(!cfg||!cfg.sets||!cfg.sets.length){
-    return h+'<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:24px 20px;text-align:center">'
-      +'<div style="font-size:12.5px;color:var(--text2)">Todavia no leimos la configuracion.</div>'
-      +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Son dos llamadas a Meta: campanas y conjuntos.</div></div>';
-  }
-  var sets=cfg.sets.slice().sort(function(a,b){
-    var ax=a.estado==='ACTIVE'?1:0, bx=b.estado==='ACTIVE'?1:0;
-    if(ax!==bx) return bx-ax;
-    return String(a.campana).localeCompare(String(b.campana));
-  });
-  // Lo que conviene ver primero: incoherencias entre conjuntos.
-  var act=sets.filter(function(s){return s.estado==='ACTIVE';});
-  var optims={}, eventos={};
-  act.forEach(function(s){ if(s.optim) optims[s.optim]=1; if(s.evento) eventos[s.evento]=1; });
-  var kOpt=Object.keys(optims), kEv=Object.keys(eventos);
-  if(kOpt.length>1||kEv.length>1){
-    h+='<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);line-height:1.55;margin-bottom:12px">'
-      +(kOpt.length>1?('Los conjuntos activos optimizan a cosas distintas: '+esc(kOpt.join(', '))+'. Sus costos no se comparan entre si. '):'')
-      +(kEv.length>1?('Y reportan a eventos distintos: '+esc(kEv.join(', '))+'.'):'')
-      +'</div>';
-  }
-  h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
-  sets.slice(0,25).forEach(function(s){
-    h+='<div style="padding:12px 16px;border-bottom:1px solid var(--border)'+(s.estado==='ACTIVE'?'':';opacity:0.55')+'">'
-      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">'
-        +'<div style="min-width:0">'
-          +'<div style="font-size:12.5px;color:var(--strong);line-height:1.35;word-break:break-word">'+esc(s.nombre||'sin nombre')+'</div>'
-          +'<div style="font-size:11px;color:var(--text3);margin-top:2px;word-break:break-word">'+esc(s.campana||'')
-            +(s.objCamp?('<span style="opacity:.8"> &middot; '+esc(s.objCamp)+'</span>'):'')+'</div>'
-        +'</div>'
-        +'<span class="pill '+(s.estado==='ACTIVE'?'pill-green':'pill-gray')+'" style="font-size:9.5px;flex-shrink:0">'
-          +(s.estado==='ACTIVE'?'activo':'pausado')+'</span>'
-      +'</div>'
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
-        +(s.optim?'<span class="pill pill-blue" style="font-size:9.5px">optimiza: '+esc(s.optim)+'</span>':'')
-        +(s.evento?'<span class="pill '+(s.eventoCustom?'pill-amber':'pill-teal')+'" style="font-size:9.5px">evento: '+esc(s.evento)+'</span>':'')
-        +(s.presupuesto?'<span class="pill pill-gray" style="font-size:9.5px">'+esc(s.presupuesto)+'</span>':'')
-        +s.advantage.map(function(x){return '<span class="pill pill-gray" style="font-size:9.5px">'+esc(x)+'</span>';}).join('')
-      +'</div>'
-      +(s.geo?('<div style="font-size:11px;color:var(--text3);margin-top:7px;line-height:1.5;word-break:break-word">'
-        +'Geo: '+esc(s.geo)+(s.edad?(' &middot; '+esc(s.edad)+' anos'):'')
-        +(s.geoExcluye?('<span style="color:var(--amberx)"> &middot; excluye '+esc(s.geoExcluye)+'</span>'):'')
-        +'</div>'):'')
-    +'</div>';
-  });
-  h+='</div>';
-  if(sets.length>25) h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Mostrando 25 de '+sets.length+'.</div>';
-  h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Leido el '+new Date(cfg.at).toLocaleString('es-AR')+'</div>';
-  return h;
-}
 
 // ---- Metricas verificables del anuncio ----
 // Todo lo de aca sale medido de Meta, no leido por IA. El angulo es una lectura
@@ -13665,7 +13542,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-20o');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-20p');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -14543,7 +14420,6 @@ function mercadoHtml(c){
       +'</div>';
     }
     html+=nuestrosAdsHtml(c);
-    html+=configMetaHtml(c);
     html+=mapaAngulosHtml(c);
     html+='<div style="height:1px;background:var(--border);margin:26px 0 20px"></div>';
     html+=calendarioContenidoHtml(c);
