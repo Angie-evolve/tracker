@@ -13542,7 +13542,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-20p');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-20q');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -13870,11 +13870,9 @@ function nuestrosAdsHtml(c){
       +'<div style="font-size:12.5px;color:var(--text2)">Todavia no trajimos los anuncios.</div>'
       +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Toca sincronizar: bajo el copy y el estado de cada uno.</div></div>';
   }
-  var orden=ads.slice().sort(function(x,y){
-    var ax=_ourActivo(x)?1:0, ay=_ourActivo(y)?1:0;
-    if(ax!==ay) return ay-ax;
-    return (_ourDias(y)||0)-(_ourDias(x)||0);
-  });
+  // Tres grupos por lo que hay que hacer con cada uno. Con 42 anuncios y 3
+  // activos, mostrarlos todos siempre era el grueso del ruido: los pausados sin
+  // gasto casi no mueven el mapa y no hace falta tenerlos a la vista.
   var act=ads.filter(_ourActivo).length;
   var sinLeer=_ourPendientes(c).length;
   var conGuion=ads.filter(function(a){ return !!_ourGuion(c,a); }).length;
@@ -13897,34 +13895,66 @@ function nuestrosAdsHtml(c){
       +'Se leen de a '+OUR_TANDA+', empezando por los activos y los que mas gastaron: cada uno es una llamada a la API. '
       +'Los pausados sin gasto podes dejarlos sin leer, casi no mueven el mapa.</div>';
   }
+
+  var porGasto=function(x,y){ return (Number(y.gasto)||0)-(Number(x.gasto)||0); };
+  var grupos=[
+    {k:'act', l:'Activos', color:'var(--accent)',
+     items:ads.filter(_ourActivo).sort(function(x,y){ return (_ourDias(y)||0)-(_ourDias(x)||0); })},
+    {k:'gasto', l:'Pausados con gasto', color:'var(--text2)',
+     items:ads.filter(function(a){ return !_ourActivo(a) && Number(a.gasto)>0; }).sort(porGasto)},
+    {k:'cero', l:'Pausados sin gasto', color:'var(--text3)',
+     items:ads.filter(function(a){ return !_ourActivo(a) && !(Number(a.gasto)>0); }).sort(porGasto)}
+  ].filter(function(g){ return g.items.length; });
+
+  S._ourGrupo=S._ourGrupo||{};
   h+='<div style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">';
-  orden.slice(0,20).forEach(function(a){
-    var sn=_ourSenal(a);
-    var eje=_adEje(c,a.eje);
-    h+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:11px 16px;border-bottom:1px solid var(--border)'+(_ourActivo(a)?'':';opacity:0.55')+'">'
-      +'<span style="min-width:0">'
-        +'<span style="display:block;font-size:12.5px;color:var(--strong);line-height:1.35;word-break:break-word">'
-          +(a.angulo?esc(a.angulo):'<span style="color:var(--text3)">Sin leer</span>')+'</span>'
-        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px;word-break:break-word">'
-          +esc(a.nombre||'')+(a.campana?('<span style="color:var(--text3);opacity:0.75"> &middot; '+esc(a.campana)+'</span>'):'')+'</span>'
-        +'<span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">'
-          +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
-          +(eje?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)"><span style="width:5px;height:5px;border-radius:50%;background:'+esc(eje.c)+'"></span>'+esc(eje.n)+'</span>':'')
-          +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">con guion</span>':'')
-          +_ourMetricasPills(a)
-          +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">el copy cambio &middot; revisar</span>':'')
-          +(a.enMeta===false?'<span class="pill pill-gray" style="font-size:9.5px">ya no esta en Meta</span>':'')
-          +(!a.angulo&&!_ourLegible(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">sin texto</span>':'')
+  grupos.forEach(function(g,gi){
+    // Los activos abiertos por defecto: son los que hay que mirar. El resto,
+    // cerrado, porque casi siempre es historia.
+    var abierto=(S._ourGrupo[g.k]===undefined)?(g.k==='act'):!!S._ourGrupo[g.k];
+    var pendGrupo=g.items.filter(function(a){ return !a.angulo && _ourLegible(c,a); }).length;
+    h+='<div onclick="_ourToggleGrupo(\''+g.k+'\')" style="display:flex;align-items:center;gap:8px;padding:9px 14px;'
+      +'background:var(--bg3);cursor:pointer'+(gi?';border-top:1px solid var(--border)':'')+'">'
+      +'<span style="color:var(--text3);font-size:9px;transform:rotate('+(abierto?'90':'0')+'deg);transition:transform .12s">&#9654;</span>'
+      +'<span style="font-size:11.5px;color:'+g.color+'">'+esc(g.l)+'</span>'
+      +'<span style="margin-left:auto;display:flex;align-items:center;gap:8px">'
+        +(pendGrupo?'<span style="font-size:10.5px;color:var(--amberx)">'+pendGrupo+' sin leer</span>':'')
+        +'<span style="font-size:11px;color:var(--text3)">'+g.items.length+'</span>'
+      +'</span></div>';
+    if(!abierto) return;
+    g.items.slice(0,20).forEach(function(a){
+      var sn=_ourSenal(a);
+      var eje=_adEje(c,a.eje);
+      h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 16px;'
+        +'border-top:1px solid var(--border)'+(_ourActivo(a)?'':';opacity:0.7')+'">'
+        +'<span style="min-width:0;flex:1;display:flex;align-items:baseline;gap:9px">'
+          +'<span style="font-size:12px;color:var(--strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:290px">'
+            +(a.angulo?esc(a.angulo):'<span style="color:var(--text3)">Sin leer</span>')+'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(a.nombre||'')+'</span>'
         +'</span>'
-      +'</span>'
-      +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px;flex-shrink:0" onclick="abrirNuestroAd(\''+a.id+'\')">Abrir</button>'
-    +'</div>';
+        +'<span style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
+          +'<span class="pill '+sn.pill+'" style="font-size:9.5px">'+sn.label+'</span>'
+          +(eje?'<span style="width:6px;height:6px;border-radius:50%;background:'+esc(eje.c)+'" title="'+esc(eje.n)+'"></span>':'')
+          +(_ourGuion(c,a)?'<span class="pill pill-gray" style="font-size:9.5px">guion</span>':'')
+          +(a.copyCambio?'<span class="pill pill-amber" style="font-size:9.5px">revisar</span>':'')
+          +(a.enMeta===false?'<span class="pill pill-gray" style="font-size:9.5px">fuera de Meta</span>':'')
+          +'<button class="btn btn-sm" style="padding:2px 9px;font-size:10.5px" onclick="event.stopPropagation();abrirNuestroAd(\''+a.id+'\')">Abrir</button>'
+        +'</span>'
+      +'</div>';
+    });
+    if(g.items.length>20){
+      h+='<div style="font-size:10.5px;color:var(--text3);padding:7px 16px;border-top:1px solid var(--border)">'
+        +'y '+(g.items.length-20)+' mas en este grupo</div>';
+    }
   });
   h+='</div>';
-  if(orden.length>20){
-    h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Mostrando 20 de '+orden.length+'. El mapa de abajo los cuenta todos.</div>';
-  }
   return h;
+}
+function _ourToggleGrupo(k){
+  S._ourGrupo=S._ourGrupo||{};
+  var actual=(S._ourGrupo[k]===undefined)?(k==='act'):!!S._ourGrupo[k];
+  S._ourGrupo[k]=!actual;
+  _refrescarMercado();
 }
 
 // Abrir un angulo cierra el anterior: la lectura util es una a la vez, y con
