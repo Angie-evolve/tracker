@@ -13473,7 +13473,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19s');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19t');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -23156,21 +23156,69 @@ function kpiMarquesina(){
   var el=document.getElementById('kpi-fila');
   if(!el || el._kpiListo) return;
   el._kpiListo=true;
+  el.style.cursor='grab';
   var quieto=false;
   try{ quieto=window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
-  var vivo=!quieto, raf=null;
-  var frenar=function(){ vivo=false; if(raf){ cancelAnimationFrame(raf); raf=null; } };
-  ['pointerdown','wheel','touchstart','keydown'].forEach(function(ev){
+  var vivo=!quieto, raf=null, clonada=true;
+  var mitad=function(){ var p=el.firstElementChild; return p?p.offsetWidth:0; };
+  // Al frenar se saca la copia del bucle. Si quedara, al mover a mano verias las
+  // mismas metricas dos veces y no sabrias donde termina la fila.
+  var frenar=function(){
+    if(raf){ cancelAnimationFrame(raf); raf=null; }
+    if(!vivo && !clonada) return;
+    vivo=false;
+    if(clonada){
+      var m=mitad();
+      var copia=el.children[1];
+      if(copia) el.removeChild(copia);
+      clonada=false;
+      if(m>0) el.scrollLeft=el.scrollLeft%m;
+    }
+  };
+  ['pointerdown','touchstart','keydown'].forEach(function(ev){
     el.addEventListener(ev, frenar, {passive:true});
   });
-  if(!vivo) return;
+  // La rueda vertical no mueve un contenedor horizontal: hay que traducirla.
+  el.addEventListener('wheel', function(e){
+    frenar();
+    var d=Math.abs(e.deltaX)>Math.abs(e.deltaY)?e.deltaX:e.deltaY;
+    if(!d) return;
+    var antes=el.scrollLeft;
+    el.scrollLeft+=d;
+    // Solo comemos el evento si de verdad nos movimos; si no, que scrollee la pagina.
+    if(el.scrollLeft!==antes) e.preventDefault();
+  }, {passive:false});
+  // Arrastre: sin barra visible es la unica forma comoda con mouse.
+  var arrastrando=false, x0=0, s0=0;
+  el.addEventListener('pointerdown', function(e){
+    if(e.button!==undefined && e.button!==0) return;
+    arrastrando=true; x0=e.clientX; s0=el.scrollLeft;
+    el.style.cursor='grabbing';
+    try{ el.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  el.addEventListener('pointermove', function(e){
+    if(!arrastrando) return;
+    el.scrollLeft=s0-(e.clientX-x0);
+  });
+  var soltar=function(e){
+    if(!arrastrando) return;
+    arrastrando=false; el.style.cursor='grab';
+    try{ el.releasePointerCapture(e.pointerId); }catch(err){}
+  };
+  el.addEventListener('pointerup', soltar);
+  el.addEventListener('pointercancel', soltar);
+  // Un arrastre no debe abrir el link ni disparar clicks de lo que haya debajo.
+  el.addEventListener('click', function(e){
+    if(Math.abs(el.scrollLeft-s0)>4 && !arrastrando) { e.stopPropagation(); }
+  }, true);
+
+  if(!vivo){ frenar(); return; }
   var paso=function(){
     if(!vivo) return;
-    var primera=el.firstElementChild;
-    var mitad=primera?primera.offsetWidth:0;
-    if(mitad<=0 || el.scrollWidth<=el.clientWidth+4){ vivo=false; return; }  // entra entera: no hay nada que mover
+    var m=mitad();
+    if(m<=0 || el.scrollWidth<=el.clientWidth+4){ frenar(); return; }  // entra entera: nada que mover
     el.scrollLeft+=0.4;
-    if(el.scrollLeft>=mitad) el.scrollLeft-=mitad;
+    if(el.scrollLeft>=m) el.scrollLeft-=m;
     raf=requestAnimationFrame(paso);
   };
   raf=requestAnimationFrame(paso);
