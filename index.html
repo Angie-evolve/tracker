@@ -151,12 +151,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* El mismo pulso de los clientes LIVE, para campanas, conjuntos y anuncios activos.
    Un poco mas marcado porque el fondo de la tabla es mas claro que el del sidebar. */
 .fila-viva{position:relative;overflow:hidden}
-/* El checkbox de incluir campana no hace falta a la vista todo el tiempo: se
-   toca poco. Aparece al pasar por la fila, y queda fijo si la campana esta
-   excluida (si no, no habria como saber por que esta apagada ni como volver). */
-.camp-check{opacity:0;transition:opacity .12s}
-.camp-row:hover .camp-check,.camp-check:focus-visible,.camp-check.fija{opacity:1}
-@media (hover:none){ .camp-check{opacity:1} }
 .fila-viva-sweep{position:absolute;inset:0;pointer-events:none;z-index:0;background:linear-gradient(90deg,transparent 20%,rgba(29,158,117,.10),transparent 80%);background-size:120% 100%;background-repeat:no-repeat;animation:clientSweep 4.5s ease-in-out infinite}
 @media (prefers-reduced-motion: reduce){ .fila-viva-sweep{animation:none} }
 .client-state{position:relative;font-size:8.5px;font-family:var(--mono);letter-spacing:.04em;flex-shrink:0}
@@ -13671,7 +13665,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-20n');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-20o');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -15073,7 +15067,9 @@ function renderTab(){
             var excluded=(activeLine.excludedCampaigns||[]).indexOf(camp.id)!==-1;
             // Modo compacto: las destildadas no se dibujan. Se cuentan para poder volver a verlas.
             if(_soloIncl && excluded){ _ocultas++; return; }
-            var checkboxHtml='<input type="checkbox" class="camp-check'+(excluded?' fija':'')+'" '+(excluded?'':'checked')+' onclick="event.stopPropagation();toggleCampaignInclude('+c.id+',\''+activeLine.id+'\',\''+camp.id+'\')" title="Incluir en el resumen" style="margin-right:8px;cursor:pointer;flex-shrink:0">';
+            // Sin checkbox en la fila: se decide desde el embudo del encabezado.
+            // Una campana excluida se reconoce por estar atenuada.
+            var checkboxHtml='';
             var _campViva=(camp.status==='ACTIVE');
             var campRow='<div class="fila-viva camp-row" style="flex-shrink:0;width:210px;display:flex;align-items:center;padding:0 12px;height:52px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);'+(excluded?'opacity:0.4':'')+'">'
               +(_campViva?'<span class="fila-viva-sweep"></span>':'')
@@ -22287,6 +22283,51 @@ function toggleMetaCamp(idx){
   renderTab();
 }
 
+// Filtro de campanas. Antes el checkbox vivia en cada fila y aparecia al pasar
+// el cursor: molestaba al leer y era dificil de encontrar. Ahora todo se decide
+// aca. Va como modal y no como menu flotante porque la tabla recorta lo que se
+// sale de su caja.
+function abrirFiltroCampanas(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var line=getActiveLine(c.conversionLines||[]); if(!line) return;
+  var camps=(line.metaCampaigns||[]).slice();
+  var excl=line.excludedCampaigns||[];
+  var dentro=camps.filter(function(x){return excl.indexOf(x.id)===-1;}).length;
+  // Las que mas gastaron primero: son las que uno decide incluir o sacar.
+  camps.sort(function(a,b){ return (Number(b.spend)||0)-(Number(a.spend)||0); });
+  var filas=camps.map(function(camp){
+    var off=excl.indexOf(camp.id)!==-1;
+    var act=(camp.effectiveStatus||camp.status)==='ACTIVE';
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--radius);'
+      +'background:var(--bg3);border:0.5px solid var(--border);margin-bottom:6px;cursor:pointer'+(off?';opacity:.55':'')+'">'
+      +'<input type="checkbox"'+(off?'':' checked')+' style="flex-shrink:0;cursor:pointer" '
+        +'onchange="toggleCampaignInclude('+c.id+',\''+_jsEsc(line.id)+'\',\''+_jsEsc(camp.id)+'\');abrirFiltroCampanas('+c.id+')">'
+      +'<span style="min-width:0;flex:1">'
+        +'<span style="display:block;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(camp.name||'')+'</span>'
+        +'<span style="display:block;font-size:10.5px;color:var(--text3);margin-top:2px">'
+          +(act?'<span style="color:var(--accent)">activa</span>':'pausada')
+          +(Number(camp.spend)?(' &middot; $'+Number(camp.spend).toFixed(2)):'')+'</span>'
+      +'</span></label>';
+  }).join('');
+  var soloIncl=metaSoloIncluidas();
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:460px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">Campanas incluidas</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:14px">'
+      +'Las tildadas suman a las metricas de arriba. Las destildadas se siguen sincronizando, solo dejan de contar.</div>'
+    +(camps.length?'<div style="max-height:340px;overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
+      :'<div style="font-size:12px;color:var(--text3);margin-bottom:12px">Sin campanas sincronizadas todavia.</div>')
+    +'<label style="display:flex;align-items:center;gap:9px;font-size:12px;color:var(--text2);cursor:pointer;'
+      +'border-top:1px solid var(--border);padding-top:12px">'
+      +'<input type="checkbox"'+(soloIncl?' checked':'')+' onchange="toggleMetaSoloIncluidas();abrirFiltroCampanas('+c.id+')">'
+      +'<span>Ocultar de la tabla las destildadas</span></label>'
+    +'<div class="modal-footer">'
+      +'<span style="font-size:11.5px;color:var(--text3);margin-right:auto">'+dentro+' de '+camps.length+' incluidas</span>'
+      +'<button class="btn btn-sm btn-primary" onclick="closeModal()">Listo</button>'
+    +'</div></div></div>';
+}
+
 function toggleCampaignInclude(clientId, lineId, campId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -23080,6 +23121,8 @@ function toggleMetaSoloIncluidas(){
 // El filtro de campanas vive en el encabezado de la columna Campana, no suelto
 // arriba: es una accion sobre esa columna y ahi es donde se la busca.
 // Filtrando muestra cuantas quedan afuera; sin filtrar, cuantas de cuantas se ven.
+// El boton se dibuja dentro de una plantilla que no tiene el cliente a mano.
+function _cfgClienteId(){ return (S&&S.clientId)||0; }
 function metaSoloIncluidasBtn(activeLine){
   var camps=(activeLine&&activeLine.metaCampaigns)||[];
   var excl=(activeLine&&activeLine.excludedCampaigns)||[];
@@ -23088,8 +23131,8 @@ function metaSoloIncluidasBtn(activeLine){
   var on=metaSoloIncluidas();
   var etiqueta=on?String(fuera):((camps.length-fuera)+'/'+camps.length);
   var col=on?'var(--accent)':'var(--text3)';
-  return '<span onclick="event.stopPropagation();toggleMetaSoloIncluidas()" '
-    +'title="'+(on?('Mostrar tambien las '+fuera+' campanas destildadas'):('Ver solo las campanas tildadas'))+'. No cambia que campanas entran en las metricas." '
+  return '<span onclick="event.stopPropagation();abrirFiltroCampanas('+_cfgClienteId()+')" '
+    +'title="Elegir que campanas cuentan en las metricas" '
     +'style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;'
     +'border:0.5px solid '+(on?'var(--accent)':'var(--border2)')+';border-radius:99px;padding:1px 7px;color:'+col+'">'
     +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>'
