@@ -13473,7 +13473,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19q');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19r');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -14850,6 +14850,9 @@ function renderTab(){
             {l:'Leads',v:total.leads||'-'},
             {l:'CPL',v:cpl?_m(cpl):'-',metric:'cpl',num:cpl?aUsd(c,Number(cpl)):null}
           ].filter(function(m){return m.v&&m.v!=='-'&&m.v!=='0';});
+          // Solo cuando el panel grande ya no esta: si no, el dato estaria dos veces.
+          var _avCard=_avisosYaVisto(c.id)?_kpiAvisos(c):null;
+          if(_avCard) _kpis.unshift(_avCard);
           return kpiFilaHtml(c, _kpis);
         })()}
       <div id="meta-tabla" style="position:relative;border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px;display:flex">
@@ -23096,14 +23099,39 @@ function _kpiTitulo(reglas, metrica, estado){
 // Una tarjeta, igual a las de siempre. Lo unico que cambia es el color del numero.
 function _kpiPieza(m, reglas){
   var estado=_kpiEstado(reglas, m.metric, m.num);
-  var tit=_kpiTitulo(reglas, m.metric, estado);
-  return '<div style="flex:0 0 auto;min-width:132px;background:var(--bg3);border:0.5px solid var(--border);'
-    +'border-radius:var(--radius);padding:10px 12px"'
-    +(tit?' title="'+esc(tit)+'"':'')+'>'
+  var tit=m.title||_kpiTitulo(reglas, m.metric, estado);
+  var color=m.color||_kpiColor(estado);
+  return '<div style="flex:0 0 auto;min-width:132px;background:var(--bg3);border:0.5px solid '
+    +(m.borde||'var(--border)')+';border-radius:var(--radius);padding:10px 12px'
+    +(m.click?';cursor:pointer':'')+'"'
+    +(tit?' title="'+esc(tit)+'"':'')
+    +(m.click?' onclick="'+m.click+'"':'')+'>'
     +'<div style="font-size:10px;color:var(--text3);margin-bottom:4px;white-space:nowrap">'+esc(m.l)+'</div>'
-    +'<div style="font-size:16px;font-weight:500;white-space:nowrap;color:'+_kpiColor(estado)+'">'+esc(m.v)+'</div>'
+    +'<div style="font-size:16px;font-weight:500;white-space:nowrap;color:'+color+'">'+esc(m.v)+'</div>'
     +'</div>';
 }
+// Los avisos, ya vistos en el cartel del dia, viajan como una tarjeta mas. El
+// detalle vive en el tooltip: ocupa cero espacio hasta que lo pedis.
+function _kpiAvisos(c){
+  var av=[];
+  try{ av=metaAvisos(c)||[]; }catch(e){ return null; }
+  if(!av.length) return null;
+  var graves=av.filter(function(a){return a.tipo==='issue';}).length;
+  var lista=av.slice(0,10).map(function(a){
+    return '\u2022 '+a.titulo+(a.donde?(' \u00b7 '+a.donde):'');
+  }).join('\n');
+  if(av.length>10) lista+='\ny '+(av.length-10)+' mas';
+  return {
+    l:graves?('Avisos \u00b7 '+graves+' a revisar'):'Avisos de Meta',
+    v:String(av.length),
+    color:graves?'var(--amberx)':'var(--text2)',
+    borde:graves?'rgba(240,168,48,0.35)':'var(--border)',
+    title:lista+'\n\nTocá para verlos completos',
+    click:'abrirAvisosDelDia(_cliAvisos('+c.id+'),true)'
+  };
+}
+// La tarjeta guarda el id, no el objeto: el onclick vive en el HTML.
+function _cliAvisos(id){ return DB.clients.find(function(x){return x.id===id;}); }
 // El renglon completo. Se duplica el contenido para que el bucle no tenga corte.
 function kpiFilaHtml(c, metricas){
   var reglas=_kpiReglas(c);
@@ -23240,12 +23268,14 @@ function abrirAvisosDelDia(c, forzar){
       +filas
       +(av.length>8?'<div style="font-size:11px;color:var(--text3);margin-top:6px">y '+(av.length-8)+' mas abajo</div>':'')
       +'<div style="display:flex;justify-content:flex-end;border-top:1px solid var(--border);padding-top:14px;margin-top:16px">'
-        +'<button class="btn btn-sm" onclick="closeModal()">Entendido</button>'
+        +'<button class="btn btn-sm" onclick="closeModal();if(typeof renderTab===\'function\')renderTab()">Entendido</button>'
       +'</div>'
     +'</div></div>';
 }
 
 function metaAvisosHtml(c){
+  // Ya lo viste al entrar: pasa a ser una tarjeta en la fila de metricas.
+  if(_avisosYaVisto(c.id)) return '';
   var av=metaAvisos(c);
   if(!av.length) return '';
   var graves=av.filter(function(a){return a.tipo==='issue';});
