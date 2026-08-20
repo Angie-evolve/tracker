@@ -4046,53 +4046,93 @@ function pedirEntregables(clientId, taskId){
   const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
   if(!t) return;
   const ya=(t.attachments||[]).length;
+  const inp='width:100%;box-sizing:border-box;padding:10px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:inherit;outline:none;resize:vertical';
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div class="modal" style="max-width:540px;width:94%">'
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:3px">Que hay para revisar</div>'
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
-      +esc(t.text||'').slice(0,120)+(String(t.text||'').length>120?'...':'')
-      +'<br>Pega los links del entregable (Drive, Figma, Loom, lo que sea). Uno por linea o todos juntos: se detectan solos.</div>'
-    +'<textarea id="pe-txt" placeholder="https://drive.google.com/...&#10;https://www.figma.com/..." '
-      +'style="width:100%;box-sizing:border-box;height:120px;padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none;resize:vertical"></textarea>'
-    +(ya?('<div style="font-size:11px;color:var(--text3);margin-top:8px">Ya tiene '+ya+' adjunto'+(ya>1?'s':'')+'. Los nuevos se suman.</div>'):'')
+      +esc(t.text||'').slice(0,120)+(String(t.text||'').length>120?'...':'')+'</div>'
+    // Links: uno por linea, con titulo opcional al lado. El titulo es lo que se
+    // ve despues en el ticket; sin el, la etiqueta sale del dominio y todos los
+    // adjuntos terminan llamandose igual ("app.gohighlevel.com" x2).
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:5px">Links del entregable</div>'
+    +'<textarea id="pe-links" placeholder="https://drive.google.com/... Guion final&#10;https://loom.com/... Video explicando el flujo" '
+      +'style="'+inp+';height:96px;line-height:1.6"></textarea>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:5px;line-height:1.55">'
+      +'Uno por linea. Despues del link pod\u00e9s escribir c\u00f3mo se llama, y eso es lo que se ve en el ticket.</div>'
+    +(ya?('<div style="font-size:11px;color:var(--text3);margin-top:6px">Ya tiene '+ya+' adjunto'+(ya>1?'s':'')+'. Los nuevos se suman.</div>'):'')
+    // Notas: van al hilo de comentarios, no a un campo suelto. Ahi las ve quien
+    // revisa y puede responder en el mismo lugar.
+    +'<div style="font-size:11px;color:var(--text3);margin:14px 0 5px">Notas para quien revisa <span style="color:var(--text3)">&middot; van al hilo de la tarea</span></div>'
+    +'<textarea id="pe-notas" placeholder="Que mirar, que qued\u00f3 pendiente, con que tuviste dudas" '
+      +'style="'+inp+';height:76px;line-height:1.6"></textarea>'
     +'<div id="pe-aviso" style="font-size:11.5px;color:var(--amberx);margin-top:8px"></div>'
     +'<div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px">'
       +'<button class="btn btn-sm" style="color:var(--text3)" onclick="closeModal()">Ahora no</button>'
       +'<button class="btn btn-sm btn-primary" onclick="guardarEntregables('+clientId+','+taskId+')">Guardar</button>'
     +'</div></div></div>';
-  setTimeout(function(){ var e=document.getElementById('pe-txt'); if(e) e.focus(); },50);
+  setTimeout(function(){ var e=document.getElementById('pe-links'); if(e) e.focus(); },50);
+}
+
+// Separa cada linea en link + titulo. El titulo es lo que sobra a los costados
+// del link; si no hay nada, se cae a la etiqueta por dominio de siempre.
+function _peLinea(linea){
+  var m=String(linea||'').match(/https?:\/\/[^\s<>"']+/);
+  if(!m) return null;
+  var url=m[0].replace(/[.,;)]+$/,'');
+  var titulo=String(linea).replace(m[0],' ').replace(/\s+/g,' ').replace(/^[-\u2013:\s]+|[-\u2013:\s]+$/g,'').trim();
+  return {url:url, label:titulo||_etiquetaLink(url)};
 }
 
 function guardarEntregables(clientId, taskId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   const t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
   if(!t) return;
-  const txt=((document.getElementById('pe-txt')||{}).value||'').trim();
   const av=document.getElementById('pe-aviso');
-  if(!txt){ if(av) av.textContent='No pegaste nada. Si todavia no hay entregable, cerra con "Ahora no".'; return; }
-  const urls=txt.match(/https?:\/\/[^\s<>"']+/g)||[];
+  const crudo=((document.getElementById('pe-links')||{}).value||'').trim();
+  const notas=((document.getElementById('pe-notas')||{}).value||'').trim();
+  if(!crudo && !notas){
+    if(av) av.textContent='No pusiste nada. Si todavia no hay entregable, cerra con "Ahora no".';
+    return;
+  }
   t.attachments=t.attachments||[];
-  let nuevos=0;
-  urls.forEach(function(u){
-    u=u.replace(/[.,;)]+$/,'');   // la puntuacion final no es parte del link
-    if(t.attachments.some(function(a){return a.url===u;})) return;
-    t.attachments.push({url:u, label:_etiquetaLink(u)});
+  var nuevos=0, sinLink=[];
+  crudo.split(/\n+/).forEach(function(linea){
+    linea=linea.trim(); if(!linea) return;
+    var p=_peLinea(linea);
+    if(!p){ sinLink.push(linea); return; }          // linea sin URL: se suma a las notas
+    var yaEsta=t.attachments.filter(function(a){return a.url===p.url;})[0];
+    if(yaEsta){ if(p.label) yaEsta.label=p.label; return; }   // repetido: solo se actualiza el titulo
+    t.attachments.push({url:p.url, label:p.label});
     nuevos++;
   });
-  // Lo que no es link se guarda como nota de entrega: a veces la referencia es
-  // "esta en la carpeta compartida" y ese dato tambien sirve.
-  const resto=txt.replace(/https?:\/\/[^\s<>"']+/g,'').replace(/\s+/g,' ').trim();
-  if(resto){
-    t.notaEntrega=resto;
-    t.notas=t.notas||[];
-    t.notas.push({texto:resto, at:new Date().toISOString()});
+  // Todo lo que no fue link entra al hilo, junto con las notas del campo de abajo.
+  var texto=[notas].concat(sinLink).filter(Boolean).join('\n').trim();
+  var comento=false;
+  if(texto){
+    t.comentarios=_comLista(t);
+    t.comentarios.push({ id:'c'+Date.now(), por:(typeof SB!=='undefined'&&SB.email)||'', texto:texto, at:new Date().toISOString() });
+    t.notaEntrega=texto;   // se mantiene para lo que ya lo leia
+    comento=true;
   }
-  if(!nuevos && !resto){ if(av) av.textContent='No encontre links nuevos en lo que pegaste.'; return; }
+  if(!nuevos && !comento){
+    if(av) av.textContent='No encontre links nuevos ni notas para guardar.';
+    return;
+  }
   save();
+  if(comento){
+    try{ comMarcarLeido(c,t); }catch(e){}
+    try{ comAvisar(c,t,texto); }catch(e){}   // quien revisa se entera del comentario
+  }
   closeModal();
   if(typeof toast==='function'){
-    toast(nuevos?(nuevos+' link'+(nuevos>1?'s':'')+' enganchado'+(nuevos>1?'s':'')+' al ticket'):'Nota de entrega guardada');
+    var partes=[];
+    if(nuevos) partes.push(nuevos+' link'+(nuevos>1?'s':''));
+    if(comento) partes.push('nota en el hilo');
+    toast(partes.join(' y ')+' guardad'+((nuevos===1&&!comento)?'o':'os'));
   }
   if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
 }
@@ -13527,7 +13567,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-20a');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-20b');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
