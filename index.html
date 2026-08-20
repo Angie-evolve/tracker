@@ -13478,7 +13478,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-19u');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-19v');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -14790,18 +14790,7 @@ function renderTab(){
     el.innerHTML=adsSubNav()+metaAvisosHtml(c)+`<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${metaToken&&metaAccountId?`
-          <select id="meta-days-select" onchange="changeMetaDays(${c.id},this.value)" style="font-size:11px;padding:4px 8px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer">
-            <option value="7" ${metaDays==7?'selected':''}>Ultimos 7 dias</option>
-            <option value="14" ${metaDays==14?'selected':''}>Ultimos 14 dias</option>
-            <option value="30" ${metaDays==30?'selected':''}>Ultimos 30 dias</option>
-            <option value="60" ${metaDays==60?'selected':''}>Ultimos 60 dias</option>
-            <option value="90" ${metaDays==90?'selected':''}>Ultimos 90 dias</option>
-            <option value="max" ${metaDays==='max'?'selected':''}>Maximo (36 meses)</option>
-            <option value="custom" ${metaDays==='custom'?'selected':''}>Rango personalizado</option>
-          </select>
-          ${metaDays==='custom'?`
-          <button class="btn btn-sm" onclick="openMetaRangeModal(${c.id})" style="font-size:11px">${activeLine.metaSince||'?'} a ${activeLine.metaUntil||'?'}</button>
-          `:''}
+          ${metaRangoControl(c, activeLine)}
           <span style="position:relative;display:inline-block">
             <button class="btn btn-sm" onclick="event.stopPropagation();toggleCondMenu('adscfg')" title="Ajustes de la vista" aria-label="Ajustes de la vista">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l4 4"/></svg>
@@ -21807,6 +21796,61 @@ function saveMetaConfig(clientId){
 
 // Mismo modal que usa Conversion de ventas, pero aplicado al rango de Meta en Ads & Guiones.
 // El anterior eran dos inputs sueltos que, si completabas solo uno, no hacian nada en silencio.
+// ---- Selector de rango: un solo control ----
+// Antes eran dos piezas que decian casi lo mismo ("Rango personalizado" al lado
+// de las fechas). Ahora manda la fecha, y el modo va debajo en chico.
+var META_DIAS_ES={7:'ultimos 7 dias',14:'ultimos 14 dias',30:'ultimos 30 dias',
+  60:'ultimos 60 dias',90:'ultimos 90 dias',max:'maximo (36 meses)',custom:'rango personalizado'};
+var _MES_CORTO=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+// "2026-06-01" -> "1 jun 2026". El formato ISO es el que peor se lee y mas ocupa.
+function _fechaCorta(iso, conAnio){
+  var m=String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return String(iso||'?');
+  return String(Number(m[3]))+' '+_MES_CORTO[Number(m[2])-1]+(conAnio?(' '+m[1]):'');
+}
+// Si el rango cae dentro del mismo anio, el anio se dice una sola vez.
+function metaRangoTexto(al){
+  var d=al&&al.metaDays;
+  if(d==='custom'){
+    var a=al.metaSince||'', b=al.metaUntil||'';
+    if(!a||!b) return 'Elegir fechas';
+    var mismoAnio=String(a).slice(0,4)===String(b).slice(0,4);
+    return _fechaCorta(a,!mismoAnio)+' \u2013 '+_fechaCorta(b,true);
+  }
+  if(d==='max') return 'Todo el historico';
+  return 'Ultimos '+(d||30)+' dias';
+}
+function metaModoTexto(al){
+  var d=(al&&al.metaDays)||30;
+  return META_DIAS_ES[d]||META_DIAS_ES[String(d)]||('ultimos '+d+' dias');
+}
+// El <select> real queda encima, invisible: conserva el menu nativo del sistema
+// (teclado, lectores de pantalla) sin tener que reimplementarlo.
+function metaRangoControl(c, al){
+  var opciones=[7,14,30,60,90,'max','custom'].map(function(v){
+    var sel=(String(al.metaDays||30)===String(v))?' selected':'';
+    return '<option value="'+v+'"'+sel+'>'+META_DIAS_ES[v]+'</option>';
+  }).join('');
+  return '<span style="position:relative;display:inline-flex;align-items:center;gap:9px;'
+    +'border:0.5px solid var(--border2);border-radius:12px;padding:5px 12px;cursor:pointer">'
+    +'<span style="text-align:right;line-height:1.25">'
+      +'<span style="display:block;font-size:12.5px;color:var(--text)">'+esc(metaRangoTexto(al))+'</span>'
+      +'<span style="display:block;font-size:10px;color:var(--text3)">'+esc(metaModoTexto(al))+'</span>'
+    +'</span>'
+    +'<span style="font-size:9px;color:var(--text3)">&#9660;</span>'
+    +'<select id="meta-days-select" onchange="changeMetaDays('+c.id+',this.value)" '
+      +'aria-label="Rango de fechas" '
+      +'style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;'
+      +'font-family:var(--font)">'+opciones+'</select>'
+    +'</span>'
+    // Con rango propio hace falta una via para editar las fechas: el select solo cambia el modo.
+    +(al.metaDays==='custom'
+      ?'<button class="btn btn-sm btn-icon" onclick="openMetaRangeModal('+c.id+')" '
+        +'title="Editar las fechas" aria-label="Editar las fechas">'
+        +'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg></button>'
+      :'');
+}
+
 function openMetaRangeModal(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
   const al=getActiveLine(c.conversionLines||[]); if(!al) return;
