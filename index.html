@@ -1140,10 +1140,103 @@ function _sbMarcar(estado, msg){
   else { el.textContent='sin sincronizar'; el.style.color='var(--amberx)'; el.title=msg||''; }
 }
 
+// ---- Espacio del navegador ----
+// localStorage da ~5 MB. Con varios clientes, cientos de oportunidades de GHL y
+// el arbol de campanas de Meta, se llena. Cuando eso pasa, setItem tira y el
+// guardado local deja de funcionar: hay que decirlo con nombre y apellido, no
+// con un "Error al guardar" que se repite en loop.
+function _pesoMB(x){ return (JSON.stringify(x||'').length/1048576); }
+function _diagEspacio(){
+  var out={total:_pesoMB(DB), clientes:[]};
+  (DB.clients||[]).forEach(function(c){
+    var partes=[];
+    var meter=function(l,v){ var p=_pesoMB(v); if(p>0.01) partes.push({l:l,mb:p}); };
+    meter('Oportunidades de GHL', c.ghl&&c.ghl.opportunities);
+    meter('Campanas de Meta', c.conversionLines);
+    meter('Anuncios propios', c.ourAds);
+    meter('Llamadas de Fathom', c.fathomCalls);
+    meter('Guiones', [c.adScripts,c.adScriptsByAd]);
+    meter('Tareas', c.tasks);
+    meter('Referentes', c.marketRefs);
+    partes.sort(function(a,b){ return b.mb-a.mb; });
+    out.clientes.push({name:c.name||('Cliente '+c.id), mb:_pesoMB(c), partes:partes});
+  });
+  out.clientes.sort(function(a,b){ return b.mb-a.mb; });
+  return out;
+}
+var _avisoEspacioDado=false;
+function _esErrorDeEspacio(e){
+  if(!e) return false;
+  var n=String(e.name||''), m=String(e.message||'');
+  return n==='QuotaExceededError' || n==='NS_ERROR_DOM_QUOTA_REACHED'
+    || /quota|exceeded|storage is full/i.test(m);
+}
+function _avisarEspacio(e){
+  if(_avisoEspacioDado) return;      // una vez por sesion, no en loop
+  _avisoEspacioDado=true;
+  var d=_diagEspacio();
+  var filas=d.clientes.slice(0,6).map(function(c){
+    return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="font-size:12px;color:var(--text)">'+esc(c.name)+'</span>'
+      +'<span style="font-size:11.5px;color:var(--text3);text-align:right">'+c.mb.toFixed(2)+' MB'
+      +(c.partes.length?('<span style="display:block;font-size:10.5px">'+esc(c.partes[0].l)+': '+c.partes[0].mb.toFixed(2)+' MB</span>'):'')
+      +'</span></div>';
+  }).join('');
+  var root=document.getElementById('modal-root'); if(!root) return;
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">El navegador se quedo sin espacio</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'Los cambios se siguen subiendo a Supabase, pero dejaron de guardarse en este navegador. '
+      +'Si recargas antes de que suban, perdes lo ultimo que hiciste. '
+      +'Estas usando <b>'+d.total.toFixed(2)+' MB</b> y el limite ronda los 5 MB.</div>'
+    +(filas?('<div style="margin-bottom:14px">'+filas+'</div>'):'')
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'"Liberar espacio" borra de este navegador el detalle de conjuntos y anuncios de las lineas '
+      +'que no estan activas. No se pierde nada: vuelve al sincronizar con Meta.</div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Ahora no</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="liberarEspacio()">Liberar espacio</button>'
+    +'</div></div></div>';
+}
+// Tira lo mas pesado y recuperable: el arbol de conjuntos/anuncios de las lineas
+// viejas. Los totales por campana se conservan, asi los informes historicos siguen.
+function liberarEspacio(){
+  var quitados=0;
+  (DB.clients||[]).forEach(function(c){
+    var activa=getActiveLine(c.conversionLines||[]);
+    (c.conversionLines||[]).forEach(function(l){
+      if(activa && l.id===activa.id) return;          // la activa no se toca
+      (l.metaCampaigns||[]).forEach(function(cp){
+        if(cp.adsets && cp.adsets.length){ quitados+=cp.adsets.length; delete cp.adsets; }
+      });
+    });
+    if(c.ghl && c.ghl._snapshot) delete c.ghl._snapshot;   // se rearma solo
+    if(c._pixeles){ delete c._pixeles; delete c._pixelesAt; }
+  });
+  var antes=_pesoMB(DB);
+  try{
+    localStorage.setItem(LS_KEY, JSON.stringify({...DB, savedAt:new Date().toISOString()}));
+    _avisoEspacioDado=false;
+    closeModal();
+    toast('Liberado. Ahora usa '+antes.toFixed(2)+' MB');
+  }catch(e){
+    closeModal();
+    toast('Sigue sin entrar: hace falta archivar algun cliente','red');
+  }
+  if(typeof renderTab==='function') renderTab();
+}
+
 function save(){
   // 1. Local primero: es instantaneo y es lo que hace que la app no dependa de la red.
   try{localStorage.setItem(LS_KEY,JSON.stringify({...DB,savedAt:new Date().toISOString()}));}
-  catch(e){toast('Error al guardar','red');}
+  catch(e){
+    // El caso real es quedarse sin espacio. Un toast generico repitiendose no
+    // dice que pasa ni como salir.
+    if(_esErrorDeEspacio(e)) _avisarEspacio(e);
+    else if(!_avisoEspacioDado){ _avisoEspacioDado=true; toast('No pude guardar en este navegador: '+(e&&e.message||''),'red'); }
+  }
   // 2. Supabase despues, agrupando los cambios de los ultimos 2 segundos.
   if(SB.listo){
     _sbMarcar('subiendo');
@@ -13542,7 +13635,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-21b');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-21d');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -21580,6 +21673,9 @@ function renderVentasTab(c, el){
         return (Math.round(den/vv*1000)/10)+'% <span style="font-size:10px;color:var(--text3)">('+den+'/'+vv.toLocaleString('en-US')+')</span>';
       })()),
       vhRow('Agendas totales',m_agendas),
+      // De los registros, cuantos llegan a agendar: el filtro que separa
+      // volumen de calidad. Con la misma definicion que el mes a mes.
+      vhRow('Agendan (%)',pctS(m_agendas,opsSeg.length)),
       vhRow('Shows pendientes',m_pend),
       vhRow('No shows',m_noshow),
       vhRow('No shows (%)',pctS(m_noshow,m_agendas)),
