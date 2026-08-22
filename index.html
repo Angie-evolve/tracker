@@ -8178,10 +8178,8 @@ function _eerrAvisoSinAporte(){
 }
 
 // Abre o cierra la lista de nombres de un mes. Volver a tocar el mismo cierra.
-function _eerrVerQuienes(clave, mes){
-  var a=S._eerrAbierto;
-  if(mes===null || (a&&a.k===clave&&a.m===mes)) S._eerrAbierto=null;
-  else S._eerrAbierto={k:clave, m:mes};
+function _eerrVerQuienes(clave){
+  S._eerrAbierto=(S._eerrAbierto===clave)?null:clave;
   renderTab();
 }
 
@@ -8569,47 +8567,55 @@ function eerrHtml(){
             ];
             return filas.map(function(f,fi){
               var clave='f'+fi;
-              var abierto=(S._eerrAbierto&&S._eerrAbierto.k===clave)?S._eerrAbierto.m:null;
+              var abierto=(S._eerrAbierto===clave);
               var tds=EERR_MESES.map(function(_,i){
-                var l=f.fn(eerrAnio(), i);
-                var n=l.length;
-                // Tocar el numero abre la lista: el tooltip obligaba a apuntar y
-                // esperar, y con doce meses eso es mirar celda por celda.
-                return '<td style="'+cel+';color:'+(n?f.col:'var(--text3)')+(n?';cursor:pointer':'')+'" '
-                  +(n?('onclick="_eerrVerQuienes(\''+clave+'\','+i+')"'):'')
-                  +(abierto===i?' data-abierta="1"':'')+'>'
-                  +(n?('<span style="border-bottom:1px dotted '+(abierto===i?'var(--accent)':'var(--border2)')+'">'+n+'</span>'):'&mdash;')
-                  +'</td>';
+                var n=f.fn(eerrAnio(), i).length;
+                return '<td style="'+cel+';color:'+(n?f.col:'var(--text3)')+'">'+(n||'&mdash;')+'</td>';
               }).join('');
-              // La lista va en su propia fila, debajo: dentro de la celda
-              // deformaba el ancho de todo el mes.
-              var detalle='';
-              if(abierto!=null){
-                var l=f.fn(eerrAnio(), abierto);
-                detalle='<tr><td colspan="14" style="padding:0 0 10px 0">'
-                  +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:10px 13px">'
-                  +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
-                    +'<span style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">'
-                      +esc(f.l)+' &middot; '+EERR_MESES[abierto]+' '+eerrAnio()+' &middot; '+l.length+'</span>'
-                    +'<span onclick="_eerrVerQuienes(\''+clave+'\',null)" style="margin-left:auto;cursor:pointer;color:var(--text3);font-size:14px;line-height:1">&times;</span>'
-                  +'</div>'
-                  +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
-                  +l.map(function(c){
-                      var m=(typeof rtMensual==='function')?rtMensual(c):{monto:0};
-                      return '<span style="font-size:11.5px;background:var(--bg2);border:0.5px solid var(--border);'
-                        +'border-radius:99px;padding:3px 10px;color:var(--text2)">'+esc(c.name||'')
-                        +(m.monto>0?('<span style="color:var(--text3)"> &middot; $'+Math.round(m.monto)+'</span>'):'')
-                        +'</span>';
-                    }).join('')
-                  +'</div></div></td></tr>';
-              }
-              // El total de una fila de stock no es la suma de los meses: seria
-              // contar al mismo cliente doce veces. Se muestra el mes en curso.
               var hoy=new Date();
               var act=(eerrAnio()===hoy.getFullYear())?f.fn(eerrAnio(), hoy.getMonth()).length:null;
-              return '<tr><td style="'+rot+';color:'+f.col+'" title="'+esc(f.ay)+'">'+f.l+'</td>'+tds
+              // La etiqueta abre la fila: adentro va un renglon por cliente con
+              // lo que aporta cada mes. Los totales de arriba no se mueven.
+              var h='<tr><td style="'+rot+';color:'+f.col+';cursor:pointer" onclick="_eerrVerQuienes(\''+clave+'\')" title="'+esc(f.ay)+'">'
+                +'<span style="color:var(--text3);font-size:9px;display:inline-block;width:11px;transform:rotate('+(abierto?'90':'0')+'deg)">&#9654;</span>'
+                +esc(f.l)+'</td>'+tds
                 +'<td style="'+cel+';color:var(--text3)" title="Hoy. No es la suma de los meses: seria contar al mismo cliente doce veces.">'
-                +(act==null?'&mdash;':act)+'</td></tr>'+detalle;
+                +(act==null?'&mdash;':act)+'</td></tr>';
+              if(!abierto) return h;
+
+              // Un cliente entra si aparece en algun mes del ano; asi no se
+              // listan los 14 en una fila que solo tiene 2.
+              var vistos={}, orden=[];
+              EERR_MESES.forEach(function(_,i){
+                f.fn(eerrAnio(), i).forEach(function(c){
+                  if(!vistos[c.id]){ vistos[c.id]=c; orden.push(c); }
+                });
+              });
+              if(!orden.length){
+                return h+'<tr><td colspan="14" style="padding:6px 0 10px 26px;font-size:11px;color:var(--text3)">Ningun cliente este ano.</td></tr>';
+              }
+              // Los que mas aportan primero: es el orden en que uno los mira.
+              orden.sort(function(a,b){
+                var ma=(typeof rtMensual==='function')?(rtMensual(a).monto||0):0;
+                var mb=(typeof rtMensual==='function')?(rtMensual(b).monto||0):0;
+                return (mb-ma)||String(a.name||'').localeCompare(String(b.name||''));
+              });
+              return h+orden.map(function(c){
+                var m=(typeof rtMensual==='function')?rtMensual(c):{monto:0};
+                var tds2=EERR_MESES.map(function(_,i){
+                  var esta=f.fn(eerrAnio(), i).some(function(x){return x.id===c.id;});
+                  if(!esta) return '<td style="'+cel+';color:var(--text3)">&mdash;</td>';
+                  // Sin monto se marca con un punto: el cliente esta, pero no
+                  // sabemos cuanto factura. Un $0 se leeria como que no cobra.
+                  return '<td style="'+cel+';color:var(--text2)">'
+                    +(m.monto>0?('$'+Math.round(m.monto).toLocaleString('es-AR'))
+                      :'<span style="color:var(--amberx)" title="Falta cargar el monto">&bull;</span>')
+                    +'</td>';
+                }).join('');
+                return '<tr style="background:var(--bg3)">'
+                  +'<td style="'+rot+';padding-left:26px;color:var(--text2);font-weight:400">'+esc(c.name||'')+'</td>'
+                  +tds2+'<td style="'+cel+';color:var(--text3)">'+(m.monto>0?('$'+Math.round(m.monto).toLocaleString('es-AR')):'&mdash;')+'</td></tr>';
+              }).join('');
             }).join('');
           })()
         +seccion('Ingresos')
@@ -13890,7 +13896,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22g');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22h');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
