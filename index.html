@@ -8097,6 +8097,70 @@ function clienteAltaInfo(c){
   return {fecha:null, fuente:null};
 }
 function clienteAlta(c){ return clienteAltaInfo(c).fecha; }
+// Quienes no aportan a la proyeccion y por que. Un cliente al que le seguis
+// entregando servicio puede sumar cero por tres motivos distintos, y cada uno se
+// arregla en un lugar distinto de la ficha.
+function eerrSinAporte(){
+  var hoy=new Date(), anio=eerrAnio();
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    var esRec=(c.serviceType==='recurrente'||c.recurrente);
+    var valor=parseFloat(c.contractValue)||0;
+    var fee=parseFloat(c.monthlyFee)||0;
+    var ct=c.contract||{};
+    var hayPdf=!!(ct.fileName||ct.driveUrl);
+    // 1. Ni abono ni contrato: no entra siquiera al calculo. Si hay un PDF
+    //    vinculado el caso es otro: falta leerle el precio, no cargar todo.
+    if(!esRec && !valor && !fee){
+      out.push({c:c, motivo:hayPdf?'sin-monto':'sin-datos'});
+      return;
+    }
+    var m=(typeof rtMensual==='function')?rtMensual(c):{monto:fee};
+    // 2. Entra pero vale cero: falta el monto o el plazo del contrato.
+    if(!(m.monto>0)){
+      out.push({c:c, motivo:(m.origen==='contrato-sin-monto')?'sin-monto':'sin-plazo'});
+      return;
+    }
+    // 3. Aporta, pero su contrato ya termino: de ahi en mas la proyeccion lo da
+    //    de baja aunque le sigas entregando servicio.
+    var h=(typeof _eerrHasta==='function')?_eerrHasta(c):null;
+    if(h){
+      var terminaAntesDeFinDeAnio=(h.a<anio)||(h.a===anio&&h.m<11);
+      var yaTermino=(h.a<hoy.getFullYear())||(h.a===hoy.getFullYear()&&h.m<hoy.getMonth());
+      if(yaTermino) out.push({c:c, motivo:'vencido', h:h});
+      else if(terminaAntesDeFinDeAnio) out.push({c:c, motivo:'termina', h:h});
+    }
+  });
+  return out;
+}
+function _eerrAvisoSinAporte(){
+  var l=eerrSinAporte();
+  if(!l.length) return '';
+  var grupos={
+    'sin-datos':{t:'sin abono ni contrato cargado', d:'No suman nada a la proyeccion. Se arregla en la ficha del cliente, en <b>Tipo de servicio</b>.'},
+    'sin-monto':{t:'con contrato pero sin monto', d:'Hay un PDF vinculado pero nadie cargo el precio: alguien tiene que leerlo del contrato.'},
+    'sin-plazo':{t:'con monto pero sin plazo', d:'Sin duracion no se puede prorratear: falta la vigencia en dias o las fechas de inicio y fin.'},
+    'vencido':{t:'con el contrato ya terminado', d:'Dejaron de sumar aunque les sigas entregando servicio. Si renovaron, hay que cargar la renovacion.'},
+    'termina':{t:'que terminan durante el ano', d:'Suman hasta ese mes y despues no: por eso la proyeccion baja.'}
+  };
+  var h='';
+  Object.keys(grupos).forEach(function(k){
+    var ls=l.filter(function(x){return x.motivo===k;});
+    if(!ls.length) return;
+    var nombres=ls.slice(0,8).map(function(x){
+      return esc(x.c.name)+(x.h?(' ('+EERR_MESES[x.h.m]+' '+x.h.a+')'):'');
+    }).join(', ');
+    h+='<div style="margin-top:6px"><b style="color:var(--amberx)">'+ls.length+' cliente'+(ls.length===1?'':'s')+' '
+      +grupos[k].t+'</b>. '+grupos[k].d+' '+nombres+(ls.length>8?(' y '+(ls.length-8)+' mas'):'')+'.</div>';
+  });
+  if(!h) return '';
+  return '<div style="font-size:11px;color:var(--text2);line-height:1.7;margin-bottom:10px;'
+    +'background:rgba(224,180,92,.07);border:1px solid rgba(224,180,92,.22);'
+    +'border-radius:var(--radius);padding:9px 12px">'
+    +'<b>Faltan clientes en esta proyeccion.</b>'+h+'</div>';
+}
+
 function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // Clientes que entraron en ese mes.
 function eerrNuevos(anio, mes){
@@ -8388,6 +8452,7 @@ function eerrHtml(){
           +est.slice(0,8).map(function(c){ return esc(c.name); }).join(', ')
           +(est.length>8?' y '+(est.length-8)+' mas':'')+'.</div>';
       })()
+    +_eerrAvisoSinAporte()
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
@@ -13692,7 +13757,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-21f');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22a');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
