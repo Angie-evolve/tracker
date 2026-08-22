@@ -8279,6 +8279,276 @@ function eerrSinFechaAlta(){
 }
 
 function eerrAnio(){ return S._eerrAnio||new Date().getFullYear(); }
+// ---- Importar transacciones de Mercury ----
+// Una vez por mes se sube el export y la IA propone categoria para cada gasto.
+// Lo importante es el paso de revision: cada correccion se guarda como regla y
+// la proxima vez ese proveedor ya sale clasificado sin preguntar ni gastar una
+// llamada a la API. El aprendizaje es esa memoria, no el modelo.
+function _txReglas(){
+  if(!DB.txReglas||typeof DB.txReglas!=='object') DB.txReglas={};
+  return DB.txReglas;
+}
+// Firma del comercio: se saca el ruido variable (numeros de operacion, fechas,
+// sufijos de ciudad) para que "STRIPE *ABC123" y "STRIPE *XYZ987" sean lo mismo.
+function _txFirma(desc){
+  var t=String(desc||'').toLowerCase();
+  t=t.replace(/[#*]/g,' ')
+     .replace(/\b\d[\d.,\-\/]*\b/g,' ')      // numeros, fechas, importes
+     .replace(/\b(inc|llc|ltd|sa|srl|co|com|net|io|corp)\b/g,' ')
+     .replace(/[^a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1 ]/g,' ')
+     .replace(/\s+/g,' ').trim();
+  // Todo lo que sigue a un * o a un # es codigo de operacion, no el comercio:
+  // "STRIPE *ABC123" y "STRIPE *XYZ987" son el mismo proveedor. Se corta ahi.
+  var corte=String(desc||'').search(/[*#]/);
+  if(corte>0){
+    t=String(desc||'').slice(0,corte).toLowerCase()
+      .replace(/[^a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1 ]/g,' ')
+      .replace(/\s+/g,' ').trim();
+  }
+  var pal=t.split(' ').filter(function(w){ return w.length>1; });
+  return pal.slice(0,2).join(' ');
+}
+function _txReglaDe(desc){
+  var f=_txFirma(desc);
+  if(!f) return null;
+  var r=_txReglas()[f];
+  return r?{cat:r.cat, veces:r.veces||1, firma:f}:null;
+}
+function _txAprender(desc, cat){
+  var f=_txFirma(desc);
+  if(!f||!cat) return;
+  var R=_txReglas();
+  // Si cambia de categoria, gana la ultima: la correccion es mas reciente que
+  // lo que se habia aprendido antes.
+  R[f]=(R[f]&&R[f].cat===cat)?{cat:cat, veces:(R[f].veces||1)+1}:{cat:cat, veces:1};
+}
+
+// Mercury exporta con encabezados; se acepta cualquier orden de columnas.
+function _txParseCSV(txt){
+  var lineas=String(txt||'').split(/\r?\n/).filter(function(l){return l.trim();});
+  if(lineas.length<2) return {error:'El archivo esta vacio o no tiene filas.'};
+  var celdas=function(l){
+    var out=[], cur='', dentro=false;
+    for(var i=0;i<l.length;i++){
+      var ch=l[i];
+      if(ch==='"'){ if(dentro&&l[i+1]==='"'){ cur+='"'; i++; } else dentro=!dentro; }
+      else if(ch===','&&!dentro){ out.push(cur); cur=''; }
+      else cur+=ch;
+    }
+    out.push(cur);
+    return out.map(function(x){return x.trim();});
+  };
+  var head=celdas(lineas[0]).map(function(h){return h.toLowerCase();});
+  var col=function(nombres){
+    for(var i=0;i<nombres.length;i++){
+      var j=head.findIndex(function(h){ return h.indexOf(nombres[i])>=0; });
+      if(j>=0) return j;
+    }
+    return -1;
+  };
+  var iF=col(['date','fecha']);
+  var iD=col(['description','descripcion','counterparty','merchant','name']);
+  var iM=col(['amount','monto','importe']);
+  if(iF<0||iD<0||iM<0){
+    return {error:'No encontre las columnas de fecha, descripcion e importe. Encabezados leidos: '+head.join(', ')};
+  }
+  var filas=[];
+  for(var k=1;k<lineas.length;k++){
+    var c=celdas(lineas[k]);
+    if(c.length<2) continue;
+    var monto=parseFloat(String(c[iM]||'').replace(/[^0-9.\-]/g,''));
+    if(!isFinite(monto)||monto===0) continue;
+    // Solo gastos: los ingresos de Mercury vienen en positivo y no van al EERR
+    // de costos. Se cuentan aparte para poder avisarlo.
+    var d=new Date(String(c[iF]||'').slice(0,10));
+    filas.push({
+      fecha:isNaN(d.getTime())?null:d,
+      desc:String(c[iD]||'').slice(0,120),
+      monto:monto,
+      gasto:monto<0
+    });
+  }
+  if(!filas.length) return {error:'No pude leer ninguna transaccion con importe.'};
+  return {filas:filas};
+}
+
+var _txState=null;
+function abrirImportarTx(){
+  var root=document.getElementById('modal-root'); if(!root) return;
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">Importar transacciones</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'Exporta el mes desde Mercury en CSV y pegalo o subilo aca. Propongo una categoria para '
+      +'cada gasto; vos corregis lo que este mal y eso queda aprendido para la proxima.</div>'
+    +'<input type="file" accept=".csv,text/csv" onchange="_txArchivo(this)" '
+      +'style="width:100%;font-size:12px;color:var(--text2);margin-bottom:10px">'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:5px">O pega el contenido:</div>'
+    +'<textarea id="tx-pegar" placeholder="Date,Description,Amount&#10;2026-07-03,GOOGLE WORKSPACE,-42.00" '
+      +'style="width:100%;box-sizing:border-box;height:110px;padding:9px 11px;border-radius:var(--radius);'
+      +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:11.5px;'
+      +'font-family:var(--mono,monospace);resize:vertical"></textarea>'
+    +'<div id="tx-aviso" style="font-size:11.5px;color:var(--amberx);margin-top:8px"></div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="_txLeerPegado()">Leer</button>'
+    +'</div></div></div>';
+}
+function _txArchivo(input){
+  var f=input&&input.files&&input.files[0]; if(!f) return;
+  var r=new FileReader();
+  r.onload=function(){ _txProcesar(String(r.result||'')); };
+  r.onerror=function(){ var a=document.getElementById('tx-aviso'); if(a) a.textContent='No pude leer el archivo.'; };
+  r.readAsText(f);
+}
+function _txLeerPegado(){
+  var t=(document.getElementById('tx-pegar')||{}).value||'';
+  if(!t.trim()){ var a=document.getElementById('tx-aviso'); if(a) a.textContent='Pega el CSV o elegi un archivo.'; return; }
+  _txProcesar(t);
+}
+
+async function _txProcesar(txt){
+  var p=_txParseCSV(txt);
+  var av=document.getElementById('tx-aviso');
+  if(p.error){ if(av) av.textContent=p.error; return; }
+  var gastos=p.filas.filter(function(f){return f.gasto;});
+  var ingresos=p.filas.length-gastos.length;
+  if(!gastos.length){ if(av) av.textContent='Solo encontre ingresos. Los gastos vienen con importe negativo.'; return; }
+
+  // Primero la memoria: lo ya aprendido no vuelve a pasar por la IA.
+  var pendientes=[];
+  gastos.forEach(function(g){
+    var r=_txReglaDe(g.desc);
+    if(r){ g.cat=r.cat; g.fuente='aprendido'; g.veces=r.veces; }
+    else pendientes.push(g);
+  });
+
+  if(pendientes.length){
+    if(av) av.textContent='Clasificando '+pendientes.length+' movimiento'+(pendientes.length===1?'':'s')+' con IA...';
+    try{ await _txClasificarIA(pendientes); }
+    catch(e){
+      pendientes.forEach(function(g){ if(!g.cat){ g.cat='otros'; g.fuente='sin-ia'; } });
+      if(av) av.textContent='La IA fallo ('+(e&&e.message||'')+'). Quedaron en Otros Gastos para que los corrijas.';
+    }
+  }
+  _txState={filas:gastos, ingresos:ingresos};
+  _txRevisar();
+}
+
+async function _txClasificarIA(filas){
+  var key=localStorage.getItem('evold-anthropic-key');
+  if(!key) throw new Error('falta la API key');
+  var cats=EERR_CATS.map(function(c){return c.k+' = '+c.n;}).join('; ');
+  var lista=filas.map(function(g,i){ return i+'. '+g.desc+' ($'+Math.abs(g.monto).toFixed(2)+')'; }).join('\n');
+  var r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':key,
+             'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:
+      'Sos el contador de una agencia de marketing. Clasifica cada gasto en una de estas categorias: '+cats+'.\n'
+      +'Pistas: pauta en Meta/Google va en ads; sueldos de quienes ejecutan campanas van en equipoDelivery; '
+      +'closers y setters en equipoVentas; software y hosting en infra; cursos y mentorias en formacion.\n'
+      +'Respondé SOLO un JSON: un array de objetos {"i": numero de linea, "cat": clave, "conf": "alta"|"baja"}. '
+      +'Usá "baja" cuando dudes.\n\n'+lista}]})
+  });
+  var d=await r.json();
+  if(d.error) throw new Error(d.error.message||'error de la API');
+  var txt=(d.content||[]).filter(function(x){return x.type==='text';}).map(function(x){return x.text;}).join('');
+  var m=txt.replace(/```json|```/g,'').trim();
+  var arr=JSON.parse(m);
+  var validas=EERR_CATS.map(function(c){return c.k;});
+  arr.forEach(function(o){
+    var g=filas[Number(o.i)];
+    if(!g) return;
+    g.cat=(validas.indexOf(o.cat)>=0)?o.cat:'otros';
+    g.fuente='ia';
+    g.conf=o.conf||'alta';
+  });
+  filas.forEach(function(g){ if(!g.cat){ g.cat='otros'; g.fuente='ia'; g.conf='baja'; } });
+}
+
+function _txRevisar(){
+  var st=_txState; if(!st) return;
+  var root=document.getElementById('modal-root'); if(!root) return;
+  var porMes={};
+  st.filas.forEach(function(g){
+    var k=g.fecha?(g.fecha.getFullYear()+'-'+g.fecha.getMonth()):'sin-fecha';
+    porMes[k]=(porMes[k]||0)+Math.abs(g.monto);
+  });
+  var meses=Object.keys(porMes).filter(function(k){return k!=='sin-fecha';});
+  var opciones=function(sel){
+    return EERR_CATS.map(function(c){
+      return '<option value="'+c.k+'"'+(c.k===sel?' selected':'')+'>'+esc(c.n)+'</option>';
+    }).join('');
+  };
+  var filas=st.filas.map(function(g,i){
+    var etq=g.fuente==='aprendido'
+      ? '<span style="color:var(--accent)" title="Aprendido de una correccion tuya, '+(g.veces||1)+' vez/veces">aprendido</span>'
+      : (g.conf==='baja'?'<span style="color:var(--amberx)" title="La IA dudo">revisar</span>':'<span style="color:var(--text3)">IA</span>');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="flex:1;min-width:0">'
+        +'<span style="display:block;font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(g.desc)+'</span>'
+        +'<span style="display:block;font-size:10px;color:var(--text3)">'
+          +(g.fecha?(g.fecha.getDate()+' '+EERR_MESES[g.fecha.getMonth()].slice(0,3)):'sin fecha')+' &middot; '+etq+'</span>'
+      +'</span>'
+      +'<span style="font-size:11.5px;color:var(--text2);flex-shrink:0">$'+Math.abs(g.monto).toFixed(2)+'</span>'
+      +'<select onchange="_txCambiar('+i+',this.value)" style="flex-shrink:0;width:150px;font-size:11px;'
+        +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-family:var(--font)">'+opciones(g.cat)+'</select>'
+    +'</div>';
+  }).join('');
+  var total=st.filas.reduce(function(s,g){return s+Math.abs(g.monto);},0);
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:96%">'
+    +'<div class="modal-title" style="margin-bottom:3px">Revisar antes de importar</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +st.filas.length+' gasto'+(st.filas.length===1?'':'s')+' por $'+total.toFixed(2)
+      +(st.ingresos?(' &middot; '+st.ingresos+' ingreso'+(st.ingresos===1?'':'s')+' que no se importan'):'')
+      +(meses.length>1?' &middot; <span style="color:var(--amberx)">hay '+meses.length+' meses distintos, cada uno va a su columna</span>':'')
+      +'. Lo que corrijas queda aprendido.</div>'
+    +'<div style="max-height:min(56vh,420px);overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="_txImportar()">Sumar a los gastos</button>'
+    +'</div></div></div>';
+}
+function _txCambiar(i, cat){
+  if(!_txState||!_txState.filas[i]) return;
+  _txState.filas[i].cat=cat;
+  _txState.filas[i].corregido=true;
+}
+
+function _txImportar(){
+  var st=_txState; if(!st) return;
+  var sumas={}, sinFecha=0;
+  st.filas.forEach(function(g){
+    if(g.corregido) _txAprender(g.desc, g.cat);      // solo lo corregido a mano
+    else if(g.fuente==='ia'&&g.conf==='alta') _txAprender(g.desc, g.cat);
+    if(!g.fecha){ sinFecha++; return; }
+    var k=g.fecha.getFullYear()+'|'+g.fecha.getMonth()+'|'+g.cat;
+    sumas[k]=(sumas[k]||0)+Math.abs(g.monto);
+  });
+  // Se suma a lo que ya habia: importar dos veces el mismo mes duplicaria, asi
+  // que conviene avisarlo.
+  var tocados=0;
+  Object.keys(sumas).forEach(function(k){
+    var p=k.split('|'), a=Number(p[0]), m=Number(p[1]), cat=p[2];
+    if(a!==eerrAnio()) return;                        // otro ano: no se toca
+    var actual=eerrVal(m, cat)||0;
+    eerrSet(m, cat, actual+sumas[k]);
+    tocados++;
+  });
+  save();
+  closeModal();
+  _txState=null;
+  var msg=tocados+' celda'+(tocados===1?'':'s')+' actualizada'+(tocados===1?'':'s');
+  if(sinFecha) msg+=' \u00b7 '+sinFecha+' sin fecha quedaron afuera';
+  toast(msg);
+  showTickets();
+}
+
 function eerrSetAnio(a){ S._eerrAnio=parseInt(a,10)||new Date().getFullYear(); showTickets(); }
 function _eerrDatos(){
   if(!DB.eerr||typeof DB.eerr!=='object') DB.eerr={};
@@ -8540,6 +8810,8 @@ function eerrHtml(){
   return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:18px">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px">'
       +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Estado de resultados</span>'
+      +'<span style="flex:1"></span>'
+      +'<button class="btn btn-sm" onclick="abrirImportarTx()" title="Subir el CSV de Mercury y clasificar los gastos">Importar transacciones</button>'
       +'<select onchange="eerrSetAnio(this.value)" style="padding:4px 9px;border-radius:var(--radius);'
         +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px;font-family:inherit">'
         +anios.map(function(x){ return '<option value="'+x+'"'+(x===anio?' selected':'')+'>'+x+'</option>'; }).join('')
@@ -14031,7 +14303,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22r');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22s');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
