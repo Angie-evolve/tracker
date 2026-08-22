@@ -8225,6 +8225,15 @@ function eerrSet(m, campo, valor){
 // Hasta cuando esta comprometido este cliente. La fecha de fin de contrato
 // manda; si no hay, el proximo pago es lo ultimo confirmado. Sin ninguna de las
 // dos no hay nada que indique un final y se toma como abierto.
+// Desde cuando cuenta. Antes no se miraba el inicio: un contrato de 90 dias que
+// arranco en marzo sumaba de agosto en adelante, o sea todos los meses menos los
+// que en realidad cubria.
+function _eerrDesde(c){
+  var i=(typeof clienteAltaInfo==='function')?clienteAltaInfo(c):null;
+  var d=i&&i.fecha;
+  if(!d) return null;
+  return {a:d.getFullYear(), m:d.getMonth()};
+}
 function _eerrHasta(c){
   // Ojo con la diferencia: la fecha FIN DE CONTRATO cubre ese mes; el PROXIMO
   // PAGO es plata que todavia no entro, asi que lo cubierto termina el mes
@@ -8233,6 +8242,17 @@ function _eerrHasta(c){
   if(c.renuevaSolo && !(c.contract&&c.contract.endDate)) return null;
   var fin=(c.contract&&c.contract.endDate)||'';
   var prox=c.nextPaymentDate||'';
+  // Sin fecha de fin explicita, un contrato con plazo termina donde dice el
+  // plazo: inicio + duracion. Si no, "90 dias de garantia" no terminaba nunca.
+  if(!fin && !prox){
+    var dias=parseFloat(c.contract&&c.contract.durationDays)||0;
+    var ini=_eerrDesde(c);
+    if(dias>0 && ini){
+      var meses=Math.max(1, Math.round(dias/30));
+      var tm=ini.m+meses-1;                 // el mes de inicio ya cuenta como uno
+      return {a:ini.a+Math.floor(tm/12), m:((tm%12)+12)%12, porPlazo:true};
+    }
+  }
   var f=fin||prox;
   if(!f) return null;
   var p=String(f).slice(0,10).split('-');
@@ -8251,6 +8271,10 @@ function _eerrVencida(c){
 // Ese mes, este cliente sigue comprometido? Proyectar mas alla de lo pactado
 // convierte una hipotesis de renovacion en ingreso asegurado.
 function _eerrCubre(c, anio, mes){
+  // Antes de empezar no hay servicio que cobrar: sin este chequeo, un cliente de
+  // marzo aportaba tambien en enero y febrero.
+  var d=_eerrDesde(c);
+  if(d && ((anio<d.a)||(anio===d.a&&mes<d.m))) return false;
   var h=_eerrHasta(c);
   if(!h) return true;                       // sin fecha, no hay final conocido
   return (anio<h.a)||(anio===h.a&&mes<=h.m);
@@ -8258,9 +8282,10 @@ function _eerrCubre(c, anio, mes){
 // Comprometido para ese mes. Entran los recurrentes por su abono y los de
 // garantia por el prorrateo del contrato: un contrato de 2400 en 3 meses son
 // 800 por mes reales, no cero.
-function eerrAbonosMes(anio, mes){
+function eerrAbonosMes(anio, mes, soloFiables){
   return (DB.clients||[])
     .filter(function(c){ return !c.archived; })
+    .filter(function(c){ return !soloFiables || (typeof clienteAltaFiable!=='function') || clienteAltaFiable(c); })
     .filter(function(c){
       var esRec=(c.serviceType==='recurrente'||c.recurrente);
       var tieneContrato=(parseFloat(c.contractValue)||0)>0;
@@ -8309,7 +8334,13 @@ function eerrEsFuturo(m){
 function eerrIngreso(m){
   var v=eerrVal(m,'ingresos');
   if(v!=null) return v;
-  return eerrEsPasado(m)?null:eerrAbonosMes(eerrAnio(), m);
+  // Un mes pasado no se completa con la cartera de HOY: eso multiplicaba el MRR
+  // actual por doce. Pero ahora cada contrato tiene inicio y fin, asi que si
+  // sabemos que alguien estaba bajo contrato ese mes, ese numero es real.
+  // Solo cuentan los de fecha de alta confiable: las estimadas del id inventan
+  // un historico que nunca paso.
+  if(eerrEsPasado(m)) return eerrAbonosMes(eerrAnio(), m, true) || null;
+  return eerrAbonosMes(eerrAnio(), m);
 }
 function eerrEsProyectado(m){
   return eerrVal(m,'ingresos')==null && !eerrEsPasado(m);
@@ -13769,7 +13800,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22b');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22c');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
