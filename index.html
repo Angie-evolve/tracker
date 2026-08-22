@@ -6684,7 +6684,13 @@ function toggleTicketsMenu(btn){
   };
   // En el Mirador solo tiene sentido lo de la agencia: el resto son acciones
   // sobre tickets, y aca no hay ninguno a la vista.
-  if((S.torreVista||'mirador')!=='tickets'){
+  if((S.torreVista||'mirador')==='rentabilidad'){
+    m.innerHTML=''
+      +it('abrirSubcategorias()','ti-users','Subcategorias de gastos')
+      +it('abrirImportarTx()','ti-file-import','Importar transacciones')
+      +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+      +it('abrirConfigAgencia()','ti-building','Configuracion de agencia');
+  } else if((S.torreVista||'mirador')!=='tickets'){
     m.innerHTML=it('abrirConfigAgencia()','ti-building','Configuracion de agencia');
   } else {
     m.innerHTML=''
@@ -8318,6 +8324,100 @@ function _txQuienDe(desc){
   return (r&&r.quien)?r.quien:'';
 }
 
+// Configuracion de subcategorias. Antes solo se creaban escribiendo en el
+// importador; aca se pueden definir de antemano, renombrar y borrar. Renombrar
+// arrastra los importes ya cargados y las reglas aprendidas: si no, cambiar
+// "Ashy" por "Ashley" partia el historico en dos personas distintas.
+function _subDefs(){
+  if(!DB.subDefs||typeof DB.subDefs!=='object') DB.subDefs={};
+  return DB.subDefs;
+}
+// Las que se pueden elegir: las definidas mas las que ya aparecen en los datos.
+function subOpciones(cat){
+  var v={};
+  (_subDefs()[cat]||[]).forEach(function(n){ v[n]=1; });
+  subNombres(cat).forEach(function(n){ v[n]=1; });
+  return Object.keys(v).sort();
+}
+function abrirSubcategorias(){
+  var root=document.getElementById('modal-root'); if(!root) return;
+  var bloques=EERR_CATS.map(function(c){
+    var l=subOpciones(c.k);
+    return '<div style="margin-bottom:14px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+        +'<span style="font-size:12px;color:var(--text)">'+esc(c.n)+'</span>'
+        +'<span style="margin-left:auto;font-size:10.5px;color:var(--text3)">'+(l.length||'sin')+' subcategoria'+(l.length===1?'':'s')+'</span>'
+      +'</div>'
+      +(l.length?('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">'+l.map(function(n){
+          return '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--bg3);'
+            +'border:0.5px solid var(--border);border-radius:99px;padding:3px 6px 3px 10px;font-size:11px;color:var(--text2)">'
+            +esc(n)
+            +'<span onclick="_subRenombrar(\''+c.k+'\',\''+_jsEsc(n)+'\')" title="Renombrar" style="cursor:pointer;color:var(--text3)">&#9998;</span>'
+            +'<span onclick="_subBorrar(\''+c.k+'\',\''+_jsEsc(n)+'\')" title="Quitar" style="cursor:pointer;color:var(--text3)">&times;</span>'
+          +'</span>';
+        }).join('')+'</div>'):'')
+      +'<input placeholder="Agregar (ej: CEO)" onkeydown="if(event.key===\'Enter\'){_subAgregar(\''+c.k+'\',this.value);this.value=\'\';}" '
+        +'style="width:100%;box-sizing:border-box;font-size:11.5px;padding:5px 9px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:inherit">'
+    +'</div>';
+  }).join('');
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div class="modal-title" style="margin-bottom:3px">Subcategorias de gastos</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'Sirven para separar dentro de una categoria: quien cobra que. Aparecen al importar '
+      +'transacciones y se pueden abrir en el estado de resultados. Renombrar arrastra lo ya cargado.</div>'
+    +'<div style="max-height:min(56vh,440px);overflow-y:auto">'+bloques+'</div>'
+    +'<div class="modal-footer"><button class="btn btn-sm btn-primary" onclick="closeModal()">Listo</button></div>'
+    +'</div></div>';
+}
+function _subAgregar(cat, nombre){
+  var n=String(nombre||'').trim();
+  if(!n) return;
+  var D=_subDefs();
+  D[cat]=D[cat]||[];
+  if(D[cat].indexOf(n)<0 && subNombres(cat).indexOf(n)<0) D[cat].push(n);
+  save(); abrirSubcategorias();
+}
+function _subBorrar(cat, nombre){
+  var usados=subNombres(cat).indexOf(nombre)>=0;
+  if(usados && !confirm('"'+nombre+'" tiene gastos cargados. Si la quitas, esos importes quedan sin detalle dentro de '+cat+'. El total de la categoria no cambia.\n\nQuitar igual?')) return;
+  var D=_subDefs();
+  if(D[cat]) D[cat]=D[cat].filter(function(x){return x!==nombre;});
+  if(usados){
+    var S2=_subDatos();
+    Object.keys(S2).forEach(function(k){
+      if(!S2[k]||!S2[k][cat]) return;
+      delete S2[k][cat][nombre];
+      // Si fue el ultimo, se saca la categoria: un objeto vacio hacia que la
+      // fila siguiera figurando como desplegable sin nada adentro.
+      if(!Object.keys(S2[k][cat]).length) delete S2[k][cat];
+      if(!Object.keys(S2[k]).length) delete S2[k];
+    });
+  }
+  save(); abrirSubcategorias();
+}
+function _subRenombrar(cat, nombre){
+  var nuevo=prompt('Nuevo nombre para "'+nombre+'":', nombre);
+  if(nuevo===null) return;
+  nuevo=String(nuevo).trim();
+  if(!nuevo||nuevo===nombre) return;
+  var D=_subDefs();
+  D[cat]=(D[cat]||[]).map(function(x){return x===nombre?nuevo:x;});
+  if(D[cat].indexOf(nuevo)<0) D[cat].push(nuevo);
+  // Arrastra los importes: sin esto el historico queda partido en dos nombres.
+  var S2=_subDatos();
+  Object.keys(S2).forEach(function(k){
+    var d=S2[k]&&S2[k][cat];
+    if(d&&d[nombre]!=null){ d[nuevo]=(d[nuevo]||0)+d[nombre]; delete d[nombre]; }
+  });
+  // Y las reglas aprendidas, para que el proximo import use el nombre nuevo.
+  var R=_txReglas();
+  Object.keys(R).forEach(function(f){ if(R[f].quien===nombre) R[f].quien=nuevo; });
+  save(); abrirSubcategorias();
+}
+
 // ---- Importar transacciones de Mercury ----
 // Una vez por mes se sube el export y la IA propone categoria para cada gasto.
 // Lo importante es el paso de revision: cada correccion se guarda como regla y
@@ -8554,7 +8654,7 @@ function _txRevisar(){
       +'. Lo que corrijas queda aprendido.</div>'
     +'<datalist id="tx-quienes">'+(function(){
         var n={};
-        EERR_CATS.forEach(function(c){ subNombres(c.k).forEach(function(x){ n[x]=1; }); });
+        EERR_CATS.forEach(function(c){ subOpciones(c.k).forEach(function(x){ n[x]=1; }); });
         st.filas.forEach(function(g){ if(g.quien) n[g.quien]=1; });
         return Object.keys(n).map(function(x){return '<option value="'+esc(x)+'">';}).join('');
       })()+'</datalist>'
@@ -14391,7 +14491,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22t');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22u');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
