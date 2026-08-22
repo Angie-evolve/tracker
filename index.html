@@ -8183,6 +8183,11 @@ function _eerrAvisoSinAporte(){
 }
 
 // Abre o cierra la lista de nombres de un mes. Volver a tocar el mismo cierra.
+function _eerrVerSub(campo){
+  S._eerrSubAbierto=(S._eerrSubAbierto===campo)?null:campo;
+  if(S.view==='tickets'&&typeof showTickets==='function') showTickets();
+  else if(typeof renderTab==='function') renderTab();
+}
 function _eerrVerClientes(){
   S._eerrClientes=!S._eerrClientes;
   // Esta tabla vive en la torre (Rentabilidad), que la dibuja showTickets.
@@ -8279,6 +8284,40 @@ function eerrSinFechaAlta(){
 }
 
 function eerrAnio(){ return S._eerrAnio||new Date().getFullYear(); }
+// ---- Desglose por persona dentro de una categoria ----
+// Se guarda aparte de los totales: la categoria sigue siendo el numero real y el
+// desglose solo explica de que esta hecha. Asi importar dos veces o cargar un
+// mes a mano nunca puede duplicar un gasto por culpa del detalle.
+function _subDatos(){
+  if(!DB.eerrSub||typeof DB.eerrSub!=='object') DB.eerrSub={};
+  return DB.eerrSub;
+}
+function _subMes(m){ return eerrAnio()+'-'+m; }
+function subVal(m, cat){
+  var D=_subDatos()[_subMes(m)];
+  return (D&&D[cat])?D[cat]:null;
+}
+function subSumar(anio, m, cat, quien, monto){
+  if(!quien||!monto) return;
+  var D=_subDatos(), k=anio+'-'+m;
+  D[k]=D[k]||{}; D[k][cat]=D[k][cat]||{};
+  D[k][cat][quien]=(D[k][cat][quien]||0)+monto;
+}
+// Nombres ya usados en una categoria, para ofrecerlos en el importador.
+function subNombres(cat){
+  var vistos={}, D=_subDatos();
+  Object.keys(D).forEach(function(k){
+    if(D[k]&&D[k][cat]) Object.keys(D[k][cat]).forEach(function(n){ vistos[n]=1; });
+  });
+  return Object.keys(vistos).sort();
+}
+// Lo aprendido tambien recuerda a quien corresponde el gasto.
+function _txQuienDe(desc){
+  var f=_txFirma(desc);
+  var r=f?_txReglas()[f]:null;
+  return (r&&r.quien)?r.quien:'';
+}
+
 // ---- Importar transacciones de Mercury ----
 // Una vez por mes se sube el export y la IA propone categoria para cada gasto.
 // Lo importante es el paso de revision: cada correccion se guarda como regla y
@@ -8314,13 +8353,12 @@ function _txReglaDe(desc){
   var r=_txReglas()[f];
   return r?{cat:r.cat, veces:r.veces||1, firma:f}:null;
 }
-function _txAprender(desc, cat){
+function _txAprender(desc, cat, quien){
   var f=_txFirma(desc);
   if(!f||!cat) return;
   var R=_txReglas();
-  // Si cambia de categoria, gana la ultima: la correccion es mas reciente que
-  // lo que se habia aprendido antes.
-  R[f]=(R[f]&&R[f].cat===cat)?{cat:cat, veces:(R[f].veces||1)+1}:{cat:cat, veces:1};
+  var igual=R[f]&&R[f].cat===cat;
+  R[f]={cat:cat, veces:igual?((R[f].veces||1)+1):1, quien:quien||((igual&&R[f].quien)||'')};
 }
 
 // Mercury exporta con encabezados; se acepta cualquier orden de columnas.
@@ -8420,7 +8458,7 @@ async function _txProcesar(txt){
   var pendientes=[];
   gastos.forEach(function(g){
     var r=_txReglaDe(g.desc);
-    if(r){ g.cat=r.cat; g.fuente='aprendido'; g.veces=r.veces; }
+    if(r){ g.cat=r.cat; g.fuente='aprendido'; g.veces=r.veces; g.quien=_txQuienDe(g.desc); }
     else pendientes.push(g);
   });
 
@@ -8493,9 +8531,15 @@ function _txRevisar(){
           +(g.fecha?(g.fecha.getDate()+' '+EERR_MESES[g.fecha.getMonth()].slice(0,3)):'sin fecha')+' &middot; '+etq+'</span>'
       +'</span>'
       +'<span style="font-size:11.5px;color:var(--text2);flex-shrink:0">$'+Math.abs(g.monto).toFixed(2)+'</span>'
-      +'<select onchange="_txCambiar('+i+',this.value)" style="flex-shrink:0;width:150px;font-size:11px;'
+      +'<select onchange="_txCambiar('+i+',this.value)" style="flex-shrink:0;width:135px;font-size:11px;'
         +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
         +'color:var(--text);font-family:var(--font)">'+opciones(g.cat)+'</select>'
+      // Quien: opcional y con las opciones ya usadas. Sirve para separar sueldos
+      // dentro de una misma categoria (CEO y COO en Equipo Propio, por ejemplo).
+      +'<input list="tx-quienes" value="'+esc(g.quien||'')+'" placeholder="quien" '
+        +'onchange="_txQuien('+i+',this.value)" style="flex-shrink:0;width:96px;font-size:11px;'
+        +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-family:var(--font)">'
     +'</div>';
   }).join('');
   var total=st.filas.reduce(function(s,g){return s+Math.abs(g.monto);},0);
@@ -8508,6 +8552,12 @@ function _txRevisar(){
       +(st.ingresos?(' &middot; '+st.ingresos+' ingreso'+(st.ingresos===1?'':'s')+' que no se importan'):'')
       +(meses.length>1?' &middot; <span style="color:var(--amberx)">hay '+meses.length+' meses distintos, cada uno va a su columna</span>':'')
       +'. Lo que corrijas queda aprendido.</div>'
+    +'<datalist id="tx-quienes">'+(function(){
+        var n={};
+        EERR_CATS.forEach(function(c){ subNombres(c.k).forEach(function(x){ n[x]=1; }); });
+        st.filas.forEach(function(g){ if(g.quien) n[g.quien]=1; });
+        return Object.keys(n).map(function(x){return '<option value="'+esc(x)+'">';}).join('');
+      })()+'</datalist>'
     +'<div style="max-height:min(56vh,420px);overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
     +'<div class="modal-footer">'
       +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
@@ -8519,16 +8569,22 @@ function _txCambiar(i, cat){
   _txState.filas[i].cat=cat;
   _txState.filas[i].corregido=true;
 }
+function _txQuien(i, quien){
+  if(!_txState||!_txState.filas[i]) return;
+  _txState.filas[i].quien=String(quien||'').trim();
+  _txState.filas[i].corregido=true;
+}
 
 function _txImportar(){
   var st=_txState; if(!st) return;
   var sumas={}, sinFecha=0;
   st.filas.forEach(function(g){
-    if(g.corregido) _txAprender(g.desc, g.cat);      // solo lo corregido a mano
-    else if(g.fuente==='ia'&&g.conf==='alta') _txAprender(g.desc, g.cat);
+    if(g.corregido) _txAprender(g.desc, g.cat, g.quien);   // solo lo corregido a mano
+    else if(g.fuente==='ia'&&g.conf==='alta') _txAprender(g.desc, g.cat, g.quien);
     if(!g.fecha){ sinFecha++; return; }
     var k=g.fecha.getFullYear()+'|'+g.fecha.getMonth()+'|'+g.cat;
     sumas[k]=(sumas[k]||0)+Math.abs(g.monto);
+    if(g.quien) subSumar(g.fecha.getFullYear(), g.fecha.getMonth(), g.cat, g.quien, Math.abs(g.monto));
   });
   // Se suma a lo que ya habia: importar dos veces el mismo mes duplicaria, asi
   // que conviene avisarlo.
@@ -8772,8 +8828,40 @@ function eerrHtml(){
         +'font-family:inherit" onfocus="this.style.borderColor=\'var(--border2)\';this.style.background=\'var(--bg3)\'" '
         +'onblur="this.style.borderColor=\'transparent\';this.style.background=\'transparent\'"></td>';
     }).join('');
-    return '<tr><td style="'+rot+(sangria?';padding-left:22px':'')+'">'+nombre+'</td>'+tds
+    // Si la categoria tiene desglose por persona, la fila se puede abrir.
+    var quienes={};
+    EERR_MESES.forEach(function(_,i){
+      var d=subVal(i,campo); if(d) Object.keys(d).forEach(function(n){ quienes[n]=1; });
+    });
+    var nombres=Object.keys(quienes).sort();
+    var abierto=(S._eerrSubAbierto===campo);
+    var cabecera='<tr><td style="'+rot+(sangria?';padding-left:22px':'')+(nombres.length?';cursor:pointer':'')+'"'
+      +(nombres.length?' onclick="_eerrVerSub(\''+campo+'\')" title="Ver el desglose"':'')+'>'
+      +(nombres.length?('<span style="color:var(--text3);font-size:9px;display:inline-block;width:11px;transform:rotate('+(abierto?'90':'0')+'deg)">&#9654;</span>'):'')
+      +nombre+'</td>'+tds
       +'<td style="'+cel+';color:var(--text2)">'+(total?_eerrPlata(total):'&mdash;')+'</td></tr>';
+    if(!abierto||!nombres.length) return cabecera;
+    // Se muestra tambien lo que no tiene detalle, para que las partes cierren
+    // contra el total de la categoria y no parezca que falta plata.
+    var filasSub=nombres.map(function(n){
+      var t2=0;
+      var tds2=EERR_MESES.map(function(_,i){
+        var d=subVal(i,campo), v=(d&&d[n])||0; t2+=v;
+        return '<td style="'+cel+';color:var(--text2)">'+(v?_eerrPlata(v):'&mdash;')+'</td>';
+      }).join('');
+      return '<tr style="background:var(--bg3)"><td style="'+rot+';padding-left:'+(sangria?38:26)+'px;color:var(--text2)">'
+        +esc(n)+'</td>'+tds2+'<td style="'+cel+';color:var(--text3)">'+(t2?_eerrPlata(t2):'&mdash;')+'</td></tr>';
+    }).join('');
+    var tr=0;
+    var tdsResto=EERR_MESES.map(function(_,i){
+      var d=subVal(i,campo)||{};
+      var suma=Object.keys(d).reduce(function(a,k){return a+(d[k]||0);},0);
+      var v=(eerrVal(i,campo)||0)-suma; tr+=v;
+      return '<td style="'+cel+';color:var(--text3)">'+(Math.round(v)?_eerrPlata(v):'&mdash;')+'</td>';
+    }).join('');
+    var resto=Math.round(tr)?('<tr style="background:var(--bg3)"><td style="'+rot+';padding-left:'+(sangria?38:26)+'px;color:var(--text3)">sin detalle</td>'
+      +tdsResto+'<td style="'+cel+';color:var(--text3)">'+_eerrPlata(tr)+'</td></tr>'):'';
+    return cabecera+filasSub+resto;
   };
   var filaCalc=function(nombre, fn, opts){
     opts=opts||{};
@@ -14303,7 +14391,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22s');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22t');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
