@@ -8178,8 +8178,8 @@ function _eerrAvisoSinAporte(){
 }
 
 // Abre o cierra la lista de nombres de un mes. Volver a tocar el mismo cierra.
-function _eerrVerQuienes(clave){
-  S._eerrAbierto=(S._eerrAbierto===clave)?null:clave;
+function _eerrVerClientes(){
+  S._eerrClientes=!S._eerrClientes;
   renderTab();
 }
 
@@ -8455,9 +8455,14 @@ function eerrHtml(){
       +'<td style="'+cel+';color:var(--text2)'+(opts.fuerte?';font-weight:600':'')+'">'
       +(opts.pct?'&mdash;':_eerrPlata(total))+'</td></tr>';
   };
-  var seccion=function(t){
+  var seccion=function(t, abrible){
+    var abierto=abrible&&S._eerrClientes;
     return '<tr><td colspan="14" style="padding:13px 10px 5px;font-size:10px;text-transform:uppercase;'
-      +'letter-spacing:.08em;color:var(--text3);position:sticky;left:0;background:var(--bg2)">'+t+'</td></tr>';
+      +'letter-spacing:.08em;color:var(--text3);position:sticky;left:0;background:var(--bg2)'
+      +(abrible?';cursor:pointer':'')+'"'
+      +(abrible?' onclick="_eerrVerClientes()" title="Ver el detalle cliente por cliente"':'')+'>'
+      +(abrible?('<span style="display:inline-block;width:11px;font-size:9px;transform:rotate('+(abierto?'90':'0')+'deg)">&#9654;</span>'):'')
+      +t+'</td></tr>';
   };
 
   var anios=[];
@@ -8533,7 +8538,7 @@ function eerrHtml(){
     +'<div style="overflow-x:auto">'
       +'<table style="width:100%;border-collapse:collapse;min-width:860px">'
         +'<thead>'+enc+'</thead><tbody>'
-        +seccion('Clientes')
+        +seccion('Clientes', true)
         +(function(){
             var tot=0;
             var tds=EERR_MESES.map(function(_,i){
@@ -8567,7 +8572,7 @@ function eerrHtml(){
             ];
             return filas.map(function(f,fi){
               var clave='f'+fi;
-              var abierto=(S._eerrAbierto===clave);
+              var abierto=false;   // el detalle ahora cuelga del encabezado CLIENTES
               var tds=EERR_MESES.map(function(_,i){
                 var n=f.fn(eerrAnio(), i).length;
                 return '<td style="'+cel+';color:'+(n?f.col:'var(--text3)')+'">'+(n||'&mdash;')+'</td>';
@@ -8576,8 +8581,8 @@ function eerrHtml(){
               var act=(eerrAnio()===hoy.getFullYear())?f.fn(eerrAnio(), hoy.getMonth()).length:null;
               // La etiqueta abre la fila: adentro va un renglon por cliente con
               // lo que aporta cada mes. Los totales de arriba no se mueven.
-              var h='<tr><td style="'+rot+';color:'+f.col+';cursor:pointer" onclick="_eerrVerQuienes(\''+clave+'\')" title="'+esc(f.ay)+'">'
-                +'<span style="color:var(--text3);font-size:9px;display:inline-block;width:11px;transform:rotate('+(abierto?'90':'0')+'deg)">&#9654;</span>'
+              var h='<tr><td style="'+rot+';color:'+f.col+'" title="'+esc(f.ay)+'">'
+                +'<span style="display:inline-block;width:11px"></span>'
                 +esc(f.l)+'</td>'+tds
                 +'<td style="'+cel+';color:var(--text3)" title="Hoy. No es la suma de los meses: seria contar al mismo cliente doce veces.">'
                 +(act==null?'&mdash;':act)+'</td></tr>';
@@ -8617,6 +8622,42 @@ function eerrHtml(){
                   +tds2+'<td style="'+cel+';color:var(--text3)">'+(m.monto>0?('$'+Math.round(m.monto).toLocaleString('es-AR')):'&mdash;')+'</td></tr>';
               }).join('');
             }).join('');
+          })()
+        +(function(){
+            if(!S._eerrClientes) return '';
+            // Un renglon por cliente y su aporte mes a mes. Es la lectura de la
+            // planilla: de un vistazo se ve desde cuando hasta cuando estuvo cada uno.
+            var vistos={}, orden=[];
+            EERR_MESES.forEach(function(_,i){
+              eerrActivos(eerrAnio(), i).forEach(function(c){
+                if(!vistos[c.id]){ vistos[c.id]=c; orden.push(c); }
+              });
+            });
+            if(!orden.length) return '<tr><td colspan="14" style="padding:6px 10px 10px 26px;font-size:11px;color:var(--text3)">Ningun cliente este ano.</td></tr>';
+            orden.sort(function(a,b){
+              var ma=(typeof rtMensual==='function')?(rtMensual(a).monto||0):0;
+              var mb=(typeof rtMensual==='function')?(rtMensual(b).monto||0):0;
+              return (mb-ma)||String(a.name||'').localeCompare(String(b.name||''));
+            });
+            return orden.map(function(c){
+              var m=(typeof rtMensual==='function')?rtMensual(c):{monto:0};
+              var tds=EERR_MESES.map(function(_,i){
+                var serv=eerrEnServicio(eerrAnio(), i).some(function(x){return x.id===c.id;});
+                var act=eerrActivos(eerrAnio(), i).some(function(x){return x.id===c.id;});
+                if(!act) return '<td style="'+cel+';color:var(--text3)">&mdash;</td>';
+                // Activo pero fuera de contrato: se marca sin monto, porque hay
+                // servicio entregado que no se esta facturando.
+                if(!serv) return '<td style="'+cel+';color:var(--text3)" title="Activo, sin contrato vigente">&bull;</td>';
+                if(!(m.monto>0)) return '<td style="'+cel+';color:var(--amberx)" title="Falta cargar el monto">&bull;</td>';
+                return '<td style="'+cel+';color:var(--text2)">$'+Math.round(m.monto).toLocaleString('es-AR')+'</td>';
+              }).join('');
+              return '<tr style="background:var(--bg3)">'
+                +'<td style="'+rot+';padding-left:26px;color:var(--text2);font-weight:400">'+esc(c.name||'')+'</td>'
+                +tds+'<td style="'+cel+';color:var(--text3)">'+(m.monto>0?('$'+Math.round(m.monto).toLocaleString('es-AR')):'&mdash;')+'</td></tr>';
+            }).join('')
+            +'<tr><td colspan="14" style="padding:5px 10px 8px 26px;font-size:10.5px;color:var(--text3);line-height:1.5">'
+              +'Monto: contrato vigente ese mes. <span style="color:var(--amberx)">&bull;</span> en servicio pero sin monto cargado. '
+              +'<span style="color:var(--text3)">&bull;</span> activo sin contrato vigente.</td></tr>';
           })()
         +seccion('Ingresos')
         +filaEdit('ingresos','Ingresos totales')
@@ -13896,7 +13937,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22h');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22i');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
