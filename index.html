@@ -8345,16 +8345,16 @@ function _eerrHasta(c){
   // vinculado de un contrato anterior. Se ignora y manda el plazo, si no el
   // cliente figura vencido desde el dia uno.
   if(fin && _eerrFinVencidoAntesDeEmpezar(c)) fin='';
-  // Sin fecha de fin explicita, un contrato con plazo termina donde dice el
-  // plazo: inicio + duracion. Si no, "90 dias de garantia" no terminaba nunca.
-  if(!fin && !prox){
-    var dias=parseFloat(c.contract&&c.contract.durationDays)||0;
-    var ini=_eerrDesde(c);
-    if(dias>0 && ini){
-      var meses=Math.max(1, Math.round(dias/30));
-      var tm=ini.m+meses-1;                 // el mes de inicio ya cuenta como uno
-      return {a:ini.a+Math.floor(tm/12), m:((tm%12)+12)%12, porPlazo:true};
-    }
+  // La duracion manda sobre la fecha de fin. El plazo se cuenta desde el inicio
+  // real del servicio, que es el dato que vos curas en "Cliente desde"; la fecha
+  // del PDF suele venir de otro ciclo o de una firma anterior. Si cargas 90 dias
+  // tienen que ser 3 meses, no los 4 que salian de una fecha heredada.
+  var dias=parseFloat(c.contract&&c.contract.durationDays)||0;
+  var ini=_eerrDesde(c);
+  if(dias>0 && ini){
+    var meses=Math.max(1, Math.round(dias/30));
+    var tm=ini.m+meses-1;                   // el mes de inicio ya cuenta como uno
+    return {a:ini.a+Math.floor(tm/12), m:((tm%12)+12)%12, porPlazo:true};
   }
   var f=fin||prox;
   if(!f) return null;
@@ -14027,7 +14027,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22m');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22o');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
@@ -15196,6 +15196,7 @@ function renderTab(){
           </div>
           <div style="display:flex;gap:6px">
             ${contract.driveUrl?`<button class="btn btn-sm" onclick="window.open('${contract.driveUrl}','_blank')"> Abrir</button>`:''}
+            ${(!(parseFloat(c.contractValue)||0) && contract.driveUrl)?`<button class="btn btn-sm" style="color:var(--amberx)" onclick="releerContrato(${c.id})" title="Volver a leerlo para sacar el monto">Releer</button>`:''}
             <button class="btn btn-sm" onclick="removeContract(${c.id})">x</button>
           </div>
         </div>`:`
@@ -16329,6 +16330,14 @@ function uploadContract(clientId, inputEl){
   reader.readAsDataURL(f);
 }
 
+// Releer el contrato ya vinculado. Sirve cuando la lectura anterior no encontro
+// el monto: el archivo sigue ahi, no hay que volver a subirlo.
+function releerContrato(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.contract||!c.contract.driveUrl){ toast('No hay contrato vinculado','red'); return; }
+  extractContractWithAI(clientId, null, c.contract.driveUrl);
+}
+
 async function extractContractWithAI(clientId, file, driveUrl){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
@@ -16350,7 +16359,7 @@ async function extractContractWithAI(clientId, file, driveUrl){
     if(file){
       messages=[{role:'user',content:[
         {type:'document',source:{type:'base64',media_type:file.type||'application/pdf',data:file.base64}},
-        {type:'text',text:'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia de inversion minima en pauta, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de inicio en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null, "contractValue": monto total que paga el cliente por el servicio principal en USD como numero (sin simbolo), "monthlyFee": monto del fee mensual opcional o de renovacion en USD como numero o null si no existe, "serviceType": "garantia" si es un contrato de servicios con garantia de resultados, "recurrente" si paga mensualmente sin contrato de garantia, o "one-time" si es un pago unico sin renovacion }'}
+        {type:'text',text:'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia de inversion minima en pauta, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de inicio en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null, "contractValue": monto total que paga el cliente por el servicio principal en USD como numero (sin simbolo). Buscalo en todo el documento: puede estar en letras, en una tabla de pagos, como suma de cuotas o en otra moneda. Si son cuotas, sumalas. Devolve null solo si no figura ningun importe, "monthlyFee": monto del fee mensual opcional o de renovacion en USD como numero o null si no existe, "serviceType": "garantia" si es un contrato de servicios con garantia de resultados, "recurrente" si paga mensualmente sin contrato de garantia, o "one-time" si es un pago unico sin renovacion }'}
       ]}];
     } else {
       // Drive URL - can't access directly, skip AI and let user fill manually
