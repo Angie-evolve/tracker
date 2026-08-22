@@ -8654,9 +8654,21 @@ function _txRevisar(){
       // Quien: opcional y con las opciones ya usadas. Sirve para separar sueldos
       // dentro de una misma categoria (CEO y COO en Equipo Propio, por ejemplo).
       +'<input list="tx-quienes" value="'+esc(g.quien||'')+'" placeholder="quien" '
-        +'onchange="_txQuien('+i+',this.value)" style="flex-shrink:0;width:96px;font-size:11px;'
+        +'onchange="_txQuien('+i+',this.value)" style="flex-shrink:0;width:86px;font-size:11px;'
         +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
         +'color:var(--text);font-family:var(--font)">'
+      // A que mes imputarlo. Por defecto el del movimiento, pero un pago de
+      // deuda de agosto puede corresponder a un servicio de marzo: la fecha en
+      // que sale la plata no siempre es el mes que hay que cargar.
+      +'<select onchange="_txMes('+i+',this.value)" title="A que mes se imputa" '
+        +'style="flex-shrink:0;width:64px;font-size:11px;padding:4px 4px;border-radius:var(--radius);'
+        +'border:1px solid '+(g.mesManual?'var(--amberx)':'var(--border2)')+';background:var(--bg3);'
+        +'color:'+(g.mesManual?'var(--amberx)':'var(--text)')+';font-family:var(--font)">'
+        +EERR_MESES.map(function(mm,mi){
+          var sel=(g.mes!=null?g.mes:(g.fecha?g.fecha.getMonth():-1))===mi;
+          return '<option value="'+mi+'"'+(sel?' selected':'')+'>'+mm.slice(0,3)+'</option>';
+        }).join('')
+      +'</select>'
     +'</div>';
   }).join('');
   var total=st.filas.reduce(function(s,g){return s+Math.abs(g.monto);},0);
@@ -8668,6 +8680,10 @@ function _txRevisar(){
       +st.filas.length+' gasto'+(st.filas.length===1?'':'s')+' por $'+total.toFixed(2)
       +(st.ingresos?(' &middot; '+st.ingresos+' ingreso'+(st.ingresos===1?'':'s')+' que no se importan'):'')
       +(meses.length>1?' &middot; <span style="color:var(--amberx)">hay '+meses.length+' meses distintos, cada uno va a su columna</span>':'')
+      +(function(){
+          var n=st.filas.filter(function(g){return g.mesManual;}).length;
+          return n?(' &middot; <span style="color:var(--amberx)">'+n+' con el mes cambiado a mano</span>'):'';
+        })()
       +'. Lo que corrijas queda aprendido.</div>'
     +'<datalist id="tx-quienes">'+(function(){
         var n={};
@@ -8691,6 +8707,13 @@ function _txQuien(i, quien){
   _txState.filas[i].quien=String(quien||'').trim();
   _txState.filas[i].corregido=true;
 }
+function _txMes(i, m){
+  if(!_txState||!_txState.filas[i]) return;
+  var g=_txState.filas[i];
+  g.mes=parseInt(m,10);
+  g.mesManual=(g.fecha? g.mes!==g.fecha.getMonth() : true);
+  _txRevisar();
+}
 
 function _txImportar(){
   var st=_txState; if(!st) return;
@@ -8698,10 +8721,14 @@ function _txImportar(){
   st.filas.forEach(function(g){
     if(g.corregido) _txAprender(g.desc, g.cat, g.quien);   // solo lo corregido a mano
     else if(g.fuente==='ia'&&g.conf==='alta') _txAprender(g.desc, g.cat, g.quien);
-    if(!g.fecha){ sinFecha++; return; }
-    var k=g.fecha.getFullYear()+'|'+g.fecha.getMonth()+'|'+g.cat;
+    var mes=(g.mes!=null)?g.mes:(g.fecha?g.fecha.getMonth():null);
+    if(mes==null){ sinFecha++; return; }
+    // El ano sigue siendo el del movimiento: mover el mes es para imputar dentro
+    // del mismo ejercicio, no para reescribir a que ano pertenece.
+    var anio=g.fecha?g.fecha.getFullYear():eerrAnio();
+    var k=anio+'|'+mes+'|'+g.cat;
     sumas[k]=(sumas[k]||0)+Math.abs(g.monto);
-    if(g.quien) subSumar(g.fecha.getFullYear(), g.fecha.getMonth(), g.cat, g.quien, Math.abs(g.monto));
+    if(g.quien) subSumar(anio, mes, g.cat, g.quien, Math.abs(g.monto));
   });
   // Se suma a lo que ya habia: importar dos veces el mismo mes duplicaria, asi
   // que conviene avisarlo.
@@ -14508,7 +14535,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22v');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22w');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
