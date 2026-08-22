@@ -8186,6 +8186,49 @@ function _eerrVerClientes(){
   else if(typeof renderTab==='function') renderTab();
 }
 
+// ---- Valor real por cliente ----
+// El ticket es lo que pago; el valor real es ese ticket repartido entre todos
+// los meses que llevas entregando servicio, con contrato o sin el. Cuando el
+// segundo baja del abono pactado, la diferencia son meses trabajados de mas.
+// El mes en curso no cuenta hasta cerrar: si no, un cliente de ayer figura con
+// un mes cumplido y el promedio queda mal.
+function _ltvMesCerrado(){
+  var h=new Date();
+  var m=h.getMonth()-1, a=h.getFullYear();
+  if(m<0){ m=11; a-=1; }
+  return {a:a, m:m};
+}
+function _ltvMeses(c){
+  var d=_eerrDesde(c); if(!d) return 0;
+  var f=_ltvMesCerrado();
+  var n=(f.a-d.a)*12+(f.m-d.m)+1;
+  return n>0?n:0;
+}
+// Meses que cubria el contrato. En recurrente, hasta su fecha de fin; sin fecha,
+// se considera al dia y no hay meses de mas.
+function _ltvPactados(c){
+  var d=_eerrDesde(c); if(!d) return 0;
+  var h=_eerrHasta(c);
+  if(!h) return _ltvMeses(c);            // sin fin conocido, todo esta en plazo
+  var f=_ltvMesCerrado();
+  var fa=h.a, fm=h.m;
+  if((fa*12+fm)>(f.a*12+f.m)){ fa=f.a; fm=f.m; }   // no contar futuro
+  var n=(fa-d.a)*12+(fm-d.m)+1;
+  return n>0?n:0;
+}
+function _ltvTicket(c){
+  var esRec=(c.serviceType==='recurrente'||c.recurrente);
+  if(esRec){
+    var fee=parseFloat(c.monthlyFee)||0;
+    return fee*_ltvPactados(c);
+  }
+  return parseFloat(c.contractValue)||0;
+}
+function _ltvValorReal(c){
+  var t=_ltvTicket(c), n=_ltvMeses(c);
+  return (t>0&&n>0)?(t/n):0;
+}
+
 // Dos lecturas distintas de la cartera en un mes dado.
 // EN SERVICIO: los que ese mes estaban dentro de su contrato (la garantia de 90
 // dias corriendo, el abono vigente). Es lo que se factura.
@@ -8559,24 +8602,43 @@ function eerrHtml(){
               return (mb-ma)||String(a.name||'').localeCompare(String(b.name||''));
             });
             return orden.map(function(c){
-              var m=(typeof rtMensual==='function')?rtMensual(c):{monto:0};
+              var vr=_ltvValorReal(c);
+              var tic=_ltvTicket(c);
+              var nAct=_ltvMeses(c), nPac=_ltvPactados(c);
+              var deMas=Math.max(0, nAct-nPac);
+              var cerr=_ltvMesCerrado();
               var tds=EERR_MESES.map(function(_,i){
-                var serv=eerrEnServicio(eerrAnio(), i).some(function(x){return x.id===c.id;});
-                var act=eerrActivos(eerrAnio(), i).some(function(x){return x.id===c.id;});
-                if(!act) return '<td style="'+cel+';color:var(--text3)">&mdash;</td>';
-                // Activo pero fuera de contrato: se marca sin monto, porque hay
-                // servicio entregado que no se esta facturando.
-                if(!serv) return '<td style="'+cel+';color:var(--text3)" title="Activo, sin contrato vigente">&bull;</td>';
-                if(!(m.monto>0)) return '<td style="'+cel+';color:var(--amberx)" title="Falta cargar el monto">&bull;</td>';
-                return '<td style="'+cel+';color:var(--text2)">$'+Math.round(m.monto).toLocaleString('es-AR')+'</td>';
+                var a=eerrAnio();
+                // El mes en curso y lo que viene no cuentan hasta cerrar.
+                if((a*12+i)>(cerr.a*12+cerr.m)) return '<td style="'+cel+';color:var(--text3)">&mdash;</td>';
+                if(!eerrActivos(a, i).some(function(x){return x.id===c.id;}))
+                  return '<td style="'+cel+';color:var(--text3)">&mdash;</td>';
+                if(!(vr>0)) return '<td style="'+cel+';color:var(--amberx)" title="Falta cargar el monto">&bull;</td>';
+                // Solo cambia el color del numero: fuera de plazo va en ambar.
+                var fuera=!_eerrCubre(c, a, i);
+                return '<td style="'+cel+';color:'+(fuera?'var(--amberx)':'var(--text2)')+'"'
+                  +(fuera?' title="Mes entregado fuera del plazo pactado"':'')+'>'
+                  +'$'+Math.round(vr).toLocaleString('es-AR')+'</td>';
               }).join('');
+              // Ultima columna: el ticket y de donde sale el valor real.
+              var det=(tic>0&&nAct)
+                ? (nPac+' pactado'+(nPac===1?'':'s')+(deMas?(' \u00b7 '+deMas+' de mas'):''))
+                : '';
               return '<tr style="background:var(--bg3)">'
                 +'<td style="'+rot+';padding-left:26px;color:var(--text2);font-weight:400">'+esc(c.name||'')+'</td>'
-                +tds+'<td style="'+cel+';color:var(--text3)">'+(m.monto>0?('$'+Math.round(m.monto).toLocaleString('es-AR')):'&mdash;')+'</td></tr>';
+                +tds
+                +'<td style="'+cel+'">'
+                  +(vr>0
+                    ?('<span style="color:var(--text)">$'+Math.round(vr).toLocaleString('es-AR')+'</span>'
+                      +'<span style="display:block;font-size:9.5px;color:'+(deMas?'var(--amberx)':'var(--text3)')+'">'
+                      +'ticket $'+Math.round(tic).toLocaleString('es-AR')+(det?(' \u00b7 '+det):'')+'</span>')
+                    :'<span style="color:var(--amberx);font-size:10.5px">falta el monto</span>')
+                +'</td></tr>';
             }).join('')
-            +'<tr><td colspan="14" style="padding:5px 10px 8px 26px;font-size:10.5px;color:var(--text3);line-height:1.5">'
-              +'Monto: contrato vigente ese mes. <span style="color:var(--amberx)">&bull;</span> en servicio pero sin monto cargado. '
-              +'<span style="color:var(--text3)">&bull;</span> activo sin contrato vigente.</td></tr>';
+            +'<tr><td colspan="14" style="padding:5px 10px 8px 26px;font-size:10.5px;color:var(--text3);line-height:1.55">'
+              +'Cada mes muestra el <b>valor real</b>: el ticket repartido entre los meses que llevas entregando servicio. '
+              +'<span style="color:var(--amberx)">En ambar</span>, los meses fuera del plazo pactado. '
+              +'El mes en curso no cuenta hasta cerrar.</td></tr>';
           })()
         +(function(){
             var tot=0;
@@ -13942,7 +14004,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22k');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22l');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
