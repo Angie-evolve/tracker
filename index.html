@@ -8173,6 +8173,30 @@ function _eerrAvisoSinAporte(){
     +'<b>Faltan clientes en esta proyeccion.</b>'+h+'</div>';
 }
 
+// Dos lecturas distintas de la cartera en un mes dado.
+// EN SERVICIO: los que ese mes estaban dentro de su contrato (la garantia de 90
+// dias corriendo, el abono vigente). Es lo que se factura.
+// ACTIVOS: los que ya eran clientes y no estan archivados, tengan contrato
+// vigente o no. La diferencia entre ambos es a quienes les seguis entregando
+// servicio sin nada firmado que lo respalde.
+function eerrEnServicio(anio, mes){
+  return (DB.clients||[]).filter(function(c){
+    if(c.archived) return false;
+    var esRec=(c.serviceType==='recurrente'||c.recurrente);
+    var tiene=(parseFloat(c.contractValue)||0)>0||(parseFloat(c.monthlyFee)||0)>0;
+    if(!esRec&&!tiene) return false;
+    return _eerrCubre(c, anio, mes);
+  });
+}
+function eerrActivos(anio, mes){
+  return (DB.clients||[]).filter(function(c){
+    if(c.archived) return false;
+    var d=_eerrDesde(c);
+    if(!d) return true;                      // sin fecha de alta, se asume que ya estaba
+    return (anio>d.a)||(anio===d.a&&mes>=d.m);
+  });
+}
+
 function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // Clientes que entraron en ese mes.
 function eerrNuevos(anio, mes){
@@ -8521,6 +8545,32 @@ function eerrHtml(){
             }).join('');
             return '<tr><td style="'+rot+';color:var(--strong);font-weight:500">Clientes nuevos</td>'+tds
               +'<td style="'+cel+';color:var(--accent);font-weight:600">'+(tot||'&mdash;')+'</td></tr>';
+          })()
+        +(function(){
+            // Se muestran dos filas hermanas: la de arriba es lo que se cobra,
+            // la de abajo a quienes se atiende. El hueco entre las dos es el dato.
+            var filas=[
+              {l:'En servicio', fn:eerrEnServicio, col:'var(--text)',
+               ay:'Con contrato vigente ese mes: la garantia corriendo o el abono al dia. Es lo que se factura.'},
+              {l:'Activos',     fn:eerrActivos,    col:'var(--text2)',
+               ay:'Clientes no archivados que ya habian empezado. Los que no estan en la fila de arriba son a los que les seguis entregando servicio sin contrato vigente.'}
+            ];
+            return filas.map(function(f){
+              var tds=EERR_MESES.map(function(_,i){
+                var l=f.fn(eerrAnio(), i);
+                var n=l.length;
+                var tit=l.slice(0,12).map(function(c){return c.name;}).join(', ')+(l.length>12?(' y '+(l.length-12)+' mas'):'');
+                return '<td style="'+cel+';color:'+(n?f.col:'var(--text3)')+'" '
+                  +(n?('title="'+esc(tit)+'"'):'')+'>'+(n||'&mdash;')+'</td>';
+              }).join('');
+              // El total de una fila de stock no es la suma de los meses: seria
+              // contar al mismo cliente doce veces. Se muestra el mes en curso.
+              var hoy=new Date();
+              var act=(eerrAnio()===hoy.getFullYear())?f.fn(eerrAnio(), hoy.getMonth()).length:null;
+              return '<tr><td style="'+rot+';color:'+f.col+'" title="'+esc(f.ay)+'">'+f.l+'</td>'+tds
+                +'<td style="'+cel+';color:var(--text3)" title="Hoy. No es la suma de los meses: seria contar al mismo cliente doce veces.">'
+                +(act==null?'&mdash;':act)+'</td></tr>';
+            }).join('');
           })()
         +seccion('Ingresos')
         +filaEdit('ingresos','Ingresos totales')
@@ -13800,7 +13850,7 @@ async function sincronizarNuestrosAds(clientId){
   // dentro de object_story_spec.link_data. Si Meta rechaza algun campo, se
   // reintenta con el set minimo antes de darse por vencido: perder el sync entero
   // por un campo opcional seria peor que perder ese campo.
-  console.log('[tracker] mercado build 2026-08-22c');   // para saber que version cargo el navegador
+  console.log('[tracker] mercado build 2026-08-22d');   // para saber que version cargo el navegador
   // Solo los anuncios de las campanas que gestionamos: la cuenta suele tener
   // campanas viejas o de otra agencia, y meterlas al mapa ensucia la lectura
   // con angulos que no son nuestros. Se respeta la misma exclusion que usa
