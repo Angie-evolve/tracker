@@ -8478,6 +8478,55 @@ function _txAprender(desc, cat, quien){
   R[f]={cat:cat, veces:igual?((R[f].veces||1)+1):1, quien:quien||((igual&&R[f].quien)||'')};
 }
 
+// Las comisiones no son un comercio: son un satelite del cargo que las genero.
+// "Intl. Transaction Fee" solo aparece adosada a una compra internacional, y
+// mostrarla como fila propia obliga a categorizar dos veces el mismo gasto y
+// deja dos renglones sin nombre entre los que no se sabe cual es cual.
+var _TX_FEE=/(transaction fee|intl\.? *transaction|foreign (transaction|exchange)|currency conversion|fx fee|wire fee|comision bancaria)/i;
+function _txMismaFecha(a,b){
+  if(!a||!b) return false;
+  return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+}
+// Cada comision se pega al cargo mas cercano de la misma fecha. Se busca en las
+// dos direcciones porque Mercury no garantiza el orden: a veces la comision cae
+// antes del cargo y a veces despues. El tope del 20% descarta pegar un gasto
+// real a otro cuando dos movimientos comparten fecha por casualidad.
+function _txAbsorberComisiones(filas){
+  var esFee=filas.map(function(g){ return _TX_FEE.test(g.desc); });
+  var padre=new Array(filas.length);
+  filas.forEach(function(g,i){
+    if(!esFee[i]) return;
+    for(var d=1;d<=6;d++){
+      var cand=[i-d,i+d];
+      for(var c=0;c<2;c++){
+        var j=cand[c];
+        if(j<0||j>=filas.length||esFee[j]) continue;
+        var p=filas[j];
+        if(!_txMismaFecha(p.fecha,g.fecha)) continue;
+        if(Math.abs(g.monto)>Math.abs(p.monto)*0.2) continue;
+        padre[i]=j; return;
+      }
+    }
+  });
+  var out=[];
+  filas.forEach(function(g,i){
+    if(padre[i]!=null){
+      var p=filas[padre[i]];
+      p.comisiones=(p.comisiones||[]).concat([g]);
+      return;
+    }
+    out.push(g);
+  });
+  return out;
+}
+// Lo que salio de la cuenta por ese movimiento, comision incluida. Es el numero
+// que hay que mostrar al revisar; en el EERR despues se separa.
+function _txTotal(g){
+  var t=Math.abs(g.monto);
+  (g.comisiones||[]).forEach(function(f){ t+=Math.abs(f.monto); });
+  return t;
+}
+
 // Mercury exporta con encabezados; se acepta cualquier orden de columnas.
 function _txParseCSV(txt){
   var lineas=String(txt||'').split(/\r?\n/).filter(function(l){return l.trim();});
@@ -8568,7 +8617,10 @@ async function _txProcesar(txt){
   var av=document.getElementById('tx-aviso');
   if(p.error){ if(av) av.textContent=p.error; return; }
   var gastos=p.filas.filter(function(f){return f.gasto;});
-  var ingresos=p.filas.length-gastos.length;
+  var ingresos=p.filas.length-gastos.length;   // se cuenta antes de absorber
+  var brutos=gastos.length;
+  gastos=_txAbsorberComisiones(gastos);
+  var absorbidas=brutos-gastos.length;
   if(!gastos.length){ if(av) av.textContent='Solo encontre ingresos. Los gastos vienen con importe negativo.'; return; }
 
   // Primero la memoria: lo ya aprendido no vuelve a pasar por la IA.
@@ -8587,7 +8639,7 @@ async function _txProcesar(txt){
       if(av) av.textContent='La IA fallo ('+(e&&e.message||'')+'). Quedaron en Otros Gastos para que los corrijas.';
     }
   }
-  _txState={filas:gastos, ingresos:ingresos};
+  _txState={filas:gastos, ingresos:ingresos, absorbidas:absorbidas};
   _txRevisar();
 }
 
@@ -8626,6 +8678,10 @@ async function _txClasificarIA(filas){
 function _txRevisar(){
   var st=_txState; if(!st) return;
   var root=document.getElementById('modal-root'); if(!root) return;
+  // Cambiar una categoria redibuja el modal entero. Con 164 filas eso mandaba
+  // la lista de vuelta arriba en cada correccion: hay que devolver el scroll.
+  var _prev=document.getElementById('tx-lista');
+  var _scroll=_prev?_prev.scrollTop:0;
   var porMes={};
   st.filas.forEach(function(g){
     var k=g.fecha?(g.fecha.getFullYear()+'-'+g.fecha.getMonth()):'sin-fecha';
@@ -8641,24 +8697,24 @@ function _txRevisar(){
     var etq=g.fuente==='aprendido'
       ? '<span style="color:var(--accent)" title="Aprendido de una correccion tuya, '+(g.veces||1)+' vez/veces">aprendido</span>'
       : (g.conf==='baja'?'<span style="color:var(--amberx)" title="La IA dudo">revisar</span>':'<span style="color:var(--text3)">IA</span>');
-    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">'
+    // La comision absorbida se declara en el subtitulo: sin esto, el importe de
+    // la fila no coincide con ninguna linea del CSV y parece un error.
+    var fee=(g.comisiones||[]).reduce(function(s,f){ return s+Math.abs(f.monto); },0);
+    var subs=subOpciones(g.cat);
+    return '<div style="padding:7px 0;border-bottom:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:center;gap:8px">'
       +'<span style="flex:1;min-width:0">'
         +'<span style="display:block;font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(g.desc)+'</span>'
         +'<span style="display:block;font-size:10px;color:var(--text3)">'
-          +(g.fecha?(g.fecha.getDate()+' '+EERR_MESES[g.fecha.getMonth()].slice(0,3)):'sin fecha')+' &middot; '+etq+'</span>'
+          +(g.fecha?(g.fecha.getDate()+' '+EERR_MESES[g.fecha.getMonth()].slice(0,3)):'sin fecha')+' &middot; '+etq
+          +(fee?(' &middot; incluye $'+fee.toFixed(2)+' de comision'):'')+'</span>'
       +'</span>'
       // Con el signo a la vista: sin el, un gasto y un reintegro se ven igual.
       +'<span style="font-size:11.5px;flex-shrink:0;color:'+(g.monto<0?'var(--text2)':'var(--accent)')+'">'
-        +(g.monto<0?'\u2212':'+')+'$'+Math.abs(g.monto).toFixed(2)+'</span>'
-      +'<select onchange="_txCambiar('+i+',this.value)" style="flex-shrink:0;width:135px;font-size:11px;'
-        +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
-        +'color:var(--text);font-family:var(--font)">'+opciones(g.cat)+'</select>'
-      // Quien: opcional y con las opciones ya usadas. Sirve para separar sueldos
-      // dentro de una misma categoria (CEO y COO en Equipo Propio, por ejemplo).
-      +'<input list="tx-q-'+g.cat+'" value="'+esc(g.quien||'')+'" placeholder="quien" '
-        +'onchange="_txQuien('+i+',this.value)" style="flex-shrink:0;width:86px;font-size:11px;'
-        +'padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
-        +'color:var(--text);font-family:var(--font)">'
+        +(g.monto<0?'\u2212':'+')+'$'+_txTotal(g).toFixed(2)+'</span>'
+      +'<select onchange="_txCambiar('+i+',this.value)" style="flex-shrink:0;width:150px;font-size:11px;'
+        +'line-height:normal;padding:4px 6px;border-radius:var(--radius);border:1px solid var(--border2);'
+        +'background:var(--bg3);color:var(--text);font-family:var(--font)">'+opciones(g.cat)+'</select>'
       // A que mes imputarlo. Por defecto el del movimiento, pero un pago de
       // deuda de agosto puede corresponder a un servicio de marzo: la fecha en
       // que sale la plata no siempre es el mes que hay que cargar.
@@ -8671,9 +8727,31 @@ function _txRevisar(){
           return '<option value="'+mi+'"'+(sel?' selected':'')+'>'+mm.slice(0,3)+'</option>';
         }).join('')
       +'</select>'
+      +'</div>'
+      // Segunda linea: solo si la categoria tiene subcategorias definidas. Las
+      // que no tienen no muestran nada, ni un cartel explicando la ausencia.
+      // Alineada a la derecha bajo el select de categoria, con un hueco del
+      // ancho del selector de mes para que los bordes queden a plomo.
+      +(subs.length?('<div style="display:flex;align-items:center;gap:8px;margin-top:5px">'
+        +'<span style="flex:1"></span>'
+        +'<select id="tx-sub-'+i+'" onchange="_txSub('+i+',this.value)" '
+          +'style="flex-shrink:0;width:150px;font-size:11px;line-height:normal;padding:4px 6px;'
+          +'border-radius:var(--radius);background:var(--bg3);font-family:var(--font);'
+          +'border:1px solid '+(g.quien?'var(--border2)':'var(--amberx)')+';'
+          +'color:'+(g.quien?'var(--text)':'var(--amberx)')+'">'
+          +'<option value=""'+(g.quien?'':' selected')+'>Sin especificar</option>'
+          +subs.map(function(n){
+              return '<option value="'+esc(n)+'"'+(n===g.quien?' selected':'')+'>'+esc(n)+'</option>';
+            }).join('')
+          +'<option value="__nueva">+ Nueva...</option>'
+        +'</select>'
+        +'<span style="flex-shrink:0;width:64px"></span>'
+      +'</div>'):'')
     +'</div>';
   }).join('');
-  var total=st.filas.reduce(function(s,g){return s+Math.abs(g.monto);},0);
+  // El total tiene que seguir cuadrando contra el CSV, asi que suma las
+  // comisiones absorbidas aunque ya no tengan fila propia.
+  var total=st.filas.reduce(function(s,g){return s+_txTotal(g);},0);
   root.innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:640px;width:96%">'
@@ -8686,22 +8764,15 @@ function _txRevisar(){
           var n=st.filas.filter(function(g){return g.mesManual;}).length;
           return n?(' &middot; <span style="color:var(--amberx)">'+n+' con el mes cambiado a mano</span>'):'';
         })()
+      +(st.absorbidas?(' &middot; '+st.absorbidas+' comision'+(st.absorbidas===1?'':'es')+' pegada'+(st.absorbidas===1?'':'s')+' a su cargo, se imputan igual a Comisiones'):'')
       +'. Lo que corrijas queda aprendido.</div>'
-    // Una lista por categoria: con una sola global, elegir Infraestructura
-    // Digital ofrecia igual CEO, COO y Ashy, que no tienen nada que ver.
-    +EERR_CATS.map(function(c){
-        var n={};
-        subOpciones(c.k).forEach(function(x){ n[x]=1; });
-        st.filas.forEach(function(g){ if(g.cat===c.k&&g.quien) n[g.quien]=1; });
-        return '<datalist id="tx-q-'+c.k+'">'
-          +Object.keys(n).sort().map(function(x){return '<option value="'+esc(x)+'">';}).join('')
-          +'</datalist>';
-      }).join('')
-    +'<div style="max-height:min(56vh,420px);overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
+    +'<div id="tx-lista" style="max-height:min(56vh,420px);overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
     +'<div class="modal-footer">'
       +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
       +'<button class="btn btn-sm btn-primary" onclick="_txImportar()">Sumar a los gastos</button>'
     +'</div></div></div>';
+  var _now=document.getElementById('tx-lista');
+  if(_now) _now.scrollTop=_scroll;
 }
 function _txCambiar(i, cat){
   if(!_txState||!_txState.filas[i]) return;
@@ -8713,11 +8784,37 @@ function _txCambiar(i, cat){
   // crearia una subcategoria suelta donde no corresponde.
   if(antes!==cat && g.quien && subOpciones(cat).indexOf(g.quien)<0) g.quien='';
   _txRevisar();
+  // El foco cae en la subcategoria recien aparecida: con Tab se sigue al gasto
+  // siguiente sin volver al mouse.
+  var s=document.getElementById('tx-sub-'+i);
+  if(s&&s.focus) s.focus();
 }
-function _txQuien(i, quien){
+function _txSub(i, val){
   if(!_txState||!_txState.filas[i]) return;
-  _txState.filas[i].quien=String(quien||'').trim();
-  _txState.filas[i].corregido=true;
+  var g=_txState.filas[i];
+  if(val==='__nueva'){
+    // Se podian crear escribiendo en el input viejo. Con un select puro esa
+    // salida se perdia, asi que queda como ultima opcion de la lista.
+    var n=String(window.prompt('Nombre de la subcategoria para '+
+      (EERR_CATS.filter(function(c){return c.k===g.cat;})[0]||{}).n)||'').trim();
+    if(n){
+      var D=_subDefs();
+      D[g.cat]=(D[g.cat]||[]).filter(function(x){return x!==n;}).concat([n]);
+      g.quien=n;
+      g.corregido=true;
+      save();
+    }
+    _txRevisar();
+    return;
+  }
+  g.quien=String(val||'').trim();
+  g.corregido=true;
+  // Sin redibujar: solo cambia el color del borde y no vale perder el foco.
+  var s=document.getElementById('tx-sub-'+i);
+  if(s){
+    s.style.borderColor=g.quien?'var(--border2)':'var(--amberx)';
+    s.style.color=g.quien?'var(--text)':'var(--amberx)';
+  }
 }
 function _txMes(i, m){
   if(!_txState||!_txState.filas[i]) return;
@@ -8741,6 +8838,12 @@ function _txImportar(){
     var k=anio+'|'+mes+'|'+g.cat;
     sumas[k]=(sumas[k]||0)+Math.abs(g.monto);
     if(g.quien) subSumar(anio, mes, g.cat, g.quien, Math.abs(g.monto));
+    // La comision se ve pegada al cargo pero contablemente va a Comisiones, y
+    // al mes del cargo padre: si no, la categoria queda vacia todo el ano.
+    (g.comisiones||[]).forEach(function(f){
+      var kf=anio+'|'+mes+'|comisiones';
+      sumas[kf]=(sumas[kf]||0)+Math.abs(f.monto);
+    });
   });
   // Se suma a lo que ya habia: importar dos veces el mismo mes duplicaria, asi
   // que conviene avisarlo.
