@@ -8494,19 +8494,26 @@ function _txMismaFecha(a,b){
 function _txAbsorberComisiones(filas){
   var esFee=filas.map(function(g){ return _TX_FEE.test(g.desc); });
   var padre=new Array(filas.length);
-  filas.forEach(function(g,i){
-    if(!esFee[i]) return;
-    for(var d=1;d<=6;d++){
-      var cand=[i-d,i+d];
-      for(var c=0;c<2;c++){
-        var j=cand[c];
-        if(j<0||j>=filas.length||esFee[j]) continue;
-        var p=filas[j];
-        if(!_txMismaFecha(p.fecha,g.fecha)) continue;
-        if(Math.abs(g.monto)>Math.abs(p.monto)*0.2) continue;
-        padre[i]=j; return;
+  var tomado={};
+  // Dos vueltas: la primera solo acepta cargos que todavia no tengan comision.
+  // Con dos compras iguales el mismo dia, las dos comisiones caian sobre la
+  // primera y la segunda quedaba mostrando $0 de comision.
+  [false,true].forEach(function(permitirRepetir){
+    filas.forEach(function(g,i){
+      if(!esFee[i]||padre[i]!=null) return;
+      for(var d=1;d<=6;d++){
+        var cand=[i-d,i+d];
+        for(var c=0;c<2;c++){
+          var j=cand[c];
+          if(j<0||j>=filas.length||esFee[j]) continue;
+          if(!permitirRepetir&&tomado[j]) continue;
+          var p=filas[j];
+          if(!_txMismaFecha(p.fecha,g.fecha)) continue;
+          if(Math.abs(g.monto)>Math.abs(p.monto)*0.2) continue;
+          padre[i]=j; tomado[j]=1; return;
+        }
       }
-    }
+    });
   });
   var out=[];
   filas.forEach(function(g,i){
@@ -8553,15 +8560,30 @@ function _txParseCSV(txt){
   var iF=col(['date','fecha']);
   var iD=col(['description','descripcion','counterparty','merchant','name']);
   var iM=col(['amount','monto','importe']);
+  var iS=col(['status','estado']);
+  var iB=col(['bank description']);
   if(iF<0||iD<0||iM<0){
     return {error:'No encontre las columnas de fecha, descripcion e importe. Encabezados leidos: '+head.join(', ')};
   }
-  var filas=[];
+  // Un pago rechazado nunca salio de la cuenta, y mover plata de una cuenta
+  // propia a otra tampoco es un gasto. Sin estos dos filtros el mes de agosto
+  // entraba con $13.515 cuando el gasto real eran $4.089.
+  var _RECHAZADO=/^(failed|cancelled|canceled|returned|reversed|declined)$/i;
+  var _INTERNA=/transfer between your|auto-?transfer/i;
+  var filas=[], nRechazados=0, nInternas=0, montoRechazado=0, montoInterno=0;
   for(var k=1;k<lineas.length;k++){
     var c=celdas(lineas[k]);
     if(c.length<2) continue;
     var monto=parseFloat(String(c[iM]||'').replace(/[^0-9.\-]/g,''));
     if(!isFinite(monto)||monto===0) continue;
+    if(iS>=0&&_RECHAZADO.test(String(c[iS]||''))){
+      if(monto<0){ nRechazados++; montoRechazado+=Math.abs(monto); }
+      continue;
+    }
+    if(iB>=0&&_INTERNA.test(String(c[iB]||''))){
+      if(monto<0){ nInternas++; montoInterno+=Math.abs(monto); }
+      continue;
+    }
     // Solo gastos: los ingresos de Mercury vienen en positivo y no van al EERR
     // de costos. Se cuentan aparte para poder avisarlo.
     var d=new Date(String(c[iF]||'').slice(0,10));
@@ -8573,7 +8595,8 @@ function _txParseCSV(txt){
     });
   }
   if(!filas.length) return {error:'No pude leer ninguna transaccion con importe.'};
-  return {filas:filas};
+  return {filas:filas, rechazados:nRechazados, internas:nInternas,
+          montoRechazado:montoRechazado, montoInterno:montoInterno};
 }
 
 var _txState=null;
@@ -8639,7 +8662,9 @@ async function _txProcesar(txt){
       if(av) av.textContent='La IA fallo ('+(e&&e.message||'')+'). Quedaron en Otros Gastos para que los corrijas.';
     }
   }
-  _txState={filas:gastos, ingresos:ingresos, absorbidas:absorbidas};
+  _txState={filas:gastos, ingresos:ingresos, absorbidas:absorbidas,
+            rechazados:p.rechazados||0, internas:p.internas||0,
+            montoRechazado:p.montoRechazado||0, montoInterno:p.montoInterno||0};
   _txRevisar();
 }
 
@@ -8765,6 +8790,11 @@ function _txRevisar(){
           return n?(' &middot; <span style="color:var(--amberx)">'+n+' con el mes cambiado a mano</span>'):'';
         })()
       +(st.absorbidas?(' &middot; '+st.absorbidas+' comision'+(st.absorbidas===1?'':'es')+' pegada'+(st.absorbidas===1?'':'s')+' a su cargo, se imputan igual a Comisiones'):'')
+      +(st.internas?(' &middot; '+st.internas+' transferencia'+(st.internas===1?'':'s')+' entre tus cuentas por $'+st.montoInterno.toFixed(2)+' que no son gasto'):'')
+      // Los rechazados en ambar: no son un descarte de rutina como los otros.
+      // Que Google y Namecheap reboten doce veces por saldo insuficiente es
+      // algo que hay que ver, no una linea de log.
+      +(st.rechazados?(' &middot; <span style="color:var(--amberx)">'+st.rechazados+' pago'+(st.rechazados===1?'':'s')+' rechazado'+(st.rechazados===1?'':'s')+' por $'+st.montoRechazado.toFixed(2)+': esa plata no salio, pero el servicio quedo impago</span>'):'')
       +'. Lo que corrijas queda aprendido.</div>'
     +'<div id="tx-lista" style="max-height:min(56vh,420px);overflow-y:auto;margin-bottom:12px">'+filas+'</div>'
     +'<div class="modal-footer">'
