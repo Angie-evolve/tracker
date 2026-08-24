@@ -16904,15 +16904,62 @@ var NC_PRODUCTOS=['DFY Agencia','The Flowing Code'];
 // Equipo del cliente: nombres sueltos que se van agregando de a uno. Vive fuera
 // del DOM porque el modal se redibuja al tildar GHL y se perderian los chips.
 var _ncEquipo=[];
+// El equipo se guarda como {nombre, email}. Los cargados antes eran strings
+// sueltos, asi que todo lo que los lee pasa por estos dos.
+function _eqNombre(e){ return (e&&typeof e==='object')?String(e.nombre||''):String(e||''); }
+function _eqMail(e){ return (e&&typeof e==='object')?String(e.email||''):''; }
+
+var _RE_MAIL=/[^\s<>,;()]+@[^\s<>,;()]+\.[^\s<>,;()]+/;
+// Acepta lo que se pega de un mail: "Ana Diaz <ana@x.com>", "Ana, ana@x.com",
+// varios separados por coma o salto de linea, o un mail solo.
+function _eqParse(texto, mailSuelto){
+  var out=[];
+  String(texto||'').split(/[\n;]|,(?![^<]*>)/).forEach(function(tramo){
+    tramo=tramo.trim();
+    if(!tramo) return;
+    var m=tramo.match(_RE_MAIL);
+    var mail=m?m[0]:'';
+    var nombre=tramo.replace(_RE_MAIL,'').replace(/[<>(),]/g,' ').replace(/\s+/g,' ').trim();
+    // Un mail sin nombre: se usa la parte de antes del arroba, que es mejor
+    // que dejar el chip vacio. Queda marcado por si hay que reunirlo.
+    var derivado=false;
+    if(!nombre&&mail){
+      nombre=mail.split('@')[0].replace(/[._-]+/g,' ').trim();
+      derivado=true;
+    }
+    if(nombre||mail) out.push({nombre:nombre, email:mail, _der:derivado});
+  });
+  // "Marcos Perez, marcos@empresa.com" se parte en dos por la coma. Si un
+  // nombre sin mail viene seguido de un mail suelto, son la misma persona.
+  var unidos=[];
+  for(var i=0;i<out.length;i++){
+    var a=out[i], b=out[i+1];
+    if(a&&!a.email&&b&&b._der&&b.email){ unidos.push({nombre:a.nombre, email:b.email}); i++; }
+    else unidos.push({nombre:a.nombre, email:a.email});
+  }
+  var suelto=String(mailSuelto||'').trim();
+  if(suelto){
+    if(unidos.length===1&&!unidos[0].email) unidos[0].email=suelto;
+    else if(!unidos.length) unidos.push({nombre:suelto.split('@')[0].replace(/[._-]+/g,' ').trim(), email:suelto});
+  }
+  return unidos;
+}
+
 function _ncEquipoRender(){
   var c=document.getElementById('nc-equipo-chips');
   if(!c) return;
   c.innerHTML=!_ncEquipo.length
     ? '<span style="font-size:11.5px;color:var(--text3)">Todavia no agregaste a nadie.</span>'
-    : _ncEquipo.map(function(n,i){
-        return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;'
+    : _ncEquipo.map(function(p,i){
+        var n=_eqNombre(p), m=_eqMail(p);
+        return '<span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;'
           +'color:var(--text);background:var(--bg3);border:1px solid var(--border2);'
-          +'border-radius:999px;padding:3px 6px 3px 10px">'+esc(n)
+          +'border-radius:999px;padding:3px 6px 3px 11px" title="'+esc(m||'sin mail')+'">'
+          +esc(n)
+          // El mail al lado y en gris: se ve de quien es sin abrir nada, y se
+          // nota enseguida a quien le falta.
+          +(m?('<span style="color:var(--text3)">'+esc(m)+'</span>')
+             :'<span style="color:var(--amberx)">sin mail</span>')
           +'<button onclick="_ncEquipoQuitar('+i+')" aria-label="Quitar '+esc(n)+'" '
           +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;'
           +'line-height:1;padding:0 2px">&times;</button></span>';
@@ -16921,13 +16968,19 @@ function _ncEquipoRender(){
 }
 function _ncEquipoAdd(){
   var inp=document.getElementById('nc-equipo-input');
+  var mail=document.getElementById('nc-equipo-mail');
   if(!inp) return;
-  // Se acepta pegar varios separados por coma: es como llegan de un mail.
-  String(inp.value||'').split(',').forEach(function(n){
-    n=n.trim();
-    if(n&&_ncEquipo.indexOf(n)<0) _ncEquipo.push(n);
+  var nuevos=_eqParse(inp.value, mail?mail.value:'');
+  nuevos.forEach(function(p){
+    var ya=_ncEquipo.some(function(x){
+      return p.email
+        ? (_eqMail(x).toLowerCase()===p.email.toLowerCase())
+        : (_eqNombre(x).toLowerCase()===p.nombre.toLowerCase());
+    });
+    if(!ya) _ncEquipo.push(p);
   });
   inp.value='';
+  if(mail) mail.value='';
   inp.focus();
   _ncEquipoRender();
 }
@@ -17253,7 +17306,8 @@ function openNewClientModal(){
               <div class="form-row">
                 <label class="form-label">Equipo del cliente</label>
                 <div style="display:flex;gap:8px">
-                  <input id="nc-equipo-input" placeholder="Nombre y Enter" onkeydown="_ncEquipoKey(event)" style="flex:1">
+                  <input id="nc-equipo-input" placeholder="Nombre" onkeydown="_ncEquipoKey(event)" style="flex:1">
+                  <input id="nc-equipo-mail" type="email" placeholder="mail@empresa.com" onkeydown="_ncEquipoKey(event)" style="flex:1">
                   <button type="button" class="btn btn-sm" onclick="_ncEquipoAdd()">Agregar</button>
                 </div>
                 <div id="nc-equipo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;align-items:center"></div>
