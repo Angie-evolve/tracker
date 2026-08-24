@@ -16410,7 +16410,13 @@ function renderTab(){
         </div>`:''}
         </div>
         <div id="sh-tiempo" style="display:${_shHoja()==='tiempo'?'block':'none'}">
-        <div style="height:0.5px;background:var(--border);margin-bottom:16px"></div>
+          ${compromisoHtml(c)}
+          <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
+
+        ${(c.conversionLines||[]).length?`
+        <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px">Lineas de conversion</div>
+        ${buildTimelineHtml(c)}
+        <div style="height:0.5px;background:var(--border);margin:8px 0 16px"></div>`:''}
 
         ${successTareasHtml(c)}
 
@@ -16464,10 +16470,7 @@ function renderTab(){
 
         </div>
       </div>
-      <div style="margin-top:24px">
-        <div style="font-size:14px;font-weight:500;color:var(--strong);margin-bottom:12px;padding-top:16px;border-top:1px solid var(--border)">Linea de tiempo</div>
-        ${buildTimelineHtml(c)}
-      </div>
+
       <div style="margin-top:30px;padding-top:18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
         <button class="btn btn-sm" style="color:var(--text3)" onclick="toggleArchiveClient(${c.id})">${c.archived?'&#8631; Reactivar cliente':'&#128451; Archivar &mdash; ya no en servicio'}</button>
         ${c.archived?`<button class="btn btn-sm" style="color:var(--redx);border-color:rgba(216,90,48,0.35)" onclick="borrarClienteDefinitivo(${c.id})">&#128465; Borrar para siempre</button>`:''}
@@ -18283,6 +18286,121 @@ function successSubNav(){
         +h.l+'</button>';
     }).join('')
   +'</div>';
+}
+
+// ---- Contra lo que se vendio --------------------------------------------
+// Cruza dos cosas que ya estan guardadas y nunca se miraban juntas: la version
+// del producto que se le vendio al cliente (con sus entregables) y las fechas
+// del contrato. Sirve para contestar "vamos en fecha?" sin abrir la propuesta.
+function _compromiso(c){
+  var p=c.productoId?_prodPorId(c.productoId):null;
+  var ver=null;
+  if(p){
+    var pv=c.productoVersion;
+    if(pv&&pv.id) ver=(p.versiones||[]).find(function(v){return v.id===pv.id;});
+    // Si la version que se vendio ya no existe se cae a la vigente, pero se
+    // avisa: el alcance puede no ser el que firmo.
+    if(!ver) ver=_prodActual(p);
+  }
+  var ct=c.contract||{};
+  var ini=_fechaISO(ct.startDate);
+  var fin=_fechaISO(ct.endDate);
+  if(!fin&&ini&&ct.durationDays){
+    fin=new Date(ini.getTime()+(+ct.durationDays)*86400000);
+  }
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var total=(ini&&fin)?Math.round((fin-ini)/86400000):null;
+  var pasados=ini?Math.round((hoy-ini)/86400000):null;
+  var pctTiempo=(total&&total>0&&pasados!==null)?Math.max(0,Math.min(100,Math.round(pasados/total*100))):null;
+  var entregables=(ver&&ver.entregables)||[];
+  var hechos=((c.entregablesHechos||{})[ver?ver.id:'']||[]);
+  var pctEntrega=entregables.length?Math.round(hechos.length/entregables.length*100):null;
+  return {p:p, ver:ver, versionVieja:!!(c.productoVersion&&ver&&c.productoVersion.id!==ver.id),
+          ini:ini, fin:fin, total:total, pasados:pasados, restan:(total!==null&&pasados!==null)?(total-pasados):null,
+          pctTiempo:pctTiempo, entregables:entregables, hechos:hechos, pctEntrega:pctEntrega};
+}
+function _fechaISO(s){
+  var m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return new Date(+m[1],+m[2]-1,+m[3]);
+  var d=parseDDMMYYYY(s);
+  return d||null;
+}
+function _fechaCorta(d){
+  return d?(d.getDate()+' '+EERR_MESES[d.getMonth()].slice(0,3)+' '+d.getFullYear()):'-';
+}
+function toggleEntregable(clientId, idx){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var k=_compromiso(c);
+  if(!k.ver) return;
+  c.entregablesHechos=c.entregablesHechos||{};
+  var arr=(c.entregablesHechos[k.ver.id]||[]).slice();
+  var i=arr.indexOf(idx);
+  if(i>=0) arr.splice(i,1); else arr.push(idx);
+  c.entregablesHechos[k.ver.id]=arr;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
+function compromisoHtml(c){
+  var k=_compromiso(c);
+  var head='<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+    +'letter-spacing:0.07em;margin-bottom:12px">Contra lo que se vendio</div>';
+  if(!k.ver&&!k.ini){
+    return head+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding-bottom:4px">'
+      +'Cargale un producto con presentacion y las fechas del contrato y aca vas a ver si el avance '
+      +'va al ritmo del plazo.</div>';
+  }
+  // La barra de tiempo con la marca de hoy: es lo que responde la pregunta de
+  // un vistazo, antes de leer ningun numero.
+  var barra='';
+  if(k.pctTiempo!==null){
+    var atrasado=(k.pctEntrega!==null && k.pctTiempo-k.pctEntrega>=20);
+    var col=atrasado?'var(--amberx)':'var(--green)';
+    barra='<div style="margin-bottom:14px">'
+      +'<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:6px">'
+        +'<span>'+_fechaCorta(k.ini)+'</span>'
+        +'<span style="color:var(--text2)">'+(k.restan>=0
+            ? ('quedan '+k.restan+' dia'+(k.restan===1?'':'s'))
+            : ('vencio hace '+Math.abs(k.restan)+' dia'+(Math.abs(k.restan)===1?'':'s')))+'</span>'
+        +'<span>'+_fechaCorta(k.fin)+'</span>'
+      +'</div>'
+      +'<div style="height:8px;background:var(--bg3);border-radius:99px;position:relative;overflow:hidden">'
+        +'<div style="height:100%;width:'+k.pctTiempo+'%;background:'+col+';opacity:.55"></div>'
+      +'</div>'
+      +'<div style="font-size:11.5px;color:'+(atrasado?'var(--amberx)':'var(--text3)')+';margin-top:7px;line-height:1.5">'
+        +'Paso el '+k.pctTiempo+'% del plazo'
+        +(k.pctEntrega!==null?(' y marcaste el '+k.pctEntrega+'% de los entregables.'):'.')
+        +(atrasado?' El avance va mas lento que el reloj.':'')
+      +'</div>'
+    +'</div>';
+  }else if(k.ver){
+    barra='<div style="font-size:11.5px;color:var(--text3);margin-bottom:12px;line-height:1.5">'
+      +'Sin fechas de contrato no puedo decirte si vas en tiempo. Cargalas en Facturacion.</div>';
+  }
+  var lista='';
+  if(k.entregables.length){
+    lista='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:8px;font-weight:500">'
+        +esc(k.p?k.p.nombre:'Producto')
+        +(k.ver&&k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
+        +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
+      +'</div>'
+      +k.entregables.map(function(e,i){
+        var ok=k.hechos.indexOf(i)>=0;
+        return '<label style="display:flex;align-items:flex-start;gap:9px;padding:5px 0;cursor:pointer">'
+          +'<input type="checkbox" '+(ok?'checked ':'')+'onchange="toggleEntregable('+c.id+','+i+')" '
+            +'style="margin-top:2px;flex-shrink:0">'
+          +'<span style="font-size:12px;line-height:1.5;color:'+(ok?'var(--text3)':'var(--text)')+';'
+            +(ok?'text-decoration:line-through':'')+'">'+esc(e)+'</span>'
+        +'</label>';
+      }).join('')
+    +'</div>';
+  }else if(k.p){
+    lista='<div style="font-size:11.5px;color:var(--text3);line-height:1.5">'
+      +esc(k.p.nombre)+' no tiene entregables cargados. Se definen en Configuracion de agencia &rarr; Productos.</div>';
+  }
+  return head+barra+lista;
 }
 
 function fathomCallsHTML(c){
