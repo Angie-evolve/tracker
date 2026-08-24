@@ -6294,30 +6294,83 @@ function _prodHtmlATexto(s){
     .trim();
 }
 
+// Analizar tarda entre 15 y 60 segundos segun el largo del documento. Con solo
+// una linea de texto gris no se distingue de "no pasa nada", y el boton Guardar
+// quedaba activo: se podia guardar vacio justo mientras la IA trabajaba.
+var _prodCrono=null;
 function _prodEstado(txt, color){
   var e=document.getElementById('pr-analisis');
   if(!e) return;
-  e.textContent=txt||'';
+  e.innerHTML='<span>'+esc(txt||'')+'</span>';
   e.style.color=color||'var(--text3)';
+}
+function _prodTrabajando(txt, t0){
+  var e=document.getElementById('pr-analisis');
+  if(!e) return;
+  e.style.color='var(--text2)';
+  e.innerHTML='<span style="display:flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span>'
+    +'<span>'+esc(txt)+'</span>'
+    +'<span id="pr-crono" style="color:var(--text3);font-variant-numeric:tabular-nums"></span>'
+  +'</span>';
+  // Un contador corriendo es la diferencia entre "esta trabajando" y "se colgo".
+  clearInterval(_prodCrono);
+  _prodCrono=setInterval(function(){
+    var c=document.getElementById('pr-crono');
+    if(!c){ clearInterval(_prodCrono); return; }
+    c.textContent=Math.round((Date.now()-t0)/1000)+'s';
+  },1000);
+}
+function _prodBloquear(on){
+  clearInterval(_prodCrono);
+  var g=document.getElementById('pr-guardar');
+  var nv=document.getElementById('pr-nuevaver');
+  [g,nv].forEach(function(b){
+    if(!b) return;
+    b.disabled=!!on;
+    b.style.opacity=on?'0.5':'';
+    b.style.pointerEvents=on?'none':'';
+  });
+  if(g) g.textContent=on?'Analizando...':'Guardar';
+}
+// Al terminar, los campos se llenan de golpe y abajo de todo: sin marcarlos, el
+// cambio pasa desapercibido y parece que no hizo nada.
+function _prodDestacar(ids){
+  ids.forEach(function(idc){
+    var e=document.getElementById(idc);
+    if(!e) return;
+    e.style.transition='border-color .3s ease, box-shadow .3s ease';
+    e.style.borderColor='var(--accent)';
+    e.style.boxShadow='0 0 0 3px rgba(78,207,160,.12)';
+    setTimeout(function(){ e.style.borderColor=''; e.style.boxShadow=''; },2200);
+  });
 }
 
 async function analizarPresentacion(id, inputEl){
   var f=inputEl&&inputEl.files&&inputEl.files[0];
   if(!f) return;
+  // Chrome no vuelve a emitir onchange si se elige el mismo archivo, asi que
+  // tras un error no habia forma de reintentar salvo renombrarlo. Se limpia
+  // apenas se tiene la referencia.
+  var _liberar=function(){ try{ inputEl.value=''; }catch(e){} };
   if(!_PROD_TIPOS.test(f.name)){
     _prodEstado('Formato no soportado. Si es un .pptx o un .docx, exportalo a PDF primero.','var(--amberx)');
-    inputEl.value='';
-    return;
+    _liberar(); return;
   }
   var esTexto=_PROD_TEXTO.test(f.name);
   if(!esTexto && f.size>_PROD_MAXBYTES){
     _prodEstado('Pesa '+Math.round(f.size/1048576)+'MB y el limite son 10MB. Exportalo mas liviano.','var(--amberx)');
-    inputEl.value='';
-    return;
+    _liberar(); return;
   }
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey){ openAnthropicKeyModal(); return; }
-  _prodEstado('Leyendo '+f.name+'...');
+  if(!apiKey){
+    _prodEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic y volve.','var(--amberx)');
+    _liberar(); return;
+  }
+  var _t0=Date.now();
+  if(inputEl) inputEl.disabled=true;
+  _prodBloquear(true);
+  _prodTrabajando('Leyendo '+f.name, _t0);
   try{
     var bloque;
     if(esTexto){
@@ -6330,8 +6383,14 @@ async function analizarPresentacion(id, inputEl){
         fr.readAsText(f);
       });
       var txtPlano=/\.html?$/i.test(f.name)?_prodHtmlATexto(crudo):crudo.trim();
-      if(!txtPlano) throw new Error('El archivo quedo vacio despues de sacarle el codigo');
+      // Una pagina que es casi toda CSS y scripts deja muy poco texto util, y
+      // conviene decirlo antes de gastar una llamada a la API.
+      if(txtPlano.length<200){
+        throw new Error('Del archivo salieron solo '+txtPlano.length+' caracteres de texto. '
+          +'Puede que el contenido se arme por Javascript: probá exportando a PDF.');
+      }
       if(txtPlano.length>_PROD_MAXTEXTO) txtPlano=txtPlano.slice(0,_PROD_MAXTEXTO);
+      _prodTrabajando('Analizando '+Math.round(txtPlano.length/1000)+' mil caracteres. Suele tardar entre 15 y 60 segundos', _t0);
       bloque={type:'text',text:'Contenido de la presentacion:\n\n'+txtPlano};
     }else{
       var b64=await new Promise(function(res,rej){
@@ -6343,13 +6402,13 @@ async function analizarPresentacion(id, inputEl){
       bloque=/\.pdf$/i.test(f.name)
         ? {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}
         : {type:'image',source:{type:'base64',media_type:f.type||'image/png',data:b64}};
+      _prodTrabajando('Analizando la presentacion. Suele tardar entre 15 y 60 segundos', _t0);
     }
-    _prodEstado('Analizando la presentacion...');
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-opus-4-8',max_tokens:2000,messages:[{role:'user',content:[
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2000,messages:[{role:'user',content:[
         bloque,
         {type:'text',text:'Esta es la presentacion comercial de un producto de una agencia. '
           +'Extrae lo que se promete entregar y con que limites. Responde SOLO con un JSON valido, '
@@ -6364,10 +6423,18 @@ async function analizarPresentacion(id, inputEl){
       ]}]})
     });
     var d=await r.json();
-    if(d.error) throw new Error(d.error.message||'La API devolvio un error');
+    // El detalle completo va a la consola: si algo falla, el mensaje de la API
+    // dice exactamente que paso y sin esto se pierde.
+    if(d.error){
+      console.error('Analisis de presentacion, respuesta de la API:', d);
+      throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
+    }
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
     var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
-    if(ini<0||fin<=ini) throw new Error('No pude leer la respuesta');
+    if(ini<0||fin<=ini){
+      console.error('Analisis de presentacion, respuesta sin JSON:', txt);
+      throw new Error('La respuesta no trajo un JSON. Esta el detalle en la consola.');
+    }
     var o=JSON.parse(txt.slice(ini,fin+1));
     // Se cargan en los campos pero NO se guarda: es un documento comercial y
     // conviene revisar lo que saco antes de dejarlo como el alcance vendido.
@@ -6384,10 +6451,18 @@ async function analizarPresentacion(id, inputEl){
     var p=_prodPorId(id);
     if(p) p._archivoPendiente={nombre:f.name, at:new Date().toISOString()};
     var n=(o.entregables||[]).length+(o.alcances||[]).length+(o.fuera||[]).length;
-    _prodEstado('Lei '+f.name+': '+n+' items. Revisalos y toca Guardar.','var(--accent)');
+    if(n) _prodDestacar(['pr-entregables','pr-alcances','pr-fuera']);
+    _prodEstado(n
+      ? ('Lei '+f.name+' en '+Math.round((Date.now()-_t0)/1000)+'s: '+n+' items cargados abajo. Revisalos y toca Guardar.')
+      : ('Lei '+f.name+' pero no encontre entregables ni alcance. Revisa que sea la presentacion correcta.'),
+      n?'var(--accent)':'var(--amberx)');
   }catch(e){
+    console.error('Analisis de presentacion:', e);
     _prodEstado('No pude analizarla: '+e.message,'var(--redx)');
   }
+  _prodBloquear(false);
+  if(inputEl) inputEl.disabled=false;
+  _liberar();
 }
 
 function abrirProductos(){
@@ -6486,8 +6561,8 @@ function abrirProducto(id){
       +'</div>'):'')
       +'<div class="modal-footer">'
         +'<button class="btn" onclick="abrirProductos()">Volver</button>'
-        +(p.versiones.length?('<button class="btn" onclick="nuevaVersionProducto(\''+p.id+'\')">Nueva version</button>'):'')
-        +'<button class="btn btn-primary" onclick="guardarProducto(\''+p.id+'\')">Guardar</button>'
+        +(p.versiones.length?('<button class="btn" id="pr-nuevaver" onclick="nuevaVersionProducto(\''+p.id+'\')">Nueva version</button>'):'')
+        +'<button class="btn btn-primary" id="pr-guardar" onclick="guardarProducto(\''+p.id+'\')">Guardar</button>'
       +'</div>'
     +'</div></div>';
 }
