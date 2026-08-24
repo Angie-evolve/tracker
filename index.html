@@ -6260,6 +6260,92 @@ function _prodResumen(p){
     +((v.alcances||[]).length?(' \u00b7 '+v.alcances.length+' alcances'):'');
 }
 
+// La API lee PDF e imagenes. Un .pptx o un .docx no los puede abrir: hay que
+// exportarlos a PDF antes, y conviene decirlo en vez de fallar con un error
+// del servidor que no explica nada.
+var _PROD_TIPOS=/\.(pdf|png|jpe?g|webp|gif)$/i;
+var _PROD_MAXBYTES=10*1024*1024;
+
+function _prodEstado(txt, color){
+  var e=document.getElementById('pr-analisis');
+  if(!e) return;
+  e.textContent=txt||'';
+  e.style.color=color||'var(--text3)';
+}
+
+async function analizarPresentacion(id, inputEl){
+  var f=inputEl&&inputEl.files&&inputEl.files[0];
+  if(!f) return;
+  if(!_PROD_TIPOS.test(f.name)){
+    _prodEstado('Solo PDF o imagen. Si es un .pptx o un .docx, exportalo a PDF primero.','var(--amberx)');
+    inputEl.value='';
+    return;
+  }
+  if(f.size>_PROD_MAXBYTES){
+    _prodEstado('Pesa '+Math.round(f.size/1048576)+'MB y el limite son 10MB. Exportalo mas liviano.','var(--amberx)');
+    inputEl.value='';
+    return;
+  }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ openAnthropicKeyModal(); return; }
+  _prodEstado('Leyendo '+f.name+'...');
+  try{
+    var b64=await new Promise(function(res,rej){
+      var fr=new FileReader();
+      fr.onerror=function(){ rej(new Error('No pude leer el archivo')); };
+      fr.onload=function(ev){ res(String(ev.target.result).split(',')[1]); };
+      fr.readAsDataURL(f);
+    });
+    var esPdf=/\.pdf$/i.test(f.name);
+    var bloque=esPdf
+      ? {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}
+      : {type:'image',source:{type:'base64',media_type:f.type||'image/png',data:b64}};
+    _prodEstado('Analizando la presentacion...');
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-opus-4-8',max_tokens:2000,messages:[{role:'user',content:[
+        bloque,
+        {type:'text',text:'Esta es la presentacion comercial de un producto de una agencia. '
+          +'Extrae lo que se promete entregar y con que limites. Responde SOLO con un JSON valido, '
+          +'sin markdown ni texto extra:\n'
+          +'{"entregables":["cada cosa concreta que la agencia entrega, con cantidad y periodicidad '
+          +'si figuran. Ej: 4 creativos por mes"],'
+          +'"alcances":["condiciones y limites de lo incluido. Ej: hasta 2 rondas de correcciones"],'
+          +'"fuera":["lo que explicitamente NO esta incluido. Array vacio si no figura"],'
+          +'"resumen":"una oracion sobre que es el producto"}\n'
+          +'Usa las palabras de la presentacion, no inventes items que no esten. '
+          +'Si algo no figura, devolve el array vacio.'}
+      ]}]})
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||'La API devolvio un error');
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini) throw new Error('No pude leer la respuesta');
+    var o=JSON.parse(txt.slice(ini,fin+1));
+    // Se cargan en los campos pero NO se guarda: es un documento comercial y
+    // conviene revisar lo que saco antes de dejarlo como el alcance vendido.
+    var set=function(idc,arr){
+      var e=document.getElementById(idc);
+      if(e&&Array.isArray(arr)) e.value=arr.join('\n');
+    };
+    set('pr-entregables',o.entregables);
+    set('pr-alcances',o.alcances);
+    set('pr-fuera',o.fuera);
+    var nt=document.getElementById('pr-notas');
+    if(nt&&!nt.value&&o.resumen) nt.value=String(o.resumen).slice(0,160);
+    // Queda registrado de que archivo salio, aunque el archivo no se guarde.
+    var p=_prodPorId(id);
+    if(p) p._archivoPendiente={nombre:f.name, at:new Date().toISOString()};
+    var n=(o.entregables||[]).length+(o.alcances||[]).length+(o.fuera||[]).length;
+    _prodEstado('Lei '+f.name+': '+n+' items. Revisalos y toca Guardar.','var(--accent)');
+  }catch(e){
+    _prodEstado('No pude analizarla: '+e.message,'var(--redx)');
+  }
+}
+
 function abrirProductos(){
   var ps=productos();
   document.getElementById('modal-root').innerHTML=
@@ -6298,6 +6384,9 @@ function nuevoProducto(){
 
 function abrirProducto(id){
   var p=_prodPorId(id); if(!p) return;
+  // Un analisis que quedo sin guardar de una sesion anterior no corresponde a
+  // lo que hay en los campos ahora: se descarta al abrir.
+  if(p._archivoPendiente) delete p._archivoPendiente;
   var v=_prodActual(p)||{};
   var previas=(p.versiones||[]).slice(0,-1).reverse();
   var ta=function(idc,label,val,ph){
@@ -6323,6 +6412,12 @@ function abrirProducto(id){
       +'</div>'
       +'<div class="form-row"><label class="form-label">Link a la presentacion</label>'
         +'<input id="pr-url" placeholder="Google Slides, Notion, PDF en Drive" value="'+esc(v.url||'')+'"></div>'
+      +'<div class="form-row"><label class="form-label">O subila y que la lea la IA</label>'
+        +'<input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" '
+        +'onchange="analizarPresentacion(\''+p.id+'\',this)" style="font-size:11.5px">'
+        +'<div id="pr-analisis" style="font-size:11.5px;color:var(--text3);margin-top:6px;line-height:1.5">'
+          +(v.archivo?('Ultimo analisis: '+esc(v.archivo)):'PDF o imagen, hasta 10MB. El archivo no se guarda: se guarda lo que la IA extrae.')
+        +'</div></div>'
       +ta('pr-entregables','Entregables',v.entregables,'Uno por linea. Ej: 4 creativos por mes')
       +ta('pr-alcances','Alcance incluido',v.alcances,'Uno por linea. Ej: Hasta 2 rondas de correcciones')
       // Lo que NO entra es lo que evita las discusiones a mitad del proyecto,
@@ -6376,6 +6471,9 @@ function guardarProducto(id){
   if(!v){ v={id:'ver-'+Date.now()}; p.versiones.push(v); }
   v.fecha=d.fecha; v.url=d.url; v.notas=d.notas;
   v.entregables=d.entregables; v.alcances=d.alcances; v.fuera=d.fuera;
+  // El archivo no se guarda, pero si de cual salio: sin eso, dentro de seis
+  // meses no hay forma de saber que PDF genero este alcance.
+  if(p._archivoPendiente){ v.archivo=p._archivoPendiente.nombre; delete p._archivoPendiente; }
   save();
   toast('Producto guardado');
   abrirProductos();
@@ -6388,7 +6486,8 @@ function nuevaVersionProducto(id){
   var d=_prodLeerCampos();
   var v=_prodActual(p);
   if(v){ v.fecha=d.fecha; v.url=d.url; v.notas=d.notas;
-         v.entregables=d.entregables; v.alcances=d.alcances; v.fuera=d.fuera; }
+         v.entregables=d.entregables; v.alcances=d.alcances; v.fuera=d.fuera;
+         if(p._archivoPendiente){ v.archivo=p._archivoPendiente.nombre; delete p._archivoPendiente; } }
   p.versiones.push({
     id:'ver-'+Date.now(),
     fecha:new Date().toISOString().split('T')[0],
