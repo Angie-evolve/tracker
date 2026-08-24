@@ -16896,6 +16896,7 @@ function _ncEquipoRender(){
           +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;'
           +'line-height:1;padding:0 2px">&times;</button></span>';
       }).join('');
+  if(typeof _ncNavPuntos==='function') _ncNavPuntos();
 }
 function _ncEquipoAdd(){
   var inp=document.getElementById('nc-equipo-input');
@@ -17070,6 +17071,7 @@ function _ncToggleGhl(){
   var chk=document.getElementById('nc-ghl');
   var campos=document.getElementById('nc-ghl-campos');
   if(campos) campos.style.display=(chk&&chk.checked)?'block':'none';
+  if(typeof _ncNavPuntos==='function') _ncNavPuntos();
 }
 
 // Crea la subcuenta en GHL y devuelve {id,name} o lanza el error de la API.
@@ -17099,88 +17101,176 @@ function _ncCobroCambio(){
     :'Monto (USD)';
 }
 
+var NC_SECCIONES=[
+  {k:'identidad', n:'Identidad'},
+  {k:'comercial', n:'Comercial'},
+  {k:'contactos', n:'Contactos'},
+  {k:'llamadas',  n:'Llamadas'},
+  {k:'ghl',       n:'GHL'}
+];
+
+// Las secciones se ocultan con display, no se redibujan: si se reconstruyera el
+// panel al cambiar de solapa se perderia lo escrito en las otras.
+function _ncSeccion(k){
+  NC_SECCIONES.forEach(function(s){
+    var pane=document.getElementById('nc-sec-'+s.k);
+    if(pane) pane.style.display=(s.k===k)?'':'none';
+    var nav=document.getElementById('nc-nav-'+s.k);
+    if(nav){
+      var act=(s.k===k);
+      nav.style.color=act?'var(--green)':'var(--text2)';
+      nav.style.borderLeftColor=act?'var(--green)':'transparent';
+      nav.style.background=act?'var(--bg3)':'transparent';
+    }
+  });
+  _ncNavPuntos();
+}
+
+// Un punto por seccion con datos. Como se puede crear el cliente desde
+// cualquier lado, sin esto no hay forma de saber que quedo cargado sin ir a
+// mirar solapa por solapa.
+function _ncNavPuntos(){
+  var lleno=function(ids){
+    return ids.some(function(id){
+      var e=document.getElementById(id);
+      return e && String(e.value||'').trim();
+    });
+  };
+  var chk=document.getElementById('nc-ghl');
+  var estado={
+    identidad: lleno(['nc-name','nc-industry','nc-contact','nc-email']),
+    comercial: lleno(['nc-tipocobro','nc-monto','nc-inicio','nc-contrato']),
+    contactos: lleno(['nc-owner']) || _ncEquipo.length>0,
+    llamadas:  _ncLlamadas.length>0,
+    ghl:       !!(chk&&chk.checked)
+  };
+  NC_SECCIONES.forEach(function(s){
+    var d=document.getElementById('nc-pt-'+s.k);
+    if(d) d.style.opacity=estado[s.k]?'1':'0';
+  });
+}
+
 function openNewClientModal(){
   _ncEquipo=[];
   _ncLlamadas=[];
   _ncEditIdx=null;
+  var nav=NC_SECCIONES.map(function(s,i){
+    return '<div id="nc-nav-'+s.k+'" onclick="_ncSeccion(\''+s.k+'\')" '
+      +'style="display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;'
+      +'padding:8px 14px;border-left:2px solid '+(i?'transparent':'var(--green)')+';'
+      +'border-radius:0;color:'+(i?'var(--text2)':'var(--green)')+';'
+      +'background:'+(i?'transparent':'var(--bg3)')+'">'
+      +'<span style="flex:1">'+s.n+'</span>'
+      +'<span id="nc-pt-'+s.k+'" style="width:5px;height:5px;border-radius:50%;'
+        +'background:var(--green);opacity:0;transition:opacity .15s"></span>'
+    +'</div>';
+  }).join('');
   document.getElementById('modal-root').innerHTML=`
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
+      <div class="modal" style="width:760px">
         <div class="modal-title">Nuevo cliente</div>
-        <div class="modal-sub">Crea el perfil del cliente. Despues podes agregar su primera linea de conversion.</div>
-        <div class="form-2col">
-          <div class="form-row"><label class="form-label">Tipo de cliente</label>
-            <select id="nc-tipo" onchange="_ncTipoCambio()">
-              <option value="empresa">Empresa constituida</option>
-              <option value="persona">A nombre propio</option>
-            </select></div>
-          <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria"></div>
-        </div>
-        <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
-        <div class="form-row"><label class="form-label">Producto</label>
-          <select id="nc-product">${productos().filter(function(p){return p.activo!==false;}).map(function(p){
-            return '<option value="'+esc(p.id)+'">'+esc(p.nombre)+'</option>';
-          }).join('')}</select></div>
-        <div class="form-2col">
-          <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona"></div>
-          <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com"></div>
-        </div>
-        <div id="nc-cliente-hint" style="display:none;font-size:11.5px;color:var(--text3);margin:-6px 0 12px;line-height:1.5">Se usa como nombre del cliente en el tracker y en la subcuenta de GHL.</div>
-        <div class="form-row">
-          <label class="form-label">Equipo del cliente</label>
-          <div style="display:flex;gap:8px">
-            <input id="nc-equipo-input" placeholder="Nombre y Enter" onkeydown="_ncEquipoKey(event)" style="flex:1">
-            <button type="button" class="btn btn-sm" onclick="_ncEquipoAdd()">Agregar</button>
+        <div class="modal-sub">Con el nombre alcanza. Lo demas se puede completar despues desde la ficha.</div>
+        <div style="display:flex;gap:20px;align-items:flex-start">
+          <div style="width:168px;flex:none;background:var(--bg3);border-radius:var(--radius);padding:8px 0">
+            ${nav}
+            <div style="font-size:11px;color:var(--text3);line-height:1.5;padding:10px 14px 4px;margin-top:6px;border-top:1px solid var(--border)">Podes crear el cliente desde cualquier seccion.</div>
           </div>
-          <div id="nc-equipo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;align-items:center"></div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Llamadas grabadas</label>
-          <div style="display:flex;gap:8px">
-            <span style="width:140px;flex:none">${_llTipoSelectHtml('nc-llamada')}<input id="nc-llamada-tipoOtra" placeholder="Titulo" style="display:none;margin-top:6px;width:100%"></span>
-            <input id="nc-llamada-fecha" type="date" style="width:150px;flex:none;align-self:flex-start">
-            <input id="nc-llamada-url" placeholder="Link de la grabacion" style="flex:1;align-self:flex-start">
+          <div style="flex:1;min-width:0">
+
+            <div id="nc-sec-identidad">
+              <div class="form-2col">
+                <div class="form-row"><label class="form-label">Tipo de cliente</label>
+                  <select id="nc-tipo" onchange="_ncTipoCambio()">
+                    <option value="empresa">Empresa constituida</option>
+                    <option value="persona">A nombre propio</option>
+                  </select></div>
+                <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria" oninput="_ncNavPuntos()"></div>
+              </div>
+              <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" oninput="_ncNavPuntos()" autofocus></div>
+              <div class="form-2col">
+                <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona" oninput="_ncNavPuntos()"></div>
+                <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com" oninput="_ncNavPuntos()"></div>
+              </div>
+              <div id="nc-cliente-hint" style="display:none;font-size:11.5px;color:var(--text3);margin:-6px 0 12px;line-height:1.5">Se usa como nombre del cliente en el tracker y en la subcuenta de GHL.</div>
+            </div>
+
+            <div id="nc-sec-comercial" style="display:none">
+              <div class="form-row"><label class="form-label">Producto</label>
+                <select id="nc-product">${productos().filter(function(p){return p.activo!==false;}).map(function(p){
+                  return '<option value="'+esc(p.id)+'">'+esc(p.nombre)+'</option>';
+                }).join('')}</select></div>
+              <div class="form-3col">
+                <div class="form-row"><label class="form-label">Que paga</label>
+                  <select id="nc-tipocobro" onchange="_ncCobroCambio();_ncNavPuntos()">
+                    <option value="">Todavia no se definio</option>
+                    <option value="garantia">Contrato con garantia</option>
+                    <option value="recurrente">Fee mensual</option>
+                    <option value="one-time">Pago unico</option>
+                  </select></div>
+                <div class="form-row"><label class="form-label" id="nc-montolabel">Monto (USD)</label>
+                  <input id="nc-monto" type="number" step="0.01" placeholder="0" oninput="_ncNavPuntos()"></div>
+                <div class="form-row"><label class="form-label">Inicio</label>
+                  <input id="nc-inicio" type="date" onchange="_ncNavPuntos()"></div>
+              </div>
+              <div class="form-row"><label class="form-label">Link al contrato</label>
+                <input id="nc-contrato" placeholder="Drive, Dropbox o donde este firmado" oninput="_ncNavPuntos()">
+                <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">Para que la IA lea el PDF y saque los montos y plazos, subilo despues desde la ficha del cliente.</div></div>
+            </div>
+
+            <div id="nc-sec-contactos" style="display:none">
+              <div class="form-row"><label class="form-label">Responsable</label>
+                <select id="nc-owner" onchange="_ncNavPuntos()">
+                  <option value="">Sin asignar</option>
+                  ${personas().map(function(p){
+                    return '<option value="'+esc(p.email)+'">'+esc(p.nombre||p.email)+'</option>';
+                  }).join('')}
+                </select></div>
+              <div class="form-row">
+                <label class="form-label">Equipo del cliente</label>
+                <div style="display:flex;gap:8px">
+                  <input id="nc-equipo-input" placeholder="Nombre y Enter" onkeydown="_ncEquipoKey(event)" style="flex:1">
+                  <button type="button" class="btn btn-sm" onclick="_ncEquipoAdd()">Agregar</button>
+                </div>
+                <div id="nc-equipo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;align-items:center"></div>
+              </div>
+            </div>
+
+            <div id="nc-sec-llamadas" style="display:none">
+              <div class="form-row">
+                <label class="form-label">Llamadas grabadas</label>
+                <div style="display:flex;gap:8px">
+                  <span style="width:140px;flex:none">${_llTipoSelectHtml('nc-llamada')}<input id="nc-llamada-tipoOtra" placeholder="Titulo" style="display:none;margin-top:6px;width:100%"></span>
+                  <input id="nc-llamada-fecha" type="date" style="width:150px;flex:none;align-self:flex-start">
+                  <input id="nc-llamada-url" placeholder="Link de la grabacion" style="flex:1;align-self:flex-start">
+                </div>
+                <textarea id="nc-llamada-transcript" rows="3" oninput="_llContar('nc-llamada')" placeholder="Transcripcion (opcional). Pegala aca o subi el .txt / .vtt de Fathom" style="width:100%;margin-top:8px;resize:vertical;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.5"></textarea>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                  <input type="file" accept=".txt,.vtt,.srt,text/plain" onchange="_llArchivo(this,'nc-llamada')" style="font-size:11.5px;flex:1">
+                  <span id="nc-llamada-cuenta" style="font-size:11px;color:var(--text3)"></span>
+                  <button type="button" class="btn btn-sm" id="nc-llamada-cancel" onclick="_ncLlamadaCancelar()" style="display:none">Cancelar</button>
+                  <button type="button" class="btn btn-sm" id="nc-llamada-btn" onclick="_ncLlamadaAdd()">Agregar llamada</button>
+                </div>
+                <div id="nc-llamadas-lista" style="margin-top:6px"></div>
+                <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">El audio no se guarda, solo el link. Con transcripcion vas a poder resumirla con IA desde el perfil.</div>
+              </div>
+            </div>
+
+            <div id="nc-sec-ghl" style="display:none">${_ncSubcuentaHtml()}</div>
+
           </div>
-          <textarea id="nc-llamada-transcript" rows="3" oninput="_llContar('nc-llamada')" placeholder="Transcripcion (opcional). Pegala aca o subi el .txt / .vtt de Fathom" style="width:100%;margin-top:8px;resize:vertical;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.5"></textarea>
-          <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
-            <input type="file" accept=".txt,.vtt,.srt,text/plain" onchange="_llArchivo(this,'nc-llamada')" style="font-size:11.5px;flex:1">
-            <span id="nc-llamada-cuenta" style="font-size:11px;color:var(--text3)"></span>
-            <button type="button" class="btn btn-sm" id="nc-llamada-cancel" onclick="_ncLlamadaCancelar()" style="display:none">Cancelar</button>
-            <button type="button" class="btn btn-sm" id="nc-llamada-btn" onclick="_ncLlamadaAdd()">Agregar llamada</button>
-          </div>
-          <div id="nc-llamadas-lista" style="margin-top:6px"></div>
-          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">El audio no se guarda, solo el link. Con transcripcion vas a poder resumirla con IA desde el perfil.</div>
         </div>
-        <div class="form-row"><label class="form-label">Responsable</label>
-          <select id="nc-owner">
-            <option value="">Sin asignar</option>
-            ${personas().map(function(p){
-              return '<option value="'+esc(p.email)+'">'+esc(p.nombre||p.email)+'</option>';
-            }).join('')}
-          </select></div>
-        <div class="form-3col">
-          <div class="form-row"><label class="form-label">Que paga</label>
-            <select id="nc-tipocobro" onchange="_ncCobroCambio()">
-              <option value="">Todavia no se definio</option>
-              <option value="garantia">Contrato con garantia</option>
-              <option value="recurrente">Fee mensual</option>
-              <option value="one-time">Pago unico</option>
-            </select></div>
-          <div class="form-row"><label class="form-label" id="nc-montolabel">Monto (USD)</label>
-            <input id="nc-monto" type="number" step="0.01" placeholder="0"></div>
-          <div class="form-row"><label class="form-label">Inicio</label>
-            <input id="nc-inicio" type="date"></div>
-        </div>
-        <div class="form-row"><label class="form-label">Link al contrato</label>
-          <input id="nc-contrato" placeholder="Drive, Dropbox o donde este firmado">
-          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">Para que la IA lea el PDF y saque los montos y plazos, subilo despues desde la ficha del cliente.</div></div>
-        ${_ncSubcuentaHtml()}
         <div class="modal-footer">
           <button class="btn" onclick="closeModal()">Cancelar</button>
           <button class="btn btn-primary" id="nc-btn" onclick="createClient()">Crear cliente</button>
         </div>
       </div>
     </div>`;
+  // Sin credenciales de agencia no hay checkbox que tildar: la solapa se
+  // muestra apagada para que no parezca que falta hacer algo ahi.
+  if(!document.getElementById('nc-ghl')){
+    var _g=document.getElementById('nc-nav-ghl');
+    if(_g) _g.style.color='var(--text3)';
+  }
   _ncEquipoRender();
 }
 
