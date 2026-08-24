@@ -6260,11 +6260,39 @@ function _prodResumen(p){
     +((v.alcances||[]).length?(' \u00b7 '+v.alcances.length+' alcances'):'');
 }
 
-// La API lee PDF e imagenes. Un .pptx o un .docx no los puede abrir: hay que
-// exportarlos a PDF antes, y conviene decirlo en vez de fallar con un error
-// del servidor que no explica nada.
-var _PROD_TIPOS=/\.(pdf|png|jpe?g|webp|gif)$/i;
+// La API lee PDF e imagenes como archivo, y cualquier texto directamente. Un
+// .pptx o un .docx no los puede abrir: hay que exportarlos a PDF antes, y
+// conviene decirlo en vez de fallar con un error del servidor.
+var _PROD_TIPOS=/\.(pdf|png|jpe?g|webp|gif|html?|md|txt)$/i;
+var _PROD_TEXTO=/\.(html?|md|txt)$/i;
 var _PROD_MAXBYTES=10*1024*1024;
+var _PROD_MAXTEXTO=150000;
+
+// Una pagina exportada trae el CSS y los scripts embebidos, que son la mayor
+// parte del archivo y no dicen nada del producto. Sin sacarlos, el analisis
+// gasta la mitad del contexto leyendo hojas de estilo.
+function _prodHtmlATexto(s){
+  var t=String(s||'')
+    .replace(/<script[\s\S]*?<\/script>/gi,' ')
+    .replace(/<style[\s\S]*?<\/style>/gi,' ')
+    .replace(/<!--[\s\S]*?-->/g,' ')
+    .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi,'\n')
+    .replace(/<br\s*\/?>/gi,'\n')
+    .replace(/<[^>]+>/g,' ');
+  // Decodifica con el parser del navegador en vez de una lista a mano: en
+  // castellano casi cada parrafo trae acentos, y &oacute; sin resolver llega a
+  // la API como ruido. El textarea no ejecuta nada de lo que se le asigna.
+  try{
+    var d=document.createElement('textarea');
+    d.innerHTML=t;
+    t=d.value;
+  }catch(e){}
+  return t
+    .replace(/[ \t]+/g,' ')
+    .replace(/^[ \t]+/gm,'')
+    .replace(/\n\s*\n\s*\n+/g,'\n\n')
+    .trim();
+}
 
 function _prodEstado(txt, color){
   var e=document.getElementById('pr-analisis');
@@ -6277,11 +6305,12 @@ async function analizarPresentacion(id, inputEl){
   var f=inputEl&&inputEl.files&&inputEl.files[0];
   if(!f) return;
   if(!_PROD_TIPOS.test(f.name)){
-    _prodEstado('Solo PDF o imagen. Si es un .pptx o un .docx, exportalo a PDF primero.','var(--amberx)');
+    _prodEstado('Formato no soportado. Si es un .pptx o un .docx, exportalo a PDF primero.','var(--amberx)');
     inputEl.value='';
     return;
   }
-  if(f.size>_PROD_MAXBYTES){
+  var esTexto=_PROD_TEXTO.test(f.name);
+  if(!esTexto && f.size>_PROD_MAXBYTES){
     _prodEstado('Pesa '+Math.round(f.size/1048576)+'MB y el limite son 10MB. Exportalo mas liviano.','var(--amberx)');
     inputEl.value='';
     return;
@@ -6290,16 +6319,31 @@ async function analizarPresentacion(id, inputEl){
   if(!apiKey){ openAnthropicKeyModal(); return; }
   _prodEstado('Leyendo '+f.name+'...');
   try{
-    var b64=await new Promise(function(res,rej){
-      var fr=new FileReader();
-      fr.onerror=function(){ rej(new Error('No pude leer el archivo')); };
-      fr.onload=function(ev){ res(String(ev.target.result).split(',')[1]); };
-      fr.readAsDataURL(f);
-    });
-    var esPdf=/\.pdf$/i.test(f.name);
-    var bloque=esPdf
-      ? {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}
-      : {type:'image',source:{type:'base64',media_type:f.type||'image/png',data:b64}};
+    var bloque;
+    if(esTexto){
+      // El texto va directo: sin base64, sin limite de peso y sin que la API
+      // tenga que renderizar nada.
+      var crudo=await new Promise(function(res,rej){
+        var fr=new FileReader();
+        fr.onerror=function(){ rej(new Error('No pude leer el archivo')); };
+        fr.onload=function(ev){ res(String(ev.target.result||'')); };
+        fr.readAsText(f);
+      });
+      var txtPlano=/\.html?$/i.test(f.name)?_prodHtmlATexto(crudo):crudo.trim();
+      if(!txtPlano) throw new Error('El archivo quedo vacio despues de sacarle el codigo');
+      if(txtPlano.length>_PROD_MAXTEXTO) txtPlano=txtPlano.slice(0,_PROD_MAXTEXTO);
+      bloque={type:'text',text:'Contenido de la presentacion:\n\n'+txtPlano};
+    }else{
+      var b64=await new Promise(function(res,rej){
+        var fr=new FileReader();
+        fr.onerror=function(){ rej(new Error('No pude leer el archivo')); };
+        fr.onload=function(ev){ res(String(ev.target.result).split(',')[1]); };
+        fr.readAsDataURL(f);
+      });
+      bloque=/\.pdf$/i.test(f.name)
+        ? {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}
+        : {type:'image',source:{type:'base64',media_type:f.type||'image/png',data:b64}};
+    }
     _prodEstado('Analizando la presentacion...');
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
@@ -6413,10 +6457,10 @@ function abrirProducto(id){
       +'<div class="form-row"><label class="form-label">Link a la presentacion</label>'
         +'<input id="pr-url" placeholder="Google Slides, Notion, PDF en Drive" value="'+esc(v.url||'')+'"></div>'
       +'<div class="form-row"><label class="form-label">O subila y que la lea la IA</label>'
-        +'<input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" '
+        +'<input type="file" accept=".html,.htm,.md,.txt,.pdf,.png,.jpg,.jpeg,.webp,.gif" '
         +'onchange="analizarPresentacion(\''+p.id+'\',this)" style="font-size:11.5px">'
         +'<div id="pr-analisis" style="font-size:11.5px;color:var(--text3);margin-top:6px;line-height:1.5">'
-          +(v.archivo?('Ultimo analisis: '+esc(v.archivo)):'PDF o imagen, hasta 10MB. El archivo no se guarda: se guarda lo que la IA extrae.')
+          +(v.archivo?('Ultimo analisis: '+esc(v.archivo)):'HTML, PDF, texto o imagen. El archivo no se guarda: se guarda lo que la IA extrae.')
         +'</div></div>'
       +ta('pr-entregables','Entregables',v.entregables,'Uno por linea. Ej: 4 creativos por mes')
       +ta('pr-alcances','Alcance incluido',v.alcances,'Uno por linea. Ej: Hasta 2 rondas de correcciones')
