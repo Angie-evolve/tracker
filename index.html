@@ -17086,6 +17086,19 @@ async function crearSubcuentaGHL(nombre, email, phone){
   return { loc:r.location||{}, duplicado:!!r.duplicado, aviso:r.aviso||'' };
 }
 
+// "Monto" quiere decir cosas distintas segun el cobro: el total del contrato no
+// es lo mismo que el fee de un mes, y guardarlos en el mismo campo sin aclararlo
+// hace que el LTV de la portada sume peras con manzanas.
+function _ncCobroCambio(){
+  var t=(document.getElementById('nc-tipocobro')||{}).value||'';
+  var l=document.getElementById('nc-montolabel');
+  if(!l) return;
+  l.textContent=(t==='recurrente')?'Fee mensual (USD)'
+    :(t==='one-time')?'Pago unico (USD)'
+    :(t==='garantia')?'Valor del contrato (USD)'
+    :'Monto (USD)';
+}
+
 function openNewClientModal(){
   _ncEquipo=[];
   _ncLlamadas=[];
@@ -17138,6 +17151,29 @@ function openNewClientModal(){
           <div id="nc-llamadas-lista" style="margin-top:6px"></div>
           <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">El audio no se guarda, solo el link. Con transcripcion vas a poder resumirla con IA desde el perfil.</div>
         </div>
+        <div class="form-row"><label class="form-label">Responsable</label>
+          <select id="nc-owner">
+            <option value="">Sin asignar</option>
+            ${personas().map(function(p){
+              return '<option value="'+esc(p.email)+'">'+esc(p.nombre||p.email)+'</option>';
+            }).join('')}
+          </select></div>
+        <div class="form-3col">
+          <div class="form-row"><label class="form-label">Que paga</label>
+            <select id="nc-tipocobro" onchange="_ncCobroCambio()">
+              <option value="">Todavia no se definio</option>
+              <option value="garantia">Contrato con garantia</option>
+              <option value="recurrente">Fee mensual</option>
+              <option value="one-time">Pago unico</option>
+            </select></div>
+          <div class="form-row"><label class="form-label" id="nc-montolabel">Monto (USD)</label>
+            <input id="nc-monto" type="number" step="0.01" placeholder="0"></div>
+          <div class="form-row"><label class="form-label">Inicio</label>
+            <input id="nc-inicio" type="date"></div>
+        </div>
+        <div class="form-row"><label class="form-label">Link al contrato</label>
+          <input id="nc-contrato" placeholder="Drive, Dropbox o donde este firmado">
+          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">Para que la IA lea el PDF y saque los montos y plazos, subilo despues desde la ficha del cliente.</div></div>
         ${_ncSubcuentaHtml()}
         <div class="modal-footer">
           <button class="btn" onclick="closeModal()">Cancelar</button>
@@ -17182,6 +17218,18 @@ async function createClient(){
   // Por si quedo texto escrito sin haber apretado Enter ni Agregar.
   var _pend=document.getElementById('nc-equipo-input');
   if(_pend&&_pend.value.trim()) _ncEquipoAdd();
+  const owner=((document.getElementById('nc-owner')||{}).value||'').trim();
+  const tipoCobro=((document.getElementById('nc-tipocobro')||{}).value||'').trim();
+  const montoRaw=((document.getElementById('nc-monto')||{}).value||'').trim();
+  const monto=montoRaw?parseFloat(montoRaw):null;
+  const inicio=((document.getElementById('nc-inicio')||{}).value||'').trim();
+  const linkContrato=((document.getElementById('nc-contrato')||{}).value||'').trim();
+  // Se usan los mismos nombres que escribe el extractor de contratos: si despues
+  // subis el PDF, completa o corrige estos campos en vez de crear otros.
+  const _fee=(tipoCobro==='recurrente');
+  const contratoObj=(inicio||linkContrato)
+    ? {startDate:inicio||undefined, driveUrl:linkContrato||undefined}
+    : undefined;
   const equipo=_ncEquipo.slice();
   // Las llamadas del alta entran al mismo array que las de Fathom, con la misma
   // forma, para que cuenten en hitos, bitacora y costo por llamada.
@@ -17224,6 +17272,12 @@ async function createClient(){
     // `contacto` queda vacio si el cliente es la persona: el dato ya esta en
     // `name` y duplicarlo hace que despues no se sepa cual es el bueno.
     esEmpresa, producto, productoId, productoVersion, contacto:(esEmpresa?contacto:''), email, equipo,
+    owner:owner||undefined,
+    serviceType:tipoCobro||undefined,
+    contractValue:(monto&&!_fee)?monto:undefined,
+    monthlyFee:(monto&&_fee)?monto:undefined,
+    recurrente:_fee||undefined,
+    contract:contratoObj,
     fathomCalls: llamadas,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
