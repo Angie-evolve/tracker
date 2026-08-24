@@ -6223,6 +6223,183 @@ function configAgenciaHtml(){
   +'</div>';
 }
 
+// ---- Productos y sus presentaciones -------------------------------------
+// Cada producto guarda versiones de su presentacion. No es un historial de
+// adorno: el alcance que se le vendio a un cliente es el de la version vigente
+// el dia que firmo, y si despues se recorta la propuesta ese cliente sigue
+// teniendo derecho a lo que compro.
+function productos(){
+  if(!Array.isArray(DB.productos)||!DB.productos.length){
+    var base=(typeof NC_PRODUCTOS!=='undefined'&&NC_PRODUCTOS.length)
+      ? NC_PRODUCTOS : ['DFY Agencia','The Flowing Code'];
+    DB.productos=base.map(function(n,i){
+      return {id:'prod-'+(Date.now()+i), nombre:n, activo:true, versiones:[]};
+    });
+    save();
+  }
+  return DB.productos;
+}
+function _prodPorId(id){
+  return productos().find(function(p){return p.id===id;})||null;
+}
+// La ultima cargada es la vigente. Las anteriores quedan para consulta.
+function _prodActual(p){
+  var v=(p&&p.versiones)||[];
+  return v.length?v[v.length-1]:null;
+}
+// Las listas se editan como texto, un item por linea. Es lo que permite pegar
+// los entregables directo desde la presentacion sin cargarlos de a uno.
+function _prodLineas(s){
+  return String(s||'').split('\n').map(function(x){return x.trim();}).filter(Boolean);
+}
+function _prodResumen(p){
+  var v=_prodActual(p);
+  if(!v) return 'Sin presentacion cargada';
+  return 'v'+p.versiones.length+' del '+(v.fecha||'sin fecha')
+    +' \u00b7 '+(v.entregables||[]).length+' entregables'
+    +((v.alcances||[]).length?(' \u00b7 '+v.alcances.length+' alcances'):'');
+}
+
+function abrirProductos(){
+  var ps=productos();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal">'
+      +'<div class="modal-title">Productos</div>'
+      +'<div class="modal-sub">Que vende la agencia, con la presentacion, los entregables y el alcance de cada uno.</div>'
+      +(ps.length?ps.map(function(p){
+        var v=_prodActual(p);
+        return '<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;color:var(--text)">'+esc(p.nombre)
+              +(p.activo?'':' <span style="font-size:11px;color:var(--text3)">(inactivo)</span>')+'</div>'
+            +'<div style="font-size:11px;color:'+(v?'var(--text3)':'var(--amberx)')+';margin-top:2px">'
+              +esc(_prodResumen(p))+'</div>'
+          +'</div>'
+          +(v&&v.url?('<a href="'+esc(v.url)+'" target="_blank" rel="noopener" '
+            +'style="font-size:11.5px;color:var(--accent);text-decoration:none">Ver</a>'):'')
+          +'<button class="btn btn-sm" onclick="abrirProducto(\''+p.id+'\')">Editar</button>'
+        +'</div>';
+      }).join(''):'<div style="font-size:12px;color:var(--text3);padding:12px 0">Todavia no hay productos.</div>')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-primary" onclick="nuevoProducto()">Nuevo producto</button>'
+      +'</div>'
+    +'</div></div>';
+}
+
+function nuevoProducto(){
+  var n=String(window.prompt('Nombre del producto')||'').trim();
+  if(!n) return;
+  productos().push({id:'prod-'+Date.now(), nombre:n, activo:true, versiones:[]});
+  save();
+  abrirProductos();
+}
+
+function abrirProducto(id){
+  var p=_prodPorId(id); if(!p) return;
+  var v=_prodActual(p)||{};
+  var previas=(p.versiones||[]).slice(0,-1).reverse();
+  var ta=function(idc,label,val,ph){
+    return '<div class="form-row"><label class="form-label">'+label+'</label>'
+      +'<textarea id="'+idc+'" rows="4" placeholder="'+ph+'" style="width:100%;resize:vertical;'
+      +'padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+      +'color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.6">'
+      +esc((val||[]).join('\n'))+'</textarea></div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal">'
+      +'<div class="modal-title">'+esc(p.nombre)+'</div>'
+      +'<div class="modal-sub">'
+        +(p.versiones.length?('Editando la version vigente, la '+p.versiones.length+'. '
+          +'Si la presentacion cambio, crea una nueva en vez de pisar esta.')
+         :'Todavia no tiene presentacion cargada.')+'</div>'
+      +'<div class="form-2col">'
+        +'<div class="form-row"><label class="form-label">Nombre</label>'
+          +'<input id="pr-nombre" value="'+esc(p.nombre)+'"></div>'
+        +'<div class="form-row"><label class="form-label">Fecha de la version</label>'
+          +'<input id="pr-fecha" type="date" value="'+esc(v.fecha||new Date().toISOString().split('T')[0])+'"></div>'
+      +'</div>'
+      +'<div class="form-row"><label class="form-label">Link a la presentacion</label>'
+        +'<input id="pr-url" placeholder="Google Slides, Notion, PDF en Drive" value="'+esc(v.url||'')+'"></div>'
+      +ta('pr-entregables','Entregables',v.entregables,'Uno por linea. Ej: 4 creativos por mes')
+      +ta('pr-alcances','Alcance incluido',v.alcances,'Uno por linea. Ej: Hasta 2 rondas de correcciones')
+      // Lo que NO entra es lo que evita las discusiones a mitad del proyecto,
+      // y casi nunca queda escrito en ningun lado.
+      +ta('pr-fuera','Fuera de alcance',v.fuera,'Uno por linea. Ej: Produccion audiovisual en locacion')
+      +'<div class="form-row"><label class="form-label">Nota del cambio</label>'
+        +'<input id="pr-notas" placeholder="Que cambio respecto de la version anterior" value="'+esc(v.notas||'')+'"></div>'
+      +(previas.length?('<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">'
+        +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">'
+          +'Versiones anteriores</div>'
+        +previas.map(function(x,i){
+          var n=previas.length-i;
+          return '<div style="display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--text3);padding:4px 0">'
+            +'<span style="color:var(--text2)">v'+n+'</span>'
+            +'<span>'+esc(x.fecha||'sin fecha')+'</span>'
+            +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+              +esc(x.notas||((x.entregables||[]).length+' entregables'))+'</span>'
+            +(x.url?('<a href="'+esc(x.url)+'" target="_blank" rel="noopener" '
+              +'style="color:var(--accent);text-decoration:none">Ver</a>'):'')
+          +'</div>';
+        }).join('')
+      +'</div>'):'')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="abrirProductos()">Volver</button>'
+        +(p.versiones.length?('<button class="btn" onclick="nuevaVersionProducto(\''+p.id+'\')">Nueva version</button>'):'')
+        +'<button class="btn btn-primary" onclick="guardarProducto(\''+p.id+'\')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+
+function _prodLeerCampos(){
+  var v=function(id){ var e=document.getElementById(id); return e?String(e.value||''):''; };
+  return {
+    nombre:v('pr-nombre').trim(),
+    fecha:v('pr-fecha'), url:v('pr-url').trim(), notas:v('pr-notas').trim(),
+    entregables:_prodLineas(v('pr-entregables')),
+    alcances:_prodLineas(v('pr-alcances')),
+    fuera:_prodLineas(v('pr-fuera'))
+  };
+}
+
+function guardarProducto(id){
+  var p=_prodPorId(id); if(!p) return;
+  var d=_prodLeerCampos();
+  if(!d.nombre){ toast('El producto necesita un nombre'); return; }
+  p.nombre=d.nombre;
+  p.versiones=p.versiones||[];
+  var v=_prodActual(p);
+  // Sin version previa se crea la primera; si ya hay una, se corrige esa. Para
+  // registrar un cambio real de la propuesta esta el boton de nueva version.
+  if(!v){ v={id:'ver-'+Date.now()}; p.versiones.push(v); }
+  v.fecha=d.fecha; v.url=d.url; v.notas=d.notas;
+  v.entregables=d.entregables; v.alcances=d.alcances; v.fuera=d.fuera;
+  save();
+  toast('Producto guardado');
+  abrirProductos();
+}
+
+// Arranca de una copia de la vigente porque una presentacion nueva casi nunca
+// se escribe de cero: se retoca sobre la anterior.
+function nuevaVersionProducto(id){
+  var p=_prodPorId(id); if(!p) return;
+  var d=_prodLeerCampos();
+  var v=_prodActual(p);
+  if(v){ v.fecha=d.fecha; v.url=d.url; v.notas=d.notas;
+         v.entregables=d.entregables; v.alcances=d.alcances; v.fuera=d.fuera; }
+  p.versiones.push({
+    id:'ver-'+Date.now(),
+    fecha:new Date().toISOString().split('T')[0],
+    url:d.url, notas:'',
+    entregables:d.entregables.slice(), alcances:d.alcances.slice(), fuera:d.fuera.slice()
+  });
+  save();
+  abrirProducto(id);
+  toast('Version '+p.versiones.length+' creada. Editala y guarda');
+}
+
 // Integraciones que valen para toda la app, no para un cliente puntual.
 // Antes vivian repartidas en modales sueltos y era dificil saber que habia configurado.
 function integracionesAppHtml(){
@@ -6380,6 +6557,21 @@ function integracionesAppHtml(){
         desc:'Tareas que se repiten: se cargan solas el dia que toca, en los clientes que elijas. Se revisan al abrir el tracker.',
         detail:act?(act+' rutina'+(act===1?'':'s')+' activa'+(act===1?'':'s')):'Sin rutinas',
         action:'abrirRutinas()', actionLabel:rs.length?'Editar':'Crear'});
+    })(),
+    (function(){
+      // Productos. No es una conexion externa, pero es configuracion de la
+      // agencia: define que se vende y con que alcance.
+      var ps=productos();
+      var conPres=ps.filter(function(p){ return _prodActual(p); }).length;
+      var vers=ps.reduce(function(s,p){ return s+((p.versiones||[]).length); },0);
+      return card({name:'Productos', st:ps.length?(conPres===ps.length?'ok':'partial'):'no',
+        desc:'Que vende la agencia. Guarda la presentacion de cada producto con sus entregables y su alcance, y versiona los cambios para saber que se le vendio a cada cliente.',
+        detail:ps.length
+          ?(ps.length+' producto'+(ps.length===1?'':'s')
+            +(conPres===ps.length?'':(' \u00b7 '+(ps.length-conPres)+' sin presentacion'))
+            +(vers?(' \u00b7 '+vers+' version'+(vers===1?'':'es')):''))
+          :'Sin productos cargados',
+        action:'abrirProductos()', actionLabel:ps.length?'Editar':'Cargar'});
     })(),
     (function(){
       // Reparto de clientes. No es una conexion externa, pero vive aca porque es
@@ -16695,8 +16887,8 @@ function openNewClientModal(){
         </div>
         <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
         <div class="form-row"><label class="form-label">Producto</label>
-          <select id="nc-product">${NC_PRODUCTOS.map(function(p){
-            return '<option>'+esc(p)+'</option>';
+          <select id="nc-product">${productos().filter(function(p){return p.activo!==false;}).map(function(p){
+            return '<option value="'+esc(p.id)+'">'+esc(p.nombre)+'</option>';
           }).join('')}</select></div>
         <div class="form-2col">
           <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona"></div>
@@ -16742,7 +16934,13 @@ async function createClient(){
   const esEmpresa=((document.getElementById('nc-tipo')||{}).value||'empresa')!=='persona';
   const empresa=((document.getElementById('nc-name')||{}).value||'').trim();
   const industry=document.getElementById('nc-industry').value.trim();
-  const producto=(document.getElementById('nc-product')||{}).value||'';
+  const productoId=(document.getElementById('nc-product')||{}).value||'';
+  const _prod=_prodPorId(productoId);
+  const producto=_prod?_prod.nombre:'';
+  // Se congela la version vigente el dia del alta: si despues se recorta la
+  // propuesta, este cliente sigue teniendo el alcance que le vendiste.
+  const _pv=_prod?_prodActual(_prod):null;
+  const productoVersion=_pv?{id:_pv.id, n:_prod.versiones.length, fecha:_pv.fecha||''}:null;
   const contacto=((document.getElementById('nc-contact')||{}).value||'').trim();
   const email=((document.getElementById('nc-email')||{}).value||'').trim();
   // La identidad sale de un campo o del otro segun el tipo. Todo lo que viene
@@ -16807,7 +17005,7 @@ async function createClient(){
     id:Date.now(), altaAt:new Date().toISOString(), name,industry,
     // `contacto` queda vacio si el cliente es la persona: el dato ya esta en
     // `name` y duplicarlo hace que despues no se sepa cual es el bueno.
-    esEmpresa, producto, contacto:(esEmpresa?contacto:''), email, equipo,
+    esEmpresa, producto, productoId, productoVersion, contacto:(esEmpresa?contacto:''), email, equipo,
     fathomCalls: llamadas,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
