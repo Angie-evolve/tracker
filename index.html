@@ -18350,8 +18350,15 @@ function _compromiso(c){
   var pctEntrega=entregables.length?Math.round(hechos.length/entregables.length*100):null;
   // El arranque del plan: la firma del contrato si esta, y si no la primera
   // llamada. Sin una de las dos no hay dia cero y no hay atraso que calcular.
-  var arranque=ini;
-  var arranqueDe='contrato';
+  // El dia cero es el onboarding: el plan de 30 dias se cuenta desde ahi, no
+  // desde la firma. Entre que se firma y que arranca el trabajo pueden pasar
+  // semanas, y contarlas como atraso seria falso.
+  var arranque=null, arranqueDe='';
+  var onb=(c.fathomCalls||[]).filter(function(cl){
+    return /onboarding/i.test(String(cl.tipo||'')+' '+String(cl.title||''));
+  }).map(function(cl){return parseDDMMYYYY(cl.date);}).filter(Boolean);
+  if(onb.length){ arranque=new Date(Math.min.apply(null,onb)); arranqueDe='onboarding'; }
+  if(!arranque&&ini){ arranque=ini; arranqueDe='firma'; }
   if(!arranque){
     var fs=(c.fathomCalls||[]).map(function(cl){return parseDDMMYYYY(cl.date);}).filter(Boolean);
     if(fs.length){ arranque=new Date(Math.min.apply(null,fs)); arranqueDe='primera llamada'; }
@@ -18366,6 +18373,13 @@ function _compromiso(c){
     return {i:i, t:_entrTexto(e), dia:dia, fecha:fecha, hecho:ok, vencido:vencido,
             porVencer:(!ok&&!vencido&&dia!==null&&diaHoy!==null&&dia-diaHoy<=7)};
   });
+  // El norte: el lanzamiento. Si algun entregable lo nombra se usa su plazo,
+  // y si no, los 30 dias que promete la propuesta.
+  var lanz=items.filter(function(x){ return /lanzamiento|launch/i.test(x.t) && x.dia!==null; })
+                .map(function(x){return x.dia;});
+  var diaLanz=lanz.length?Math.max.apply(null,lanz):30;
+  var fechaLanz=arranque?new Date(arranque.getTime()+diaLanz*86400000):null;
+  var faltanLanz=(diaHoy!==null)?(diaLanz-diaHoy):null;
   var conPlazo=items.filter(function(x){return x.dia!==null;}).length;
   var vencidos=items.filter(function(x){return x.vencido;}).length;
   var porVencer=items.filter(function(x){return x.porVencer;}).length;
@@ -18373,6 +18387,7 @@ function _compromiso(c){
           ini:ini, fin:fin, total:total, pasados:pasados, restan:(total!==null&&pasados!==null)?(total-pasados):null,
           pctTiempo:pctTiempo, entregables:entregables, hechos:hechos, pctEntrega:pctEntrega,
           arranque:arranque, arranqueDe:arranqueDe, diaHoy:diaHoy,
+          diaLanz:diaLanz, fechaLanz:fechaLanz, faltanLanz:faltanLanz,
           items:items, conPlazo:conPlazo, vencidos:vencidos, porVencer:porVencer};
 }
 function _fechaISO(s){
@@ -18653,12 +18668,36 @@ function compromisoHtml(c){
     veredicto='<span style="color:var(--green)">Al dia con todo lo que ya vencio.</span>';
   }
 
+  // El lanzamiento arriba de todo: es la fecha contra la que se mide el resto,
+  // y en una cuenta regresiva se entiende sin leer los numeros de abajo.
+  var f=k.faltanLanz;
+  var estadoLanz=(k.vencidos?'var(--redx)':(f!==null&&f<=7?'var(--amberx)':'var(--green)'));
+  var pctLanz=Math.max(0,Math.min(100,Math.round((k.diaHoy/k.diaLanz)*100)));
+  var norte='<div style="background:var(--bg3);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:12px">'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:9px">'
+      +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Lanzamiento</span>'
+      +'<span style="font-size:15px;color:var(--strong);font-weight:500">'+_fechaCorta(k.fechaLanz)+'</span>'
+      +'<span style="font-size:12px;color:'+estadoLanz+'">'
+        +(f===null?'':(f>0?('faltan '+f+' dia'+(f===1?'':'s'))
+          :(f===0?'es hoy':('paso hace '+Math.abs(f)+' dia'+(Math.abs(f)===1?'':'s')))))+'</span>'
+      +'<span style="flex:1"></span>'
+      +'<span style="font-size:11px;color:var(--text3)">dia '+k.diaHoy+' de '+k.diaLanz+'</span>'
+    +'</div>'
+    +'<div style="height:6px;background:var(--bg2);border-radius:99px;overflow:hidden">'
+      +'<div style="height:100%;width:'+pctLanz+'%;background:'+estadoLanz+';opacity:.6"></div>'
+    +'</div>'
+    +'<div style="font-size:11.5px;line-height:1.5;margin-top:8px;color:var(--text2)">'+veredicto+'</div>'
+  +'</div>';
+
   return head+barra
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">'
       +acciones
-      +'<div style="font-size:11.5px;line-height:1.5;margin-bottom:12px;color:var(--text2)">'
-        +'Dia '+k.diaHoy+' desde '+(k.arranqueDe==='contrato'?'la firma':'la primera llamada')
-        +' ('+_fechaCorta(k.arranque)+'). '+veredicto+'</div>'
+      +norte
+      +'<div style="font-size:11px;line-height:1.5;margin-bottom:12px;color:var(--text3)">'
+        +'Dia cero: '+(k.arranqueDe==='onboarding'?'la llamada de onboarding'
+            :k.arranqueDe==='firma'?'la firma del contrato, no hay llamada de onboarding cargada'
+            :'la primera llamada, no hay onboarding ni contrato')
+        +' &middot; '+_fechaCorta(k.arranque)+'</div>'
       +'<div style="overflow-x:auto;padding-bottom:6px"><div style="display:flex;gap:10px;min-width:max-content;align-items:flex-start">'
         +cols+'</div></div>'
       +'<div style="height:1px;background:var(--border);margin:12px 0"></div>'
