@@ -18629,58 +18629,90 @@ function compromisoHtml(c){
   var porAplicar=an?Object.keys(an.items).filter(function(i){
     return an.items[i].estado==='hecho' && k.hechos.indexOf(+i)<0;
   }).length:0;
+  var pct=Math.round(k.hechos.length/k.entregables.length*100);
+  var abierto=!!S._entrTodos;
 
-  // El estado temporal lo cuenta la ruta de arriba. Aca solo el alcance: que se
-  // prometio, que se cumplio y de donde sale esa afirmacion.
-  var resumen=k.hechos.length+' de '+k.entregables.length+' cumplidos'
-    +(k.vencidos?(' &middot; <span style="color:var(--redx)">'+k.vencidos+' pasado'
-      +(k.vencidos===1?'':'s')+' de fecha</span>'):'');
+  // Lo proximo: los pendientes ordenados por plazo. Los que no tienen plazo van
+  // al final, porque no hay forma de saber cuando corresponden.
+  var prox=k.items.filter(function(x){return !x.hecho;}).sort(function(x,y){
+    if(x.dia===null&&y.dia===null) return x.i-y.i;
+    if(x.dia===null) return 1;
+    if(y.dia===null) return -1;
+    return x.dia-y.dia;
+  }).slice(0,4);
 
   return head
-    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
-        +'<div style="font-size:10px;color:var(--text3);font-weight:500;flex:1;min-width:0">'
-          +esc(k.p.nombre)+(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
-          +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
-        +'</div>'
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px">'
+      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">'
+        +'<span style="font-size:20px;font-weight:500;color:var(--strong);line-height:1">'
+          +k.hechos.length+'<span style="font-size:13px;color:var(--text3)">/'+k.entregables.length+'</span></span>'
+        +'<span style="flex:1;min-width:80px;height:5px;background:var(--bg3);border-radius:99px;overflow:hidden">'
+          +'<span style="display:block;width:'+pct+'%;height:100%;background:var(--green)"></span></span>'
         +(porAplicar?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-          +'onclick="aplicarEntregablesIA('+c.id+')">Tildar los '+porAplicar+' que vio cumplidos</button>'):'')
+          +'onclick="aplicarEntregablesIA('+c.id+')">Tildar '+porAplicar+'</button>'):'')
         +(conLlamadas?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
           +'onclick="revisarEntregables('+c.id+')">'+(an?'Volver a revisar':'Revisar contra las llamadas')+'</button>'):'')
+        +'<button class="btn btn-sm" id="cp-ver" style="font-size:11px;padding:3px 9px" '
+          +'onclick="toggleEntregablesTodos()">'+(abierto?'Ver solo lo proximo':('Ver los '+k.entregables.length))+'</button>'
       +'</div>'
-      +'<div id="cp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
-        +resumen
+      +'<div id="cp-estado" style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+        +esc(k.p.nombre)+(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
+        +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
         +(an?(' &middot; revisado contra '+an.n+' llamada'+(an.n===1?'':'s')
              +' el '+new Date(an.at).toLocaleDateString('es-AR'))
-           :(conLlamadas?(' &middot; '+conLlamadas+' llamada'+(conLlamadas===1?'':'s')+' sin cruzar contra esta lista'):''))
+           :(conLlamadas?(' &middot; '+conLlamadas+' llamada'+(conLlamadas===1?'':'s')+' sin cruzar'):''))
       +'</div>'
-      +_cpLista(c,k,an)
+      +'<div id="cp-proximos" style="display:'+(abierto?'none':'block')+'">'
+        +'<div style="font-size:11px;color:var(--text3);margin-bottom:7px">Lo proximo</div>'
+        +(prox.length?prox.map(function(x){
+            var colDia=x.vencido?'var(--redx)':(x.porVencer?'var(--amberx)':'var(--text3)');
+            return '<div onclick="toggleEntregable('+c.id+','+x.i+')" '
+              +'style="display:flex;align-items:baseline;gap:12px;padding:5px 0;cursor:pointer">'
+              +'<span style="width:46px;flex:none;font-size:11px;color:'+colDia+'">'
+                +(x.dia!==null?('dia '+x.dia):'&mdash;')+'</span>'
+              +'<span style="flex:1;font-size:12.5px;line-height:1.45;color:var(--text)">'+esc(x.t)+'</span>'
+            +'</div>';
+          }).join(''):'<div style="font-size:11.5px;color:var(--green)">Estan todos cumplidos.</div>')
+      +'</div>'
+      +'<div id="cp-todos" style="display:'+(abierto?'block':'none')+'">'+_cpLista(c,k,an)+'</div>'
     +'</div>';
 }
 
-// La lista completa con checkbox y evidencia. Vive aparte porque se usa tanto
-// debajo de la linea de tiempo como cuando no hay plazos para dibujarla.
+// Alterna entre lo proximo y la lista completa sin redibujar la pestana: un
+// renderTab() aca perderia el scroll y tardaria mas que el cambio en si.
+function toggleEntregablesTodos(){
+  S._entrTodos=!S._entrTodos;
+  var p=document.getElementById('cp-proximos');
+  var t=document.getElementById('cp-todos');
+  var b=document.getElementById('cp-ver');
+  if(p) p.style.display=S._entrTodos?'none':'block';
+  if(t) t.style.display=S._entrTodos?'block':'none';
+  if(b){
+    var n=t?t.querySelectorAll('[data-entr]').length:0;
+    b.textContent=S._entrTodos?'Ver solo lo proximo':('Ver los '+(n||'todos'));
+  }
+}
+
+// La lista completa. Sin casillas: 22 cuadrados compiten con el texto y la fila
+// entera puede ser el boton. El punto de la izquierda dice el estado.
 function _cpLista(c,k,an){
-  var badge={
-    hecho:{t:'ya se hizo', c:'var(--green)', bg:'rgba(29,158,117,0.14)'},
-    curso:{t:'en curso',   c:'var(--amberx)', bg:'rgba(186,117,23,0.14)'}
-  };
   return k.items.map(function(x){
     var s=an&&an.items[x.i];
-    var b=(s&&badge[s.estado])?badge[s.estado]:null;
-    return '<div style="padding:5px 0">'
-      +'<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">'
-        +'<input type="checkbox" '+(x.hecho?'checked ':'')+'onchange="toggleEntregable('+c.id+','+x.i+')" '
-          +'style="margin-top:2px;flex-shrink:0">'
-        +'<span style="flex:1;font-size:12px;line-height:1.5;color:'+(x.hecho?'var(--text3)':'var(--text)')+';'
+    var punto=x.hecho?'background:var(--green)'
+      :(x.vencido?'background:var(--redx)'
+      :((s&&s.estado==='curso')?'background:var(--amberx)'
+      :'background:transparent;border:1px solid var(--border2)'));
+    return '<div data-entr="1" onclick="toggleEntregable('+c.id+','+x.i+')" '
+      +'style="padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+      +'<div style="display:flex;align-items:center;gap:11px">'
+        +'<span style="width:7px;height:7px;border-radius:50%;flex:none;'+punto+'"></span>'
+        +'<span style="flex:1;font-size:12.5px;line-height:1.45;color:'+(x.hecho?'var(--text3)':'var(--text)')+';'
           +(x.hecho?'text-decoration:line-through':'')+'">'+esc(x.t)+'</span>'
-        +(x.dia!==null?('<span style="flex-shrink:0;font-size:10px;color:'
+        +(x.dia!==null?('<span style="flex-shrink:0;font-size:11px;color:'
           +(x.vencido?'var(--redx)':'var(--text3)')+'">dia '+x.dia+'</span>'):'')
-        +(b?('<span style="flex-shrink:0;font-size:10px;padding:2px 7px;border-radius:99px;'
-          +'background:'+b.bg+';color:'+b.c+'">'+b.t+'</span>'):'')
-      +'</label>'
+      +'</div>'
       +((s&&s.evidencia)?('<div style="font-size:11px;color:var(--text3);line-height:1.5;'
-        +'margin:2px 0 0 26px">'+esc(s.evidencia)+'</div>'):'')
+        +'margin:3px 0 0 18px">'+esc(s.evidencia)+'</div>'):'')
     +'</div>';
   }).join('');
 }
