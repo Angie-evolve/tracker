@@ -826,6 +826,76 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
 
 <script>
 const LS_KEY = 'evold-v1';
+
+// ---- Cache local en IndexedDB -------------------------------------------
+// localStorage topea en ~5 MB y con las transcripciones se llena. IndexedDB
+// da cientos de MB con la misma idea: copia local para abrir rapido y poder
+// trabajar sin conexion. Supabase sigue siendo la fuente de verdad.
+var _IDB_DB='evold', _IDB_STORE='kv', _idbConn=null;
+function _idb(){
+  if(_idbConn) return _idbConn;
+  _idbConn=new Promise(function(res,rej){
+    if(!window.indexedDB) return rej(new Error('sin IndexedDB'));
+    var r=indexedDB.open(_IDB_DB,1);
+    r.onupgradeneeded=function(){ r.result.createObjectStore(_IDB_STORE); };
+    r.onsuccess=function(){ res(r.result); };
+    r.onerror=function(){ rej(r.error||new Error('no pude abrir IndexedDB')); };
+  });
+  return _idbConn;
+}
+function idbGuardar(clave, valor){
+  return _idb().then(function(db){
+    return new Promise(function(res,rej){
+      var t=db.transaction(_IDB_STORE,'readwrite');
+      t.objectStore(_IDB_STORE).put(valor, clave);
+      t.oncomplete=function(){ res(true); };
+      t.onerror=function(){ rej(t.error); };
+      t.onabort=function(){ rej(t.error||new Error('transaccion abortada')); };
+    });
+  });
+}
+function idbLeer(clave){
+  return _idb().then(function(db){
+    return new Promise(function(res,rej){
+      var t=db.transaction(_IDB_STORE,'readonly');
+      var q=t.objectStore(_IDB_STORE).get(clave);
+      q.onsuccess=function(){ res(q.result); };
+      q.onerror=function(){ rej(q.error); };
+    });
+  });
+}
+// Se guarda el objeto tal cual, sin JSON.stringify: IndexedDB lo serializa
+// solo y evita armar un string de varios MB en memoria en cada guardado.
+function _guardarLocal(obj){
+  return idbGuardar(LS_KEY, obj).catch(function(e){
+    // Si IndexedDB no esta disponible (modo privado de algunos navegadores),
+    // se cae a localStorage con el limite de siempre.
+    console.warn('IndexedDB no disponible, uso localStorage:', e&&e.message);
+    localStorage.setItem(LS_KEY, JSON.stringify(obj));
+    return false;
+  });
+}
+async function _leerLocal(){
+  try{
+    var v=await idbLeer(LS_KEY);
+    if(v) return v;
+  }catch(e){ console.warn('IndexedDB no disponible al leer:', e&&e.message); }
+  // Primera vez despues de migrar: lo que haya en localStorage se levanta y
+  // se pasa a IndexedDB, y recien ahi se libera la clave vieja.
+  try{
+    var raw=localStorage.getItem(LS_KEY);
+    if(raw){
+      var p=JSON.parse(raw);
+      if(p&&p.clients&&p.clients.length){
+        await _guardarLocal(p);
+        try{ localStorage.removeItem(LS_KEY); }catch(e2){}
+        console.log('Base migrada de localStorage a IndexedDB');
+        return p;
+      }
+    }
+  }catch(e){}
+  return null;
+}
 function esc(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function showCambioZoom(el){
@@ -1074,7 +1144,7 @@ async function sbBajar(){
   var nuevo={clients:filas.map(function(f){ return f.datos; })};
   (cfg||[]).forEach(function(row){ nuevo[row.clave]=row.valor; });
   DB=Object.assign({}, DB, nuevo);
-  try{ localStorage.setItem(LS_KEY,JSON.stringify(DB)); }catch(e){}
+  _guardarLocal(DB).catch(function(e){});
   return true;
 }
 
@@ -1148,14 +1218,26 @@ function _sbMarcar(estado, msg){
 // con un "Error al guardar" que se repite en loop.
 function _pesoMB(x){ return (JSON.stringify(x||'').length/1048576); }
 function _diagEspacio(){
-  var out={total:_pesoMB(DB), clientes:[]};
+  var out={total:_pesoMB(DB), clientes:[], transcripciones:0, respuestas:0};
   (DB.clients||[]).forEach(function(c){
     var partes=[];
     var meter=function(l,v){ var p=_pesoMB(v); if(p>0.01) partes.push({l:l,mb:p}); };
     meter('Oportunidades de GHL', c.ghl&&c.ghl.opportunities);
     meter('Campanas de Meta', c.conversionLines);
     meter('Anuncios propios', c.ourAds);
-    meter('Llamadas de Fathom', c.fathomCalls);
+    // Las transcripciones se miden aparte: son lo mas pesado que hay y estaban
+    // escondidas adentro del bulto de llamadas.
+    var tr=(c.fathomCalls||[]).map(function(cl){return cl.transcript||'';});
+    var mbTr=_pesoMB(tr);
+    out.transcripciones+=mbTr;
+    meter('Transcripciones', tr);
+    meter('Llamadas sin transcripcion', (c.fathomCalls||[]).map(function(cl){
+      var o={}; for(var k2 in cl){ if(k2!=='transcript') o[k2]=cl[k2]; } return o;
+    }));
+    var mbResp=_pesoMB(c.respuestas);
+    out.respuestas+=mbResp;
+    meter('Respuestas de IA', c.respuestas);
+    meter('Analisis de entregables', c.entregablesIA);
     meter('Guiones', [c.adScripts,c.adScriptsByAd]);
     meter('Tareas', c.tasks);
     meter('Referentes', c.marketRefs);
@@ -1163,7 +1245,38 @@ function _diagEspacio(){
     out.clientes.push({name:c.name||('Cliente '+c.id), mb:_pesoMB(c), partes:partes});
   });
   out.clientes.sort(function(a,b){ return b.mb-a.mb; });
+  // Cuanto se recuperaria borrando transcripciones que ya tienen resumen.
+  out.trResumidas=0; out.nResumidas=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      if(cl.transcript && cl.summary){
+        out.trResumidas+=_pesoMB(cl.transcript);
+        out.nResumidas++;
+      }
+    });
+  });
   return out;
+}
+
+// Borra las transcripciones de llamadas que ya tienen resumen. No es gratis:
+// las preguntas pierden el minuto exacto de esas llamadas, porque el resumen
+// no lo trae. Por eso va aparte del liberar de siempre y con aviso.
+function liberarTranscripciones(){
+  var d=_diagEspacio();
+  if(!d.nResumidas){ toast('No hay transcripciones ya resumidas para borrar'); return; }
+  if(!confirm('Borrar '+d.nResumidas+' transcripciones que ya tienen resumen?\n\n'
+    +'Recuperas '+d.trResumidas.toFixed(2)+' MB. El resumen y los action items quedan.\n'
+    +'Perdes el minuto exacto al preguntarle a esas llamadas.')) return;
+  var n=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      if(cl.transcript && cl.summary){ delete cl.transcript; n++; }
+    });
+  });
+  save();
+  closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast('Borradas '+n+' transcripciones. Ahora usa '+_pesoMB(DB).toFixed(2)+' MB');
 }
 var _avisoEspacioDado=false;
 function _esErrorDeEspacio(e){
@@ -1172,6 +1285,8 @@ function _esErrorDeEspacio(e){
   return n==='QuotaExceededError' || n==='NS_ERROR_DOM_QUOTA_REACHED'
     || /quota|exceeded|storage is full/i.test(m);
 }
+// Abre el panel a pedido, saltando el bloqueo de una vez por sesion.
+function _avisarEspacioManual(){ _avisoEspacioDado=false; _avisarEspacio(null); }
 function _avisarEspacio(e){
   if(_avisoEspacioDado) return;      // una vez por sesion, no en loop
   _avisoEspacioDado=true;
@@ -1187,18 +1302,35 @@ function _avisarEspacio(e){
   root.innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:480px;width:94%">'
-    +'<div class="modal-title" style="margin-bottom:3px">El navegador se quedo sin espacio</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
-      +'Los cambios se siguen subiendo a Supabase, pero dejaron de guardarse en este navegador. '
-      +'Si recargas antes de que suban, perdes lo ultimo que hiciste. '
+    // El titulo cambia segun por que se abrio: no es lo mismo revisar de
+    // curioso que enterarse de que dejo de guardar.
+    +'<div class="modal-title" style="margin-bottom:3px">'
+      +(e?'El navegador se quedo sin espacio':'Almacenamiento')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +(e?('Los cambios se siguen subiendo a Supabase, pero dejaron de guardarse en este navegador. '
+           +'Si recargas antes de que suban, perdes lo ultimo que hiciste. ')
+         :'Cuando se llena, el tracker deja de guardar en este navegador y solo sube a Supabase. ')
       +'Estas usando <b>'+d.total.toFixed(2)+' MB</b> y el limite ronda los 5 MB.</div>'
+    +'<div style="height:7px;background:var(--bg3);border-radius:99px;overflow:hidden;margin-bottom:14px">'
+      +'<div style="height:100%;width:'+Math.min(100,Math.round(d.total/5*100))+'%;background:'
+      +(d.total/5>=0.85?'var(--redx)':(d.total/5>=0.6?'var(--amberx)':'var(--green)'))+'"></div></div>'
     +(filas?('<div style="margin-bottom:14px">'+filas+'</div>'):'')
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
-      +'"Liberar espacio" borra de este navegador el detalle de conjuntos y anuncios de las lineas '
-      +'que no estan activas. No se pierde nada: vuelve al sincronizar con Meta.</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'<b style="color:var(--text2)">Liberar caches</b> borra el detalle de conjuntos y anuncios '
+      +'de las lineas que no estan activas, y el snapshot de GHL. '
+      +'No se pierde nada: vuelve al sincronizar.</div>'
+    // La segunda opcion si tiene costo, y se dice cual antes de tocarla.
+    +(d.nResumidas?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'<b style="color:var(--text2)">Borrar transcripciones resumidas</b> recupera '
+      +'<b style="color:var(--text2)">'+d.trResumidas.toFixed(2)+' MB</b> de '+d.nResumidas
+      +' llamada'+(d.nResumidas===1?'':'s')+' que ya tienen resumen. El resumen y los action items '
+      +'quedan, pero al preguntarle a esas llamadas <span style="color:var(--amberx)">se pierde el '
+      +'minuto exacto</span>, porque el resumen no lo trae.</div>'):'')
     +'<div class="modal-footer">'
-      +'<button class="btn btn-sm" onclick="closeModal()">Ahora no</button>'
-      +'<button class="btn btn-sm btn-primary" onclick="liberarEspacio()">Liberar espacio</button>'
+      +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +(d.nResumidas?('<button class="btn btn-sm" onclick="liberarTranscripciones()">'
+        +'Borrar transcripciones ('+d.trResumidas.toFixed(2)+' MB)</button>'):'')
+      +'<button class="btn btn-sm btn-primary" onclick="liberarEspacio()">Liberar caches</button>'
     +'</div></div></div>';
 }
 // Tira lo mas pesado y recuperable: el arbol de conjuntos/anuncios de las lineas
@@ -1218,7 +1350,7 @@ function liberarEspacio(){
   });
   var antes=_pesoMB(DB);
   try{
-    localStorage.setItem(LS_KEY, JSON.stringify({...DB, savedAt:new Date().toISOString()}));
+    _guardarLocal({...DB, savedAt:new Date().toISOString()});
     _avisoEspacioDado=false;
     closeModal();
     toast('Liberado. Ahora usa '+antes.toFixed(2)+' MB');
@@ -1231,13 +1363,12 @@ function liberarEspacio(){
 
 function save(){
   // 1. Local primero: es instantaneo y es lo que hace que la app no dependa de la red.
-  try{localStorage.setItem(LS_KEY,JSON.stringify({...DB,savedAt:new Date().toISOString()}));}
-  catch(e){
+  _guardarLocal({...DB,savedAt:new Date().toISOString()}).catch(function(e){
     // El caso real es quedarse sin espacio. Un toast generico repitiendose no
     // dice que pasa ni como salir.
     if(_esErrorDeEspacio(e)) _avisarEspacio(e);
     else if(!_avisoEspacioDado){ _avisoEspacioDado=true; toast('No pude guardar en este navegador: '+(e&&e.message||''),'red'); }
-  }
+  });
   // 2. Supabase despues, agrupando los cambios de los ultimos 2 segundos.
   if(SB.listo){
     _sbMarcar('subiendo');
@@ -1245,10 +1376,12 @@ function save(){
     _sbPendiente=setTimeout(function(){ sbSubir(); }, 2000);
   }
 }
-function load(){
+// Asincrona porque IndexedDB lo es. La app arranca con la base vacia y se
+// completa apenas resuelve; el render espera a que termine.
+async function load(){
   try{
-    const raw=localStorage.getItem(LS_KEY);
-    if(raw){const p=JSON.parse(raw);if(p.clients?.length){DB=p;return;}}
+    const p=await _leerLocal();
+    if(p&&p.clients&&p.clients.length){ DB=p; return; }
   }catch(e){}
   DB=JSON.parse(JSON.stringify(DEFAULT));
   save();
@@ -6812,6 +6945,20 @@ function integracionesAppHtml(){
         desc:'Tareas que se repiten: se cargan solas el dia que toca, en los clientes que elijas. Se revisan al abrir el tracker.',
         detail:act?(act+' rutina'+(act===1?'':'s')+' activa'+(act===1?'':'s')):'Sin rutinas',
         action:'abrirRutinas()', actionLabel:rs.length?'Editar':'Crear'});
+    })(),
+    (function(){
+      // Almacenamiento. El aviso de espacio existia pero solo saltaba cuando ya
+      // no entraba nada; para entonces ya perdiste lo ultimo que hiciste.
+      var d=_diagEspacio();
+      var pct=Math.round(d.total/5*100);
+      var st=pct>=85?'no':(pct>=60?'partial':'ok');
+      var detalle=d.total.toFixed(2)+' MB de ~5 MB ('+pct+'%)';
+      if(d.transcripciones>0.05) detalle+=' \u00b7 '+d.transcripciones.toFixed(2)+' MB en transcripciones';
+      return card({name:'Almacenamiento', st:st,
+        desc:'Cuanto ocupa el tracker en este navegador. Al llegar al limite deja de guardar '
+          +'local y solo sube a Supabase: si recargas antes de que suba, perdes lo ultimo.',
+        detail:detalle,
+        action:'_avisarEspacioManual()', actionLabel:'Ver detalle'});
     })(),
     (function(){
       // Productos. No es una conexion externa, pero es configuracion de la
@@ -28485,7 +28632,9 @@ function toggleTheme(){
   applyTheme(t);
 }
 applyTheme(localStorage.getItem('evold-theme')||'dark');
-load();
+// La carga local ahora es asincrona. Se guarda la promesa y se espera antes
+// de dibujar, para no pintar una pantalla vacia y despues rellenarla.
+var _cargaLocal=load();
 // El link del mail o del WhatsApp puede caer antes de iniciar sesion: se guarda
 // ahora y el formulario se abre cuando la app termino de cargar.
 try{ rvGuardarLinkPendiente(); }catch(e){}
@@ -28558,6 +28707,7 @@ function _limpiarSyncsColgados(){
 
 async function arrancarConSesion(){
   SB.listo=true;
+  try{ await _cargaLocal; }catch(e){}
   // Empieza a mirar si se publico una version nueva del tracker.
   try{ verIniciar(); }catch(e){}
   try{
