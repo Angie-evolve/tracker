@@ -18037,15 +18037,27 @@ function _llFechaDeInput(s){
 
 // Los .vtt y .srt que exporta Fathom traen numeracion y timecodes que no
 // aportan nada al resumen y ocupan la mitad del archivo.
-// El ultimo timecode de un .vtt o .srt es el minuto en que termina la llamada,
-// o sea su duracion. Se lee antes de limpiar la transcripcion, que es donde se
-// pierden. Con esto no hay que cargar la duracion a mano.
+// La duracion es el ultimo minuto que aparece en la transcripcion. Hay dos
+// formatos: el timecode de un .vtt o .srt, y la marca de hablante que usa el
+// .txt de Fathom ("23:52 - Martin Marquez"). El segundo sobrevive a la
+// limpieza, asi que sirve tambien para transcripciones ya guardadas.
 function _llDuracionDeTranscript(crudo){
   var t=String(crudo||'');
-  var ms=t.match(/(\d{1,2}):(\d{2}):(\d{2})[.,]\d{3}/g);
-  if(!ms||!ms.length) return '';
-  var ult=ms[ms.length-1].match(/(\d{1,2}):(\d{2}):(\d{2})/);
-  var min=Math.round(+ult[1]*60 + +ult[2] + (+ult[3])/60);
+  var min=0;
+  var vtt=t.match(/(\d{1,2}):(\d{2}):(\d{2})[.,]\d{3}/g);
+  if(vtt&&vtt.length){
+    var u=vtt[vtt.length-1].match(/(\d{1,2}):(\d{2}):(\d{2})/);
+    min=+u[1]*60 + +u[2] + (+u[3])/60;
+  }else{
+    // Al principio de linea y seguida de guion: asi no se confunde con una
+    // hora suelta mencionada dentro de una frase.
+    var marcas=t.match(/^[ \t]*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[ \t]*[-\u2013\u2014]/gm);
+    if(marcas&&marcas.length){
+      var m=marcas[marcas.length-1].match(/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/);
+      min=m[1]!==undefined ? (+m[1]*60 + +m[2] + (+m[3])/60) : (+m[2] + (+m[3])/60);
+    }
+  }
+  min=Math.round(min);
   if(!min) return '';
   var h=Math.floor(min/60), r=min%60;
   return h?(h+'h'+(r?(' '+r+'m'):'')):(r+' min');
@@ -18804,8 +18816,36 @@ function fathomCallsHTML(c){
     html += '<button class="btn btn-sm" id="fc-ver" onclick="verTodasLasLlamadas(this)" '
       +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(calls.length-3)+'</button>';
   }
+  // Solo si hay algo que completar y de donde sacarlo.
+  var _recuperables=calls.filter(function(cl){
+    return !_durMin(cl.duration) && _llDuracionDeTranscript(cl.transcript||'');
+  }).length;
+  if(_recuperables){
+    html += '<button class="btn btn-sm" onclick="calcularDuraciones('+c.id+')" '
+      +'style="font-size:11px;padding:3px 9px;margin-top:2px;margin-left:6px">'
+      +'Calcular '+_recuperables+' duracion'+(_recuperables===1?'':'es')+'</button>';
+  }
   html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
   return html;
+}
+
+// Las transcripciones ya guardadas conservan las marcas de hablante, asi que
+// la duracion se puede sacar sin volver a subir nada. Solo completa las que
+// estan vacias: lo escrito a mano no se toca.
+function calcularDuraciones(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var n=0, sin=0;
+  (c.fathomCalls||[]).forEach(function(cl){
+    if(_durMin(cl.duration)) return;
+    var d=_llDuracionDeTranscript(cl.transcript||'');
+    if(d){ cl.duration=d; n++; } else sin++;
+  });
+  if(n) save();
+  if(typeof renderTab==='function') renderTab();
+  toast(n
+    ? ('Complete '+n+' duracion'+(n===1?'':'es')+(sin?(' \u00b7 '+sin+' sin marcas de tiempo'):''))
+    : 'Ninguna transcripcion tiene marcas de tiempo para leer', n?'':'amber');
 }
 
 function verTodasLasLlamadas(btn){
