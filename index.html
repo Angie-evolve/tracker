@@ -16502,6 +16502,25 @@ function _ncEquipoAdd(){
 function _ncEquipoQuitar(i){ _ncEquipo.splice(i,1); _ncEquipoRender(); }
 function _ncEquipoKey(e){ if(e.key==='Enter'){ e.preventDefault(); _ncEquipoAdd(); } }
 
+// Hay clientes que facturan como empresa y otros que trabajan a nombre propio.
+// Antes el nombre de la empresa era obligatorio, asi que a los segundos habia
+// que inventarles una razon social o escribir el nombre de la persona en un
+// campo que decia "empresa".
+function _ncTipoCambio(){
+  var tipo=(document.getElementById('nc-tipo')||{}).value;
+  var esEmp=(tipo!=='persona');
+  var row=document.getElementById('nc-empresa-row');
+  if(row) row.style.display=esEmp?'':'none';
+  var hint=document.getElementById('nc-cliente-hint');
+  if(hint) hint.style.display=esEmp?'none':'';
+  var lbl=document.getElementById('nc-cliente-label');
+  // Cuando no hay empresa, este campo deja de ser el contacto y pasa a ser la
+  // identidad del cliente: el label tiene que decirlo.
+  if(lbl) lbl.textContent=esEmp?'Cliente':'Nombre y apellido';
+  var foco=document.getElementById(esEmp?'nc-name':'nc-contact');
+  if(foco&&foco.focus) foco.focus();
+}
+
 // Modals
 // Bloque opcional del alta de cliente: crear tambien la subcuenta en GHL.
 // Solo aparece si la configuracion de agencia esta completa.
@@ -16561,17 +16580,23 @@ function openNewClientModal(){
         <div class="modal-title">Nuevo cliente</div>
         <div class="modal-sub">Crea el perfil del cliente. Despues podes agregar su primera linea de conversion.</div>
         <div class="form-2col">
-          <div class="form-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
+          <div class="form-row"><label class="form-label">Tipo de cliente</label>
+            <select id="nc-tipo" onchange="_ncTipoCambio()">
+              <option value="empresa">Empresa constituida</option>
+              <option value="persona">A nombre propio</option>
+            </select></div>
           <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria"></div>
         </div>
+        <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
         <div class="form-row"><label class="form-label">Producto</label>
           <select id="nc-product">${NC_PRODUCTOS.map(function(p){
             return '<option>'+esc(p)+'</option>';
           }).join('')}</select></div>
         <div class="form-2col">
-          <div class="form-row"><label class="form-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona"></div>
+          <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona"></div>
           <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com"></div>
         </div>
+        <div id="nc-cliente-hint" style="display:none;font-size:11.5px;color:var(--text3);margin:-6px 0 12px;line-height:1.5">Se usa como nombre del cliente en el tracker y en la subcuenta de GHL.</div>
         <div class="form-row">
           <label class="form-label">Equipo del cliente</label>
           <div style="display:flex;gap:8px">
@@ -16591,12 +16616,21 @@ function openNewClientModal(){
 }
 
 async function createClient(){
-  const name=document.getElementById('nc-name').value.trim();
+  const esEmpresa=((document.getElementById('nc-tipo')||{}).value||'empresa')!=='persona';
+  const empresa=((document.getElementById('nc-name')||{}).value||'').trim();
   const industry=document.getElementById('nc-industry').value.trim();
   const producto=(document.getElementById('nc-product')||{}).value||'';
   const contacto=((document.getElementById('nc-contact')||{}).value||'').trim();
   const email=((document.getElementById('nc-email')||{}).value||'').trim();
-  if(!name)return;
+  // La identidad sale de un campo o del otro segun el tipo. Todo lo que viene
+  // despues (avatar, sidebar, subcuenta en GHL) sigue usando un solo `name`.
+  const name=esEmpresa?empresa:contacto;
+  if(!name){
+    var _falta=document.getElementById(esEmpresa?'nc-name':'nc-contact');
+    if(_falta&&_falta.focus) _falta.focus();
+    toast(esEmpresa?'Falta el nombre de la empresa':'Falta el nombre del cliente');
+    return;
+  }
   // El email es opcional, pero si esta mal escrito conviene frenar aca: es el
   // que se manda a GHL y despues corregirlo implica tocar las dos puntas.
   var _mail=document.getElementById('nc-email');
@@ -16639,7 +16673,9 @@ async function createClient(){
     // Fecha de alta explicita: hasta ahora se deducia del id, que funciona pero
     // se rompe si algun dia cambia como se generan.
     id:Date.now(), altaAt:new Date().toISOString(), name,industry,
-    producto, contacto, email, equipo,
+    // `contacto` queda vacio si el cliente es la persona: el dato ya esta en
+    // `name` y duplicarlo hace que despues no se sepa cual es el bueno.
+    esEmpresa, producto, contacto:(esEmpresa?contacto:''), email, equipo,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
     monthlyLeads:0,monthlyBudget:0,avgCPL:0,conversionLines:[],
