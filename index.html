@@ -16466,6 +16466,42 @@ function renderTab(){
   }
 }
 
+// Los dos productos que vende la agencia. Si aparece uno nuevo se agrega aca y
+// el dropdown lo toma solo; no hay que tocar el modal.
+var NC_PRODUCTOS=['DFY Agencia','The Flowing Code'];
+
+// Equipo del cliente: nombres sueltos que se van agregando de a uno. Vive fuera
+// del DOM porque el modal se redibuja al tildar GHL y se perderian los chips.
+var _ncEquipo=[];
+function _ncEquipoRender(){
+  var c=document.getElementById('nc-equipo-chips');
+  if(!c) return;
+  c.innerHTML=!_ncEquipo.length
+    ? '<span style="font-size:11.5px;color:var(--text3)">Todavia no agregaste a nadie.</span>'
+    : _ncEquipo.map(function(n,i){
+        return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;'
+          +'color:var(--text);background:var(--bg3);border:1px solid var(--border2);'
+          +'border-radius:999px;padding:3px 6px 3px 10px">'+esc(n)
+          +'<button onclick="_ncEquipoQuitar('+i+')" aria-label="Quitar '+esc(n)+'" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;'
+          +'line-height:1;padding:0 2px">&times;</button></span>';
+      }).join('');
+}
+function _ncEquipoAdd(){
+  var inp=document.getElementById('nc-equipo-input');
+  if(!inp) return;
+  // Se acepta pegar varios separados por coma: es como llegan de un mail.
+  String(inp.value||'').split(',').forEach(function(n){
+    n=n.trim();
+    if(n&&_ncEquipo.indexOf(n)<0) _ncEquipo.push(n);
+  });
+  inp.value='';
+  inp.focus();
+  _ncEquipoRender();
+}
+function _ncEquipoQuitar(i){ _ncEquipo.splice(i,1); _ncEquipoRender(); }
+function _ncEquipoKey(e){ if(e.key==='Enter'){ e.preventDefault(); _ncEquipoAdd(); } }
+
 // Modals
 // Bloque opcional del alta de cliente: crear tambien la subcuenta en GHL.
 // Solo aparece si la configuracion de agencia esta completa.
@@ -16488,10 +16524,10 @@ function _ncSubcuentaHtml(){
       +'</span>'
     +'</label>'
     +'<div id="nc-ghl-campos" style="display:none;margin-top:12px">'
-      +'<div class="form-2col">'
-        +'<div class="form-row"><label class="form-label">Email del contacto</label><input id="nc-email" placeholder="opcional"></div>'
-        +'<div class="form-row"><label class="form-label">Telefono</label><input id="nc-phone" placeholder="opcional"></div>'
-      +'</div>'
+      +'<div class="form-row"><label class="form-label">Telefono</label>'
+        +'<input id="nc-phone" placeholder="opcional"></div>'
+      // El email ya se pide arriba: repetirlo aca obligaba a escribirlo dos
+      // veces y dejaba abierta la posibilidad de que no coincidieran.
       +'<div id="nc-ghl-estado" style="font-size:12px;color:var(--text3);margin-top:8px;line-height:1.5"></div>'
     +'</div>'
   +'</div>';
@@ -16518,6 +16554,7 @@ async function crearSubcuentaGHL(nombre, email, phone){
 }
 
 function openNewClientModal(){
+  _ncEquipo=[];
   document.getElementById('modal-root').innerHTML=`
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -16527,6 +16564,22 @@ function openNewClientModal(){
           <div class="form-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" autofocus></div>
           <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria"></div>
         </div>
+        <div class="form-row"><label class="form-label">Producto</label>
+          <select id="nc-product">${NC_PRODUCTOS.map(function(p){
+            return '<option>'+esc(p)+'</option>';
+          }).join('')}</select></div>
+        <div class="form-2col">
+          <div class="form-row"><label class="form-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona"></div>
+          <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com"></div>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Equipo del cliente</label>
+          <div style="display:flex;gap:8px">
+            <input id="nc-equipo-input" placeholder="Nombre y Enter" onkeydown="_ncEquipoKey(event)" style="flex:1">
+            <button type="button" class="btn btn-sm" onclick="_ncEquipoAdd()">Agregar</button>
+          </div>
+          <div id="nc-equipo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;align-items:center"></div>
+        </div>
         ${_ncSubcuentaHtml()}
         <div class="modal-footer">
           <button class="btn" onclick="closeModal()">Cancelar</button>
@@ -16534,12 +16587,29 @@ function openNewClientModal(){
         </div>
       </div>
     </div>`;
+  _ncEquipoRender();
 }
 
 async function createClient(){
   const name=document.getElementById('nc-name').value.trim();
   const industry=document.getElementById('nc-industry').value.trim();
+  const producto=(document.getElementById('nc-product')||{}).value||'';
+  const contacto=((document.getElementById('nc-contact')||{}).value||'').trim();
+  const email=((document.getElementById('nc-email')||{}).value||'').trim();
   if(!name)return;
+  // El email es opcional, pero si esta mal escrito conviene frenar aca: es el
+  // que se manda a GHL y despues corregirlo implica tocar las dos puntas.
+  var _mail=document.getElementById('nc-email');
+  if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    if(_mail){ _mail.style.borderColor='var(--redx)'; _mail.focus(); }
+    toast('Revisa el email del cliente');
+    return;
+  }
+  if(_mail) _mail.style.borderColor='';
+  // Por si quedo texto escrito sin haber apretado Enter ni Agregar.
+  var _pend=document.getElementById('nc-equipo-input');
+  if(_pend&&_pend.value.trim()) _ncEquipoAdd();
+  const equipo=_ncEquipo.slice();
 
   // Opcional: crear tambien la subcuenta en GHL antes de dar de alta al cliente.
   // Si falla, no se crea nada: es preferible a dejar un cliente huerfano en el tracker.
@@ -16551,8 +16621,7 @@ async function createClient(){
     if(_btn){ _btn.disabled=true; _btn.textContent='Creando en GHL...'; } // bloqueo anti doble click
     if(_est){ _est.textContent='Creando la subcuenta...'; _est.style.color='var(--text3)'; }
     try{
-      var _r=await crearSubcuentaGHL(name,
-        (document.getElementById('nc-email')||{}).value,
+      var _r=await crearSubcuentaGHL(name, email,
         (document.getElementById('nc-phone')||{}).value);
       ghlLoc=_r.loc;
       if(_est){
@@ -16570,6 +16639,7 @@ async function createClient(){
     // Fecha de alta explicita: hasta ahora se deducia del id, que funciona pero
     // se rompe si algun dia cambia como se generan.
     id:Date.now(), altaAt:new Date().toISOString(), name,industry,
+    producto, contacto, email, equipo,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
     monthlyLeads:0,monthlyBudget:0,avgCPL:0,conversionLines:[],
