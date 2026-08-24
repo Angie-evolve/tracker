@@ -18348,6 +18348,116 @@ function toggleEntregable(clientId, idx){
   if(typeof renderTab==='function') renderTab();
 }
 
+// Cruza los entregables con lo que se hablo en las llamadas. La informacion ya
+// esta cargada en las dos puntas y nadie la iba a leer entera: 23 entregables
+// contra 6 transcripciones son 138 comparaciones a mano.
+var _ENTREG_MAXCALL=20000;
+var _ENTREG_MAXTOTAL=120000;
+
+function _entregEstado(txt, color){
+  var e=document.getElementById('cp-estado');
+  if(!e) return;
+  e.innerHTML=txt||'';
+  e.style.color=color||'var(--text3)';
+}
+
+async function revisarEntregables(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var k=_compromiso(c);
+  if(!k.ver||!k.entregables.length) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){
+    _entregEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)');
+    return;
+  }
+  // Se prefiere el resumen cuando existe: dice lo mismo en una decima parte del
+  // texto. La transcripcion cruda es el respaldo para las que no se resumieron.
+  var total=0;
+  var llamadas=(c.fathomCalls||[]).map(function(cl){
+    var cuerpo=cl.summary||cl.transcript||'';
+    if(!cuerpo) return null;
+    if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
+    if(total+cuerpo.length>_ENTREG_MAXTOTAL) return null;
+    total+=cuerpo.length;
+    return {titulo:(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')', texto:cuerpo};
+  }).filter(Boolean);
+  if(!llamadas.length){
+    _entregEstado('Ninguna llamada tiene transcripcion ni resumen para analizar.','var(--amberx)');
+    return;
+  }
+  var t0=Date.now();
+  _entregEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+llamadas.length+' llamadas...</span></span>','var(--text2)');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:3000,messages:[{role:'user',content:
+        'Sos analista de una agencia. Abajo estan los ENTREGABLES que se le vendieron a '+(c.name||'un cliente')
+        +' y las LLAMADAS que se tuvieron con el. Para cada entregable deci si ya se cumplio, '
+        +'segun lo que se dijo en las llamadas.\n\n'
+        +'Devolve SOLO un JSON array, sin markdown, con un objeto por entregable:\n'
+        +'[{"i":indice del entregable empezando en 0,'
+        +'"estado":"hecho" si en alguna llamada se habla de eso como terminado o entregado, '
+        +'"curso" si se menciona como en proceso o acordado pero sin terminar, '
+        +'"no" si no aparece en ninguna llamada,'
+        +'"evidencia":"titulo de la llamada donde aparece, y en pocas palabras que se dijo. '
+        +'String vacio si el estado es no"}]\n'
+        +'Se conservador: si no hay una mencion clara, poné "no". No inventes.\n\n'
+        +'ENTREGABLES:\n'+k.entregables.map(function(e,i){return i+'. '+e;}).join('\n')
+        +'\n\nLLAMADAS:\n'+llamadas.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
+    });
+    var d=await r.json();
+    if(d.error){
+      console.error('Revision de entregables:', d);
+      throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
+    }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('['), fin=txt.lastIndexOf(']');
+    if(ini<0||fin<=ini){
+      console.error('Revision de entregables, sin JSON:', txt);
+      throw new Error('La respuesta no trajo un JSON. Esta el detalle en la consola.');
+    }
+    var arr=JSON.parse(txt.slice(ini,fin+1));
+    var items={};
+    arr.forEach(function(o){
+      if(o&&typeof o.i==='number') items[o.i]={estado:o.estado||'no', evidencia:String(o.evidencia||'')};
+    });
+    // Se guarda por version: si manana cambia la propuesta, este analisis ya no
+    // corresponde a los entregables nuevos.
+    c.entregablesIA=c.entregablesIA||{};
+    c.entregablesIA[k.ver.id]={at:new Date().toISOString(), n:llamadas.length, items:items};
+    save();
+    if(typeof renderTab==='function') renderTab();
+    var hechos=Object.keys(items).filter(function(i){return items[i].estado==='hecho';}).length;
+    toast('Revise '+llamadas.length+' llamadas en '+Math.round((Date.now()-t0)/1000)+'s: '
+      +hechos+' entregables ya cubiertos');
+  }catch(e){
+    console.error('Revision de entregables:', e);
+    _entregEstado('No pude revisarlas: '+e.message,'var(--redx)');
+  }
+}
+
+// Pasa a tildado todo lo que la IA marco como hecho. Queda como accion aparte:
+// una revision automatica no deberia dar por entregado nada sin que lo mires.
+function aplicarEntregablesIA(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var k=_compromiso(c);
+  var an=(c.entregablesIA||{})[k.ver?k.ver.id:''];
+  if(!an) return;
+  var arr=(c.entregablesHechos&&c.entregablesHechos[k.ver.id]||[]).slice();
+  Object.keys(an.items).forEach(function(i){
+    if(an.items[i].estado==='hecho' && arr.indexOf(+i)<0) arr.push(+i);
+  });
+  c.entregablesHechos=c.entregablesHechos||{};
+  c.entregablesHechos[k.ver.id]=arr;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
 function compromisoHtml(c){
   var k=_compromiso(c);
   var head='<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
@@ -18403,21 +18513,52 @@ function compromisoHtml(c){
     +'</div>';
   }
 
+  var an=(c.entregablesIA||{})[k.ver.id]||null;
+  var conLlamadas=(c.fathomCalls||[]).filter(function(cl){return cl.summary||cl.transcript;}).length;
+  var porAplicar=an?Object.keys(an.items).filter(function(i){
+    return an.items[i].estado==='hecho' && k.hechos.indexOf(+i)<0;
+  }).length:0;
+  var badge={
+    hecho:{t:'ya se hizo', c:'var(--green)', bg:'rgba(29,158,117,0.14)'},
+    curso:{t:'en curso',   c:'var(--amberx)', bg:'rgba(186,117,23,0.14)'}
+  };
+
   return head+barra
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">'
-      +'<div style="font-size:10px;color:var(--text3);margin-bottom:8px;font-weight:500">'
-        +esc(k.p.nombre)
-        +(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
-        +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">'
+        +'<div style="font-size:10px;color:var(--text3);font-weight:500;flex:1;min-width:0">'
+          +esc(k.p.nombre)
+          +(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
+          +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
+        +'</div>'
+        +(porAplicar?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'onclick="aplicarEntregablesIA('+c.id+')">Tildar los '+porAplicar+' que vio cumplidos</button>'):'')
+        +(conLlamadas?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'onclick="revisarEntregables('+c.id+')">'+(an?'Volver a revisar':'Revisar contra las llamadas')+'</button>'):'')
+      +'</div>'
+      +'<div id="cp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:6px">'
+        +(an?('Revisado contra '+an.n+' llamada'+(an.n===1?'':'s')+' el '
+             +new Date(an.at).toLocaleDateString('es-AR'))
+           :(conLlamadas?('Hay '+conLlamadas+' llamada'+(conLlamadas===1?'':'s')+' con transcripcion sin cruzar contra esta lista.'):''))
       +'</div>'
       +k.entregables.map(function(e,i){
         var ok=k.hechos.indexOf(i)>=0;
-        return '<label style="display:flex;align-items:flex-start;gap:9px;padding:5px 0;cursor:pointer">'
-          +'<input type="checkbox" '+(ok?'checked ':'')+'onchange="toggleEntregable('+c.id+','+i+')" '
-            +'style="margin-top:2px;flex-shrink:0">'
-          +'<span style="font-size:12px;line-height:1.5;color:'+(ok?'var(--text3)':'var(--text)')+';'
-            +(ok?'text-decoration:line-through':'')+'">'+esc(e)+'</span>'
-        +'</label>';
+        var s=an&&an.items[i];
+        var b=(s&&badge[s.estado])?badge[s.estado]:null;
+        return '<div style="padding:5px 0">'
+          +'<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">'
+            +'<input type="checkbox" '+(ok?'checked ':'')+'onchange="toggleEntregable('+c.id+','+i+')" '
+              +'style="margin-top:2px;flex-shrink:0">'
+            +'<span style="flex:1;font-size:12px;line-height:1.5;color:'+(ok?'var(--text3)':'var(--text)')+';'
+              +(ok?'text-decoration:line-through':'')+'">'+esc(e)+'</span>'
+            +(b?('<span style="flex-shrink:0;font-size:10px;padding:2px 7px;border-radius:99px;'
+              +'background:'+b.bg+';color:'+b.c+'">'+b.t+'</span>'):'')
+          +'</label>'
+          // La evidencia es lo que hace confiable la sugerencia: sin decir de
+          // que llamada salio, tildar a ciegas seria peor que no revisar.
+          +((s&&s.evidencia)?('<div style="font-size:11px;color:var(--text3);line-height:1.5;'
+            +'margin:2px 0 0 26px">'+esc(s.evidencia)+'</div>'):'')
+        +'</div>';
       }).join('')
     +'</div>';
 }
