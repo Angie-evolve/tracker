@@ -18883,6 +18883,8 @@ var PREG_DEFAULT=[
   '¿Ya corrio anuncios en Meta? ¿Con que resultado, y tuvo cuentas restringidas, rechazos o problemas con el pixel?',
   '¿Se vendio algo fuera de los entregables del producto? Otro embudo, mas creativos, cualquier cosa acordada de palabra.',
   '¿Que se definio sobre la configuracion de campañas y del embudo? Segmentacion geografica, presupuesto, dominio, cuentas publicitarias, accesos.',
+  '¿Que competidores o alternativas menciono? Por nombre, y que dijo de cada uno.',
+  '¿Quien va a grabar los videos? Si se definio quien pone la cara, si tiene experiencia frente a camara, y cuando puede grabar.',
   '¿Que objeciones o dudas quedaron sin responder?',
   '¿Que cambio respecto de lo que se hablo en la venta?',
   '¿Hay señales de que el cliente esta incomodo o en riesgo?',
@@ -18891,23 +18893,43 @@ var PREG_DEFAULT=[
 function preguntas(){
   if(!Array.isArray(DB.preguntas)||!DB.preguntas.length){
     DB.preguntas=PREG_DEFAULT.slice();
+    DB.preguntasVistas=PREG_DEFAULT.slice();
+    save();
+    return DB.preguntas;
+  }
+  // Las preguntas que se suman al catalogo con el tiempo entran una sola vez.
+  // Se lleva registro de las que ya se ofrecieron, asi una que borraste no
+  // vuelve a aparecer en la proxima actualizacion.
+  if(!Array.isArray(DB.preguntasVistas)) DB.preguntasVistas=DB.preguntas.slice();
+  var nuevas=PREG_DEFAULT.filter(function(q){ return DB.preguntasVistas.indexOf(q)<0; });
+  if(nuevas.length){
+    DB.preguntas=DB.preguntas.concat(nuevas);
+    DB.preguntasVistas=DB.preguntasVistas.concat(nuevas);
     save();
   }
   return DB.preguntas;
 }
 
-// El material que se le manda: resumen si existe, transcripcion si no. Mismo
-// criterio que el cruce de entregables, para no gastar contexto de mas.
+// Para preguntar se prefiere la transcripcion aunque haya resumen: es la unica
+// que trae las marcas de minuto, y sin eso la respuesta no se puede ir a
+// chequear a la grabacion. El resumen queda como respaldo.
 function _llamadasParaIA(c){
-  var total=0;
-  return (c.fathomCalls||[]).map(function(cl){
-    var cuerpo=cl.summary||cl.transcript||'';
-    if(!cuerpo) return null;
+  var total=0, omitidas=[], items=[];
+  (c.fathomCalls||[]).forEach(function(cl){
+    var titulo=(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')';
+    var cuerpo=cl.transcript||cl.summary||'';
+    if(!cuerpo){ omitidas.push(titulo+': sin material'); return; }
     if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
-    if(total+cuerpo.length>_ENTREG_MAXTOTAL) return null;
+    if(total+cuerpo.length>_ENTREG_MAXTOTAL){
+      // Se descarta por tamaño, no por falta de datos. Decirlo importa: la
+      // respuesta sale de menos llamadas de las que el cliente tiene.
+      omitidas.push(titulo+': no entro por tamaño');
+      return;
+    }
     total+=cuerpo.length;
-    return {titulo:(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')', texto:cuerpo};
-  }).filter(Boolean);
+    items.push({titulo:titulo, texto:cuerpo});
+  });
+  return {items:items, omitidas:omitidas, chars:total};
 }
 
 function _pregEstado(html, color){
@@ -18924,7 +18946,8 @@ async function preguntarALlamadas(clientId, texto){
   if(!q){ _pregEstado('Escribi una pregunta o toca una de las guardadas.','var(--amberx)'); return; }
   var apiKey=localStorage.getItem('evold-anthropic-key');
   if(!apiKey){ _pregEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)'); return; }
-  var llamadas=_llamadasParaIA(c);
+  var mat=_llamadasParaIA(c);
+  var llamadas=mat.items;
   if(!llamadas.length){
     _pregEstado('Este cliente no tiene transcripciones ni resumenes para leer.','var(--amberx)');
     return;
@@ -18944,7 +18967,10 @@ async function preguntarALlamadas(clientId, texto){
         +'- Castellano rioplatense, directo, sin preambulo.\n'
         // La cita es lo que hace usable la respuesta: sin saber de donde sale
         // cada afirmacion no se puede llevar a una conversacion con el cliente.
-        +'- Cada afirmacion tiene que decir de que llamada sale, entre parentesis.\n'
+        +'- Cada afirmacion tiene que decir de que llamada sale Y en que minuto, entre '
+        +'parentesis. La transcripcion trae marcas como "23:52 - Nombre": usa esa marca. '
+        +'Ej: (Onboarding 12/08, 23:52). Si el fragmento no tiene marca de minuto cerca, '
+        +'poné solo la llamada.\n'
         +'- Si algo no se hablo, deci "no aparece en las llamadas". No lo deduzcas ni lo inventes.\n'
         +'- Si la respuesta son varias cosas, usa vinetas con "- ". Si es una sola, dos o tres oraciones.\n'
         +'- Maximo 200 palabras.\n\n'
@@ -18958,12 +18984,14 @@ async function preguntarALlamadas(clientId, texto){
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
     if(!txt) throw new Error('La respuesta vino vacia');
     c.respuestas=c.respuestas||[];
-    c.respuestas.unshift({q:q, r:txt, at:new Date().toISOString(), n:llamadas.length});
+    c.respuestas.unshift({q:q, r:txt, at:new Date().toISOString(), n:llamadas.length,
+                          omitidas:mat.omitidas.length?mat.omitidas:undefined});
     // Un tope: son texto y comparten el localStorage con todo lo demas.
     if(c.respuestas.length>15) c.respuestas.length=15;
     save();
     if(typeof renderTab==='function') renderTab();
-    toast('Respondido en '+Math.round((Date.now()-t0)/1000)+'s con '+llamadas.length+' llamadas');
+    toast('Respondido en '+Math.round((Date.now()-t0)/1000)+'s con '+llamadas.length+' llamadas'
+      +(mat.omitidas.length?(' \u00b7 '+mat.omitidas.length+' quedaron afuera'):''));
   }catch(e){
     console.error('Pregunta sobre llamadas:', e);
     _pregEstado('No pude responder: '+esc(e.message),'var(--redx)');
@@ -19000,6 +19028,9 @@ function guardarPreguntas(){
   if(!e) return;
   var l=String(e.value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean);
   DB.preguntas=l.length?l:PREG_DEFAULT.slice();
+  // Lo que quedo tras editar se marca como visto: si borraste una, no vuelve.
+  DB.preguntasVistas=(DB.preguntasVistas||[]).concat(
+    DB.preguntas.filter(function(q){ return (DB.preguntasVistas||[]).indexOf(q)<0; }));
   save(); closeModal();
   if(typeof renderTab==='function') renderTab();
   toast(l.length+' preguntas guardadas');
@@ -19035,6 +19066,9 @@ function preguntasHtml(c){
           +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
       +'</div>'
       +'<div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(x.r)+'</div>'
+      +((x.omitidas&&x.omitidas.length)?('<div style="font-size:11px;color:var(--amberx);line-height:1.5;'
+        +'margin-top:8px;padding-top:7px;border-top:1px solid var(--border)">Sin leer: '
+        +esc(x.omitidas.join(' &middot; '))+'</div>'):'')
     +'</div>';
   }).join('');
   return head
