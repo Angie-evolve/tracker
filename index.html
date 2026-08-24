@@ -1247,10 +1247,27 @@ function save(){
 function load(){
   try{
     const raw=localStorage.getItem(LS_KEY);
-    if(raw){const p=JSON.parse(raw);if(p.clients?.length){DB=p;return;}}
+    if(raw){const p=JSON.parse(raw);if(p.clients?.length){DB=p;_repararHitosLlamadas();return;}}
   }catch(e){}
   DB=JSON.parse(JSON.stringify(DEFAULT));
   save();
+}
+// Las llamadas cargadas a mano antes de que el hito se creara al guardar
+// quedaron sin su entrada en la linea de tiempo. Se completan una sola vez.
+function _repararHitosLlamadas(){
+  if(typeof _fathomUpsertMilestone!=='function') return;
+  var tocado=false;
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      if(!cl||!cl.id) return;
+      var ya=(c.milestones||[]).some(function(m){return m.fathomId===cl.id;});
+      if(ya) return;
+      _fathomUpsertMilestone(c,cl);
+      tocado=true;
+    });
+    if(tocado) _fathomSortMilestones(c);
+  });
+  if(tocado) save();
 }
 function exportData(){
   const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
@@ -5312,7 +5329,12 @@ function _fathomMatchClient(meeting){
 }
 function _fathomUpsertMilestone(c, cl){
   if(!c.milestones) c.milestones=[];
-  var body=(cl.summary||'')+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):'');
+  // Una llamada sin resumir igual paso, y el hito tiene que existir. Sin este
+  // texto el cuerpo quedaba vacio y el hito no decia nada.
+  var cab=cl.summary||(cl.transcript
+    ? 'Sin resumir todavia. Tiene la transcripcion cargada.'
+    : 'Sin resumen. Cargala o pega la transcripcion para resumirla.');
+  var body=cab+(cl.actionItems&&cl.actionItems.length?'\n\nAction items: '+cl.actionItems.join(', '):'')+(cl.riskFlags&&cl.riskFlags.length?'\n\nRiesgos: '+cl.riskFlags.join(', '):'');
   var tipo=cl.sentiment==='satisfecho'?'hito':'alerta';
   var tags=[cl.sentiment==='satisfecho'?'Llamada':'Llamada - atencion',cl.duration].filter(Boolean);
   var ex=c.milestones.find(function(m){return m.fathomId===cl.id;});
@@ -17376,7 +17398,16 @@ async function createClient(){
     // Si se creo la subcuenta, el locationId ya queda cargado: solo falta el token del cliente.
     ghl: (ghlLoc&&ghlLoc.id) ? {locationId:ghlLoc.id, token:''} : undefined
   });
-  save();closeModal();renderSidebar();showOverview();
+  save();
+  // Las llamadas cargadas en el alta tambien necesitan su hito: si no, un
+  // cliente nuevo con tres llamadas arranca con la linea de tiempo vacia.
+  var _nuevo=DB.clients[DB.clients.length-1];
+  if(_nuevo && (_nuevo.fathomCalls||[]).length && typeof _fathomUpsertMilestone==='function'){
+    _nuevo.fathomCalls.forEach(function(cl){ _fathomUpsertMilestone(_nuevo,cl); });
+    _fathomSortMilestones(_nuevo);
+    save();
+  }
+  closeModal();renderSidebar();showOverview();
   toast((ghlLoc&&ghlLoc.id) ? 'Cliente y subcuenta creados OK' : 'Cliente creado OK');
 }
 
@@ -18139,6 +18170,13 @@ function guardarLlamada(clientId, callId){
       _cid:c.id, manual:true, tipo:tipo, url:url, transcript:t
     });
   }
+  // El hito se crea al guardar, no al resumir: la llamada ocurrio igual. El
+  // upsert despues lo enriquece con el resumen sin duplicarlo.
+  var _cl=ed||c.fathomCalls[0];
+  if(_cl && typeof _fathomUpsertMilestone==='function'){
+    _fathomUpsertMilestone(c,_cl);
+    _fathomSortMilestones(c);
+  }
   save(); closeModal();
   if(typeof renderTab==='function') renderTab();
   toast(ed?'Llamada actualizada':(t?'Llamada guardada. Ya podes resumirla':'Llamada guardada'));
@@ -18148,6 +18186,9 @@ function borrarLlamada(clientId, callId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!confirm('Borrar esta llamada?')) return;
   c.fathomCalls=(c.fathomCalls||[]).filter(function(cl){return cl.id!==callId;});
+  // Sin esto el hito quedaba huerfano en la linea de tiempo, apuntando a una
+  // llamada que ya no existe.
+  c.milestones=(c.milestones||[]).filter(function(m){return m.fathomId!==callId;});
   save(); if(typeof renderTab==='function') renderTab();
 }
 
