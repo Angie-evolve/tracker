@@ -18398,7 +18398,10 @@ function _fechaISO(s){
   var d=parseDDMMYYYY(s);
   return d||null;
 }
-function _fechaCorta(d){
+// Ojo: mas abajo hay otra _fechaCorta que recibe un ISO string. Esta recibe un
+// Date y por eso lleva otro nombre; con el mismo, la de abajo la pisaba y las
+// fechas salian como "Mon Jul 27 2026 00:00:00 GMT-0300".
+function _fechaDia(d){
   return d?(d.getDate()+' '+EERR_MESES[d.getMonth()].slice(0,3)+' '+d.getFullYear()):'-';
 }
 function toggleEntregable(clientId, idx){
@@ -18586,7 +18589,7 @@ function rutaHtml(c){
       +'<div style="width:12px;height:12px;border-radius:50%;background:'+col[x.estado]+';margin-bottom:9px"></div>'
       +'<div style="font-size:11.5px;line-height:1.35;color:'+txt[x.estado]+'">'+esc(x.l)+'</div>'
       +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'
-        +(x.fecha?_fechaCorta(x.fecha):'sin fecha')+'</div>'
+        +(x.fecha?_fechaDia(x.fecha):'sin fecha')+'</div>'
       // Se distingue lo que paso de lo que se estima: sin esa marca, una fecha
       // proyectada se lee como un hecho.
       +'<div style="font-size:10px;margin-top:1px;color:'
@@ -18608,13 +18611,11 @@ function rutaHtml(c){
 function compromisoHtml(c){
   var k=_compromiso(c);
   var head='<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
-    +'letter-spacing:0.07em;margin-bottom:12px">Contra lo que se vendio</div>';
+    +'letter-spacing:0.07em;margin-bottom:12px">Entregables vendidos</div>';
   var nota=function(txt,col){
     return '<div style="font-size:11.5px;color:'+(col||'var(--text3)')+';line-height:1.6;padding-bottom:4px">'
       +txt+'</div>';
   };
-  // Las dos faltas se avisan por separado: sin producto no hay nada que
-  // mostrar, pero sin contrato los entregables igual sirven.
   if(!k.p){
     return head+nota('Este cliente no tiene producto asignado. Elegilo y aca vas a ver los entregables que le vendiste.');
   }
@@ -18623,166 +18624,36 @@ function compromisoHtml(c){
       +(k.ver?'entregables':'presentacion')+' cargados. Se define en Configuracion de agencia &rarr; Productos.');
   }
 
-  var barra;
-  if(k.pctTiempo!==null){
-    // La barra de tiempo con lo entregado al lado: es lo que contesta la
-    // pregunta de un vistazo, antes de leer ningun numero.
-    var atrasado=(k.pctTiempo-k.pctEntrega>=20);
-    var col=atrasado?'var(--amberx)':'var(--green)';
-    barra='<div style="margin-bottom:14px">'
-      +'<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:6px">'
-        +'<span>'+_fechaCorta(k.ini)+'</span>'
-        +'<span style="color:var(--text2)">'+(k.restan>=0
-            ? ('quedan '+k.restan+' dia'+(k.restan===1?'':'s'))
-            : ('vencio hace '+Math.abs(k.restan)+' dia'+(Math.abs(k.restan)===1?'':'s')))+'</span>'
-        +'<span>'+_fechaCorta(k.fin)+'</span>'
-      +'</div>'
-      +'<div style="height:8px;background:var(--bg3);border-radius:99px;overflow:hidden">'
-        +'<div style="height:100%;width:'+k.pctTiempo+'%;background:'+col+';opacity:.55"></div>'
-      +'</div>'
-      +'<div style="font-size:11.5px;color:'+(atrasado?'var(--amberx)':'var(--text3)')+';margin-top:7px;line-height:1.5">'
-        +'Paso el '+k.pctTiempo+'% del plazo y marcaste el '+k.pctEntrega+'% de los entregables.'
-        +(atrasado?' El avance va mas lento que el reloj.':'')
-      +'</div>'
-    +'</div>';
-  }else{
-    // Sin contrato el bloque sigue sirviendo: se ve que se prometio y cuanto
-    // se cumplio. Lo unico que no se puede decir es si va en fecha.
-    barra='<div style="margin-bottom:14px">'
-      +'<div style="height:8px;background:var(--bg3);border-radius:99px;overflow:hidden">'
-        +'<div style="height:100%;width:'+k.pctEntrega+'%;background:var(--green);opacity:.55"></div>'
-      +'</div>'
-      +'<div style="font-size:11.5px;color:var(--text3);margin-top:7px;line-height:1.5">'
-        +'Marcaste el '+k.pctEntrega+'% de los entregables. '
-        +'<span style="color:var(--amberx)">Sin fechas de contrato no puedo decirte si vas en tiempo</span>, '
-        +'cargalas en Facturacion.'
-      +'</div>'
-    +'</div>';
-  }
-
   var an=(c.entregablesIA||{})[k.ver.id]||null;
   var conLlamadas=(c.fathomCalls||[]).filter(function(cl){return cl.summary||cl.transcript;}).length;
   var porAplicar=an?Object.keys(an.items).filter(function(i){
     return an.items[i].estado==='hecho' && k.hechos.indexOf(+i)<0;
   }).length:0;
 
-  var acciones='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
-    +'<div style="font-size:10px;color:var(--text3);font-weight:500;flex:1;min-width:0">'
-      +esc(k.p.nombre)+(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
-      +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
-    +'</div>'
-    +(porAplicar?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-      +'onclick="aplicarEntregablesIA('+c.id+')">Tildar los '+porAplicar+' que vio cumplidos</button>'):'')
-    +(conLlamadas?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-      +'onclick="revisarEntregables('+c.id+')">'+(an?'Volver a revisar':'Revisar contra las llamadas')+'</button>'):'')
-  +'</div>'
-  +'<div id="cp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
-    +(an?('Revisado contra '+an.n+' llamada'+(an.n===1?'':'s')+' el '+new Date(an.at).toLocaleDateString('es-AR'))
-       :(conLlamadas?('Hay '+conLlamadas+' llamada'+(conLlamadas===1?'':'s')+' con transcripcion sin cruzar contra esta lista.'):''))
-  +'</div>';
+  // El estado temporal lo cuenta la ruta de arriba. Aca solo el alcance: que se
+  // prometio, que se cumplio y de donde sale esa afirmacion.
+  var resumen=k.hechos.length+' de '+k.entregables.length+' cumplidos'
+    +(k.vencidos?(' &middot; <span style="color:var(--redx)">'+k.vencidos+' pasado'
+      +(k.vencidos===1?'':'s')+' de fecha</span>'):'');
 
-  // Sin plazos no hay linea de tiempo posible: se cae a la lista de siempre.
-  if(!k.conPlazo||k.diaHoy===null){
-    return head+barra+'<div style="background:var(--bg2);border:1px solid var(--border);'
-      +'border-radius:var(--radius-md);padding:10px 12px">'+acciones
-      +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:8px">'
-        +(!k.conPlazo
-          ? 'Ningun entregable tiene plazo cargado, asi que no puedo decirte si vas demorado. '
-            +'Se cargan en el producto con una barra al final: "Gameplan de 7 dias | 7".'
-          : 'Sin fecha de contrato ni llamadas no hay dia cero para contar los plazos.')
-      +'</div>'
-      +_cpLista(c,k,an)+'</div>';
-  }
-
-  // El eje es el plan vendido, no las llamadas: cada columna es un plazo
-  // prometido y la marca de hoy dice de que lado cae cada cosa.
-  var dias=[];
-  k.items.forEach(function(x){ if(x.dia!==null&&dias.indexOf(x.dia)<0) dias.push(x.dia); });
-  dias.sort(function(a,b){return a-b;});
-  var sinPlazo=k.items.filter(function(x){return x.dia===null;});
-  var col=function(d){
-    var ent=k.items.filter(function(x){return x.dia===d;});
-    var pasado=(d<=k.diaHoy);
-    var hayVencido=ent.some(function(x){return x.vencido;});
-    var borde=hayVencido?'var(--redx)':(ent.every(function(x){return x.hecho;})?'var(--green)':(pasado?'var(--amberx)':'var(--border2)'));
-    var f=ent[0]&&ent[0].fecha;
-    return '<div style="width:150px;flex:none">'
-      +'<div style="font-size:11.5px;color:'+(pasado?'var(--text)':'var(--text3)')+'">Dia '+d+'</div>'
-      +'<div style="font-size:10px;color:var(--text3);margin-bottom:8px">'+(f?_fechaCorta(f):'&nbsp;')+'</div>'
-      +'<div style="border-top:2px solid '+borde+';border-radius:0;padding-top:8px;display:flex;flex-direction:column;gap:6px">'
-      +ent.map(function(x){
-          var c2=x.hecho?'var(--green)':(x.vencido?'var(--redx)':'var(--text2)');
-          return '<span style="font-size:11px;line-height:1.4;color:'+c2+';'
-            +(x.hecho?'text-decoration:line-through':'')+'">'+esc(x.t)+'</span>';
-        }).join('')
-      +'</div></div>';
-  };
-  var marca='<div style="width:1px;flex:none;align-self:stretch;background:var(--accent);position:relative;margin:0 6px">'
-    +'<span style="position:absolute;top:-2px;left:-13px;font-size:9px;color:var(--accent);white-space:nowrap">hoy</span></div>';
-  var cols='';
-  var puesta=false;
-  dias.forEach(function(d){
-    if(!puesta&&d>k.diaHoy){ cols+=marca; puesta=true; }
-    cols+=col(d);
-  });
-  if(!puesta) cols+=marca;
-  if(sinPlazo.length){
-    cols+='<div style="width:150px;flex:none">'
-      +'<div style="font-size:11.5px;color:var(--text3)">Sin plazo</div>'
-      +'<div style="font-size:10px;color:var(--text3);margin-bottom:8px">'+sinPlazo.length+' entregables</div>'
-      +'<div style="border-top:2px dashed var(--border2);border-radius:0;padding-top:8px;display:flex;flex-direction:column;gap:6px">'
-      +sinPlazo.slice(0,4).map(function(x){
-          return '<span style="font-size:11px;line-height:1.4;color:'+(x.hecho?'var(--green)':'var(--text3)')+';'
-            +(x.hecho?'text-decoration:line-through':'')+'">'+esc(x.t)+'</span>';
-        }).join('')
-      +(sinPlazo.length>4?('<span style="font-size:11px;color:var(--text3)">y '+(sinPlazo.length-4)+' mas</span>'):'')
-      +'</div></div>';
-  }
-
-  var veredicto;
-  if(k.vencidos){
-    veredicto='<span style="color:var(--redx)">'+k.vencidos+' entregable'+(k.vencidos===1?'':'s')
-      +' pasado'+(k.vencidos===1?'':'s')+' de fecha.</span>'
-      +(k.porVencer?(' Otros '+k.porVencer+' vencen esta semana.'):'');
-  }else if(k.porVencer){
-    veredicto='<span style="color:var(--amberx)">Al dia, pero '+k.porVencer+' vencen en los proximos 7 dias.</span>';
-  }else{
-    veredicto='<span style="color:var(--green)">Al dia con todo lo que ya vencio.</span>';
-  }
-
-  // El lanzamiento arriba de todo: es la fecha contra la que se mide el resto,
-  // y en una cuenta regresiva se entiende sin leer los numeros de abajo.
-  var f=k.faltanLanz;
-  var estadoLanz=(k.vencidos?'var(--redx)':(f!==null&&f<=7?'var(--amberx)':'var(--green)'));
-  var pctLanz=Math.max(0,Math.min(100,Math.round((k.diaHoy/k.diaLanz)*100)));
-  var norte='<div style="background:var(--bg3);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:12px">'
-    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:9px">'
-      +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Lanzamiento</span>'
-      +'<span style="font-size:15px;color:var(--strong);font-weight:500">'+_fechaCorta(k.fechaLanz)+'</span>'
-      +'<span style="font-size:12px;color:'+estadoLanz+'">'
-        +(f===null?'':(f>0?('faltan '+f+' dia'+(f===1?'':'s'))
-          :(f===0?'es hoy':('paso hace '+Math.abs(f)+' dia'+(Math.abs(f)===1?'':'s')))))+'</span>'
-      +'<span style="flex:1"></span>'
-      +'<span style="font-size:11px;color:var(--text3)">dia '+k.diaHoy+' de '+k.diaLanz+'</span>'
-    +'</div>'
-    +'<div style="height:6px;background:var(--bg2);border-radius:99px;overflow:hidden">'
-      +'<div style="height:100%;width:'+pctLanz+'%;background:'+estadoLanz+';opacity:.6"></div>'
-    +'</div>'
-    +'<div style="font-size:11.5px;line-height:1.5;margin-top:8px;color:var(--text2)">'+veredicto+'</div>'
-  +'</div>';
-
-  return head+barra
+  return head
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">'
-      +acciones
-      +norte
-      +'<div style="font-size:11px;line-height:1.5;margin-bottom:12px;color:var(--text3)">'
-        +'Dia cero: '+(k.arranqueDe==='onboarding'?'la llamada de onboarding'
-            :k.arranqueDe==='firma'?'la firma del contrato, no hay llamada de onboarding cargada'
-            :'la primera llamada, no hay onboarding ni contrato')
-        +' &middot; '+_fechaCorta(k.arranque)+'</div>'
-      +'<div style="overflow-x:auto;padding-bottom:6px"><div style="display:flex;gap:10px;min-width:max-content;align-items:flex-start">'
-        +cols+'</div></div>'
-      +'<div style="height:1px;background:var(--border);margin:12px 0"></div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
+        +'<div style="font-size:10px;color:var(--text3);font-weight:500;flex:1;min-width:0">'
+          +esc(k.p.nombre)+(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
+          +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
+        +'</div>'
+        +(porAplicar?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'onclick="aplicarEntregablesIA('+c.id+')">Tildar los '+porAplicar+' que vio cumplidos</button>'):'')
+        +(conLlamadas?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'onclick="revisarEntregables('+c.id+')">'+(an?'Volver a revisar':'Revisar contra las llamadas')+'</button>'):'')
+      +'</div>'
+      +'<div id="cp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+        +resumen
+        +(an?(' &middot; revisado contra '+an.n+' llamada'+(an.n===1?'':'s')
+             +' el '+new Date(an.at).toLocaleDateString('es-AR'))
+           :(conLlamadas?(' &middot; '+conLlamadas+' llamada'+(conLlamadas===1?'':'s')+' sin cruzar contra esta lista'):''))
+      +'</div>'
       +_cpLista(c,k,an)
     +'</div>';
 }
