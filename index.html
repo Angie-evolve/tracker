@@ -16453,6 +16453,8 @@ function renderTab(){
                 style="flex:1;padding:6px 10px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--strong);font-family:var(--font);outline:none">
             </div>
           </div>
+          <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
+          ${preguntasHtml(c)}
         </div>
 
         </div>
@@ -18870,6 +18872,184 @@ function _horasTexto(min){
   var h=Math.floor(min/60), r=min%60;
   return h?(h+' h'+(r?(' '+r+'\u2032'):'')):(r+' min');
 }
+
+// ---- Preguntas sobre las llamadas ---------------------------------------
+// Se guardan en DB para que se puedan editar sin tocar el codigo, y sobre todo
+// para que la misma pregunta se haga igual en todos los clientes: asi las
+// respuestas se pueden comparar entre uno y otro.
+var PREG_DEFAULT=[
+  '¿Que se comprometio la agencia que todavia no esta entregado?',
+  '¿Que esta esperando el cliente de nosotros ahora mismo?',
+  '¿Ya corrio anuncios en Meta? ¿Con que resultado, y tuvo cuentas restringidas, rechazos o problemas con el pixel?',
+  '¿Se vendio algo fuera de los entregables del producto? Otro embudo, mas creativos, cualquier cosa acordada de palabra.',
+  '¿Que se definio sobre la configuracion de campañas y del embudo? Segmentacion geografica, presupuesto, dominio, cuentas publicitarias, accesos.',
+  '¿Que objeciones o dudas quedaron sin responder?',
+  '¿Que cambio respecto de lo que se hablo en la venta?',
+  '¿Hay señales de que el cliente esta incomodo o en riesgo?',
+  '¿Que datos o accesos nos faltan de su lado?'
+];
+function preguntas(){
+  if(!Array.isArray(DB.preguntas)||!DB.preguntas.length){
+    DB.preguntas=PREG_DEFAULT.slice();
+    save();
+  }
+  return DB.preguntas;
+}
+
+// El material que se le manda: resumen si existe, transcripcion si no. Mismo
+// criterio que el cruce de entregables, para no gastar contexto de mas.
+function _llamadasParaIA(c){
+  var total=0;
+  return (c.fathomCalls||[]).map(function(cl){
+    var cuerpo=cl.summary||cl.transcript||'';
+    if(!cuerpo) return null;
+    if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
+    if(total+cuerpo.length>_ENTREG_MAXTOTAL) return null;
+    total+=cuerpo.length;
+    return {titulo:(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')', texto:cuerpo};
+  }).filter(Boolean);
+}
+
+function _pregEstado(html, color){
+  var e=document.getElementById('pg-estado');
+  if(!e) return;
+  e.innerHTML=html||'';
+  e.style.color=color||'var(--text3)';
+}
+
+async function preguntarALlamadas(clientId, texto){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var q=String(texto!==undefined?texto:((document.getElementById('pg-input')||{}).value||'')).trim();
+  if(!q){ _pregEstado('Escribi una pregunta o toca una de las guardadas.','var(--amberx)'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _pregEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)'); return; }
+  var llamadas=_llamadasParaIA(c);
+  if(!llamadas.length){
+    _pregEstado('Este cliente no tiene transcripciones ni resumenes para leer.','var(--amberx)');
+    return;
+  }
+  var t0=Date.now();
+  _pregEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+llamadas.length+' llamadas...</span></span>','var(--text2)');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:
+        'Sos analista de una agencia. Abajo estan las llamadas con el cliente '+(c.name||'')+'. '
+        +'Contesta esta pregunta usando SOLO lo que se dijo en esas llamadas:\n\n'+q+'\n\n'
+        +'Reglas:\n'
+        +'- Castellano rioplatense, directo, sin preambulo.\n'
+        // La cita es lo que hace usable la respuesta: sin saber de donde sale
+        // cada afirmacion no se puede llevar a una conversacion con el cliente.
+        +'- Cada afirmacion tiene que decir de que llamada sale, entre parentesis.\n'
+        +'- Si algo no se hablo, deci "no aparece en las llamadas". No lo deduzcas ni lo inventes.\n'
+        +'- Si la respuesta son varias cosas, usa vinetas con "- ". Si es una sola, dos o tres oraciones.\n'
+        +'- Maximo 200 palabras.\n\n'
+        +'LLAMADAS:\n'+llamadas.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
+    });
+    var d=await r.json();
+    if(d.error){
+      console.error('Pregunta sobre llamadas:', d);
+      throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
+    }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+    if(!txt) throw new Error('La respuesta vino vacia');
+    c.respuestas=c.respuestas||[];
+    c.respuestas.unshift({q:q, r:txt, at:new Date().toISOString(), n:llamadas.length});
+    // Un tope: son texto y comparten el localStorage con todo lo demas.
+    if(c.respuestas.length>15) c.respuestas.length=15;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Respondido en '+Math.round((Date.now()-t0)/1000)+'s con '+llamadas.length+' llamadas');
+  }catch(e){
+    console.error('Pregunta sobre llamadas:', e);
+    _pregEstado('No pude responder: '+esc(e.message),'var(--redx)');
+  }
+}
+
+function borrarRespuesta(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.respuestas) return;
+  c.respuestas.splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
+function abrirPreguntasModal(){
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal">'
+      +'<div class="modal-title">Preguntas guardadas</div>'
+      +'<div class="modal-sub">Una por linea. Son las mismas para todos los clientes, '
+        +'asi las respuestas se pueden comparar entre uno y otro.</div>'
+      +'<textarea id="pg-lista" rows="10" style="width:100%;resize:vertical;padding:8px 10px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.6">'
+        +esc(preguntas().join('\n'))+'</textarea>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="guardarPreguntas()">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function guardarPreguntas(){
+  var e=document.getElementById('pg-lista');
+  if(!e) return;
+  var l=String(e.value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean);
+  DB.preguntas=l.length?l:PREG_DEFAULT.slice();
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast(l.length+' preguntas guardadas');
+}
+
+function preguntasHtml(c){
+  var conMaterial=(c.fathomCalls||[]).filter(function(cl){return cl.summary||cl.transcript;}).length;
+  var head='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">'
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em">Preguntarle a las llamadas</div>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'onclick="abrirPreguntasModal()">Editar preguntas</button>'
+  +'</div>';
+  if(!conMaterial){
+    return head+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Sin transcripciones ni resumenes no hay de donde sacar las respuestas. '
+      +'Cargalos en las llamadas de arriba.</div>';
+  }
+  var chips=preguntas().map(function(q,i){
+    return '<button onclick="preguntarALlamadas('+c.id+',PREG_TXT('+i+'))" '
+      +'style="text-align:left;font-size:11.5px;line-height:1.45;padding:6px 11px;border-radius:var(--radius);'
+      +'border:1px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer;'
+      +'font-family:var(--font)">'+esc(q)+'</button>';
+  }).join('');
+  var hist=(c.respuestas||[]).map(function(x,i){
+    return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);'
+      +'padding:10px 12px;margin-top:8px">'
+      +'<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px">'
+        +'<span style="flex:1;font-size:12px;color:var(--text);line-height:1.45">'+esc(x.q)+'</span>'
+        +'<span style="font-size:10px;color:var(--text3);white-space:nowrap">'
+          +new Date(x.at).toLocaleDateString('es-AR')+' &middot; '+x.n+' llamadas</span>'
+        +'<button onclick="borrarRespuesta('+c.id+','+i+')" aria-label="Borrar" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
+      +'</div>'
+      +'<div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(x.r)+'</div>'
+    +'</div>';
+  }).join('');
+  return head
+    +'<div style="display:flex;gap:8px;margin-bottom:9px">'
+      +'<input id="pg-input" placeholder="Preguntale lo que quieras sobre estas llamadas" '
+        +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();preguntarALlamadas('+c.id+');}" style="flex:1">'
+      +'<button class="btn btn-sm btn-primary" onclick="preguntarALlamadas('+c.id+')">Preguntar</button>'
+    +'</div>'
+    +'<div id="pg-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:9px"></div>'
+    +'<div style="display:flex;flex-direction:column;gap:5px">'+chips+'</div>'
+    +hist;
+}
+// Las preguntas pueden tener comillas y acentos: pasarlas por el onclick como
+// texto rompia el HTML. Se pasa el indice y se resuelve al hacer clic.
+function PREG_TXT(i){ return preguntas()[i]||''; }
 
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
