@@ -2936,7 +2936,8 @@ function _overviewMetricsHtml(_ovDonde){
     ? eerrAbonos()
     : recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
   var conLtv=activos.filter(function(cl){
-    return (cl.serviceType==='garantia'||!cl.serviceType) && (parseFloat(cl.contractValue)||0)>0;
+    return (cl.serviceType==='garantia'||cl.serviceType==='mixto'||!cl.serviceType)
+      && (parseFloat(cl.contractValue)||0)>0;
   });
   var ltv=conLtv.reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
   // En riesgo / para escalar: se leen de los cierres reales de GHL, no de un
@@ -3148,7 +3149,10 @@ function setClientServiceType(clientId, type){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   c.serviceType=type;
-  c.recurrente=(type==='recurrente');
+  // Mixto tambien recurre: el resto del tracker decide por esta bandera, no
+  // por el nombre del tipo, asi que con esto entra en MRR, en las alarmas de
+  // cobro y en la proyeccion sin tocar nada mas.
+  c.recurrente=(type==='recurrente'||type==='mixto');
   save();
   renderTab();
 }
@@ -8476,8 +8480,13 @@ function _rtEsfuerzo(c){
 // realidad el contrato dice cuanto paga y por cuanto tiempo.
 function rtMensual(c){
   var fee=parseFloat(c.monthlyFee)||0;
-  if(fee) return {monto:fee, origen:'abono'};
+  var mixto=(c.serviceType==='mixto');
+  // En un mixto los dos numeros conviven: el abono todos los meses y la
+  // implementacion prorrateada mientras dura. Devolver solo uno escondia el
+  // otro de la proyeccion.
+  if(fee&&!mixto) return {monto:fee, origen:'abono'};
   var valor=parseFloat(c.contractValue)||0;
+  if(mixto&&!valor) return {monto:fee, origen:'abono'};
   if(!valor){
     // Hay contrato vinculado pero no dice el precio. Es muy distinto de un
     // cliente sin datos: aca falta un numero que alguien tiene que leer del PDF.
@@ -8492,8 +8501,10 @@ function rtMensual(c){
     if(!isNaN(d1)&&!isNaN(d2)) dias=Math.round((d2-d1)/86400000);
   }
   var meses=dias?Math.max(1, Math.round(dias/30)):0;
-  if(!meses) return {monto:0, origen:'contrato-sin-plazo', valor:valor};
-  return {monto:valor/meses, origen:'contrato', valor:valor, meses:meses};
+  if(!meses) return mixto
+    ? {monto:fee, origen:'abono', valor:valor}
+    : {monto:0, origen:'contrato-sin-plazo', valor:valor};
+  return {monto:valor/meses+fee, origen:mixto?'mixto':'contrato', valor:valor, meses:meses, fee:fee};
 }
 
 function _rtFilas(){
@@ -16237,6 +16248,7 @@ function renderTab(){
           <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
             <button onclick="setClientServiceType(${c.id},'garantia')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${(c.serviceType||'garantia')==='garantia'?'background:rgba(29,158,117,0.15);border-color:var(--accent);color:var(--accent);font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Garantia</button>
             <button onclick="setClientServiceType(${c.id},'recurrente')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='recurrente'?'background:rgba(55,138,221,0.15);border-color:#378ADD;color:#378ADD;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Recurrente</button>
+            <button onclick="setClientServiceType(${c.id},'mixto')" style="font-size:11px;padding:4px 12px;border-radius:99px;cursor:pointer;font-family:var(--font);border:1px solid ${c.serviceType==='mixto'?'var(--amberx)':'var(--border2)'};background:transparent;color:${c.serviceType==='mixto'?'var(--amberx)':'var(--text3)'}">Implementacion + fee</button>
             <button onclick="setClientServiceType(${c.id},'one-time')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='one-time'?'background:rgba(186,117,23,0.15);border-color:#BA7517;color:#BA7517;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">One-time</button>
           </div>
           ${!verPlata()?`
@@ -16245,7 +16257,7 @@ function renderTab(){
           </div>`:`
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
             <div>
-              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Valor del contrato</div>
+              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.serviceType==='mixto'?'Fee de implementacion':'Valor del contrato'}</div>
               <div style="display:flex;gap:6px;align-items:center">
                 <span style="font-size:12px;color:var(--text2)">$</span>
                 <input type="number" value="${c.contractValue||''}" placeholder="0"
@@ -16272,9 +16284,9 @@ function renderTab(){
                 })()
               }</div>
             </div>`:''}
-            ${c.serviceType==='recurrente'?`
+            ${(c.serviceType==='recurrente'||c.serviceType==='mixto')?`
             <div>
-              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Monto mensual</div>
+              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.serviceType==='mixto'?'Fee mensual de soporte':'Monto mensual'}</div>
               <div style="display:flex;gap:6px;align-items:center">
                 <span style="font-size:12px;color:var(--text2)">$</span>
                 <input type="number" value="${c.monthlyFee||''}" placeholder="0"
