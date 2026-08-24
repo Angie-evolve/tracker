@@ -16527,11 +16527,18 @@ var _ncLlamadas=[];
 function _ncLlamadaAdd(){
   var url=(document.getElementById('nc-llamada-url')||{}).value||'';
   url=url.trim();
-  if(!url){ toast('Pega el link de la grabacion'); return; }
+  var ta=document.getElementById('nc-llamada-transcript');
+  var t=_llLimpiarTranscript(ta?ta.value:'');
+  // Alcanza con una de las dos: hay llamadas de las que solo queda el link, y
+  // otras de las que solo queda la transcripcion.
+  if(!url&&!t){ toast('Pega el link o la transcripcion'); return; }
+  if(t.length>_LLAMADA_MAX) t=t.slice(0,_LLAMADA_MAX);
   var tipo=(document.getElementById('nc-llamada-tipo')||{}).value||'Diagnostico';
   var fecha=(document.getElementById('nc-llamada-fecha')||{}).value||'';
-  _ncLlamadas.push({tipo:tipo, url:url, fecha:_llFechaDeInput(fecha)});
+  _ncLlamadas.push({tipo:tipo, url:url, fecha:_llFechaDeInput(fecha), transcript:t});
   document.getElementById('nc-llamada-url').value='';
+  if(ta) ta.value='';
+  _llContar('nc-llamada');
   _ncLlamadasRender();
 }
 function _ncLlamadaQuitar(i){ _ncLlamadas.splice(i,1); _ncLlamadasRender(); }
@@ -16539,11 +16546,17 @@ function _ncLlamadasRender(){
   var cont=document.getElementById('nc-llamadas-lista');
   if(!cont) return;
   cont.innerHTML=!_ncLlamadas.length?'':_ncLlamadas.map(function(l,i){
+    // Se marca si tiene transcripcion: es lo que decide si despues se puede
+    // resumir o no, y conviene verlo antes de crear al cliente.
+    var tr=l.transcript
+      ? '<span style="color:var(--accent)">con transcripcion</span>'
+      : '<span style="color:var(--text3)">sin transcripcion</span>';
     return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);padding:4px 0">'
       +'<span style="color:var(--text)">'+esc(l.tipo)+'</span>'
       +'<span style="color:var(--text3)">'+esc(l.fecha||'sin fecha')+'</span>'
       +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-        +'color:var(--text3)">'+esc(l.url)+'</span>'
+        +'color:var(--text3)">'+esc(l.url||'')+'</span>'
+      +tr
       +'<button onclick="_ncLlamadaQuitar('+i+')" aria-label="Quitar" style="border:0;background:none;'
         +'color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
     +'</div>';
@@ -16643,10 +16656,15 @@ function openNewClientModal(){
             }).join('')}</select>
             <input id="nc-llamada-fecha" type="date" style="width:150px;flex:none">
             <input id="nc-llamada-url" placeholder="Link de la grabacion" style="flex:1">
-            <button type="button" class="btn btn-sm" onclick="_ncLlamadaAdd()">Agregar</button>
+          </div>
+          <textarea id="nc-llamada-transcript" rows="3" oninput="_llContar('nc-llamada')" placeholder="Transcripcion (opcional). Pegala aca o subi el .txt / .vtt de Fathom" style="width:100%;margin-top:8px;resize:vertical;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.5"></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+            <input type="file" accept=".txt,.vtt,.srt,text/plain" onchange="_llArchivo(this,'nc-llamada')" style="font-size:11.5px;flex:1">
+            <span id="nc-llamada-cuenta" style="font-size:11px;color:var(--text3)"></span>
+            <button type="button" class="btn btn-sm" onclick="_ncLlamadaAdd()">Agregar llamada</button>
           </div>
           <div id="nc-llamadas-lista" style="margin-top:6px"></div>
-          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">Solo el link. La transcripcion y el resumen se cargan despues desde el perfil del cliente.</div>
+          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">El audio no se guarda, solo el link. Con transcripcion vas a poder resumirla con IA desde el perfil.</div>
         </div>
         ${_ncSubcuentaHtml()}
         <div class="modal-footer">
@@ -16694,7 +16712,7 @@ async function createClient(){
     return { id:'manual-'+(Date.now()+i), title:l.tipo+' - '+name,
       date:l.fecha||new Date().toLocaleDateString('es-AR'), duration:'',
       sentiment:'satisfecho', summary:'', actionItems:[], riskFlags:[],
-      initials:_ini, manual:true, tipo:l.tipo, url:l.url, transcript:'' };
+      initials:_ini, manual:true, tipo:l.tipo, url:l.url, transcript:l.transcript||'' };
   });
 
   // Opcional: crear tambien la subcuenta en GHL antes de dar de alta al cliente.
@@ -17350,21 +17368,25 @@ function _llLimpiarTranscript(t){
     .trim();
 }
 
-function _llArchivo(inputEl){
+// Los ids llevan prefijo porque estas dos funciones sirven al modal del perfil
+// ('ll') y al bloque del alta ('nc-llamada'), que conviven en pantalla.
+function _llArchivo(inputEl, pref){
+  pref=pref||'ll';
   var f=inputEl&&inputEl.files&&inputEl.files[0];
   if(!f) return;
   var fr=new FileReader();
   fr.onload=function(ev){
     var t=_llLimpiarTranscript(ev.target.result);
-    var ta=document.getElementById('ll-transcript');
-    if(ta){ ta.value=t; _llContar(); }
+    var ta=document.getElementById(pref+'-transcript');
+    if(ta){ ta.value=t; _llContar(pref); }
   };
   fr.readAsText(f);
 }
 
-function _llContar(){
-  var ta=document.getElementById('ll-transcript');
-  var av=document.getElementById('ll-cuenta');
+function _llContar(pref){
+  pref=pref||'ll';
+  var ta=document.getElementById(pref+'-transcript');
+  var av=document.getElementById(pref+'-cuenta');
   if(!ta||!av) return;
   var n=ta.value.length;
   av.textContent=n?(Math.round(n/1000)+' mil caracteres'+(n>_LLAMADA_MAX?' - se va a recortar al guardar':'')):'';
