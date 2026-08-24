@@ -18873,6 +18873,94 @@ function _horasTexto(min){
   return h?(h+' h'+(r?(' '+r+'\u2032'):'')):(r+' min');
 }
 
+function fathomCallsHTML(c){
+  const calls = c.fathomCalls||[];
+  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">Cargar llamada</button>';
+  if(!calls.length){
+    return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
+      +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen, o cargala a mano.</div>'
+      +btnAgregar
+      +'</div>';
+  }
+  const opps = (c.ghl&&c.ghl.opportunities)||[];
+  const lastCall = calls[0];
+  const pendingItems = calls.reduce(function(s,cl){return s+(cl.actionItems?cl.actionItems.length:0);},0);
+  const satisfied = calls.filter(function(cl){return cl.sentiment==='satisfecho';}).length;
+  const sentiment = satisfied/calls.length>=0.6?'Activo':'En riesgo';
+  const sentColor = sentiment==='Activo'?'#1D9E75':'#BA7517';
+  // Horas en llamada: el tiempo que la agencia le puso a este cliente. Ya
+  // estaba en cada llamada como texto y no lo sumaba nadie.
+  var minTotal=calls.reduce(function(s,cl){ return s+_durMin(cl.duration); },0);
+  var sinDur=calls.filter(function(cl){ return !_durMin(cl.duration); }).length;
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px">'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+calls.length+'</div><div style="font-size:10px;color:var(--text3)">Llamadas</div></div>'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:'+sentColor+'">'+sentiment+'</div><div style="font-size:10px;color:var(--text3)">Estado</div></div>'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+pendingItems+'</div><div style="font-size:10px;color:var(--text3)">Action items</div></div>'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center">'
+      +'<div style="font-size:18px;font-weight:500;color:'+(minTotal?'var(--text)':'var(--text3)')+'">'
+      +(minTotal?_horasTexto(minTotal):'sin datos')+'</div>'
+      +'<div style="font-size:10px;color:var(--text3)" title="'
+      +(minTotal?'':'La duracion sale sola del .vtt de Fathom, o se escribe al editar cada llamada')+'">'
+      +(minTotal?('Horas en llamada'+(sinDur?(' \u00b7 faltan '+sinDur):''))
+        :'Horas en llamada \u00b7 cargala al editar')+'</div></div>'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:14px;font-weight:500;color:var(--text)">'+(lastCall?lastCall.date:'--')+'</div><div style="font-size:10px;color:var(--text3)">Ultima llamada</div></div>'
+    +'</div>';
+  // Se dibujan todas y las que pasan de 3 arrancan ocultas. Mostrarlas es
+  // cambiar un display, no volver a construir la lista.
+  calls.forEach(function(cl, _i){
+    var bg = cl.sentiment==='satisfecho'?'rgba(29,158,117,0.15)':'rgba(186,117,23,0.15)';
+    var col = cl.sentiment==='satisfecho'?'var(--accent)':'var(--amberx)';
+    var label = cl.sentiment==='satisfecho'?'Satisfecho':'Atencion';
+    const linkedOpp = opps.find(function(o){return o.id===cl.linkedOppId;});
+    const isSqlLinked = linkedOpp && linkedOpp._sql;
+    html += '<div'+(_i>=3?' data-callx="1" style="display:none;':' style="')
+      +'background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:6px">'
+      +'<div style="display:flex;align-items:center;gap:10px">'
+      +'<div style="width:30px;height:30px;border-radius:50%;background:#E1F5EE;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#0F6E56">'+(cl.initials||'?')+'</div>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text)">'+cl.title+'</div>'
+      +'<div style="font-size:10px;color:var(--text3)">'+cl.date+' - '+cl.duration+'</div></div>'
+      +'<span style="font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;background:'+bg+';color:'+col+'">'+label+'</span>'
+      +(isSqlLinked?'<span class="pill pill-green" style="font-size:9px">SQL ✓</span>':'')
+      +'</div>'
+      +'</div>'
+      // Solo para las cargadas a mano: las de Fathom ya llegan resumidas y su
+      // grabacion se abre desde Fathom, no desde aca.
+      +(cl.manual?('<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +(cl.url?('<a href="'+esc(cl.url)+'" target="_blank" rel="noopener" '
+          +'style="font-size:11px;color:var(--accent);text-decoration:none">Ver grabacion</a>'):'')
+        +(cl.transcript
+          ?('<button class="btn btn-sm" onclick="resumirLlamada('+c.id+',\''+cl.id+'\')" '
+            +(cl._resumiendo?'disabled ':'')+'style="font-size:11px;padding:3px 9px">'
+            +(cl._resumiendo?'Resumiendo...':(cl.summary?'Volver a resumir':'Resumir con IA'))+'</button>')
+          :'<span style="font-size:11px;color:var(--text3)">Sin transcripcion</span>')
+        +'<span style="flex:1"></span>'
+        +'<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+',\''+cl.id+'\')" '
+          +'style="font-size:11px;padding:3px 9px">Editar</button>'
+        +'<button class="btn btn-sm" onclick="borrarLlamada('+c.id+',\''+cl.id+'\')" '
+          +'style="font-size:11px;padding:3px 9px;color:var(--text3)">Borrar</button>'
+      +'</div>'
+      +(cl.summary?('<div style="margin-top:8px;font-size:11.5px;color:var(--text2);line-height:1.55">'
+        +esc(cl.summary)+'</div>'):'')):'')
+      +'</div>';
+  });
+  if(calls.length>3){
+    html += '<button class="btn btn-sm" id="fc-ver" onclick="verTodasLasLlamadas(this)" '
+      +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(calls.length-3)+'</button>';
+  }
+  // Solo si hay algo que completar y de donde sacarlo.
+  var _recuperables=calls.filter(function(cl){
+    return !_durMin(cl.duration) && _llDuracionDeTranscript(cl.transcript||'');
+  }).length;
+  if(_recuperables){
+    html += '<button class="btn btn-sm" onclick="calcularDuraciones('+c.id+')" '
+      +'style="font-size:11px;padding:3px 9px;margin-top:2px;margin-left:6px">'
+      +'Calcular '+_recuperables+' duracion'+(_recuperables===1?'':'es')+'</button>';
+  }
+  html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
+  return html;
+}
+
 // ---- Preguntas sobre las llamadas ---------------------------------------
 // Se guardan en DB para que se puedan editar sin tocar el codigo, y sobre todo
 // para que la misma pregunta se haga igual en todos los clientes: asi las
