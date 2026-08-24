@@ -2403,7 +2403,20 @@ function toggleArchiveClient(clientId){
   }
 }
 function toggleShowArchived(){ S.showArchived=!S.showArchived; showOverview(); }
-function activeClients(){ return DB.clients.filter(function(c){return !c.archived;}); }
+// La agencia vive como un cliente mas para que las 89 vistas de tareas la
+// recorran sin cambios, pero no es un cliente: queda fuera de metricas,
+// facturacion y de todo lo que cuente cartera.
+function esAgencia(c){ return !!(c&&c.esAgencia); }
+function activeClients(){ return DB.clients.filter(function(c){return !c.archived && !esAgencia(c);}); }
+// La ficha de la agencia, creada la primera vez que se le asigna una tarea.
+function clienteAgencia(crear){
+  var c=(DB.clients||[]).find(esAgencia);
+  if(c||!crear) return c||null;
+  c={ id:Date.now(), esAgencia:true, name:'Evolve (interno)', altaAt:new Date().toISOString(), tasks:[] };
+  DB.clients.push(c);
+  save();
+  return c;
+}
 
 // ================= FILTRO DE CLIENTES DEL SIDEBAR =================
 // Por defecto los archivados quedan fuera: se ven solo si se prende la opcion.
@@ -2822,6 +2835,7 @@ function equipo(){
 function sidebarClients(){
   var f=cliFiltro();
   return DB.clients.filter(function(c){
+    if(esAgencia(c)) return false;
     if(c.archived && !f.archivados) return false;
     if(f.duenio==='mios' && !soyYo(c.owner)) return false;
     if(f.duenio==='otros' && (soyYo(c.owner)||!c.owner)) return false;
@@ -7768,7 +7782,15 @@ function ticketEditarModal(cid,tid){
     +'<textarea id="ted-text" style="'+inp+';min-height:64px;resize:vertical">'+esc(t.text||'')+'</textarea></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
     +'<div><div style="'+lbl+'">Cliente</div><select id="ted-cliente" style="'+inp+'">'
-    +DB.clients.map(function(x){return '<option value="'+x.id+'"'+(x.id===cid?' selected':'')+'>'+esc(x.name)+'</option>';}).join('')
+    // La agencia primero: mover una tarea de un cliente a interna es algo que
+    // pasa, y buscarla entre doce nombres alfabeticos no ayudaba.
+    +(function(){
+      var ag=clienteAgencia(false);
+      var resto=DB.clients.filter(function(x){return !esAgencia(x);});
+      var op=function(x,etq){ return '<option value="'+x.id+'"'+(x.id===cid?' selected':'')+'>'+esc(etq||x.name)+'</option>'; };
+      return (ag?op(ag,'Evolve \u2014 tarea interna'):'')
+        +resto.map(function(x){ return op(x); }).join('');
+    })()
     +'</select></div>'
     +'<div><div style="'+lbl+'">Responsable</div>'+_tedRespCampo(t)+'</div>'
     +'</div>'
@@ -11814,6 +11836,8 @@ function rvEsperandoAprobacion(){
 // en dos paneles distintos con el mismo titulo hacia que los numeros no cerraran.
 function tareasEsperandoAprobacion(){
   var out=[];
+  // Incluye la agencia: una tarea interna esperando tu OK es tan pendiente
+  // como una de cliente.
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
     (c.tasks||[]).forEach(function(t){
@@ -27740,6 +27764,9 @@ function openNewTicketModal(){
     +'<div style="display:flex;flex-direction:column;gap:10px">'
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Destino</div>'
     +'<select id="nt-client" class="btn btn-sm" style="width:100%;text-align:left;padding:8px 11px">'
+    // Primera y separada: una tarea interna no es "un cliente mas", y ponerla
+    // en la lista alfabetica la escondia entre doce nombres.
+    +'<option value="agencia">Evolve &mdash; tarea interna, sin cliente</option>'
     +'<optgroup label="Grupos (crea la tarea en cada cliente)">'
       +'<option value="grp:live">Todos con campana activa ('+activeClients().filter(function(c){ var a=adsDot(c); return a&&a.live; }).length+')</option>'
       +'<option value="grp:noarch">Todos los activos ('+activeClients().length+')</option>'
@@ -27770,7 +27797,9 @@ function _ntTargets(){
   var v=String((document.getElementById('nt-client')||{}).value||'');
   // Todos de verdad: tambien los archivados. Sirve para tareas de mantenimiento
   // sobre datos historicos, donde el archivado importa igual.
-  if(v==='grp:todos') return (DB.clients||[]).slice();
+  if(v==='agencia'){ var a=clienteAgencia(true); return a?[a]:[]; }
+  // Los grupos nunca incluyen a la agencia: "todos los clientes" son clientes.
+  if(v==='grp:todos') return (DB.clients||[]).filter(function(c){return !esAgencia(c);});
   if(v==='grp:noarch') return activeClients();
   if(v==='grp:live') return activeClients().filter(function(c){ var a=adsDot(c); return a&&a.live; });
   var c=DB.clients.find(function(x){return x.id===+v;});
