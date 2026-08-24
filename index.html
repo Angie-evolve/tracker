@@ -17138,6 +17138,15 @@ function _ncSubcuentaHtml(){
     +'<div id="nc-ghl-campos" style="display:none;margin-top:12px">'
       +'<div class="form-row"><label class="form-label">Telefono</label>'
         +'<input id="nc-phone" placeholder="opcional"></div>'
+      +'<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin-top:4px">'
+        +'<input type="checkbox" id="nc-ghl-invitar" style="margin-top:2px" checked>'
+        +'<span>'
+          +'<span style="font-size:13px;color:var(--text)">Invitar al equipo del cliente</span>'
+          +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.5">'
+          +'Los de Contactos que tengan mail reciben la invitacion a su subcuenta. '
+          +'Los que no tengan mail se saltean.</span>'
+        +'</span>'
+      +'</label>'
       // El email ya se pide arriba: repetirlo aca obligaba a escribirlo dos
       // veces y dejaba abierta la posibilidad de que no coincidieran.
       +'<div id="nc-ghl-estado" style="font-size:12px;color:var(--text3);margin-top:8px;line-height:1.5"></div>'
@@ -17153,6 +17162,38 @@ function _ncToggleGhl(){
 }
 
 // Crea la subcuenta en GHL y devuelve {id,name} o lanza el error de la API.
+// Invita al equipo del cliente como usuarios de su subcuenta. Es un endpoint
+// distinto al de crear la location, asi que el proxy de agencia necesita la
+// accion 'create_user'; si no la tiene, se avisa y el cliente se crea igual.
+async function invitarUsuariosGHL(locationId, gente){
+  var res={ok:0, fallaron:[], sinSoporte:false};
+  for(var i=0;i<gente.length;i++){
+    var p=gente[i];
+    var mail=_eqMail(p), nom=_eqNombre(p)||mail.split('@')[0];
+    if(!mail) continue;
+    var partes=nom.split(/\s+/);
+    try{
+      var r=await (await fetch(_agUrl('create_user',{
+        locationId:locationId,
+        email:mail,
+        firstName:partes[0]||nom,
+        lastName:partes.slice(1).join(' ')||'',
+        type:'account',
+        role:'user'
+      }))).json();
+      if(r&&r.ok) res.ok++;
+      else{
+        var msg=String((r&&r.error)||'error');
+        // El proxy viejo no conoce la accion: no tiene sentido intentar con
+        // los demas, van a fallar todos igual.
+        if(/accion|action|unknown|no soportad/i.test(msg)){ res.sinSoporte=true; break; }
+        res.fallaron.push(mail+': '+msg);
+      }
+    }catch(e){ res.fallaron.push(mail+': '+e.message); }
+  }
+  return res;
+}
+
 async function crearSubcuentaGHL(nombre, email, phone){
   var a=cfgAg();
   var extra={name:nombre};
@@ -17426,6 +17467,24 @@ async function createClient(){
       if(_est){
         _est.textContent=(_r.duplicado?_r.aviso+' ':'')+'Subcuenta lista: '+(ghlLoc.id||'');
         _est.style.color='var(--accent)';
+      }
+      var _inv=document.getElementById('nc-ghl-invitar');
+      var _conMail=equipo.filter(function(p){ return _eqMail(p); });
+      if(_inv&&_inv.checked&&ghlLoc.id&&_conMail.length){
+        if(_est){ _est.textContent='Invitando a '+_conMail.length+' persona'+(_conMail.length===1?'':'s')+'...'; _est.style.color='var(--text3)'; }
+        var _ri=await invitarUsuariosGHL(ghlLoc.id, _conMail);
+        if(_est){
+          if(_ri.sinSoporte){
+            _est.textContent='Subcuenta lista, pero tu proxy de agencia no tiene la accion create_user. '
+              +'El cliente se crea igual; las invitaciones hay que mandarlas desde GHL.';
+            _est.style.color='var(--amberx)';
+          }else{
+            _est.textContent='Subcuenta lista &middot; '+_ri.ok+' invitacion'+(_ri.ok===1?'':'es')+' enviada'+(_ri.ok===1?'':'s')
+              +(_ri.fallaron.length?(' &middot; fallaron '+_ri.fallaron.length):'');
+            _est.style.color=_ri.fallaron.length?'var(--amberx)':'var(--accent)';
+            if(_ri.fallaron.length) console.warn('Invitaciones GHL que fallaron:', _ri.fallaron);
+          }
+        }
       }
     }catch(e){
       if(_est){ _est.textContent='No se pudo crear en GHL: '+e.message+'. El cliente no se dio de alta.'; _est.style.color='var(--redx)'; }
