@@ -16521,6 +16521,35 @@ function _ncTipoCambio(){
   if(foco&&foco.focus) foco.focus();
 }
 
+// Llamadas cargadas durante el alta. Normalmente es la de diagnostico, que
+// ocurre antes de que el cliente exista en el tracker.
+var _ncLlamadas=[];
+function _ncLlamadaAdd(){
+  var url=(document.getElementById('nc-llamada-url')||{}).value||'';
+  url=url.trim();
+  if(!url){ toast('Pega el link de la grabacion'); return; }
+  var tipo=(document.getElementById('nc-llamada-tipo')||{}).value||'Diagnostico';
+  var fecha=(document.getElementById('nc-llamada-fecha')||{}).value||'';
+  _ncLlamadas.push({tipo:tipo, url:url, fecha:_llFechaDeInput(fecha)});
+  document.getElementById('nc-llamada-url').value='';
+  _ncLlamadasRender();
+}
+function _ncLlamadaQuitar(i){ _ncLlamadas.splice(i,1); _ncLlamadasRender(); }
+function _ncLlamadasRender(){
+  var cont=document.getElementById('nc-llamadas-lista');
+  if(!cont) return;
+  cont.innerHTML=!_ncLlamadas.length?'':_ncLlamadas.map(function(l,i){
+    return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);padding:4px 0">'
+      +'<span style="color:var(--text)">'+esc(l.tipo)+'</span>'
+      +'<span style="color:var(--text3)">'+esc(l.fecha||'sin fecha')+'</span>'
+      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+        +'color:var(--text3)">'+esc(l.url)+'</span>'
+      +'<button onclick="_ncLlamadaQuitar('+i+')" aria-label="Quitar" style="border:0;background:none;'
+        +'color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
+    +'</div>';
+  }).join('');
+}
+
 // Modals
 // Bloque opcional del alta de cliente: crear tambien la subcuenta en GHL.
 // Solo aparece si la configuracion de agencia esta completa.
@@ -16574,6 +16603,7 @@ async function crearSubcuentaGHL(nombre, email, phone){
 
 function openNewClientModal(){
   _ncEquipo=[];
+  _ncLlamadas=[];
   document.getElementById('modal-root').innerHTML=`
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -16604,6 +16634,19 @@ function openNewClientModal(){
             <button type="button" class="btn btn-sm" onclick="_ncEquipoAdd()">Agregar</button>
           </div>
           <div id="nc-equipo-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;align-items:center"></div>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Llamadas grabadas</label>
+          <div style="display:flex;gap:8px">
+            <select id="nc-llamada-tipo" style="width:140px;flex:none">${LLAMADA_TIPOS.map(function(t){
+              return '<option>'+esc(t)+'</option>';
+            }).join('')}</select>
+            <input id="nc-llamada-fecha" type="date" style="width:150px;flex:none">
+            <input id="nc-llamada-url" placeholder="Link de la grabacion" style="flex:1">
+            <button type="button" class="btn btn-sm" onclick="_ncLlamadaAdd()">Agregar</button>
+          </div>
+          <div id="nc-llamadas-lista" style="margin-top:6px"></div>
+          <div style="font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.5">Solo el link. La transcripcion y el resumen se cargan despues desde el perfil del cliente.</div>
         </div>
         ${_ncSubcuentaHtml()}
         <div class="modal-footer">
@@ -16644,6 +16687,15 @@ async function createClient(){
   var _pend=document.getElementById('nc-equipo-input');
   if(_pend&&_pend.value.trim()) _ncEquipoAdd();
   const equipo=_ncEquipo.slice();
+  // Las llamadas del alta entran al mismo array que las de Fathom, con la misma
+  // forma, para que cuenten en hitos, bitacora y costo por llamada.
+  var _ini=(name||'?').split(' ').map(function(w){return w[0];}).join('').substring(0,2).toUpperCase();
+  const llamadas=_ncLlamadas.map(function(l,i){
+    return { id:'manual-'+(Date.now()+i), title:l.tipo+' - '+name,
+      date:l.fecha||new Date().toLocaleDateString('es-AR'), duration:'',
+      sentiment:'satisfecho', summary:'', actionItems:[], riskFlags:[],
+      initials:_ini, manual:true, tipo:l.tipo, url:l.url, transcript:'' };
+  });
 
   // Opcional: crear tambien la subcuenta en GHL antes de dar de alta al cliente.
   // Si falla, no se crea nada: es preferible a dejar un cliente huerfano en el tracker.
@@ -16676,6 +16728,7 @@ async function createClient(){
     // `contacto` queda vacio si el cliente es la persona: el dato ya esta en
     // `name` y duplicarlo hace que despues no se sepa cual es el bueno.
     esEmpresa, producto, contacto:(esEmpresa?contacto:''), email, equipo,
+    fathomCalls: llamadas,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
     color:ci,health:{score:null,label:'Sin datos',color:'gray'},
     monthlyLeads:0,monthlyBudget:0,avgCPL:0,conversionLines:[],
@@ -17263,12 +17316,189 @@ function removeMilestone(clientId, idx){
 }
 
 // Fathom Integration via Claude MCP
+// ---- Llamadas cargadas a mano -------------------------------------------
+// Fathom sincroniza solo lo que cae dentro de sus palabras clave. Las que
+// quedan afuera (o las de antes de dar de alta al cliente) se cargan aca y
+// entran al mismo array, asi cuentan para hitos, costo por llamada y bitacora.
+
+// El audio no se guarda: no entra en localStorage. Se guarda el link a la
+// grabacion y, si la hay, la transcripcion en texto, que es lo unico que la
+// API puede leer (el link de Fathom pide sesion).
+var LLAMADA_TIPOS=['Diagnostico','Venta','Onboarding','Seguimiento','Otra'];
+var _LLAMADA_MAX=60000; // ~1h de transcripcion; mas que esto llena el storage
+
+// Convierte DD/MM/YYYY <-> YYYY-MM-DD para el input date sin perder el
+// formato que ya usan las llamadas sincronizadas.
+function _llFechaAInput(s){
+  var m=String(s||'').match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if(!m) return '';
+  return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+}
+function _llFechaDeInput(s){
+  var m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m?(m[3]+'/'+m[2]+'/'+m[1]):'';
+}
+
+// Los .vtt y .srt que exporta Fathom traen numeracion y timecodes que no
+// aportan nada al resumen y ocupan la mitad del archivo.
+function _llLimpiarTranscript(t){
+  return String(t||'')
+    .replace(/^WEBVTT.*$/gm,'')
+    .replace(/^\d+\s*$/gm,'')
+    .replace(/^\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->.*$/gm,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
+function _llArchivo(inputEl){
+  var f=inputEl&&inputEl.files&&inputEl.files[0];
+  if(!f) return;
+  var fr=new FileReader();
+  fr.onload=function(ev){
+    var t=_llLimpiarTranscript(ev.target.result);
+    var ta=document.getElementById('ll-transcript');
+    if(ta){ ta.value=t; _llContar(); }
+  };
+  fr.readAsText(f);
+}
+
+function _llContar(){
+  var ta=document.getElementById('ll-transcript');
+  var av=document.getElementById('ll-cuenta');
+  if(!ta||!av) return;
+  var n=ta.value.length;
+  av.textContent=n?(Math.round(n/1000)+' mil caracteres'+(n>_LLAMADA_MAX?' - se va a recortar al guardar':'')):'';
+  av.style.color=n>_LLAMADA_MAX?'var(--amberx)':'var(--text3)';
+}
+
+function abrirLlamadaModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var hoy=new Date().toISOString().split('T')[0];
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal">'
+      +'<div class="modal-title">Cargar llamada grabada</div>'
+      +'<div class="modal-sub">'+esc(c.name)+'. Se guarda el link a la grabacion, no el audio.</div>'
+      +'<div class="form-3col">'
+        +'<div class="form-row"><label class="form-label">Tipo</label><select id="ll-tipo">'
+          +LLAMADA_TIPOS.map(function(t){return '<option>'+esc(t)+'</option>';}).join('')
+        +'</select></div>'
+        +'<div class="form-row"><label class="form-label">Fecha</label><input id="ll-fecha" type="date" value="'+hoy+'"></div>'
+        +'<div class="form-row"><label class="form-label">Duracion</label><input id="ll-dur" placeholder="Ej: 42 min"></div>'
+      +'</div>'
+      +'<div class="form-row"><label class="form-label">Link de la grabacion</label>'
+        +'<input id="ll-url" placeholder="https://fathom.video/... o Drive, Zoom" autofocus></div>'
+      +'<div class="form-row"><label class="form-label">Transcripcion</label>'
+        +'<textarea id="ll-transcript" rows="5" oninput="_llContar()" placeholder="Pegala aca, o subi el .txt / .vtt que exporta Fathom" '
+        +'style="width:100%;resize:vertical;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+        +'background:var(--bg3);color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.5"></textarea>'
+        +'<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+          +'<input type="file" accept=".txt,.vtt,.srt,text/plain" onchange="_llArchivo(this)" style="font-size:11.5px;flex:1">'
+          +'<span id="ll-cuenta" style="font-size:11px;color:var(--text3)"></span>'
+        +'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin-top:6px;line-height:1.5">'
+          +'Sin transcripcion la llamada se guarda igual, pero la IA no la puede resumir: '
+          +'el link necesita tu sesion para abrirse.</div>'
+      +'</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" id="ll-btn" onclick="guardarLlamada('+clientId+')">Guardar llamada</button>'
+      +'</div>'
+    +'</div></div>';
+}
+
+function guardarLlamada(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var v=function(id){ var e=document.getElementById(id); return e?String(e.value||'').trim():''; };
+  var url=v('ll-url'), tipo=v('ll-tipo'), fecha=_llFechaDeInput(v('ll-fecha'));
+  if(!url&&!v('ll-transcript')){
+    toast('Pega el link o la transcripcion');
+    return;
+  }
+  var t=_llLimpiarTranscript(v('ll-transcript'));
+  if(t.length>_LLAMADA_MAX) t=t.slice(0,_LLAMADA_MAX);
+  c.fathomCalls=c.fathomCalls||[];
+  c.fathomCalls.unshift({
+    id:'manual-'+Date.now(),
+    title:tipo+' - '+c.name,
+    date:fecha||new Date().toLocaleDateString('es-AR'),
+    duration:v('ll-dur'),
+    // Sin resumen todavia no hay como saber como fue: neutro hasta que se
+    // resuma, para no ensuciar el indicador de estado del cliente.
+    sentiment:'satisfecho',
+    summary:'', actionItems:[], riskFlags:[],
+    initials:(c.name||'?').split(' ').map(function(w){return w[0];}).join('').substring(0,2).toUpperCase(),
+    _cid:c.id, manual:true, tipo:tipo, url:url, transcript:t
+  });
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast(t?'Llamada guardada. Ya podes resumirla':'Llamada guardada');
+}
+
+function borrarLlamada(clientId, callId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!confirm('Borrar esta llamada?')) return;
+  c.fathomCalls=(c.fathomCalls||[]).filter(function(cl){return cl.id!==callId;});
+  save(); if(typeof renderTab==='function') renderTab();
+}
+
+// Resume la transcripcion y llena los mismos campos que trae Fathom, para que
+// una llamada cargada a mano se comporte igual que una sincronizada.
+async function resumirLlamada(clientId, callId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cl=(c.fathomCalls||[]).find(function(x){return x.id===callId;});
+  if(!cl) return;
+  if(!cl.transcript){ toast('Esta llamada no tiene transcripcion','red'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ openAnthropicKeyModal(); return; }
+  cl._resumiendo=true; if(typeof renderTab==='function') renderTab();
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:
+        'Sos analista de una agencia. Esta es la transcripcion de una llamada de tipo "'+(cl.tipo||'reunion')
+        +'" con el cliente '+(c.name||'')+'. Devolve SOLO un JSON, sin markdown ni explicaciones, con esta forma:\n'
+        +'{"summary":"3 a 5 oraciones en castellano rioplatense sobre lo que se hablo y que se definio",'
+        +'"actionItems":["compromisos concretos, cortos y en imperativo"],'
+        +'"riskFlags":["senales de riesgo, molestia o cosas trabadas; array vacio si no hay"],'
+        +'"sentiment":"satisfecho" o "atencion"}\n\nTranscripcion:\n'+cl.transcript}]})
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||'La API devolvio un error');
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini) throw new Error('No pude leer la respuesta');
+    var o=JSON.parse(txt.slice(ini,fin+1));
+    cl.summary=o.summary||'';
+    cl.actionItems=Array.isArray(o.actionItems)?o.actionItems:[];
+    cl.riskFlags=Array.isArray(o.riskFlags)?o.riskFlags:[];
+    if(o.sentiment) cl.sentiment=o.sentiment;
+    cl.resumenAt=new Date().toISOString();
+    // El hito de la linea de tiempo se arma con el resumen, asi que recien
+    // ahora tiene sentido crearlo.
+    if(typeof _fathomUpsertMilestone==='function'){ _fathomUpsertMilestone(c,cl); _fathomSortMilestones(c); }
+    toast('Llamada resumida');
+  }catch(e){
+    toast('No pude resumir: '+e.message,'red');
+  }
+  cl._resumiendo=false;
+  save(); if(typeof renderTab==='function') renderTab();
+}
+
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
+  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">'
+    +'Cargar llamada</button>';
   if(!calls.length){
     return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
       +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
-      +'<div style="font-size:11px;color:var(--text3)">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen.</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen, o cargala a mano.</div>'
+      +btnAgregar
       +'</div>';
   }
   const opps = (c.ghl&&c.ghl.opportunities)||[];
@@ -17304,9 +17534,26 @@ function fathomCallsHTML(c){
       +'<option value="">Sin vincular</option>'
       +opps.map(function(o){return '<option value="'+o.id+'" '+(cl.linkedOppId===o.id?'selected':'')+'>'+esc(o.contactName||o.name||'Lead')+(o._sql?' (SQL)':'')+'</option>';}).join('')
       +'</select></div>'
+      // Solo para las cargadas a mano: las de Fathom ya llegan resumidas y su
+      // grabacion se abre desde Fathom, no desde aca.
+      +(cl.manual?('<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +(cl.url?('<a href="'+esc(cl.url)+'" target="_blank" rel="noopener" '
+          +'style="font-size:11px;color:var(--accent);text-decoration:none">Ver grabacion</a>'):'')
+        +(cl.transcript
+          ?('<button class="btn btn-sm" onclick="resumirLlamada('+c.id+',\''+cl.id+'\')" '
+            +(cl._resumiendo?'disabled ':'')+'style="font-size:11px;padding:3px 9px">'
+            +(cl._resumiendo?'Resumiendo...':(cl.summary?'Volver a resumir':'Resumir con IA'))+'</button>')
+          :'<span style="font-size:11px;color:var(--text3)">Sin transcripcion</span>')
+        +'<span style="flex:1"></span>'
+        +'<button class="btn btn-sm" onclick="borrarLlamada('+c.id+',\''+cl.id+'\')" '
+          +'style="font-size:11px;padding:3px 9px;color:var(--text3)">Borrar</button>'
+      +'</div>'
+      +(cl.summary?('<div style="margin-top:8px;font-size:11.5px;color:var(--text2);line-height:1.55">'
+        +esc(cl.summary)+'</div>'):'')):'')
       +'</div>';
   });
   if(calls.length>3) html += '<div style="font-size:11px;color:var(--text3);margin-top:4px">'+(calls.length-3)+' llamadas mas (vinculalas desde el JSON o pedime que muestre todas)</div>';
+  html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
   return html;
 }
 
