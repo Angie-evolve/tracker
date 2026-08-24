@@ -18877,19 +18877,34 @@ function _horasTexto(min){
 // Se guardan en DB para que se puedan editar sin tocar el codigo, y sobre todo
 // para que la misma pregunta se haga igual en todos los clientes: asi las
 // respuestas se pueden comparar entre uno y otro.
+// Cada pregunta tiene una etiqueta corta y el texto largo, separados por barra.
+// La etiqueta es lo que se ve; el texto largo es lo que se le manda a la IA.
+// Mismo formato de barra que usan los entregables con su plazo.
 var PREG_DEFAULT=[
-  '¿Que se comprometio la agencia que todavia no esta entregado?',
-  '¿Que esta esperando el cliente de nosotros ahora mismo?',
-  '¿Ya corrio anuncios en Meta? ¿Con que resultado, y tuvo cuentas restringidas, rechazos o problemas con el pixel?',
-  '¿Se vendio algo fuera de los entregables del producto? Otro embudo, mas creativos, cualquier cosa acordada de palabra.',
-  '¿Que se definio sobre la configuracion de campañas y del embudo? Segmentacion geografica, presupuesto, dominio, cuentas publicitarias, accesos.',
-  '¿Que competidores o alternativas menciono? Por nombre, y que dijo de cada uno.',
-  '¿Quien va a grabar los videos? Si se definio quien pone la cara, si tiene experiencia frente a camara, y cuando puede grabar.',
-  '¿Que objeciones o dudas quedaron sin responder?',
-  '¿Que cambio respecto de lo que se hablo en la venta?',
-  '¿Hay señales de que el cliente esta incomodo o en riesgo?',
-  '¿Que datos o accesos nos faltan de su lado?'
+  'Compromisos pendientes | ¿Que se comprometio la agencia que todavia no esta entregado?',
+  'Que espera el cliente | ¿Que esta esperando el cliente de nosotros ahora mismo?',
+  'Meta previo | ¿Ya corrio anuncios en Meta? ¿Con que resultado, y tuvo cuentas restringidas, rechazos o problemas con el pixel?',
+  'Fuera de alcance | ¿Se vendio algo fuera de los entregables del producto? Otro embudo, mas creativos, cualquier cosa acordada de palabra.',
+  'Tipo de embudo | ¿El embudo es a llamada agendada, a formulario, a registro o a otra cosa? ¿Se definio que pasa despues de que el lead deja los datos: quien lo contacta, en cuanto tiempo y por que canal?',
+  'Config de campañas | ¿Que se definio sobre la configuracion de campañas y del embudo? Segmentacion geografica, presupuesto, dominio, cuentas publicitarias, accesos.',
+  'Competidores | ¿Que competidores o alternativas menciono? Por nombre, y que dijo de cada uno.',
+  'Quien graba | ¿Quien va a grabar los videos? Si se definio quien pone la cara, si tiene experiencia frente a camara, y cuando puede grabar.',
+  'Objeciones abiertas | ¿Que objeciones o dudas quedaron sin responder?',
+  'Cambios desde la venta | ¿Que cambio respecto de lo que se hablo en la venta?',
+  'Señales de riesgo | ¿Hay señales de que el cliente esta incomodo o en riesgo?',
+  'Accesos que faltan | ¿Que datos o accesos nos faltan de su lado?'
 ];
+function _pgTexto(q){
+  var s=String(q||''); var i=s.indexOf('|');
+  return (i>=0?s.slice(i+1):s).trim();
+}
+function _pgEtiqueta(q){
+  var s=String(q||''); var i=s.indexOf('|');
+  if(i>=0) return s.slice(0,i).trim();
+  // Sin etiqueta se arma una con las primeras palabras, sin los signos.
+  var t=s.replace(/^[¿¡]+/,'').split(/\s+/).slice(0,4).join(' ').replace(/[?¿.,]+$/,'');
+  return t||s;
+}
 function preguntas(){
   if(!Array.isArray(DB.preguntas)||!DB.preguntas.length){
     DB.preguntas=PREG_DEFAULT.slice();
@@ -18901,12 +18916,22 @@ function preguntas(){
   // Se lleva registro de las que ya se ofrecieron, asi una que borraste no
   // vuelve a aparecer en la proxima actualizacion.
   if(!Array.isArray(DB.preguntasVistas)) DB.preguntasVistas=DB.preguntas.slice();
-  var nuevas=PREG_DEFAULT.filter(function(q){ return DB.preguntasVistas.indexOf(q)<0; });
+  // Se compara por el texto de la pregunta y no por el string entero: al
+  // agregarle etiqueta a una que ya existia, seria "nueva" y se duplicaria.
+  var vistas={};
+  DB.preguntasVistas.forEach(function(q){ vistas[_pgTexto(q)]=1; });
+  // Las que ya tenias sin etiqueta se actualizan a la version etiquetada.
+  DB.preguntas=DB.preguntas.map(function(q){
+    if(String(q).indexOf('|')>=0) return q;
+    var d=PREG_DEFAULT.filter(function(x){ return _pgTexto(x)===_pgTexto(q); })[0];
+    return d||q;
+  });
+  var nuevas=PREG_DEFAULT.filter(function(q){ return !vistas[_pgTexto(q)]; });
   if(nuevas.length){
     DB.preguntas=DB.preguntas.concat(nuevas);
     DB.preguntasVistas=DB.preguntasVistas.concat(nuevas);
-    save();
   }
+  save();
   return DB.preguntas;
 }
 
@@ -18942,8 +18967,10 @@ function _pregEstado(html, color){
 async function preguntarALlamadas(clientId, texto){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var q=String(texto!==undefined?texto:((document.getElementById('pg-input')||{}).value||'')).trim();
-  if(!q){ _pregEstado('Escribi una pregunta o toca una de las guardadas.','var(--amberx)'); return; }
+  var crudo=String(texto!==undefined?texto:((document.getElementById('pg-input')||{}).value||'')).trim();
+  if(!crudo){ _pregEstado('Escribi una pregunta o toca una de las guardadas.','var(--amberx)'); return; }
+  // A la IA le va el texto largo; en la tarjeta se guarda la etiqueta corta.
+  var q=_pgTexto(crudo), etiqueta=_pgEtiqueta(crudo);
   var apiKey=localStorage.getItem('evold-anthropic-key');
   if(!apiKey){ _pregEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)'); return; }
   var mat=_llamadasParaIA(c);
@@ -18984,7 +19011,7 @@ async function preguntarALlamadas(clientId, texto){
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
     if(!txt) throw new Error('La respuesta vino vacia');
     c.respuestas=c.respuestas||[];
-    c.respuestas.unshift({q:q, r:txt, at:new Date().toISOString(), n:llamadas.length,
+    c.respuestas.unshift({q:q, label:etiqueta, r:txt, at:new Date().toISOString(), n:llamadas.length,
                           omitidas:mat.omitidas.length?mat.omitidas:undefined});
     // Un tope: son texto y comparten el localStorage con todo lo demas.
     if(c.respuestas.length>15) c.respuestas.length=15;
@@ -19011,8 +19038,10 @@ function abrirPreguntasModal(){
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal">'
       +'<div class="modal-title">Preguntas guardadas</div>'
-      +'<div class="modal-sub">Una por linea. Son las mismas para todos los clientes, '
-        +'asi las respuestas se pueden comparar entre uno y otro.</div>'
+      +'<div class="modal-sub">Una por linea, con la etiqueta corta antes de la barra: '
+        +'<b style="color:var(--text2)">Competidores | ¿Que competidores menciono?</b>. '
+        +'La etiqueta es lo que ves; lo de despues es lo que lee la IA. '
+        +'Son las mismas para todos los clientes, asi las respuestas se comparan.</div>'
       +'<textarea id="pg-lista" rows="10" style="width:100%;resize:vertical;padding:8px 10px;'
         +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
         +'color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.6">'
@@ -19049,124 +19078,66 @@ function preguntasHtml(c){
       +'Sin transcripciones ni resumenes no hay de donde sacar las respuestas. '
       +'Cargalos en las llamadas de arriba.</div>';
   }
-  var chips=preguntas().map(function(q,i){
-    return '<button onclick="preguntarALlamadas('+c.id+',PREG_TXT('+i+'))" '
-      +'style="text-align:left;font-size:11.5px;line-height:1.45;padding:6px 11px;border-radius:var(--radius);'
-      +'border:1px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer;'
-      +'font-family:var(--font)">'+esc(q)+'</button>';
-  }).join('');
+  var qs=preguntas();
+  // El desplegable muestra la etiqueta arriba y la pregunta entera abajo: la
+  // etiqueta sola no alcanza para elegir bien entre once.
+  var menu='<div id="pg-menu" style="display:none;position:absolute;right:0;top:38px;z-index:40;'
+    +'width:min(460px,90vw);max-height:320px;overflow-y:auto;background:var(--bg2);'
+    +'border:1px solid var(--border2);border-radius:var(--radius-md);box-shadow:0 8px 24px rgba(0,0,0,.4)">'
+    +qs.map(function(q,i){
+      return '<div onclick="preguntarALlamadas('+c.id+',PREG_TXT('+i+'));_pgMenu(false)" '
+        +'style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border)">'
+        +'<div style="font-size:12px;color:var(--text);line-height:1.35">'+esc(_pgEtiqueta(q))+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);line-height:1.45;margin-top:2px">'+esc(_pgTexto(q))+'</div>'
+      +'</div>';
+    }).join('')
+  +'</div>';
   var hist=(c.respuestas||[]).map(function(x,i){
     return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);'
-      +'padding:10px 12px;margin-top:8px">'
+      +'padding:11px 13px;margin-top:8px">'
       +'<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px">'
-        +'<span style="flex:1;font-size:12px;color:var(--text);line-height:1.45">'+esc(x.q)+'</span>'
+        +'<span style="flex:1;font-size:12.5px;color:var(--text);line-height:1.4" title="'+esc(x.q)+'">'
+          +esc(x.label||_pgEtiqueta(x.q))+'</span>'
         +'<span style="font-size:10px;color:var(--text3);white-space:nowrap">'
           +new Date(x.at).toLocaleDateString('es-AR')+' &middot; '+x.n+' llamadas</span>'
         +'<button onclick="borrarRespuesta('+c.id+','+i+')" aria-label="Borrar" '
           +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
       +'</div>'
-      +'<div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">'+esc(x.r)+'</div>'
+      // Las citas de llamada y minuto van en gris para que no compitan con la
+      // respuesta, pero se puedan encontrar al pasar la vista.
+      +'<div style="font-size:12px;color:var(--text2);line-height:1.65;white-space:pre-wrap">'
+        +_pgCitas(x.r)+'</div>'
       +((x.omitidas&&x.omitidas.length)?('<div style="font-size:11px;color:var(--amberx);line-height:1.5;'
         +'margin-top:8px;padding-top:7px;border-top:1px solid var(--border)">Sin leer: '
         +esc(x.omitidas.join(' &middot; '))+'</div>'):'')
     +'</div>';
   }).join('');
   return head
-    +'<div style="display:flex;gap:8px;margin-bottom:9px">'
+    +'<div style="position:relative;display:flex;gap:8px;margin-bottom:4px">'
       +'<input id="pg-input" placeholder="Preguntale lo que quieras sobre estas llamadas" '
         +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();preguntarALlamadas('+c.id+');}" style="flex:1">'
+      +'<button class="btn btn-sm" onclick="_pgMenu()" title="Preguntas guardadas" '
+        +'style="padding:0 11px">&#9776; '+qs.length+'</button>'
       +'<button class="btn btn-sm btn-primary" onclick="preguntarALlamadas('+c.id+')">Preguntar</button>'
+      +menu
     +'</div>'
-    +'<div id="pg-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:9px"></div>'
-    +'<div style="display:flex;flex-direction:column;gap:5px">'+chips+'</div>'
+    +'<div id="pg-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +hist;
 }
-// Las preguntas pueden tener comillas y acentos: pasarlas por el onclick como
-// texto rompia el HTML. Se pasa el indice y se resuelve al hacer clic.
 function PREG_TXT(i){ return preguntas()[i]||''; }
-
-function fathomCallsHTML(c){
-  const calls = c.fathomCalls||[];
-  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">'
-    +'Cargar llamada</button>';
-  if(!calls.length){
-    return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
-      +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
-      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen, o cargala a mano.</div>'
-      +btnAgregar
-      +'</div>';
-  }
-  const opps = (c.ghl&&c.ghl.opportunities)||[];
-  const lastCall = calls[0];
-  const pendingItems = calls.reduce(function(s,cl){return s+(cl.actionItems?cl.actionItems.length:0);},0);
-  const satisfied = calls.filter(function(cl){return cl.sentiment==='satisfecho';}).length;
-  const sentiment = satisfied/calls.length>=0.6?'Activo':'En riesgo';
-  const sentColor = sentiment==='Activo'?'#1D9E75':'#BA7517';
-  // Horas en llamada: el tiempo que la agencia le puso a este cliente. Ya
-  // estaba en cada llamada como texto y no lo sumaba nadie.
-  var minTotal=calls.reduce(function(s,cl){ return s+_durMin(cl.duration); },0);
-  var sinDur=calls.filter(function(cl){ return !_durMin(cl.duration); }).length;
-  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px">'
-    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+calls.length+'</div><div style="font-size:10px;color:var(--text3)">Llamadas</div></div>'
-    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:'+sentColor+'">'+sentiment+'</div><div style="font-size:10px;color:var(--text3)">Estado</div></div>'
-    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+pendingItems+'</div><div style="font-size:10px;color:var(--text3)">Action items</div></div>'
-    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+_horasTexto(minTotal)+'</div><div style="font-size:10px;color:var(--text3)" title="'+(sinDur?(sinDur+' llamadas sin duracion cargada'):'')+'">Horas en llamada'+(sinDur?(' \u00b7 faltan '+sinDur):'')+'</div></div>'
-    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:14px;font-weight:500;color:var(--text)">'+(lastCall?lastCall.date:'--')+'</div><div style="font-size:10px;color:var(--text3)">Ultima llamada</div></div>'
-    +'</div>';
-  // Se dibujan todas y las que pasan de 3 arrancan ocultas. Mostrarlas es
-  // cambiar un display, no volver a construir la lista: asi el boton responde
-  // al toque y no se pierde el scroll.
-  calls.forEach(function(cl, _i){
-    var bg = cl.sentiment==='satisfecho'?'rgba(29,158,117,0.15)':'rgba(186,117,23,0.15)';
-    var col = cl.sentiment==='satisfecho'?'var(--accent)':'var(--amberx)';
-    var label = cl.sentiment==='satisfecho'?'Satisfecho':'Atencion';
-    const linkedOpp = opps.find(function(o){return o.id===cl.linkedOppId;});
-    const isSqlLinked = linkedOpp && linkedOpp._sql;
-    html += '<div'+(_i>=3?' data-callx="1" style="display:none;':' style="')
-      +'background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:6px">'
-      +'<div style="display:flex;align-items:center;gap:10px">'
-      +'<div style="width:30px;height:30px;border-radius:50%;background:#E1F5EE;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#0F6E56">'+(cl.initials||'?')+'</div>'
-      +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text)">'+cl.title+'</div>'
-      +'<div style="font-size:10px;color:var(--text3)">'+cl.date+' - '+cl.duration+'</div></div>'
-      +'<span style="font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;background:'+bg+';color:'+col+'">'+label+'</span>'
-      +(isSqlLinked?'<span class="pill pill-green" style="font-size:9px">SQL ✓</span>':'')
-      +'</div>'
-      // Solo para las cargadas a mano: las de Fathom ya llegan resumidas y su
-      // grabacion se abre desde Fathom, no desde aca.
-      +(cl.manual?('<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-        +(cl.url?('<a href="'+esc(cl.url)+'" target="_blank" rel="noopener" '
-          +'style="font-size:11px;color:var(--accent);text-decoration:none">Ver grabacion</a>'):'')
-        +(cl.transcript
-          ?('<button class="btn btn-sm" onclick="resumirLlamada('+c.id+',\''+cl.id+'\')" '
-            +(cl._resumiendo?'disabled ':'')+'style="font-size:11px;padding:3px 9px">'
-            +(cl._resumiendo?'Resumiendo...':(cl.summary?'Volver a resumir':'Resumir con IA'))+'</button>')
-          :'<span style="font-size:11px;color:var(--text3)">Sin transcripcion</span>')
-        +'<span style="flex:1"></span>'
-        +'<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+',\''+cl.id+'\')" '
-          +'style="font-size:11px;padding:3px 9px">Editar</button>'
-        +'<button class="btn btn-sm" onclick="borrarLlamada('+c.id+',\''+cl.id+'\')" '
-          +'style="font-size:11px;padding:3px 9px;color:var(--text3)">Borrar</button>'
-      +'</div>'
-      +(cl.summary?('<div style="margin-top:8px;font-size:11.5px;color:var(--text2);line-height:1.55">'
-        +esc(cl.summary)+'</div>'):'')):'')
-      +'</div>';
-  });
-  if(calls.length>3){
-    html += '<button class="btn btn-sm" id="fc-ver" onclick="verTodasLasLlamadas(this)" '
-      +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(calls.length-3)+'</button>';
-  }
-  // Solo si hay algo que completar y de donde sacarlo.
-  var _recuperables=calls.filter(function(cl){
-    return !_durMin(cl.duration) && _llDuracionDeTranscript(cl.transcript||'');
-  }).length;
-  if(_recuperables){
-    html += '<button class="btn btn-sm" onclick="calcularDuraciones('+c.id+')" '
-      +'style="font-size:11px;padding:3px 9px;margin-top:2px;margin-left:6px">'
-      +'Calcular '+_recuperables+' duracion'+(_recuperables===1?'':'es')+'</button>';
-  }
-  html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
-  return html;
+function _pgMenu(abrir){
+  var m=document.getElementById('pg-menu');
+  if(!m) return;
+  var v=(abrir===undefined)?(m.style.display==='none'):abrir;
+  m.style.display=v?'block':'none';
 }
+// Resalta en gris lo que va entre parentesis, que es de donde salio cada
+// afirmacion. Escapa primero: la respuesta viene de la IA, no del codigo.
+function _pgCitas(txt){
+  return esc(String(txt||'')).replace(/\(([^()]{3,80})\)/g,
+    '<span style="color:var(--text3)">($1)</span>');
+}
+
 
 // Las transcripciones ya guardadas conservan las marcas de hablante, asi que
 // la duracion se puede sacar sin volver a subir nada. Solo completa las que
