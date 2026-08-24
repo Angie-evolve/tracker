@@ -18672,6 +18672,36 @@ function _cpLista(c,k,an){
   }).join('');
 }
 
+// La duracion viene como texto libre y cambia segun de donde salga la llamada:
+// "42 min", "1h 15m", "1:05". Se normaliza a minutos para poder sumarla.
+function _durMin(str){
+  var s=String(str||'').trim();
+  if(!s) return 0;
+  var reloj=s.match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+  if(reloj){
+    return reloj[3]!==undefined
+      ? (+reloj[1]*60 + +reloj[2] + (+reloj[3])/60)   // h:mm:ss
+      : (+reloj[1]*60 + +reloj[2]);                    // h:mm
+  }
+  var t=0, hubo=false;
+  var h=s.match(/(\d+(?:[.,]\d+)?)\s*(?:hs?\b|horas?\b)/i);
+  if(h){ t+=parseFloat(h[1].replace(',','.'))*60; hubo=true; }
+  var m=s.match(/(\d+(?:[.,]\d+)?)\s*(?:m\b|min\w*\b)/i);
+  if(m){ t+=parseFloat(m[1].replace(',','.')); hubo=true; }
+  // Un numero pelado se toma como minutos: es como se escribe a mano.
+  if(!hubo){
+    var n=s.match(/^(\d+(?:[.,]\d+)?)$/);
+    if(n) t=parseFloat(n[1].replace(',','.'));
+  }
+  return t;
+}
+function _horasTexto(min){
+  min=Math.round(min);
+  if(!min) return '-';
+  var h=Math.floor(min/60), r=min%60;
+  return h?(h+' h'+(r?(' '+r+'\u2032'):'')):(r+' min');
+}
+
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">'
@@ -18689,10 +18719,15 @@ function fathomCallsHTML(c){
   const satisfied = calls.filter(function(cl){return cl.sentiment==='satisfecho';}).length;
   const sentiment = satisfied/calls.length>=0.6?'Activo':'En riesgo';
   const sentColor = sentiment==='Activo'?'#1D9E75':'#BA7517';
-  let html = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">'
+  // Horas en llamada: el tiempo que la agencia le puso a este cliente. Ya
+  // estaba en cada llamada como texto y no lo sumaba nadie.
+  var minTotal=calls.reduce(function(s,cl){ return s+_durMin(cl.duration); },0);
+  var sinDur=calls.filter(function(cl){ return !_durMin(cl.duration); }).length;
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px">'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+calls.length+'</div><div style="font-size:10px;color:var(--text3)">Llamadas</div></div>'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:'+sentColor+'">'+sentiment+'</div><div style="font-size:10px;color:var(--text3)">Estado</div></div>'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+pendingItems+'</div><div style="font-size:10px;color:var(--text3)">Action items</div></div>'
+    +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+_horasTexto(minTotal)+'</div><div style="font-size:10px;color:var(--text3)" title="'+(sinDur?(sinDur+' llamadas sin duracion cargada'):'')+'">Horas en llamada'+(sinDur?(' \u00b7 faltan '+sinDur):'')+'</div></div>'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:14px;font-weight:500;color:var(--text)">'+(lastCall?lastCall.date:'--')+'</div><div style="font-size:10px;color:var(--text3)">Ultima llamada</div></div>'
     +'</div>';
   const previewCalls = calls.slice(0,3);
@@ -18710,12 +18745,6 @@ function fathomCallsHTML(c){
       +'<span style="font-size:10px;font-weight:500;padding:2px 8px;border-radius:99px;background:'+bg+';color:'+col+'">'+label+'</span>'
       +(isSqlLinked?'<span class="pill pill-green" style="font-size:9px">SQL ✓</span>':'')
       +'</div>'
-      +'<div style="margin-top:8px;display:flex;align-items:center;gap:6px">'
-      +'<span style="font-size:10px;color:var(--text3)">Vincular a lead SQL:</span>'
-      +'<select onchange="linkFathomCall('+c.id+',\''+cl.id+'\',this.value)" style="flex:1;max-width:220px;padding:3px 6px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text);font-family:var(--font);outline:none">'
-      +'<option value="">Sin vincular</option>'
-      +opps.map(function(o){return '<option value="'+o.id+'" '+(cl.linkedOppId===o.id?'selected':'')+'>'+esc(o.contactName||o.name||'Lead')+(o._sql?' (SQL)':'')+'</option>';}).join('')
-      +'</select></div>'
       // Solo para las cargadas a mano: las de Fathom ya llegan resumidas y su
       // grabacion se abre desde Fathom, no desde aca.
       +(cl.manual?('<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
