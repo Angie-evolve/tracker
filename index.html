@@ -16991,7 +16991,8 @@ function _ncLlamadaCancelar(){
 function _ncLlamadaAdd(){
   var f=_ncLlamadaCampos();
   var url=f.url?String(f.url.value||'').trim():'';
-  var t=_llLimpiarTranscript(f.ta?f.ta.value:'');
+  var crudo=f.ta?f.ta.value:'';
+  var t=_llLimpiarTranscript(crudo);
   // Alcanza con una de las dos: hay llamadas de las que solo queda el link, y
   // otras de las que solo queda la transcripcion.
   if(!url&&!t){ toast('Pega el link o la transcripcion'); return; }
@@ -17000,6 +17001,9 @@ function _ncLlamadaAdd(){
     tipo:_llTipoEfectivo('nc-llamada'),
     url:url,
     fecha:_llFechaDeInput(f.fecha?f.fecha.value:''),
+    // La duracion sale del timecode del .vtt. No hay campo para escribirla en
+    // el alta: seria una caja mas en una fila ya cargada.
+    duration:_llDuracionDeTranscript(crudo),
     transcript:t
   };
   if(_ncEditIdx!=null){ _ncLlamadas[_ncEditIdx]=reg; _ncEditIdx=null; }
@@ -17335,7 +17339,7 @@ async function createClient(){
   var _ini=(name||'?').split(' ').map(function(w){return w[0];}).join('').substring(0,2).toUpperCase();
   const llamadas=_ncLlamadas.map(function(l,i){
     return { id:'manual-'+(Date.now()+i), title:l.tipo+' - '+name,
-      date:l.fecha||new Date().toLocaleDateString('es-AR'), duration:'',
+      date:l.fecha||new Date().toLocaleDateString('es-AR'), duration:l.duration||'',
       sentiment:'satisfecho', summary:'', actionItems:[], riskFlags:[],
       initials:_ini, manual:true, tipo:l.tipo, url:l.url, transcript:l.transcript||'' };
   });
@@ -18033,6 +18037,20 @@ function _llFechaDeInput(s){
 
 // Los .vtt y .srt que exporta Fathom traen numeracion y timecodes que no
 // aportan nada al resumen y ocupan la mitad del archivo.
+// El ultimo timecode de un .vtt o .srt es el minuto en que termina la llamada,
+// o sea su duracion. Se lee antes de limpiar la transcripcion, que es donde se
+// pierden. Con esto no hay que cargar la duracion a mano.
+function _llDuracionDeTranscript(crudo){
+  var t=String(crudo||'');
+  var ms=t.match(/(\d{1,2}):(\d{2}):(\d{2})[.,]\d{3}/g);
+  if(!ms||!ms.length) return '';
+  var ult=ms[ms.length-1].match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  var min=Math.round(+ult[1]*60 + +ult[2] + (+ult[3])/60);
+  if(!min) return '';
+  var h=Math.floor(min/60), r=min%60;
+  return h?(h+'h'+(r?(' '+r+'m'):'')):(r+' min');
+}
+
 function _llLimpiarTranscript(t){
   return String(t||'')
     .replace(/^WEBVTT.*$/gm,'')
@@ -18050,9 +18068,15 @@ function _llArchivo(inputEl, pref){
   if(!f) return;
   var fr=new FileReader();
   fr.onload=function(ev){
-    var t=_llLimpiarTranscript(ev.target.result);
+    var crudo=String(ev.target.result||'');
     var ta=document.getElementById(pref+'-transcript');
-    if(ta){ ta.value=t; _llContar(pref); }
+    if(ta){ ta.value=_llLimpiarTranscript(crudo); _llContar(pref); }
+    // Solo si esta vacia: lo que hayas escrito a mano manda sobre el timecode.
+    var du=document.getElementById(pref==='ll'?'ll-dur':'nc-llamada-dur');
+    if(du&&!String(du.value||'').trim()){
+      var d=_llDuracionDeTranscript(crudo);
+      if(d) du.value=d;
+    }
   };
   fr.readAsText(f);
 }
@@ -18121,7 +18145,9 @@ function guardarLlamada(clientId, callId){
   if(!c) return;
   var v=function(id){ var e=document.getElementById(id); return e?String(e.value||'').trim():''; };
   var url=v('ll-url'), tipo=_llTipoEfectivo('ll'), fecha=_llFechaDeInput(v('ll-fecha'));
-  var t=_llLimpiarTranscript(v('ll-transcript'));
+  var crudo=v('ll-transcript');
+  var dur=v('ll-dur')||_llDuracionDeTranscript(crudo);
+  var t=_llLimpiarTranscript(crudo);
   if(!url&&!t){
     toast('Pega el link o la transcripcion');
     return;
@@ -18132,7 +18158,7 @@ function guardarLlamada(clientId, callId){
   if(ed){
     // El resumen y los action items no se tocan: los genero la IA sobre una
     // transcripcion que puede seguir siendo la misma. Si cambio, se re-resume.
-    ed.tipo=tipo; ed.date=fecha||ed.date; ed.duration=v('ll-dur');
+    ed.tipo=tipo; ed.date=fecha||ed.date; ed.duration=dur;
     ed.url=url; ed.transcript=t;
     ed.title=tipo+' - '+c.name;
   }else{
@@ -18140,7 +18166,7 @@ function guardarLlamada(clientId, callId){
       id:'manual-'+Date.now(),
       title:tipo+' - '+c.name,
       date:fecha||new Date().toLocaleDateString('es-AR'),
-      duration:v('ll-dur'),
+      duration:dur,
       // Sin resumen todavia no hay como saber como fue: neutro hasta que se
       // resuma, para no ensuciar el indicador de estado del cliente.
       sentiment:'satisfecho',
@@ -18736,14 +18762,17 @@ function fathomCallsHTML(c){
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:var(--text)">'+_horasTexto(minTotal)+'</div><div style="font-size:10px;color:var(--text3)" title="'+(sinDur?(sinDur+' llamadas sin duracion cargada'):'')+'">Horas en llamada'+(sinDur?(' \u00b7 faltan '+sinDur):'')+'</div></div>'
     +'<div style="background:var(--bg2);border-radius:var(--radius-md);padding:10px 12px;text-align:center"><div style="font-size:14px;font-weight:500;color:var(--text)">'+(lastCall?lastCall.date:'--')+'</div><div style="font-size:10px;color:var(--text3)">Ultima llamada</div></div>'
     +'</div>';
-  const previewCalls = calls.slice(0,3);
-  previewCalls.forEach(function(cl){
+  // Se dibujan todas y las que pasan de 3 arrancan ocultas. Mostrarlas es
+  // cambiar un display, no volver a construir la lista: asi el boton responde
+  // al toque y no se pierde el scroll.
+  calls.forEach(function(cl, _i){
     var bg = cl.sentiment==='satisfecho'?'rgba(29,158,117,0.15)':'rgba(186,117,23,0.15)';
     var col = cl.sentiment==='satisfecho'?'var(--accent)':'var(--amberx)';
     var label = cl.sentiment==='satisfecho'?'Satisfecho':'Atencion';
     const linkedOpp = opps.find(function(o){return o.id===cl.linkedOppId;});
     const isSqlLinked = linkedOpp && linkedOpp._sql;
-    html += '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:6px">'
+    html += '<div'+(_i>=3?' data-callx="1" style="display:none;':' style="')
+      +'background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:6px">'
       +'<div style="display:flex;align-items:center;gap:10px">'
       +'<div style="width:30px;height:30px;border-radius:50%;background:#E1F5EE;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#0F6E56">'+(cl.initials||'?')+'</div>'
       +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text)">'+cl.title+'</div>'
@@ -18771,9 +18800,21 @@ function fathomCallsHTML(c){
         +esc(cl.summary)+'</div>'):'')):'')
       +'</div>';
   });
-  if(calls.length>3) html += '<div style="font-size:11px;color:var(--text3);margin-top:4px">'+(calls.length-3)+' llamadas mas (vinculalas desde el JSON o pedime que muestre todas)</div>';
+  if(calls.length>3){
+    html += '<button class="btn btn-sm" id="fc-ver" onclick="verTodasLasLlamadas(this)" '
+      +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(calls.length-3)+'</button>';
+  }
   html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
   return html;
+}
+
+function verTodasLasLlamadas(btn){
+  var host=btn&&btn.parentNode;
+  if(!host) return;
+  var ocultas=host.querySelectorAll('[data-callx]');
+  var abrir=(ocultas.length&&ocultas[0].style.display==='none');
+  Array.prototype.forEach.call(ocultas,function(d){ d.style.display=abrir?'block':'none'; });
+  btn.textContent=abrir?'Ver solo las ultimas 3':('Ver las otras '+ocultas.length);
 }
 
 function linkFathomCall(clientId, callId, oppId){
