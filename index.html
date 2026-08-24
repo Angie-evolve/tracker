@@ -16669,6 +16669,9 @@ function renderTab(){
         </div>
 
         </div>
+        <div id="sh-material" style="display:${_shHoja()==='material'?'block':'none'}">
+          ${materialHtml(c)}
+        </div>
       </div>
 
       <div style="margin-top:30px;padding-top:18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
@@ -18592,7 +18595,8 @@ async function resumirLlamada(clientId, callId){
 var SH_HOJAS=[
   {k:'facturacion', l:'Facturacion'},
   {k:'tiempo',      l:'Linea de tiempo'},
-  {k:'contexto',    l:'Contexto'}
+  {k:'contexto',    l:'Contexto'},
+  {k:'material',    l:'Material'}
 ];
 function _shHoja(){
   var k=S._shHoja;
@@ -19082,6 +19086,96 @@ function _horasTexto(min){
   if(!min) return '-';
   var h=Math.floor(min/60), r=min%60;
   return h?(h+' h'+(r?(' '+r+'\u2032'):'')):(r+' min');
+}
+
+// ---- Material del cliente -----------------------------------------------
+// Los links del cliente estaban repartidos: el contrato en Facturacion, las
+// grabaciones en Contexto, los adjuntos dentro de cada tarea y la presentacion
+// en el producto. Aca se juntan, mas lo que cargues a mano.
+function _matNormUrl(u){
+  u=String(u||'').trim();
+  if(!u) return '';
+  return /^https?:\/\//i.test(u)?u:('https://'+u);
+}
+function _matDominio(u){
+  try{ return new URL(u).hostname.replace(/^www\./,''); }catch(e){ return ''; }
+}
+function matAgregar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var u=_matNormUrl((document.getElementById('mat-url')||{}).value);
+  if(!u){ toast('Pega un link'); return; }
+  var l=String((document.getElementById('mat-label')||{}).value||'').trim();
+  c.material=c.material||[];
+  c.material.unshift({id:Date.now(), label:l||_matDominio(u)||'Link', url:u, at:new Date().toISOString()});
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+function matQuitar(clientId, id){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.material) return;
+  c.material=c.material.filter(function(m){return m.id!==id;});
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
+// Todo lo que ya existe en otras pestañas, con el origen a la vista para que
+// se entienda por que esta ahi y donde se edita.
+function _matHeredado(c){
+  var out=[];
+  var ct=c.contract||{};
+  if(ct.driveUrl) out.push({l:'Contrato', u:ct.driveUrl, de:'Facturacion'});
+  else if(ct.fileName) out.push({l:'Contrato: '+ct.fileName, u:'', de:'Facturacion'});
+  try{
+    var k=_compromiso(c);
+    if(k.ver&&k.ver.url) out.push({l:'Presentacion de '+(k.p?k.p.nombre:'el producto'), u:k.ver.url, de:'Producto'});
+  }catch(e){}
+  (c.fathomCalls||[]).forEach(function(cl){
+    if(cl.url) out.push({l:cl.title||'Llamada', u:cl.url, de:(cl.date||'llamada')});
+  });
+  (c.tasks||[]).forEach(function(t){
+    (t.attachments||[]).forEach(function(a){
+      if(a&&a.url) out.push({l:a.label||_matDominio(a.url)||'Adjunto', u:a.url,
+                             de:'Tarea '+(t.ticket||'')});
+    });
+  });
+  return out;
+}
+
+function materialHtml(c){
+  var propios=(c.material||[]);
+  var hered=_matHeredado(c);
+  var fila=function(l,u,de,id){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+      +(u?('<a href="'+esc(u)+'" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:12.5px;'
+        +'color:var(--text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+        +esc(l)+'<span style="color:var(--text3)"> &middot; '+esc(_matDominio(u)||u)+'</span></a>')
+        :('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text3)">'+esc(l)+'</span>'))
+      +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'+esc(de)+'</span>'
+      +(id?('<button onclick="matQuitar('+c.id+','+id+')" aria-label="Quitar" '
+        +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'):'')
+    +'</div>';
+  };
+  return '<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em;margin-bottom:10px">Material del cliente</div>'
+    +'<div style="display:flex;gap:8px;margin-bottom:12px">'
+      +'<input id="mat-label" placeholder="Que es" style="width:180px;flex:none">'
+      +'<input id="mat-url" placeholder="Pega el link: Drive, Figma, la landing, accesos..." style="flex:1" '
+        +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();matAgregar('+c.id+');}">'
+      +'<button class="btn btn-sm btn-primary" onclick="matAgregar('+c.id+')">Agregar</button>'
+    +'</div>'
+    +(propios.length?propios.map(function(m){
+        return fila(m.label, m.url, new Date(m.at).toLocaleDateString('es-AR'), m.id);
+      }).join('')
+      :'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding-bottom:6px">'
+       +'Todavia no cargaste nada. Aca van los accesos, la marca, la landing, lo que necesites tener a mano.</div>')
+    +(hered.length?('<div style="margin-top:18px">'
+      +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.07em;margin-bottom:8px">Ya cargado en otras pestañas</div>'
+      +hered.map(function(m){ return fila(m.l, m.u, m.de, null); }).join('')
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px">'
+        +'Se editan donde se cargaron. Aca estan solo para tenerlos juntos.</div>'
+    +'</div>'):'');
 }
 
 function fathomCallsHTML(c){
