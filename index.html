@@ -16437,6 +16437,8 @@ function renderTab(){
         </div>`:''}
         </div>
         <div id="sh-tiempo" style="display:${_shHoja()==='tiempo'?'block':'none'}">
+          ${rutaHtml(c)}
+          <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${compromisoHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
 
@@ -18459,7 +18461,7 @@ async function revisarEntregables(clientId){
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:3000,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
         'Sos analista de una agencia. Abajo estan los ENTREGABLES que se le vendieron a '+(c.name||'un cliente')
         +' y las LLAMADAS que se tuvieron con el. Para cada entregable deci si ya se cumplio, '
         +'segun lo que se dijo en las llamadas.\n\n'
@@ -18468,7 +18470,7 @@ async function revisarEntregables(clientId){
         +'"estado":"hecho" si en alguna llamada se habla de eso como terminado o entregado, '
         +'"curso" si se menciona como en proceso o acordado pero sin terminar, '
         +'"no" si no aparece en ninguna llamada,'
-        +'"evidencia":"titulo de la llamada donde aparece, y en pocas palabras que se dijo. '
+        +'"evidencia":"titulo de la llamada donde aparece y que se dijo, en MENOS DE 15 PALABRAS. '
         +'String vacio si el estado es no"}]\n'
         +'Se conservador: si no hay una mencion clara, poné "no". No inventes.\n\n'
         +'ENTREGABLES:\n'+k.entregables.map(function(e,i){return i+'. '+e;}).join('\n')
@@ -18480,12 +18482,25 @@ async function revisarEntregables(clientId){
       throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
     }
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
-    var ini=txt.indexOf('['), fin=txt.lastIndexOf(']');
-    if(ini<0||fin<=ini){
+    var ini=txt.indexOf('[');
+    if(ini<0){
       console.error('Revision de entregables, sin JSON:', txt);
       throw new Error('La respuesta no trajo un JSON. Esta el detalle en la consola.');
     }
-    var arr=JSON.parse(txt.slice(ini,fin+1));
+    var arr;
+    try{
+      arr=JSON.parse(txt.slice(ini, txt.lastIndexOf(']')+1));
+    }catch(pe){
+      // Si el modelo llego al tope de tokens el array queda sin cerrar. En vez
+      // de perder todo, se rescatan los objetos completos que si llegaron.
+      var objs=txt.slice(ini).match(/\{[^{}]*\}/g)||[];
+      arr=objs.map(function(o){ try{ return JSON.parse(o); }catch(e2){ return null; } }).filter(Boolean);
+      if(!arr.length){
+        console.error('Revision de entregables, JSON cortado:', txt);
+        throw new Error('La respuesta llego cortada. Esta el detalle en la consola.');
+      }
+      console.warn('Revision de entregables: respuesta cortada, rescate '+arr.length+' items');
+    }
     var items={};
     arr.forEach(function(o){
       if(o&&typeof o.i==='number') items[o.i]={estado:o.estado||'no', evidencia:String(o.evidencia||'')};
@@ -18521,6 +18536,73 @@ function aplicarEntregablesIA(clientId){
   c.entregablesHechos[k.ver.id]=arr;
   save();
   if(typeof renderTab==='function') renderTab();
+}
+
+// ---- Ruta del cliente ---------------------------------------------------
+// Las etapas por las que pasa todo cliente, en orden. Cada una se engancha a
+// una llamada real por el titulo; si esa llamada todavia no existe, la fecha
+// se proyecta desde el onboarding con el plazo del plan.
+var RUTA_DEFAULT=[
+  {l:'Diagnostico',          re:/diagn/i,                          dia:null},
+  {l:'Presentacion / venta', re:/venta|present|propuesta/i,        dia:null},
+  {l:'Pago / onboarding',    re:/onboarding/i,                     dia:0},
+  {l:'Estrategia 1',         re:/(strategy|estrategia)\s*1/i,      dia:7},
+  {l:'Estrategia 2',         re:/(strategy|estrategia)\s*2/i,      dia:14},
+  {l:'Documento dataset',    re:/dataset|documento/i,              dia:18},
+  {l:'Sprint de lanzamiento',re:/sprint/i,                         dia:21},
+  {l:'Llamada de sistemas',  re:/sistema/i,                        dia:26},
+  {l:'Lanzamiento',          re:/lanzam|launch|handoff/i,          dia:30}
+];
+function _ruta(c){
+  var k=_compromiso(c);
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var calls=(c.fathomCalls||[]).slice();
+  return RUTA_DEFAULT.map(function(e){
+    var m=calls.filter(function(x){
+      return e.re.test(String(x.tipo||'')+' '+String(x.title||''));
+    }).map(function(x){ return parseDDMMYYYY(x.date); }).filter(Boolean).sort(function(a,b){return a-b;});
+    var real=m.length?m[0]:null;
+    var prev=(k.arranque&&e.dia!==null)?new Date(k.arranque.getTime()+e.dia*86400000):null;
+    var fecha=real||prev;
+    return {l:e.l, dia:e.dia, real:real, fecha:fecha,
+            estado:real?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
+  });
+}
+function rutaHtml(c){
+  var et=_ruta(c);
+  var head='<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+    +'letter-spacing:0.07em;margin-bottom:12px">Ruta del cliente</div>';
+  if(!et.some(function(x){return x.fecha;})){
+    return head+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Cargale la llamada de onboarding y las etapas se ubican solas en el calendario.</div>';
+  }
+  var col={hecho:'var(--green)', tarde:'var(--redx)', pendiente:'var(--border2)'};
+  var txt={hecho:'var(--text)', tarde:'var(--redx)', pendiente:'var(--text3)'};
+  var nodos=et.map(function(x,i){
+    return '<div style="width:118px;flex:none;position:relative">'
+      // La linea conecta con la etapa anterior, asi se lee como un recorrido y
+      // no como tarjetas sueltas.
+      +(i>0?'<div style="position:absolute;left:-22px;top:6px;width:22px;height:1px;background:var(--border2)"></div>':'')
+      +'<div style="width:12px;height:12px;border-radius:50%;background:'+col[x.estado]+';margin-bottom:9px"></div>'
+      +'<div style="font-size:11.5px;line-height:1.35;color:'+txt[x.estado]+'">'+esc(x.l)+'</div>'
+      +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'
+        +(x.fecha?_fechaCorta(x.fecha):'sin fecha')+'</div>'
+      // Se distingue lo que paso de lo que se estima: sin esa marca, una fecha
+      // proyectada se lee como un hecho.
+      +'<div style="font-size:10px;margin-top:1px;color:'
+        +(x.estado==='tarde'?'var(--redx)':'var(--text3)')+'">'
+        +(x.real?'hecha':(x.estado==='tarde'?'atrasada':'estimada'))+'</div>'
+    +'</div>';
+  }).join('');
+  var tarde=et.filter(function(x){return x.estado==='tarde';});
+  var pie=tarde.length
+    ? '<span style="color:var(--redx)">'+tarde.length+' etapa'+(tarde.length===1?'':'s')
+      +' sin hacer que ya deberian estar: '+tarde.map(function(x){return esc(x.l);}).join(', ')+'.</span>'
+    : '<span style="color:var(--green)">Todas las etapas que ya vencieron estan hechas.</span>';
+  return head
+    +'<div style="overflow-x:auto;padding-bottom:8px"><div style="display:flex;gap:22px;min-width:max-content">'
+      +nodos+'</div></div>'
+    +'<div style="font-size:11.5px;line-height:1.5;margin-top:6px">'+pie+'</div>';
 }
 
 function compromisoHtml(c){
