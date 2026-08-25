@@ -16672,6 +16672,9 @@ function renderTab(){
         <div id="sh-material" style="display:${_shHoja()==='material'?'block':'none'}">
           ${materialHtml(c)}
         </div>
+        <div id="sh-landing" style="display:${_shHoja()==='landing'?'block':'none'}">
+          ${landingHtml(c)}
+        </div>
       </div>
 
       <div style="margin-top:30px;padding-top:18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
@@ -18596,7 +18599,8 @@ var SH_HOJAS=[
   {k:'facturacion', l:'Facturacion'},
   {k:'tiempo',      l:'Linea de tiempo'},
   {k:'contexto',    l:'Contexto'},
-  {k:'material',    l:'Material'}
+  {k:'material',    l:'Material'},
+  {k:'landing',     l:'Landing'}
 ];
 function _shHoja(){
   var k=S._shHoja;
@@ -19176,6 +19180,247 @@ function materialHtml(c){
       +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px">'
         +'Se editan donde se cargaron. Aca estan solo para tenerlos juntos.</div>'
     +'</div>'):'');
+}
+
+// ---- Generador de landings ----------------------------------------------
+// No genera HTML. Produce el objeto COPY que llena una plantilla estable.
+// Las plantillas se mejoran por fuera; si las generara la app, cada mejora
+// se perderia en la proxima corrida.
+var LP_PIELES = [
+  {k:'institucional', l:'Institucional', d:'Muchas secciones, prueba social extendida, precios y FAQ. Para ticket alto y decision compartida.'},
+  {k:'simple',        l:'Simple',        d:'Una pantalla, una promesa, un CTA. Para trafico frio que no lee.'},
+  {k:'hollywood',     l:'Hollywood',     d:'Video de fondo como hero. Solo si el negocio se ve: local, producto o gente trabajando.'}
+];
+var LP_MECANICAS = [
+  {k:'formulario', l:'Formulario', d:'Mas volumen, menos calidad. Postea a GHL.'},
+  {k:'calendario', l:'Calendario', d:'Menos volumen, agenda llena. Embed de GHL.'},
+  {k:'quiz',       l:'Quiz',       d:'Califica antes de pedir el dato.'}
+];
+var LP_TEMAS = [{k:'oscuro',l:'Oscuro'},{k:'claro',l:'Claro'}];
+
+function _lpCfg(c){
+  c.landing=c.landing||{};
+  if(!c.landing.piel)     c.landing.piel='simple';
+  if(!c.landing.mecanica) c.landing.mecanica='formulario';
+  if(!c.landing.tema)     c.landing.tema='oscuro';
+  return c.landing;
+}
+function lpSet(clientId, campo, valor){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  _lpCfg(c)[campo]=valor;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
+// Hollywood necesita que el negocio se vea. Sin material visual la pieza
+// termina siendo un stock generico y resta en vez de sumar.
+function _lpHollywoodViable(c){
+  var m=(c.material||[]).concat(_matHeredado(c).map(function(x){return {url:x.u,label:x.l};}));
+  // Drive queda afuera a proposito: un contrato en Drive no es material
+  // visual, y contarlo daba Hollywood por viable en clientes que no lo son.
+  return m.some(function(x){
+    var t=(x.url||'')+' '+(x.label||'');
+    return /instagram\.com|youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|\.(mp4|mov|jpg|jpeg|png|webp)\b/i.test(t)
+        || /\b(foto|fotos|video|videos|galeria|reel|imagen|imagenes)\b/i.test(t);
+  });
+}
+
+function _lpEstado(html, color){
+  var e=document.getElementById('lp-estado');
+  if(!e) return;
+  e.innerHTML=html||'';
+  e.style.color=color||'var(--text3)';
+}
+
+// Lo que la app ya sabe del cliente, sin buscar nada afuera.
+function _lpContextoInterno(c){
+  var out=[];
+  var k=null;
+  try{ k=_compromiso(c); }catch(e){}
+  if(k&&k.p) out.push('PRODUCTO VENDIDO: '+k.p.nombre);
+  if(k&&k.entregables&&k.entregables.length){
+    out.push('ENTREGABLES PROMETIDOS:\n'+k.entregables.map(function(e){
+      var d=_entrDia(e); return '- '+_entrTexto(e)+(d!==null?(' (dia '+d+')'):'');
+    }).join('\n'));
+  }
+  if(c.industry) out.push('INDUSTRIA: '+c.industry);
+  (c.respuestas||[]).slice(0,6).forEach(function(r){
+    out.push('PREGUNTA: '+r.q+'\nRESPUESTA (de las llamadas): '+r.r);
+  });
+  var links=(c.material||[]).map(function(m){ return '- '+m.label+': '+m.url; });
+  _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
+  if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
+  return {texto:out.join('\n\n'), links:links.length, respuestas:(c.respuestas||[]).length};
+}
+
+async function generarLanding(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _lpEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)'); return; }
+  var ctx=_lpContextoInterno(c);
+  if(!ctx.texto){
+    _lpEstado('Este cliente no tiene producto, llamadas ni links cargados. Sin eso la landing sale generica.','var(--amberx)');
+    return;
+  }
+  var t0=Date.now();
+  _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Juntando lo de adentro y buscando lo de afuera...</span></span>','var(--text2)');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({
+        model:'claude-sonnet-5', max_tokens:4000,
+        // La busqueda web es lo que permite traer prueba social y precios
+        // reales del sitio del cliente, que es lo que ninguna plantilla tiene.
+        tools:[{type:'web_search_20250305', name:'web_search', max_uses:5}],
+        messages:[{role:'user',content:
+          'Sos director creativo de una agencia. Vas a escribir el copy de una landing de conversion '
+          +'para el cliente "'+(c.name||'')+'".\n\n'
+          +'PRIMERO: busca en la web el sitio y las redes de este cliente usando los links de abajo '
+          +'y su nombre. Necesito prueba social real (cantidad de clientes, metricas, nombres de '
+          +'clientes suyos), precios si los publica, y sus diferenciales con las palabras que ellos usan.\n\n'
+          +'DESPUES: escribi el copy combinando eso con lo que sabemos de las llamadas.\n\n'
+          +'PIEL: '+cfg.piel+'. MECANICA: '+cfg.mecanica+'.\n\n'
+          +'Devolve SOLO un JSON, sin markdown:\n'
+          +'{"hallazgos":[{"dato":"que encontraste","fuente":"de donde","confianza":"alta|media|baja"}],'
+          +'"contradicciones":["cosas del sitio que no coinciden con las llamadas. Array vacio si no hay"],'
+          +'"copy":{"eyebrow":"","promesas":["3 variantes del titular para testear, cortas"],'
+          +'"bajada":"2 lineas","cta":"","bajoCta":"","puntos":["3 bullets cortos"],'
+          +'"pruebaSocial":[{"n":"numero","l":"que mide"}],'
+          +'"faq":[{"q":"","a":""}]}}\n\n'
+          +'Reglas: castellano rioplatense, sin superlativos vacios. Usa numeros solo si los '
+          +'encontraste, nunca inventados. Si no hay prueba social real, devolve el array vacio '
+          +'en vez de rellenar.\n\n'
+          +'LO QUE SABEMOS:\n'+ctx.texto}]
+      })
+    });
+    var d=await r.json();
+    if(d.error){
+      console.error('Generador de landing:', d);
+      throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
+    }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
+    if(ini<0||fin<=ini){
+      console.error('Generador de landing, sin JSON:', txt);
+      throw new Error('La respuesta no trajo un JSON. Esta el detalle en la consola.');
+    }
+    var o=JSON.parse(txt.slice(ini,fin+1));
+    cfg.resultado=o;
+    cfg.at=new Date().toISOString();
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s');
+  }catch(e){
+    console.error('Generador de landing:', e);
+    _lpEstado('No pude generarlo: '+esc(e.message),'var(--redx)');
+  }
+}
+
+// El COPY se arma recien al copiar: asi lo que se pega siempre refleja
+// la piel y el tema elegidos ahora, no los de cuando se genero.
+function copiarCopyLanding(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.landing||!c.landing.resultado) return;
+  var o=c.landing.resultado.copy||{};
+  var salida={
+    marca:c.name||'', eyebrow:o.eyebrow||'',
+    promesas:o.promesas||[], bajada:o.bajada||'',
+    cta:o.cta||'', bajoCta:o.bajoCta||'',
+    puntos:o.puntos||[], pruebaSocial:o.pruebaSocial||[], faq:o.faq||[],
+    _piel:c.landing.piel, _tema:c.landing.tema, _mecanica:c.landing.mecanica
+  };
+  var t='const COPY = '+JSON.stringify(salida,null,2)+';';
+  navigator.clipboard.writeText(t).then(function(){
+    toast('COPY copiado. Pegalo reemplazando el de la plantilla '+c.landing.piel);
+  },function(){
+    _lpEstado('No pude copiar. Seleccionalo a mano abajo.','var(--amberx)');
+  });
+}
+
+function landingHtml(c){
+  var cfg=_lpCfg(c);
+  var head='<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+    +'letter-spacing:0.07em;margin-bottom:12px">Landing de conversion</div>';
+
+  var opciones=function(titulo, lista, campo, extra){
+    return '<div style="margin-bottom:16px">'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:7px">'+titulo+'</div>'
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+      +lista.map(function(o){
+        var on=(cfg[campo]===o.k);
+        var bloq=(extra&&extra[o.k]);
+        return '<button onclick="lpSet('+c.id+',\''+campo+'\',\''+o.k+'\')" '
+          +(o.d?('title="'+esc(o.d)+'" '):'')
+          +'style="font-size:12px;padding:6px 13px;border-radius:99px;cursor:pointer;font-family:var(--font);'
+          +'border:1px solid '+(on?'transparent':'var(--border2)')+';'
+          +'background:'+(on?'var(--accent)':'transparent')+';'
+          +'color:'+(on?'var(--on-accent)':(bloq?'var(--amberx)':'var(--text2)'))+'">'
+          +esc(o.l)+(bloq?' \u26a0':'')+'</button>';
+      }).join('')
+      +'</div></div>';
+  };
+
+  var avisoHw = (cfg.piel==='hollywood'&&!_lpHollywoodViable(c))
+    ? '<div style="font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:14px">'
+      +'Hollywood necesita material visual del cliente y no encuentro fotos ni videos en Material. '
+      +'Sin eso el video termina siendo stock generico.</div>'
+    : '';
+
+  var ctx=_lpContextoInterno(c);
+  var res=cfg.resultado;
+
+  var bloqueRes='';
+  if(res){
+    var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
+    bloqueRes='<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+        +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.07em;flex:1">Revisa antes de usarlo</div>'
+        +'<span style="font-size:10px;color:var(--text3)">'+new Date(cfg.at).toLocaleDateString('es-AR')+'</span>'
+        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
+          +'onclick="copiarCopyLanding('+c.id+')">Copiar el COPY</button>'
+      +'</div>'
+      // Las contradicciones primero: es el motivo por el que existe este paso.
+      +((res.contradicciones&&res.contradicciones.length)
+        ?('<div style="background:rgba(186,117,23,.12);border:1px solid var(--amberx);'
+          +'border-radius:var(--radius-md);padding:10px 12px;margin-bottom:12px">'
+          +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.55">'
+          +'<b>No coincide con lo que dicen las llamadas:</b><br>'
+          +res.contradicciones.map(esc).join('<br>')+'</div></div>'):'')
+      +(res.hallazgos||[]).map(function(h){
+          return '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;'
+            +'border-bottom:1px solid var(--border)">'
+            +'<span style="width:6px;height:6px;border-radius:50%;flex:none;margin-top:7px;'
+              +'background:'+(badge[h.confianza]||'var(--text3)')+'"></span>'
+            +'<span style="flex:1;font-size:12px;line-height:1.5;color:var(--text)">'+esc(h.dato)+'</span>'
+            +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'+esc(h.fuente||'')+'</span>'
+          +'</div>';
+        }).join('')
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:10px">'
+        +'El punto verde es dato verificado en la web; el gris, deducido. '
+        +'Los numeros sin verificar no deberian ir a la landing.</div>'
+    +'</div>';
+  }
+
+  return head
+    +opciones('Mecanica', LP_MECANICAS, 'mecanica')
+    +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)})
+    +opciones('Tema', LP_TEMAS, 'tema')
+    +avisoHw
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">'
+      +'<button class="btn btn-sm btn-primary" onclick="generarLanding('+c.id+')">'
+        +(res?'Volver a generar':'Generar el copy')+'</button>'
+      +'<span style="font-size:11.5px;color:var(--text3)">'
+        +ctx.respuestas+' respuestas de llamadas &middot; '+ctx.links+' links para investigar</span>'
+    +'</div>'
+    +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:10px;min-height:16px"></div>'
+    +bloqueRes;
 }
 
 function fathomCallsHTML(c){
