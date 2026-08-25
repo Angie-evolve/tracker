@@ -15831,14 +15831,39 @@ function _angEstado(html,color){
   e.innerHTML=html||'';
   e.style.color=color||'var(--text3)';
 }
+// Junta las transcripciones que cargaste lead por lead. Es distinto de
+// _llamadasParaIA, que trae nuestras llamadas con el cliente.
+function _angMaterialLeads(c){
+  DB.capT=DB.capT||{};
+  var opps=((c.ghl&&c.ghl.opportunities)||[]);
+  var total=0, items=[], sinTexto=0;
+  opps.forEach(function(o){
+    var k=_capKey(o);
+    var t=DB.capT[k]||{};
+    var texto=Object.keys(t).map(function(u){return t[u];})
+      .filter(function(x){return x&&x.trim();}).join('\n\n');
+    if(!texto){ sinTexto++; return; }
+    if(texto.length>_ENTREG_MAXCALL) texto=texto.slice(0,_ENTREG_MAXCALL);
+    if(total+texto.length>_ENTREG_MAXTOTAL) return;
+    total+=texto.length;
+    items.push({titulo:(o.contactName||o.name||'Lead')
+      +(o.pipelineStage?(' \u00b7 '+o.pipelineStage):''), texto:texto});
+  });
+  return {items:items, conTexto:items.length, sinTexto:sinTexto, total:opps.length};
+}
+
 async function extraerAngulosLlamadas(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var apiKey=localStorage.getItem('evold-anthropic-key');
   if(!apiKey){ _angEstado('Falta la clave de Anthropic.','var(--amberx)'); return; }
-  var mat=_llamadasParaIA(c);
+  // Las llamadas del cliente con SUS leads, que viven en DB.capT indexadas
+  // por contacto. Antes leia c.fathomCalls, que son nuestras llamadas CON el
+  // cliente: los angulos salian de reuniones de seguimiento, no del mercado.
+  var mat=_angMaterialLeads(c);
   if(!mat.items.length){
-    _angEstado('Este cliente no tiene transcripciones ni resumenes cargados.','var(--amberx)');
+    _angEstado('No hay transcripciones de llamadas con leads. Cargalas desde la lista de '
+      +'leads, en cada ficha.','var(--amberx)');
     return;
   }
   var t0=Date.now();
@@ -15848,9 +15873,11 @@ async function extraerAngulosLlamadas(clientId){
     var o=await _lpApi(apiKey,{
       model:'claude-sonnet-5', max_tokens:3000,
       messages:[{role:'user',content:
-        'Estas son llamadas de venta. Sacá los angulos de comunicacion que aparecen en '
-        +'como habla la gente: el dolor con sus palabras, lo que los frena, lo que los '
-        +'convencio, con que comparan.\n\n'
+        'Estas son llamadas de venta entre '+(c.name||'el cliente')+' y SUS PROSPECTOS. '
+        +'Saca los angulos de comunicacion que aparecen en como hablan los prospectos: '
+        +'el dolor con sus palabras, lo que los frena, lo que los convencio, con que comparan.\n\n'
+        +'IMPORTANTE: te interesa lo que dice el PROSPECTO, no lo que dice el vendedor. '
+        +'Un angulo que solo dijo el vendedor no sirve: eso ya lo estan comunicando.\n\n'
         +'Devolve SOLO un JSON, empezando con { :\n'
         +'{"angulos":[{"a":"el angulo en 4 a 7 palabras",'
         +'"frase":"la frase textual de la llamada que lo sostiene",'
@@ -15861,8 +15888,7 @@ async function extraerAngulosLlamadas(clientId){
         +'No repitas el mismo angulo con distintas palabras.\n\n'
         +'LLAMADAS:\n'+mat.items.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]
     });
-    c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(), n:mat.items.length,
-                       omitidas:mat.omitidas};
+    c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(), n:mat.items.length};
     save();
     if(typeof renderTab==='function') renderTab();
     toast('Sacados '+((o.angulos||[]).length)+' angulos en '+Math.round((Date.now()-t0)/1000)+'s');
@@ -16024,8 +16050,15 @@ function mapaAngulosHtml(c){
         +'</div>'
         +'<div id="ang-estado" style="font-size:11px;color:var(--text3);line-height:1.5;padding:0 13px"></div>';
       if(!ang.length){
+        // Decir cuanto material hay antes de que aprete: si son 2 de 42, la
+        // lectura va a salir pobre y conviene saberlo antes.
+        var _m=_angMaterialLeads(c);
         x+='<div style="padding:14px 13px;font-size:11.5px;color:var(--text3);line-height:1.5">'
-          +'Lo que dice la gente cuando nadie le esta vendiendo. Sale de las transcripciones cargadas en Contexto.</div>';
+          +'Lo que dicen los prospectos en las llamadas de venta del cliente. '
+          +'Sale de las transcripciones que cargas lead por lead.'
+          +(_m.total?('<br><span style="color:'+(_m.conTexto?'var(--text2)':'var(--amberx)')+'">'
+            +_m.conTexto+' de '+_m.total+' leads tienen transcripcion cargada.</span>'):'')
+          +'</div>';
       }else{
         ang.slice(0,12).forEach(function(a,i){
           x+='<div style="border-top:1px solid var(--border);padding:9px 13px">'
@@ -16045,7 +16078,7 @@ function mapaAngulosHtml(c){
         });
         if(ang.length>12) x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10.5px;color:var(--text3)">y '+(ang.length-12)+' mas</div>';
         x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10px;color:var(--text3)">'
-          +al.n+' llamadas leidas &middot; '+new Date(al.at).toLocaleDateString('es-AR')+'</div>';
+          +al.n+' lead'+(al.n===1?'':'s')+' leidos &middot; '+new Date(al.at).toLocaleDateString('es-AR')+'</div>';
       }
       return x+'</div>';
     })();
