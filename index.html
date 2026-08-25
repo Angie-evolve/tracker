@@ -2445,11 +2445,27 @@ function _respMail(v){
   var n=_n(t);
   var lista=[];
   try{ lista=personas()||[]; }catch(e){}
-  var p=lista.filter(function(x){
-    if(_n(x.nombre||'')===n) return true;
-    return _n(String(x.email||'').split('@')[0])===n;   // "angie" matchea angie@...
-  })[0];
-  return p?p.email:t;
+
+  // Por niveles, del mas estricto al mas flojo. Una tarea puede decir "Ashy"
+  // y la persona llamarse "Ashy Leon": comparando exacto quedaban afuera y la
+  // lista daba menos tareas de las que la persona realmente tiene.
+  var niveles=[
+    // 1. el nombre completo, igual
+    function(x){ return _n(x.nombre||'')===n; },
+    // 2. lo que va antes del arroba
+    function(x){ return _n(String(x.email||'').split('@')[0])===n; },
+    // 3. el primer nombre: "Ashy" contra "Ashy Leon"
+    function(x){ return _n((x.nombre||'').split(/\s+/)[0])===n; },
+    // 4. el nombre guardado empieza con lo que dice la tarea
+    function(x){ var xn=_n(x.nombre||''); return xn.indexOf(n)===0 || n.indexOf(xn)===0; }
+  ];
+  for(var i=0;i<niveles.length;i++){
+    var m=lista.filter(niveles[i]);
+    // Solo si es una sola persona. Con dos "Ana" es mejor no resolver que
+    // mostrarle a alguien las tareas de otro.
+    if(m.length===1) return m[0].email;
+  }
+  return t;
 }
 function _respEsMio(v){
   var m=_respMail(v);
@@ -10444,6 +10460,19 @@ function showTickets(){
       var mio=_respEsMio(resp);
       return _du==='mios' ? mio : !mio;
     });
+    // Si el filtro deja a alguien afuera por no poder resolver su nombre, hay
+    // que decirlo: si no, la persona ve menos tareas de las que tiene y cree
+    // que no las tiene asignadas.
+    window._tkSinResolver=[];
+    if(_du==='mios'){
+      var vistos={};
+      (window._tkAntesDeFiltrar||[]).forEach(function(r){
+        var rr=String(r.t.responsible||'').trim();
+        if(!rr || r.t.done) return;
+        var m=_respMail(rr);
+        if(m.indexOf('@')<0 && !vistos[rr]){ vistos[rr]=1; window._tkSinResolver.push(rr); }
+      });
+    }
   }
   // orden: vencidos primero, luego abiertos mas viejos, luego hechos recientes
   list=[...list].sort(function(a,b){
@@ -10571,6 +10600,18 @@ function showTickets(){
     grupos[idx[cid]].rows.push(r);
   });
   let _gi=0;
+  // Aviso cuando el filtro no pudo resolver a quien pertenece una tarea.
+  var _avisoResp='';
+  if((window._tkSinResolver||[]).length){
+    _avisoResp='<div style="background:rgba(186,117,23,.12);border:1px solid var(--amberx);'
+      +'border-radius:var(--radius-md);padding:10px 13px;margin-bottom:12px;font-size:11.5px;'
+      +'color:var(--amberx);line-height:1.55">'
+      +'Hay tareas asignadas a <b>'+window._tkSinResolver.map(esc).join('</b>, <b>')+'</b> que no '
+      +'coinciden con nadie en Personas, asi que no entran en este filtro. '
+      +'Agregá esos nombres en Configuracion &rarr; Personas, o corregí el responsable en cada tarea.'
+      +'</div>';
+  }
+
   const rowsHtml=grupos.map(function(g){
     const abiertasG=g.rows.filter(function(r){return !r.t.done;}).length;
     const vencG=g.rows.some(function(r){const dd=endOfDue(r.t);return !r.t.done&&dd&&dd<now;});
@@ -10730,12 +10771,12 @@ function showTickets(){
     +'</div>'
     +(tkVista()==='pipe'
       ? tkPipeHtml(list)
-      : (list.length
+      : (_avisoResp + (list.length
       ?'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px 16px 16px">'+rowsHtml+elimHtml+'</div>'
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>'))))))
+        +'</div>')))))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
