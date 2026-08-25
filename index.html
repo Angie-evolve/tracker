@@ -15819,6 +15819,66 @@ function mapaToggleAngulo(k){
 // ---- Mapa de angulos: la lectura que solo aparece cruzando competidores ----
 // Dos preguntas que ninguna ficha suelta contesta: que angulo esta saturado
 // (varios competidores pegandole al mismo lugar) y que eje no esta hablando nadie.
+// Los angulos que salen de las llamadas de venta. Las otras dos columnas
+// muestran lo que se anuncia; esta muestra lo que la gente dice cuando nadie
+// le esta vendiendo. Ahi suele estar el angulo que nadie esta usando.
+function _angDeLlamadas(c){
+  return (c.angulosLlamadas&&c.angulosLlamadas.items)||[];
+}
+function _angEstado(html,color){
+  var e=document.getElementById('ang-estado');
+  if(!e) return;
+  e.innerHTML=html||'';
+  e.style.color=color||'var(--text3)';
+}
+async function extraerAngulosLlamadas(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _angEstado('Falta la clave de Anthropic.','var(--amberx)'); return; }
+  var mat=_llamadasParaIA(c);
+  if(!mat.items.length){
+    _angEstado('Este cliente no tiene transcripciones ni resumenes cargados.','var(--amberx)');
+    return;
+  }
+  var t0=Date.now();
+  _angEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+mat.items.length+' llamadas...</span></span>','var(--text2)');
+  try{
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:3000,
+      messages:[{role:'user',content:
+        'Estas son llamadas de venta. Sacá los angulos de comunicacion que aparecen en '
+        +'como habla la gente: el dolor con sus palabras, lo que los frena, lo que los '
+        +'convencio, con que comparan.\n\n'
+        +'Devolve SOLO un JSON, empezando con { :\n'
+        +'{"angulos":[{"a":"el angulo en 4 a 7 palabras",'
+        +'"frase":"la frase textual de la llamada que lo sostiene",'
+        +'"de":"titulo de la llamada y minuto si aparece",'
+        +'"tipo":"dolor|freno|deseo|comparacion"}]}\n\n'
+        +'Reglas: maximo 10. La frase tiene que ser textual, no parafraseada. '
+        +'Si un angulo no tiene una frase que lo sostenga, no lo incluyas. '
+        +'No repitas el mismo angulo con distintas palabras.\n\n'
+        +'LLAMADAS:\n'+mat.items.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]
+    });
+    c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(), n:mat.items.length,
+                       omitidas:mat.omitidas};
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Sacados '+((o.angulos||[]).length)+' angulos en '+Math.round((Date.now()-t0)/1000)+'s');
+  }catch(e){
+    console.error('Angulos de llamadas:', e);
+    _angEstado('No pude sacarlos: '+esc(e.message),'var(--redx)');
+  }
+}
+function borrarAnguloLlamada(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.angulosLlamadas) return;
+  c.angulosLlamadas.items.splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+
 function mapaAngulosHtml(c){
   var todos=_adTodos(c);
   if(!todos.length) return '';
@@ -15950,6 +16010,47 @@ function mapaAngulosHtml(c){
       return x+'</div>';
     };
 
+    // Tercera columna: no son anuncios sino frases de las llamadas, asi que
+    // tiene su propio formato en vez de reusar columna().
+    var col3=(function(){
+      var ang=_angDeLlamadas(c), al=c.angulosLlamadas||{};
+      var col={dolor:'var(--redx)',freno:'var(--amberx)',deseo:'var(--green)',comparacion:'var(--text2)'};
+      var x='<div style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">'
+        +'<div style="padding:9px 13px;background:var(--bg2);display:flex;align-items:center;gap:8px">'
+          +'<span style="font-size:10.5px;color:var(--text2);text-transform:uppercase;letter-spacing:0.07em">De las llamadas</span>'
+          +'<span style="margin-left:auto;font-size:11px;color:var(--text3)">'+ang.length+'</span>'
+          +'<button class="btn btn-sm" style="padding:2px 8px;font-size:10px" '
+            +'onclick="extraerAngulosLlamadas('+c.id+')">'+(ang.length?'Releer':'Leer')+'</button>'
+        +'</div>'
+        +'<div id="ang-estado" style="font-size:11px;color:var(--text3);line-height:1.5;padding:0 13px"></div>';
+      if(!ang.length){
+        x+='<div style="padding:14px 13px;font-size:11.5px;color:var(--text3);line-height:1.5">'
+          +'Lo que dice la gente cuando nadie le esta vendiendo. Sale de las transcripciones cargadas en Contexto.</div>';
+      }else{
+        ang.slice(0,12).forEach(function(a,i){
+          x+='<div style="border-top:1px solid var(--border);padding:9px 13px">'
+            +'<div style="display:flex;align-items:flex-start;gap:8px">'
+              +'<span style="width:5px;height:5px;border-radius:50%;flex:none;margin-top:6px;'
+                +'background:'+(col[a.tipo]||'var(--text3)')+'"></span>'
+              +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text);line-height:1.35">'+esc(a.a||'')+'</span>'
+              +'<button onclick="borrarAnguloLlamada('+c.id+','+i+')" aria-label="Quitar" '
+                +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:13px;line-height:1;padding:0 2px">&times;</button>'
+            +'</div>'
+            // La frase textual es lo que hace usable el angulo: sin ella es una
+            // etiqueta mas; con ella ya tenes el copy del anuncio.
+            +(a.frase?('<div style="font-size:11px;color:var(--text3);line-height:1.5;margin:4px 0 0 13px">'
+              +'\u201c'+esc(a.frase)+'\u201d</div>'):'')
+            +(a.de?('<div style="font-size:10px;color:var(--text3);margin:2px 0 0 13px;opacity:.75">'+esc(a.de)+'</div>'):'')
+          +'</div>';
+        });
+        if(ang.length>12) x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10.5px;color:var(--text3)">y '+(ang.length-12)+' mas</div>';
+        x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10px;color:var(--text3)">'
+          +al.n+' llamadas leidas &middot; '+new Date(al.at).toLocaleDateString('es-AR')+'</div>';
+      }
+      return x+'</div>';
+    })();
+
+
     // Los compartidos van con el mercado: ahi es donde vale saber que ya los
     // probo alguien mas.
     h+='<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
@@ -15957,6 +16058,7 @@ function mapaAngulosHtml(c){
                'Todavia no cargaste material de la competencia.', true)
       +columna('Nosotros', 'var(--text2)', nuestros,
                'Todavia no leiste ningun anuncio propio.', false)
+    +col3
       +'</div>';
     if(compartidos.length){
       h+='<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:10px">'
