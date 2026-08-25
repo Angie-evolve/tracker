@@ -6964,6 +6964,16 @@ function integracionesAppHtml(){
         action:'abrirRutinas()', actionLabel:rs.length?'Editar':'Crear'});
     })(),
     (function(){
+      var g=(DB.glosario||[]);
+      return card({name:'Glosario', st:g.length?'ok':'no',
+        desc:'Las palabras con las que hablas en las llamadas. Viaja a los prompts que '
+          +'escriben copy, para que los anuncios suenen igual que vos.',
+        detail:g.length?(g.length+' termino'+(g.length===1?'':'s')+' \u00b7 '
+          +g.slice(0,3).map(function(x){return x.decir;}).join(', ')
+          +(g.length>3?'...':'')):'Sin terminos cargados',
+        action:'abrirGlosarioModal()', actionLabel:g.length?'Editar':'Cargar'});
+    })(),
+    (function(){
       // Almacenamiento. El aviso de espacio existia pero solo saltaba cuando ya
       // no entraba nada; para entonces ya perdiste lo ultimo que hiciste.
       var d=_diagEspacio();
@@ -15909,7 +15919,11 @@ async function extraerAngulosLlamadas(clientId){
         +'LLAMADAS:\n'+mat.items.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]
     });
     c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(),
-                       n:mat.conTexto, aud:mat.auditorias};
+                       n:mat.conTexto, aud:mat.auditorias,
+                       // Marca de origen. Los guardados antes de este cambio
+                       // salieron de nuestras llamadas con el cliente y no
+                       // sirven para ángulos: hay que poder distinguirlos.
+                       fuente:'leads'};
     save();
     if(typeof renderTab==='function') renderTab();
     toast('Sacados '+((o.angulos||[]).length)+' angulos en '+Math.round((Date.now()-t0)/1000)+'s');
@@ -15917,6 +15931,14 @@ async function extraerAngulosLlamadas(clientId){
     console.error('Angulos de llamadas:', e);
     _angEstado('No pude sacarlos: '+esc(e.message),'var(--redx)');
   }
+}
+function borrarAngulosViejos(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  delete c.angulosLlamadas;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast('Borrados. Toca Leer para sacarlos de las llamadas con leads.');
 }
 function borrarAnguloLlamada(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -16083,6 +16105,15 @@ function mapaAngulosHtml(c){
             +'.</span>'):'')
           +'</div>';
       }else{
+        if(al.fuente!=='leads'){
+          x+='<div style="background:rgba(186,117,23,.12);border-bottom:1px solid var(--amberx);'
+            +'padding:9px 13px;font-size:11px;color:var(--amberx);line-height:1.5">'
+            +'Estos salieron de tus llamadas <b>con</b> el cliente, no de las llamadas del '
+            +'cliente con sus leads. No sirven como angulos. '
+            +'<button onclick="borrarAngulosViejos('+c.id+')" style="border:0;background:none;'
+            +'color:var(--amberx);text-decoration:underline;cursor:pointer;font-family:inherit;'
+            +'font-size:11px;padding:0">Borrarlos</button></div>';
+        }
         ang.slice(0,12).forEach(function(a,i){
           x+='<div style="border-top:1px solid var(--border);padding:9px 13px">'
             +'<div style="display:flex;align-items:flex-start;gap:8px">'
@@ -19365,6 +19396,142 @@ function materialHtml(c){
     +'</div>'):'');
 }
 
+// ---- Glosario -----------------------------------------------------------
+// Un glosario de palabras sueltas es una referencia que nadie abre. Este
+// guarda pares "decir / evitar": eso es una regla, se puede aplicar y se
+// puede revisar. Y sobre todo viaja a los prompts, que es lo unico que hace
+// que los anuncios terminen hablando igual que las llamadas.
+function glosario(){
+  if(!Array.isArray(DB.glosario)) DB.glosario=[];
+  return DB.glosario;
+}
+// El bloque que se le agrega a cualquier prompt que escriba copy.
+function _glosParaPrompt(){
+  var g=glosario().filter(function(x){return x.decir;});
+  if(!g.length) return '';
+  return '\n\nGLOSARIO OBLIGATORIO. Usa estas palabras y evita las otras:\n'
+    +g.map(function(x){
+      return '- Deci "'+x.decir+'"'+(x.evitar?(', nunca "'+x.evitar+'"'):'')
+        +(x.nota?(' ('+x.nota+')'):'');
+    }).join('\n');
+}
+function glosAgregar(){
+  var d=(document.getElementById('gl-decir')||{}).value||'';
+  var e=(document.getElementById('gl-evitar')||{}).value||'';
+  var n=(document.getElementById('gl-nota')||{}).value||'';
+  d=d.trim();
+  if(!d){ toast('Falta la palabra que si va'); return; }
+  glosario().unshift({id:Date.now(), decir:d, evitar:e.trim(), nota:n.trim()});
+  save();
+  abrirGlosarioModal();
+}
+function glosQuitar(id){
+  DB.glosario=glosario().filter(function(x){return x.id!==id;});
+  save();
+  abrirGlosarioModal();
+}
+// Propone terminos mirando como se habla en las llamadas ya cargadas. No los
+// guarda: los deja escritos para que los edites, porque la mitad va a ser ruido.
+async function glosSugerir(){
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ toast('Falta la clave de Anthropic'); return; }
+  var textos=[], total=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      var t=cl.transcript||'';
+      if(!t || total>60000) return;
+      t=t.slice(0,12000); total+=t.length;
+      textos.push(t);
+    });
+  });
+  if(!textos.length){ toast('No hay transcripciones cargadas para leer'); return; }
+  var e=document.getElementById('gl-sug');
+  if(e) e.innerHTML='<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo como hablas...</span></span>';
+  try{
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:2000,
+      messages:[{role:'user',content:
+        'Abajo hay transcripciones de llamadas de venta. Identifica el vocabulario propio '
+        +'de quien vende: palabras y expresiones que repite y que son parte de su forma de '
+        +'nombrar las cosas, no castellano comun.\n\n'
+        +'Devolve SOLO un JSON, empezando con { :\n'
+        +'{"terminos":[{"decir":"la palabra que usa","evitar":"la alternativa generica que '
+        +'NO deberia usarse en su lugar, o vacio","nota":"cuando aplica, en pocas palabras"}]}\n\n'
+        +'Maximo 10. Solo lo que sea distintivo: si cualquiera lo diria igual, no lo incluyas.\n\n'
+        +'LLAMADAS:\n'+textos.join('\n\n---\n\n')}]
+    });
+    var t=(o.terminos||[]);
+    if(!t.length){ if(e) e.textContent='No encontre vocabulario distintivo.'; return; }
+    if(e) e.innerHTML='<div style="font-size:11px;color:var(--text3);margin-bottom:6px">'
+      +'Tocá el que quieras sumar. Se puede editar despues.</div>'
+      +t.map(function(x,i){
+        return '<button onclick="glosSumarSugerido('+i+')" style="display:block;width:100%;'
+          +'text-align:left;font-size:11.5px;padding:6px 9px;margin-bottom:4px;cursor:pointer;'
+          +'border:1px solid var(--border2);border-radius:var(--radius);background:transparent;'
+          +'color:var(--text2);font-family:var(--font)">'
+          +'<b style="color:var(--text)">'+esc(x.decir)+'</b>'
+          +(x.evitar?(' <span style="color:var(--text3)">en vez de '+esc(x.evitar)+'</span>'):'')
+          +'</button>';
+      }).join('');
+    S._glosSug=t;
+  }catch(err){
+    console.error('Sugerir glosario:', err);
+    if(e) e.textContent='No pude leerlas: '+err.message;
+  }
+}
+function glosSumarSugerido(i){
+  var x=(S._glosSug||[])[i];
+  if(!x) return;
+  glosario().unshift({id:Date.now(), decir:x.decir||'', evitar:x.evitar||'', nota:x.nota||''});
+  save();
+  abrirGlosarioModal();
+}
+
+function abrirGlosarioModal(){
+  var g=glosario();
+  var inp='width:100%;font-size:12.5px;padding:8px 10px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font)';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px">'
+      +'<div class="modal-title">Glosario</div>'
+      +'<div class="modal-sub">Las palabras con las que hablas en las llamadas. Viaja a los '
+        +'prompts que escriben copy, para que los anuncios suenen igual que vos y no a IA.</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'
+        +'<div><div style="font-size:10.5px;color:var(--text3);margin-bottom:4px">Deci esto</div>'
+          +'<input id="gl-decir" placeholder="grilla" style="'+inp+'"></div>'
+        +'<div><div style="font-size:10.5px;color:var(--text3);margin-bottom:4px">En vez de</div>'
+          +'<input id="gl-evitar" placeholder="calendario de reservas" style="'+inp+'"></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:8px;margin-bottom:14px">'
+        +'<input id="gl-nota" placeholder="Cuando aplica (opcional)" style="'+inp+';flex:1" '
+          +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();glosAgregar();}">'
+        +'<button class="btn btn-sm btn-primary" onclick="glosAgregar()">Agregar</button>'
+      +'</div>'
+      +(g.length?g.map(function(x){
+        return '<div style="display:flex;align-items:baseline;gap:9px;padding:8px 0;'
+          +'border-top:1px solid var(--border)">'
+          +'<span style="font-size:12.5px;color:var(--text)">'+esc(x.decir)+'</span>'
+          +(x.evitar?('<span style="font-size:11.5px;color:var(--text3)">en vez de '
+            +'<span style="text-decoration:line-through">'+esc(x.evitar)+'</span></span>'):'')
+          +(x.nota?('<span style="font-size:11px;color:var(--text3);opacity:.8">'+esc(x.nota)+'</span>'):'')
+          +'<span style="flex:1"></span>'
+          +'<button onclick="glosQuitar('+x.id+')" aria-label="Quitar" style="border:0;background:none;'
+            +'color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
+        +'</div>';
+      }).join('')
+      :'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding:8px 0;'
+       +'border-top:1px solid var(--border)">Todavia no cargaste ninguna. '
+       +'Podes escribirlas o dejar que las saque de tus llamadas.</div>')
+      +'<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">'
+        +'<button class="btn btn-sm" onclick="glosSugerir()">Sacarlas de mis llamadas</button>'
+        +'<div id="gl-sug" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:10px"></div>'
+      +'</div>'
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
+}
+
 // ---- Generador de landings ----------------------------------------------
 // No genera HTML. Produce el objeto COPY que llena una plantilla estable.
 // Las plantillas se mejoran por fuera; si las generara la app, cada mejora
@@ -19549,6 +19716,7 @@ async function escribirCopyLanding(clientId){
         +'"bajoCta":"lo que saca el miedo a hacer clic",'
         +'"puntos":["3 bullets de una linea"]}\n\n'
         +'Reglas: castellano rioplatense. Usa las palabras del cliente, no las tuyas. '
+        +_glosParaPrompt()+' '
         +'Nunca inventes numeros: solo los de PRUEBA SOCIAL de abajo, si los hay. '
         +(cfg.piel==='simple'?'Piel Simple: la promesa tiene que entenderse sola, sin contexto.\n':'')
         +(cfg.piel==='hollywood'?'Piel Hollywood: hay un video de fondo que ya muestra el negocio. '
@@ -19935,7 +20103,7 @@ async function preguntarALlamadas(clientId, texto){
         +'poné solo la llamada.\n'
         +'- Si algo no se hablo, deci "no aparece en las llamadas". No lo deduzcas ni lo inventes.\n'
         +'- Si la respuesta son varias cosas, usa vinetas con "- ". Si es una sola, dos o tres oraciones.\n'
-        +'- Maximo 200 palabras.\n\n'
+        +'- Maximo 200 palabras.'+_glosParaPrompt()+'\n\n'
         +'LLAMADAS:\n'+llamadas.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
     });
     var d=await r.json();
