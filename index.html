@@ -19451,7 +19451,8 @@ async function armarVoz(clientId){
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:2500, messages:[{role:'user',content:
+      // 4000: cinco secciones con frases textuales no entran en 2500.
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:4000, messages:[{role:'user',content:
         'Abajo hay llamadas de venta entre '+(c.name||'una empresa')+' y sus prospectos.\n\n'
         +'Escribi un bloque de instrucciones que yo voy a pegar arriba de otros prompts, para '
         +'que cuando escriba anuncios y guiones suenen como habla este mercado y no como IA.\n\n'
@@ -19476,11 +19477,18 @@ async function armarVoz(clientId){
     console.log('Voz del mercado:', d);
     if(d.error) throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error'));
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
-    if(!txt) throw new Error(d.stop_reason==='max_tokens'?'se quedo sin tokens':'vino vacia');
-    c.voz={texto:txt, at:new Date().toISOString(), n:mat.conTexto};
+    if(!txt) throw new Error(d.stop_reason==='max_tokens'
+      ? 'se quedo sin tokens sin llegar a escribir nada. Proba de nuevo.'
+      : ('termino con stop_reason "'+(d.stop_reason||'?')+'" y sin texto.'));
+    // Un bloque cortado sirve igual: es texto editable, no un JSON que hay
+    // que parsear. Descartarlo era tirar trabajo ya hecho.
+    var cortado=(d.stop_reason==='max_tokens');
+    c.voz={texto:txt, at:new Date().toISOString(), n:mat.conTexto, cortado:cortado};
     save();
     if(typeof renderTab==='function') renderTab();
-    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s');
+    if(cortado) _vozEstado('Llego cortado por falta de tokens. Lo que hay sirve: '
+      +'revisalo, completalo a mano o toca Rehacer.','var(--amberx)');
+    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s'+(cortado?' (cortado)':''));
   }catch(e){
     console.error('Voz del mercado:', e);
     _vozEstado('No pude armarlo: '+esc(e.message),'var(--redx)');
@@ -19499,8 +19507,9 @@ function glosarioHtml(c){
     +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px">'
       +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;flex:1">'
         +'Voz del mercado</div>'
-      +(t?('<span style="font-size:10px;color:var(--text3)">'+v.n+' leads &middot; '
-        +new Date(v.at).toLocaleDateString('es-AR')+'</span>'):'')
+      +(t?('<span style="font-size:10px;color:'+(v.cortado?'var(--amberx)':'var(--text3)')+'">'
+        +v.n+' leads &middot; '+new Date(v.at).toLocaleDateString('es-AR')
+        +(v.cortado?' &middot; cortado':'')+'</span>'):'')
       +(t?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
         +'onclick="vozCopiar('+c.id+')">Copiar</button>'):'')
       +'<button class="btn btn-sm'+(t?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
