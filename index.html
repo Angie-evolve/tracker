@@ -7796,7 +7796,12 @@ function ticketEditarModal(cid,tid){
     +'</div>'
     // Vence al lado de Estado: son las dos cosas que se cambian al revisar una
     // tarea, y hasta ahora la fecha solo se podia tocar recreando la tarea.
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">'
+    +'<div><div style="'+lbl+'">Prioridad</div>'
+      +'<select id="ted-nivel" style="'+inp+'">'
+      +TK_NIVELES.map(function(n){
+        return '<option value="'+n.k+'"'+((t.nivel||'media')===n.k?' selected':'')+'>'+n.l+'</option>';
+      }).join('')+'</select></div>'
     +'<div><div style="'+lbl+'">Vence</div>'
       +'<input id="ted-due" type="date" value="'+esc(_tedDueISO(t.due))+'" style="'+inp+'"></div>'
     +'<div><div style="'+lbl+'">Estado</div><select id="ted-estado" style="'+inp+'">'
@@ -7860,6 +7865,7 @@ function ticketGuardarEdicion(){
   var resp=(document.getElementById('ted-resp')||{}).value||'';
   var estado=(document.getElementById('ted-estado')||{}).value||'';
   var due=(document.getElementById('ted-due')||{}).value||'';
+  var nivel=(document.getElementById('ted-nivel')||{}).value||'';
   var nuevoCid=parseInt((document.getElementById('ted-cliente')||{}).value||d.cid,10);
   if(text.trim()) t.text=text.trim();
   t.responsible=resp.trim()||t.responsible;
@@ -7867,6 +7873,7 @@ function ticketGuardarEdicion(){
   // Vaciar el campo saca el vencimiento: una tarea sin fecha es valida y no
   // deberia quedar atada a la que se le puso al crearla.
   if(due) t.due=due; else delete t.due;
+  if(nivel && nivel!==t.nivel){ t.nivel=nivel; delete t.prio; }
   if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
   else if(t.done && estado){ t.done=false; delete t.doneAt; }
   t.attachments=(d.attachments||[]).slice();
@@ -10372,7 +10379,10 @@ function showTickets(){
     const doneA=a.t.done?1:0, doneB=b.t.done?1:0;
     if(doneA!==doneB) return doneA-doneB; // hechas al final
     if(!doneA){
-      // prioridad manual (drag & drop) manda; sin prio va despues
+      // Primero el nivel ya escalado por antiguedad. El arrastre desempata
+      // dentro del mismo nivel, no por encima de el.
+      const na=_tkPeso(a.t), nb=_tkPeso(b.t);
+      if(na!==nb) return na-nb;
       const pa=(a.t.prio!=null)?a.t.prio:1e9;
       const pb=(b.t.prio!=null)?b.t.prio:1e9;
       if(pa!==pb) return pa-pb;
@@ -10402,7 +10412,75 @@ function showTickets(){
   const fmtF=function(iso){ if(!iso) return '-'; const d=new Date(iso); return d.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}); };
 
   // --- Filas agrupadas por cliente (rediseno minimalista) ---
-  const _check='<svg viewBox=\"0 0 12 12\" fill=\"none\"><path d=\"M2.5 6.2l2.3 2.3 4.7-4.9\" stroke=\"#fff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
+  // ---- Prioridad ----------------------------------------------------------
+// Dos cosas separadas a proposito: el nivel lo elegis vos y no se toca solo;
+// la antiguedad suma aparte y se muestra. Si el envejecimiento pisara tu
+// eleccion en silencio, elegir dejaria de significar algo.
+var TK_NIVELES=[
+  {k:'alta',  l:'Alta',  col:'var(--redx)',   bg:'rgba(216,90,48,0.14)',  peso:0},
+  {k:'media', l:'Media', col:'var(--amberx)', bg:'rgba(240,168,48,0.14)', peso:1},
+  {k:'baja',  l:'Baja',  col:'var(--text3)',  bg:'var(--bg3)',            peso:2}
+];
+function _tkNivel(t){
+  var k=t.nivel||'media';
+  return TK_NIVELES.filter(function(x){return x.k===k;})[0]||TK_NIVELES[1];
+}
+// Cuanto lleva sin moverse. Cuenta desde el ultimo cambio de estado real,
+// no desde que se creo: una tarea que avanzo ayer no esta vieja.
+function _tkQuieta(t){
+  var ref=t.revisionAt||t.procesoAt||t.delegatedAt||t.createdAt;
+  if(!ref) return 0;
+  var d=new Date(ref);
+  if(isNaN(d.getTime())) return 0;
+  return Math.floor((Date.now()-d.getTime())/86400000);
+}
+// Escala: 0 no pasa nada, 1 sube un nivel, 2 sube dos. Vencida pesa mas que
+// quieta, porque hubo una fecha comprometida y se paso.
+function _tkEscala(t){
+  if(t.done||t.archivada) return {n:0};
+  var q=_tkQuieta(t);
+  var d=endOfDue(t), venc=d?Math.floor((Date.now()-d.getTime())/86400000):-1;
+  if(venc>=7)  return {n:2, txt:'vencida hace '+venc+' d'};
+  if(venc>=2)  return {n:1, txt:'vencida hace '+venc+' d'};
+  if(q>=14)    return {n:2, txt:'quieta '+q+' d'};
+  if(q>=7)     return {n:1, txt:'quieta '+q+' d'};
+  return {n:0, q:q};
+}
+// El peso con el que se ordena. El nivel manda; la escala lo sube, nunca lo baja.
+function _tkPeso(t){
+  var e=_tkEscala(t);
+  return Math.max(0, _tkNivel(t).peso - e.n);
+}
+function setTicketNivel(clientId, taskId, k){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  t.nivel=k;
+  // Al elegir a mano se suelta el orden por arrastre: si no, la posicion
+  // vieja seguiria mandando y el cambio de nivel no se veria.
+  delete t.prio;
+  save();
+  showTickets();
+}
+function ticketNivelMenu(clientId, taskId, el){
+  var m=document.getElementById('tk-nivel-menu');
+  if(m) m.remove();
+  var d=document.createElement('div');
+  d.id='tk-nivel-menu';
+  d.style.cssText='position:absolute;left:0;top:22px;z-index:60;background:var(--bg2);'
+    +'border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;min-width:104px;'
+    +'box-shadow:0 6px 18px rgba(0,0,0,.4)';
+  d.innerHTML=TK_NIVELES.map(function(n){
+    return '<div onclick="event.stopPropagation();setTicketNivel('+clientId+','+taskId+',\''+n.k+'\')" '
+      +'style="padding:7px 12px;font-size:12px;cursor:pointer;color:'+n.col+'">'+n.l+'</div>';
+  }).join('');
+  el.parentNode.appendChild(d);
+  setTimeout(function(){
+    document.addEventListener('click', function cerrar(){ d.remove(); document.removeEventListener('click',cerrar); });
+  },0);
+}
+
+const _check='<svg viewBox=\"0 0 12 12\" fill=\"none\"><path d=\"M2.5 6.2l2.3 2.3 4.7-4.9\" stroke=\"#fff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
   const filaTarea=function(r,_i){
     const t=r.t, c=r.c;
     const d=endOfDue(t);
@@ -10418,6 +10496,12 @@ function showTickets(){
     else if(t.estado==='proceso'&&t.procesoAt){ meta='en proceso &middot; <span style=\"color:var(--bluex,#378add)\">'+_tkProcTexto(t)+'</span>'; }
     else if(t.estado&&ST){ meta=ST.label.toLowerCase()+(t.delegatedAt?(' &middot; '+_tkDias(new Date(t.delegatedAt),now)+' d'):''); }
     else { meta=(t.delegatedAt?('abierta '+_tkDias(new Date(t.delegatedAt),now)+' d'):'abierta'); }
+    var _esc=_tkEscala(t);
+    if(_esc.n && !t.done){
+      meta+=' &middot; <span style=\"color:'+(_esc.n>1?'var(--redx)':'var(--amberx)')+'\">'
+        +'subio a '+TK_NIVELES[Math.max(0,_tkNivel(t).peso-_esc.n)].l.toLowerCase()
+        +' &mdash; '+_esc.txt+'</span>';
+    }
     const seguir=t.ownerCliente?'<span style=\"display:inline-block;background:rgba(216,90,48,0.14);color:var(--redx);font-size:9px;font-weight:600;padding:1px 6px;border-radius:20px;margin-right:6px;text-transform:uppercase;letter-spacing:.04em\">Seguir a '+esc(t.responsible||'cliente')+'</span>':'';
     // Chip de estado como DROPDOWN: se toca y muestra las opciones para elegir directo.
     var chip='';
@@ -10441,7 +10525,19 @@ function showTickets(){
       +'</span>';
     return '<div class=\"tk-row'+(t.done?' done':'')+'\" '
       +(t.done?'':'draggable=\"true\" ondragstart=\"ticketDragStart('+_i+')\" ondragover=\"ticketDragOver(event)\" ondrop=\"ticketDrop(event,'+_i+')\" ')+'>'
-      +'<span class=\"tk-check\" onclick=\"toggleTask('+c.id+','+t.id+','+(t.done?'false':'true')+')\" role=\"checkbox\" aria-checked=\"'+(t.done?'true':'false')+'\">'+_check+'</span>'
+      +(t.done?'':(function(){
+  var n=_tkNivel(t), e=_tkEscala(t);
+  // Cuando escalo se muestra el nivel efectivo y, al lado, por que subio.
+  // Ver el motivo es lo que hace que el reordenamiento no sea magia.
+  var efec=e.n?TK_NIVELES[Math.max(0,n.peso-e.n)]:n;
+  return '<span style=\"position:relative;display:inline-block;flex:none\">'
+    +'<span onclick=\"event.stopPropagation();ticketNivelMenu('+c.id+','+t.id+',this)\" '
+      +'title=\"'+(e.n?('Elegiste '+n.l+'; subio por estar '+e.txt):'Prioridad')+'\" '
+      +'style=\"display:inline-block;width:8px;height:8px;border-radius:50%;cursor:pointer;'
+      +'background:'+efec.col+(e.n?';box-shadow:0 0 0 3px '+efec.bg:'')+'\"></span>'
+  +'</span>';
+})())
++'<span class=\"tk-check\" onclick=\"toggleTask('+c.id+','+t.id+','+(t.done?'false':'true')+')\" role=\"checkbox\" aria-checked=\"'+(t.done?'true':'false')+'\">'+_check+'</span>'
       +'<div style=\"flex:1;min-width:0\">'
       +'<div class=\"tk-txt\">'+seguir+esc(t.text||'')+'</div>'
       +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(personaNombre(t.responsible||'Ashy'))+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta
