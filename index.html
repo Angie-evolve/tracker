@@ -15834,7 +15834,7 @@ function _angEstado(html,color){
 // Junta las transcripciones que cargaste lead por lead. Es distinto de
 // _llamadasParaIA, que trae nuestras llamadas con el cliente.
 function _angMaterialLeads(c){
-  DB.capT=DB.capT||{};
+  DB.capT=DB.capT||{}; DB.capBatches=DB.capBatches||[];
   var opps=((c.ghl&&c.ghl.opportunities)||[]);
   var total=0, items=[], sinTexto=0;
   opps.forEach(function(o){
@@ -15849,7 +15849,25 @@ function _angMaterialLeads(c){
     items.push({titulo:(o.contactName||o.name||'Lead')
       +(o.pipelineStage?(' \u00b7 '+o.pipelineStage):''), texto:texto});
   });
-  return {items:items, conTexto:items.length, sinTexto:sinTexto, total:opps.length};
+  // Las auditorias ya hechas son analisis destilado de esas mismas llamadas.
+  // Entran despues de las transcripciones: si el espacio alcanza suman, y si
+  // no, no desplazan al material crudo, que es donde estan las frases.
+  var auditorias=0;
+  var mios={};
+  opps.forEach(function(o){ mios[_capKey(o)]=1; });
+  DB.capBatches.forEach(function(b){
+    if(!(b.leads||[]).some(function(L){return mios[L.key];})) return;
+    var f=String(b.feedback||'');
+    if(!f) return;
+    if(f.length>_ENTREG_MAXCALL) f=f.slice(0,_ENTREG_MAXCALL);
+    if(total+f.length>_ENTREG_MAXTOTAL) return;
+    total+=f.length;
+    auditorias++;
+    items.push({titulo:'Auditoria de '+((b.leads||[]).map(function(L){return L.name;}).slice(0,3).join(', '))
+      +' ('+new Date(b.createdAt).toLocaleDateString('es-AR')+')', texto:f});
+  });
+  return {items:items, conTexto:items.length-auditorias, sinTexto:sinTexto,
+          total:opps.length, auditorias:auditorias};
 }
 
 async function extraerAngulosLlamadas(clientId){
@@ -15871,7 +15889,9 @@ async function extraerAngulosLlamadas(clientId){
     +'<span class="carga-spin"></span><span>Leyendo '+mat.items.length+' llamadas...</span></span>','var(--text2)');
   try{
     var o=await _lpApi(apiKey,{
-      model:'claude-sonnet-5', max_tokens:3000,
+      // 6000 porque cada angulo lleva su frase textual: con 3000 llegaba
+      // cortado antes de terminar la lista.
+      model:'claude-sonnet-5', max_tokens:6000,
       messages:[{role:'user',content:
         'Estas son llamadas de venta entre '+(c.name||'el cliente')+' y SUS PROSPECTOS. '
         +'Saca los angulos de comunicacion que aparecen en como hablan los prospectos: '
@@ -15883,12 +15903,13 @@ async function extraerAngulosLlamadas(clientId){
         +'"frase":"la frase textual de la llamada que lo sostiene",'
         +'"de":"titulo de la llamada y minuto si aparece",'
         +'"tipo":"dolor|freno|deseo|comparacion"}]}\n\n'
-        +'Reglas: maximo 10. La frase tiene que ser textual, no parafraseada. '
+        +'Reglas: maximo 8. La frase tiene que ser textual, no parafraseada. '
         +'Si un angulo no tiene una frase que lo sostenga, no lo incluyas. '
         +'No repitas el mismo angulo con distintas palabras.\n\n'
         +'LLAMADAS:\n'+mat.items.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]
     });
-    c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(), n:mat.items.length};
+    c.angulosLlamadas={items:(o.angulos||[]), at:new Date().toISOString(),
+                       n:mat.conTexto, aud:mat.auditorias};
     save();
     if(typeof renderTab==='function') renderTab();
     toast('Sacados '+((o.angulos||[]).length)+' angulos en '+Math.round((Date.now()-t0)/1000)+'s');
@@ -16056,8 +16077,10 @@ function mapaAngulosHtml(c){
         x+='<div style="padding:14px 13px;font-size:11.5px;color:var(--text3);line-height:1.5">'
           +'Lo que dicen los prospectos en las llamadas de venta del cliente. '
           +'Sale de las transcripciones que cargas lead por lead.'
-          +(_m.total?('<br><span style="color:'+(_m.conTexto?'var(--text2)':'var(--amberx)')+'">'
-            +_m.conTexto+' de '+_m.total+' leads tienen transcripcion cargada.</span>'):'')
+          +(_m.total?('<br><span style="color:'+((_m.conTexto||_m.auditorias)?'var(--text2)':'var(--amberx)')+'">'
+            +_m.conTexto+' de '+_m.total+' leads con transcripcion'
+            +(_m.auditorias?(' y '+_m.auditorias+' auditoria'+(_m.auditorias===1?'':'s')+' hechas'):'')
+            +'.</span>'):'')
           +'</div>';
       }else{
         ang.slice(0,12).forEach(function(a,i){
@@ -16078,7 +16101,8 @@ function mapaAngulosHtml(c){
         });
         if(ang.length>12) x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10.5px;color:var(--text3)">y '+(ang.length-12)+' mas</div>';
         x+='<div style="border-top:1px solid var(--border);padding:7px 13px;font-size:10px;color:var(--text3)">'
-          +al.n+' lead'+(al.n===1?'':'s')+' leidos &middot; '+new Date(al.at).toLocaleDateString('es-AR')+'</div>';
+          +al.n+' lead'+(al.n===1?'':'s')+(al.aud?(' y '+al.aud+' auditoria'+(al.aud===1?'':'s')):'')
+          +' &middot; '+new Date(al.at).toLocaleDateString('es-AR')+'</div>';
       }
       return x+'</div>';
     })();
