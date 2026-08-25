@@ -19264,90 +19264,126 @@ function _lpContextoInterno(c){
   return {texto:out.join('\n\n'), links:links.length, respuestas:(c.respuestas||[]).length};
 }
 
-async function generarLanding(clientId){
+async function _lpApi(apiKey, body){
+  var r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':apiKey,
+      'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify(body)
+  });
+  var d=await r.json();
+  console.log('Landing, respuesta:', d);
+  if(d.error) throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
+  var txt=(d.content||[]).filter(function(b2){return b2.type==='text';}).map(function(b2){return b2.text;}).join('');
+  var ini=txt.indexOf('{');
+  if(ini<0){
+    throw new Error(d.stop_reason==='max_tokens'
+      ? 'se quedo sin tokens. Proba de nuevo.'
+      : 'termino con stop_reason "'+(d.stop_reason||'?')+'" y sin texto.');
+  }
+  try{ return JSON.parse(txt.slice(ini, txt.lastIndexOf('}')+1)); }
+  catch(pe){
+    console.error('Landing, JSON cortado:', txt);
+    throw new Error('La respuesta llego cortada'+(d.stop_reason==='max_tokens'?' por falta de tokens.':'.'));
+  }
+}
+
+// ── PASO 1: investigar ──────────────────────────────────────────
+// Solo busca. No escribe copy. Separarlo es lo que hace que el
+// modelo dedique todo su presupuesto a encontrar, y sobre todo que
+// cambiar de piel no obligue a investigar de nuevo.
+async function investigarLanding(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey){ _lpEstado('Falta la clave de Anthropic. Cargala en la tarjeta Anthropic.','var(--amberx)'); return; }
+  if(!apiKey){ _lpEstado('Falta la clave de Anthropic.','var(--amberx)'); return; }
   var ctx=_lpContextoInterno(c);
-  if(!ctx.texto){
-    _lpEstado('Este cliente no tiene producto, llamadas ni links cargados. Sin eso la landing sale generica.','var(--amberx)');
-    return;
-  }
   var t0=Date.now();
   _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
-    +'<span class="carga-spin"></span><span>Juntando lo de adentro y buscando lo de afuera...</span></span>','var(--text2)');
+    +'<span class="carga-spin"></span><span>Buscando en el sitio y las redes...</span></span>','var(--text2)');
   try{
-    var r=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,
-        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({
-        // 8000 porque la busqueda consume presupuesto: con 4000 el modelo
-        // terminaba de investigar y se quedaba sin espacio para el JSON.
-        model:'claude-sonnet-5', max_tokens:8000,
-        // La busqueda web es lo que permite traer prueba social y precios
-        // reales del sitio del cliente, que es lo que ninguna plantilla tiene.
-        tools:[{type:'web_search_20250305', name:'web_search', max_uses:3}],
-        messages:[{role:'user',content:
-          'Sos director creativo de una agencia. Vas a escribir el copy de una landing de conversion '
-          +'para el cliente "'+(c.name||'')+'".\n\n'
-          +'PRIMERO: busca en la web el sitio y las redes de este cliente usando los links de abajo '
-          +'y su nombre. Necesito prueba social real (cantidad de clientes, metricas, nombres de '
-          +'clientes suyos), precios si los publica, y sus diferenciales con las palabras que ellos usan.\n\n'
-          +'DESPUES: escribi el copy combinando eso con lo que sabemos de las llamadas.\n\n'
-          +'PIEL: '+cfg.piel+'. MECANICA: '+cfg.mecanica+'.\n\n'
-          +'Devolve SOLO un JSON, sin markdown:\n'
-          +'{"hallazgos":[{"dato":"que encontraste","fuente":"de donde","confianza":"alta|media|baja"}],  // maximo 6'
-          +'"contradicciones":["cosas del sitio que no coinciden con las llamadas. Array vacio si no hay"],'
-          +'"copy":{"eyebrow":"","promesas":["3 variantes del titular para testear, cortas"],'
-          +'"bajada":"2 lineas","cta":"","bajoCta":"","puntos":["3 bullets cortos"],'
-          +'"pruebaSocial":[{"n":"numero","l":"que mide"}],'
-          +'"faq":[{"q":"","a":""}]}}\n\n'
-          +'IMPORTANTE: buscá primero y despues escribi. No expliques lo que vas a hacer ni '
-          +'comentes las busquedas. Tu respuesta arranca con { y termina con }, nada antes ni despues. '
-          +'Maximo 6 hallazgos y 4 preguntas en el FAQ, para que entre completo.\n\n'
-          +'Reglas: castellano rioplatense, sin superlativos vacios. Usa numeros solo si los '
-          +'encontraste, nunca inventados. Si no hay prueba social real, devolve el array vacio '
-          +'en vez de rellenar.\n\n'
-          +'LO QUE SABEMOS:\n'+ctx.texto}]
-      })
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:5000,
+      tools:[{type:'web_search_20250305', name:'web_search', max_uses:6}],
+      messages:[{role:'user',content:
+        'Investiga a la empresa "'+(c.name||'')+'" en la web. Entra a su sitio y a sus redes '
+        +'usando los links de abajo y su nombre.\n\n'
+        +'Busca especificamente, en este orden de prioridad:\n'
+        +'1. PRUEBA SOCIAL: cantidad de clientes, metricas de uso, nombres de clientes suyos, '
+        +'logos de clientes, testimonios. Suele estar en franjas tipo "confiado por" o en el pie.\n'
+        +'2. Precios publicados y que incluye cada plan.\n'
+        +'3. Sus diferenciales, con las palabras exactas que ellos usan.\n'
+        +'4. Objeciones que respondan en su FAQ.\n\n'
+        +'Devolve SOLO un JSON, sin markdown, empezando con { :\n'
+        +'{"hallazgos":[{"dato":"","fuente":"","confianza":"alta|media|baja"}],'
+        +'"pruebaSocial":[{"n":"el numero","l":"que mide"}],'
+        +'"clientes":["nombres de clientes suyos si los publica"],'
+        +'"diferenciales":["con sus palabras"],'
+        +'"faq":[{"q":"","a":""}],'
+        +'"contradicciones":["cosas de la web que no coinciden con las llamadas"]}\n\n'
+        +'Si algo no lo encontras, array vacio. Nunca inventes numeros ni nombres.\n\n'
+        +'CONTEXTO DE LAS LLAMADAS:\n'+ctx.texto}]
     });
-    var d=await r.json();
-    if(d.error){
-      console.error('Generador de landing:', d);
-      throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
-    }
-    // Se deja la respuesta entera en la consola: cuando falla, el motivo
-    // esta casi siempre en stop_reason o en los bloques que no son texto.
-    console.log('Generador de landing, respuesta completa:', d);
-    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
-    var ini=txt.indexOf('{');
-    if(ini<0){
-      var motivo = (d.stop_reason==='max_tokens')
-        ? 'se quedo sin tokens despues de buscar. Proba de nuevo: suele salir a la segunda.'
-        : ('termino con stop_reason "'+(d.stop_reason||'?')+'" y sin texto. Esta la respuesta en la consola.');
-      throw new Error(motivo);
-    }
-    var o;
-    try{
-      o=JSON.parse(txt.slice(ini, txt.lastIndexOf('}')+1));
-    }catch(pe){
-      // Si el JSON quedo cortado se rescatan los objetos completos que
-      // llegaron, igual que en el cruce de entregables.
-      console.error('Generador de landing, JSON cortado:', txt);
-      throw new Error('La respuesta llego cortada'
-        +(d.stop_reason==='max_tokens'?' por falta de tokens. Proba de nuevo.':'. Esta el detalle en la consola.'));
-    }
-    cfg.resultado=o;
-    cfg.at=new Date().toISOString();
+    cfg.investigacion=o;
+    cfg.investigadoAt=new Date().toISOString();
     save();
     if(typeof renderTab==='function') renderTab();
-    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s');
+    toast('Investigado en '+Math.round((Date.now()-t0)/1000)+'s');
   }catch(e){
-    console.error('Generador de landing:', e);
-    _lpEstado('No pude generarlo: '+esc(e.message),'var(--redx)');
+    console.error('Investigar landing:', e);
+    _lpEstado('No pude investigar: '+esc(e.message),'var(--redx)');
+  }
+}
+
+// ── PASO 2: escribir ────────────────────────────────────────────
+// Sin busqueda: todo el presupuesto va al copy, que es lo que se
+// lee. Corre en segundos y se puede repetir por cada piel.
+async function escribirCopyLanding(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _lpEstado('Falta la clave de Anthropic.','var(--amberx)'); return; }
+  var ctx=_lpContextoInterno(c);
+  var inv=cfg.investigacion||{};
+  var piel=LP_PIELES.filter(function(p){return p.k===cfg.piel;})[0]||{};
+  var t0=Date.now();
+  _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Escribiendo el copy...</span></span>','var(--text2)');
+  try{
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:3000,
+      messages:[{role:'user',content:
+        'Sos director creativo. Escribi el copy de una landing de conversion para "'+(c.name||'')+'".\n\n'
+        +'PIEL: '+cfg.piel+' — '+(piel.d||'')+'\n'
+        +'MECANICA: '+cfg.mecanica+'\n\n'
+        +'Devolve SOLO un JSON, empezando con { :\n'
+        +'{"eyebrow":"una linea corta arriba del titular",'
+        +'"promesas":["3 titulares para testear. Cortos, concretos, sin superlativos"],'
+        +'"bajada":"dos lineas que expliquen como se cumple la promesa",'
+        +'"cta":"texto del boton, en verbo",'
+        +'"bajoCta":"lo que saca el miedo a hacer clic",'
+        +'"puntos":["3 bullets de una linea"]}\n\n'
+        +'Reglas: castellano rioplatense. Usa las palabras del cliente, no las tuyas. '
+        +'Nunca inventes numeros: solo los de PRUEBA SOCIAL de abajo, si los hay. '
+        +(cfg.piel==='simple'?'Piel Simple: la promesa tiene que entenderse sola, sin contexto.\n':'')
+        +(cfg.piel==='hollywood'?'Piel Hollywood: hay un video de fondo que ya muestra el negocio. '
+          +'El titular NO describe lo que se ve: maximo 5 palabras.\n':'')
+        +'\n\nLO QUE ENCONTRAMOS EN SU WEB:\n'+JSON.stringify({
+            pruebaSocial:inv.pruebaSocial||[], clientes:inv.clientes||[],
+            diferenciales:inv.diferenciales||[]
+          })
+        +'\n\nLO QUE SABEMOS DE LAS LLAMADAS:\n'+ctx.texto}]
+    });
+    cfg.copy=o;
+    cfg.copyAt=new Date().toISOString();
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Copy listo en '+Math.round((Date.now()-t0)/1000)+'s');
+  }catch(e){
+    console.error('Escribir copy:', e);
+    _lpEstado('No pude escribirlo: '+esc(e.message),'var(--redx)');
   }
 }
 
@@ -19355,26 +19391,24 @@ async function generarLanding(clientId){
 // la piel y el tema elegidos ahora, no los de cuando se genero.
 function copiarCopyLanding(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c||!c.landing||!c.landing.resultado) return;
-  var o=c.landing.resultado.copy||{};
-  // Las citas nunca deben llegar a la landing publicada.
+  if(!c||!c.landing) return;
+  var cfg=c.landing, o=cfg.copy||{}, inv=cfg.investigacion||{};
   var L=_lpLimpiar;
-  var LA=function(a){ return (a||[]).map(function(x){
+  var LA=function(a2){ return (a2||[]).map(function(x){
     return (x&&typeof x==='object') ? Object.keys(x).reduce(function(n,k){ n[k]=L(x[k]); return n; },{}) : L(x);
   }); };
+  // La prueba social sale de la investigacion, no del copy: son datos
+  // verificados, no texto escrito, y no deberian pasar por el redactor.
   var salida={
     marca:c.name||'', eyebrow:L(o.eyebrow),
     promesas:LA(o.promesas), bajada:L(o.bajada),
-    cta:L(o.cta), bajoCta:L(o.bajoCta),
-    puntos:LA(o.puntos), pruebaSocial:LA(o.pruebaSocial), faq:LA(o.faq),
-    _piel:c.landing.piel, _tema:c.landing.tema, _mecanica:c.landing.mecanica
+    cta:L(o.cta), bajoCta:L(o.bajoCta), puntos:LA(o.puntos),
+    pruebaSocial:LA(inv.pruebaSocial), clientes:LA(inv.clientes), faq:LA(inv.faq),
+    _piel:cfg.piel, _tema:cfg.tema, _mecanica:cfg.mecanica
   };
-  var t='const COPY = '+JSON.stringify(salida,null,2)+';';
-  navigator.clipboard.writeText(t).then(function(){
-    toast('COPY copiado. Pegalo reemplazando el de la plantilla '+c.landing.piel);
-  },function(){
-    _lpEstado('No pude copiar. Seleccionalo a mano abajo.','var(--amberx)');
-  });
+  navigator.clipboard.writeText('const COPY = '+JSON.stringify(salida,null,2)+';').then(function(){
+    toast('COPY copiado. Pegalo en la plantilla '+cfg.piel);
+  },function(){ _lpEstado('No pude copiar al portapapeles.','var(--amberx)'); });
 }
 
 function landingHtml(c){
@@ -19400,61 +19434,108 @@ function landingHtml(c){
       +'</div></div>';
   };
 
+  var ctx=_lpContextoInterno(c);
+  var inv=cfg.investigacion, cp=cfg.copy;
+  var fecha=function(d){ return d?new Date(d).toLocaleDateString('es-AR'):''; };
+
   var avisoHw = (cfg.piel==='hollywood'&&!_lpHollywoodViable(c))
     ? '<div style="font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:14px">'
-      +'Hollywood necesita material visual del cliente y no encuentro fotos ni videos en Material. '
-      +'Sin eso el video termina siendo stock generico.</div>'
+      +'Hollywood necesita material visual del cliente y no encuentro fotos ni videos en Material.</div>'
     : '';
 
-  var ctx=_lpContextoInterno(c);
-  var res=cfg.resultado;
+  // ── Paso 1 ──────────────────────────────────────────────────
+  var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
+  var p1='<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">1</span>'
+      +'<div style="font-size:12.5px;color:var(--text);flex:1">Investigar la web del cliente</div>'
+      +(inv?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.investigadoAt)+'</span>'):'')
+      +'<button class="btn btn-sm'+(inv?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
+        +'onclick="investigarLanding('+c.id+')">'+(inv?'Volver a buscar':'Buscar')+'</button>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+      +ctx.links+' links de Material &middot; busca prueba social, precios y diferenciales</div>';
 
-  var bloqueRes='';
-  if(res){
-    var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
-    bloqueRes='<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">'
-      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-        +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
-          +'letter-spacing:.07em;flex:1">Revisa antes de usarlo</div>'
-        +'<span style="font-size:10px;color:var(--text3)">'+new Date(cfg.at).toLocaleDateString('es-AR')+'</span>'
-        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
-          +'onclick="copiarCopyLanding('+c.id+')">Copiar el COPY</button>'
+  if(inv){
+    var ps=(inv.pruebaSocial||[]), cl=(inv.clientes||[]);
+    p1+=((inv.contradicciones&&inv.contradicciones.length)
+      ?('<div style="background:rgba(186,117,23,.12);border:1px solid var(--amberx);'
+        +'border-radius:var(--radius-md);padding:10px 12px;margin-bottom:12px">'
+        +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.55"><b>No coincide con las llamadas:</b><br>'
+        +inv.contradicciones.map(function(x){return esc(_lpLimpiar(x));}).join('<br>')+'</div></div>'):'')
+    // La prueba social arriba y destacada: es el dato que decide si la
+    // piel Institucional se banca o hay que ir a Simple.
+    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);'
+      +'padding:10px 12px;margin-bottom:10px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:7px">Prueba social encontrada</div>'
+      +(ps.length
+        ?('<div style="display:flex;gap:22px;flex-wrap:wrap">'+ps.map(function(x){
+            return '<div><div style="font-size:1.15rem;font-weight:600;color:var(--text)">'+esc(_lpLimpiar(x.n))+'</div>'
+              +'<div style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(x.l))+'</div></div>';
+          }).join('')+'</div>')
+        :'<div style="font-size:11.5px;color:var(--amberx);line-height:1.5">Ninguna. '
+         +'Sin numeros ni nombres de clientes, la piel Institucional queda vacia: conviene Simple.</div>')
+      +(cl.length?('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'
+        +cl.map(function(x){return '<span style="font-size:11px;border:1px solid var(--border);'
+          +'border-radius:var(--radius);padding:3px 8px;color:var(--text2)">'+esc(_lpLimpiar(x))+'</span>';}).join('')
+        +'</div>'):'')
+    +'</div>'
+    +(inv.hallazgos||[]).map(function(h){
+        return '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">'
+          +'<span style="width:6px;height:6px;border-radius:50%;flex:none;margin-top:7px;'
+            +'background:'+(badge[h.confianza]||'var(--text3)')+'"></span>'
+          +'<span style="flex:1;font-size:12px;line-height:1.5;color:var(--text)">'+esc(_lpLimpiar(h.dato))+'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'+esc(_lpLimpiar(h.fuente||''))+'</span>'
+        +'</div>';
+      }).join('');
+  }
+  p1+='</div>';
+
+  // ── Paso 2 ──────────────────────────────────────────────────
+  var p2='<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
+      +'<div style="font-size:12.5px;color:var(--text);flex:1">Escribir el copy</div>'
+      +(cp?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.copyAt)+'</span>'):'')
+      +(cp?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="copiarCopyLanding('+c.id+')">Copiar el COPY</button>'):'')
+      +'<button class="btn btn-sm'+(inv&&!cp?' btn-primary':'')+'" style="font-size:11px;padding:3px 9px" '
+        +'onclick="escribirCopyLanding('+c.id+')">'+(cp?'Reescribir':'Escribir')+'</button>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+      +(inv?('Sin buscar de nuevo. Reescribi cada vez que cambies de piel: tarda segundos.')
+          :('Podes escribir sin investigar, pero sale sin prueba social ni las palabras del cliente.'))
+    +'</div>';
+
+  if(cp){
+    p2+='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">'+esc(_lpLimpiar(cp.eyebrow||''))+'</div>'
+      +(cp.promesas||[]).map(function(p,i){
+        return '<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0">'
+          +'<span style="font-size:10px;color:var(--text3);width:14px;flex:none">'+(i+1)+'</span>'
+          +'<span style="font-size:14px;font-weight:600;color:var(--strong);line-height:1.25">'+esc(_lpLimpiar(p))+'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="font-size:12px;color:var(--text2);line-height:1.55;margin-top:8px">'+esc(_lpLimpiar(cp.bajada||''))+'</div>'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+        +'<span style="font-size:11.5px;background:var(--accent);color:var(--on-accent);'
+          +'padding:5px 12px;border-radius:var(--radius)">'+esc(_lpLimpiar(cp.cta||''))+'</span>'
+        +'<span style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(cp.bajoCta||''))+'</span>'
       +'</div>'
-      // Las contradicciones primero: es el motivo por el que existe este paso.
-      +((res.contradicciones&&res.contradicciones.length)
-        ?('<div style="background:rgba(186,117,23,.12);border:1px solid var(--amberx);'
-          +'border-radius:var(--radius-md);padding:10px 12px;margin-bottom:12px">'
-          +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.55">'
-          +'<b>No coincide con lo que dicen las llamadas:</b><br>'
-          +res.contradicciones.map(function(x){return esc(_lpLimpiar(x));}).join('<br>')+'</div></div>'):'')
-      +(res.hallazgos||[]).map(function(h){
-          return '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;'
-            +'border-bottom:1px solid var(--border)">'
-            +'<span style="width:6px;height:6px;border-radius:50%;flex:none;margin-top:7px;'
-              +'background:'+(badge[h.confianza]||'var(--text3)')+'"></span>'
-            +'<span style="flex:1;font-size:12px;line-height:1.5;color:var(--text)">'+esc(_lpLimpiar(h.dato))+'</span>'
-            +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'+esc(h.fuente||'')+'</span>'
-          +'</div>';
-        }).join('')
-      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:10px">'
-        +'El punto verde es dato verificado en la web; el gris, deducido. '
-        +'Los numeros sin verificar no deberian ir a la landing.</div>'
+      +((cp.puntos||[]).length?('<div style="margin-top:10px">'+cp.puntos.map(function(x){
+        return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '+esc(_lpLimpiar(x))+'</div>';
+      }).join('')+'</div>'):'')
     +'</div>';
   }
+  p2+='</div>';
 
   return head
     +opciones('Mecanica', LP_MECANICAS, 'mecanica')
     +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)})
     +opciones('Tema', LP_TEMAS, 'tema')
     +avisoHw
-    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">'
-      +'<button class="btn btn-sm btn-primary" onclick="generarLanding('+c.id+')">'
-        +(res?'Volver a generar':'Generar el copy')+'</button>'
-      +'<span style="font-size:11.5px;color:var(--text3)">'
-        +ctx.respuestas+' respuestas de llamadas &middot; '+ctx.links+' links para investigar</span>'
-    +'</div>'
-    +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:10px;min-height:16px"></div>'
-    +bloqueRes;
+    +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
+    +p1+p2;
 }
 
 function fathomCallsHTML(c){
