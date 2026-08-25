@@ -19274,10 +19274,12 @@ async function generarLanding(clientId){
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({
-        model:'claude-sonnet-5', max_tokens:4000,
+        // 8000 porque la busqueda consume presupuesto: con 4000 el modelo
+        // terminaba de investigar y se quedaba sin espacio para el JSON.
+        model:'claude-sonnet-5', max_tokens:8000,
         // La busqueda web es lo que permite traer prueba social y precios
         // reales del sitio del cliente, que es lo que ninguna plantilla tiene.
-        tools:[{type:'web_search_20250305', name:'web_search', max_uses:5}],
+        tools:[{type:'web_search_20250305', name:'web_search', max_uses:3}],
         messages:[{role:'user',content:
           'Sos director creativo de una agencia. Vas a escribir el copy de una landing de conversion '
           +'para el cliente "'+(c.name||'')+'".\n\n'
@@ -19287,12 +19289,15 @@ async function generarLanding(clientId){
           +'DESPUES: escribi el copy combinando eso con lo que sabemos de las llamadas.\n\n'
           +'PIEL: '+cfg.piel+'. MECANICA: '+cfg.mecanica+'.\n\n'
           +'Devolve SOLO un JSON, sin markdown:\n'
-          +'{"hallazgos":[{"dato":"que encontraste","fuente":"de donde","confianza":"alta|media|baja"}],'
+          +'{"hallazgos":[{"dato":"que encontraste","fuente":"de donde","confianza":"alta|media|baja"}],  // maximo 6'
           +'"contradicciones":["cosas del sitio que no coinciden con las llamadas. Array vacio si no hay"],'
           +'"copy":{"eyebrow":"","promesas":["3 variantes del titular para testear, cortas"],'
           +'"bajada":"2 lineas","cta":"","bajoCta":"","puntos":["3 bullets cortos"],'
           +'"pruebaSocial":[{"n":"numero","l":"que mide"}],'
           +'"faq":[{"q":"","a":""}]}}\n\n'
+          +'IMPORTANTE: buscá primero y despues escribi. No expliques lo que vas a hacer ni '
+          +'comentes las busquedas. Tu respuesta arranca con { y termina con }, nada antes ni despues. '
+          +'Maximo 6 hallazgos y 4 preguntas en el FAQ, para que entre completo.\n\n'
           +'Reglas: castellano rioplatense, sin superlativos vacios. Usa numeros solo si los '
           +'encontraste, nunca inventados. Si no hay prueba social real, devolve el array vacio '
           +'en vez de rellenar.\n\n'
@@ -19304,13 +19309,27 @@ async function generarLanding(clientId){
       console.error('Generador de landing:', d);
       throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error de la API'));
     }
+    // Se deja la respuesta entera en la consola: cuando falla, el motivo
+    // esta casi siempre en stop_reason o en los bloques que no son texto.
+    console.log('Generador de landing, respuesta completa:', d);
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
-    var ini=txt.indexOf('{'), fin=txt.lastIndexOf('}');
-    if(ini<0||fin<=ini){
-      console.error('Generador de landing, sin JSON:', txt);
-      throw new Error('La respuesta no trajo un JSON. Esta el detalle en la consola.');
+    var ini=txt.indexOf('{');
+    if(ini<0){
+      var motivo = (d.stop_reason==='max_tokens')
+        ? 'se quedo sin tokens despues de buscar. Proba de nuevo: suele salir a la segunda.'
+        : ('termino con stop_reason "'+(d.stop_reason||'?')+'" y sin texto. Esta la respuesta en la consola.');
+      throw new Error(motivo);
     }
-    var o=JSON.parse(txt.slice(ini,fin+1));
+    var o;
+    try{
+      o=JSON.parse(txt.slice(ini, txt.lastIndexOf('}')+1));
+    }catch(pe){
+      // Si el JSON quedo cortado se rescatan los objetos completos que
+      // llegaron, igual que en el cruce de entregables.
+      console.error('Generador de landing, JSON cortado:', txt);
+      throw new Error('La respuesta llego cortada'
+        +(d.stop_reason==='max_tokens'?' por falta de tokens. Proba de nuevo.':'. Esta el detalle en la consola.'));
+    }
     cfg.resultado=o;
     cfg.at=new Date().toISOString();
     save();
