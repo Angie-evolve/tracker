@@ -19391,100 +19391,133 @@ function materialHtml(c){
     +'</div>'):'');
 }
 
-// ---- Glosario -----------------------------------------------------------
-// Un glosario de palabras sueltas es una referencia que nadie abre. Este
-// guarda pares "decir / evitar": eso es una regla, se puede aplicar y se
-// puede revisar. Y sobre todo viaja a los prompts, que es lo unico que hace
-// que los anuncios terminen hablando igual que las llamadas.
-// Vive en el cliente, no en la agencia: son las palabras con las que los
-// prospectos de ESE mercado nombran su problema. El vocabulario de los leads
-// de Zentenio no le sirve a PlayWith.
-function glosario(c){
-  if(!c) return [];
-  if(!Array.isArray(c.glosario)) c.glosario=[];
-  return c.glosario;
-}
-// El bloque que se le agrega a cualquier prompt que escriba copy.
+// ---- Voz del mercado ----------------------------------------------------
+// No es una lista de terminos: es un bloque de prompt listo para pegar cuando
+// escribis guiones o copy en otro lado. Sale de las mismas llamadas que los
+// angulos, y se puede editar a mano antes de usarlo.
+function _vozTexto(c){ return (c && c.voz && c.voz.texto) || ''; }
 function _glosParaPrompt(c){
-  var g=glosario(c).filter(function(x){return x.decir;});
-  if(!g.length) return '';
-  return '\n\nGLOSARIO OBLIGATORIO. Usa estas palabras y evita las otras:\n'
-    +g.map(function(x){
-      return '- Deci "'+x.decir+'"'+(x.evitar?(', nunca "'+x.evitar+'"'):'')
-        +(x.nota?(' ('+x.nota+')'):'');
-    }).join('\n');
+  var t=_vozTexto(c);
+  return t ? ('\n\nCOMO HABLA ESTE MERCADO. Usa estas palabras, no las tuyas:\n'+t) : '';
 }
-function glosAgregar(clientId){
+function vozGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var d=String((document.getElementById('gl-decir')||{}).value||'').trim();
-  var e=String((document.getElementById('gl-evitar')||{}).value||'').trim();
-  var n=String((document.getElementById('gl-nota')||{}).value||'').trim();
-  if(!d){ toast('Falta la palabra que si va'); return; }
-  glosario(c).unshift({id:Date.now(), decir:d, evitar:e, nota:n});
+  var e=document.getElementById('voz-txt');
+  if(!e) return;
+  c.voz=c.voz||{};
+  c.voz.texto=e.value;
   save();
-  if(typeof renderTab==='function') renderTab();
+  toast('Guardado');
 }
-function glosQuitar(clientId, id){
+function vozCopiar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  c.glosario=glosario(c).filter(function(x){return x.id!==id;});
-  save();
-  if(typeof renderTab==='function') renderTab();
+  var t=(document.getElementById('voz-txt')||{}).value||'';
+  if(!t.trim()){ toast('Todavia no hay nada para copiar'); return; }
+  navigator.clipboard.writeText(t).then(function(){
+    toast('Copiado. Pegalo arriba del prompt con el que estes escribiendo.');
+  },function(){ toast('No pude copiar'); });
 }
-// Un angulo ya trae la frase textual del prospecto: pasarlo al glosario es
-// quedarse con sus palabras en vez de reescribirlas.
+// Suma la frase de un angulo al final del bloque, sin pisar lo que ya hay.
 function glosDesdeAngulo(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var a=(_angDeLlamadas(c)||[])[i];
   if(!a) return;
-  glosario(c).unshift({id:Date.now(), decir:(a.frase||a.a||'').slice(0,120),
-                       evitar:'', nota:'de '+(a.de||'una llamada')});
+  c.voz=c.voz||{};
+  var linea='- "'+(a.frase||a.a||'')+'"'+(a.de?('  ('+a.de+')'):'');
+  c.voz.texto=(c.voz.texto?(c.voz.texto.replace(/\s+$/,'')+'\n'):'')+linea;
   save();
   if(typeof renderTab==='function') renderTab();
-  toast('Sumado al glosario del cliente');
+  toast('Sumado a la voz del mercado');
 }
-// Propone terminos mirando como se habla en las llamadas ya cargadas. No los
-// guarda: los deja escritos para que los edites, porque la mitad va a ser ruido.
+
+async function armarVoz(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _vozEstado('Falta la clave de Anthropic.','var(--amberx)'); return; }
+  var mat=_angMaterialLeads(c);
+  if(!mat.items.length){
+    _vozEstado('No hay transcripciones de llamadas con leads.','var(--amberx)');
+    return;
+  }
+  var t0=Date.now();
+  _vozEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+mat.conTexto+' leads...</span></span>','var(--text2)');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:2500, messages:[{role:'user',content:
+        'Abajo hay llamadas de venta entre '+(c.name||'una empresa')+' y sus prospectos.\n\n'
+        +'Escribi un bloque de instrucciones que yo voy a pegar arriba de otros prompts, para '
+        +'que cuando escriba anuncios y guiones suenen como habla este mercado y no como IA.\n\n'
+        +'Formato exacto, sin encabezados ni markdown, en texto plano:\n\n'
+        +'PALABRAS QUE USAN\n'
+        +'- (termino tal cual lo dicen) en vez de (la version generica)\n\n'
+        +'COMO NOMBRAN EL PROBLEMA\n'
+        +'- (frase textual entre comillas)\n\n'
+        +'LO QUE LOS FRENA\n'
+        +'- (frase textual entre comillas)\n\n'
+        +'TONO\n'
+        +'- (2 o 3 lineas sobre como hablan: registro, largo de frase, si tutean, si usan '
+        +'tecnicismos o no)\n\n'
+        +'NUNCA DIGAS\n'
+        +'- (palabras de consultor o de IA que romperian el registro)\n\n'
+        +'Reglas: castellano rioplatense. Las frases entre comillas tienen que ser textuales '
+        +'de las llamadas, no inventadas ni parafraseadas. Maximo 6 puntos por seccion. '
+        +'Nada de preambulo: arranca en PALABRAS QUE USAN.\n\n'
+        +'LLAMADAS:\n'+mat.items.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
+    });
+    var d=await r.json();
+    console.log('Voz del mercado:', d);
+    if(d.error) throw new Error('HTTP '+r.status+' - '+(d.error.message||d.error.type||'error'));
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('').trim();
+    if(!txt) throw new Error(d.stop_reason==='max_tokens'?'se quedo sin tokens':'vino vacia');
+    c.voz={texto:txt, at:new Date().toISOString(), n:mat.conTexto};
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s');
+  }catch(e){
+    console.error('Voz del mercado:', e);
+    _vozEstado('No pude armarlo: '+esc(e.message),'var(--redx)');
+  }
+}
+function _vozEstado(html,color){
+  var e=document.getElementById('voz-estado');
+  if(!e) return;
+  e.innerHTML=html||'';
+  e.style.color=color||'var(--text3)';
+}
 
 function glosarioHtml(c){
-  var g=glosario(c);
-  var inp='font-size:12.5px;padding:7px 10px;border-radius:var(--radius);'
-    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font)';
+  var t=_vozTexto(c), v=c.voz||{};
   return '<div style="margin-top:26px;padding-top:20px;border-top:1px solid var(--border)">'
-    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em">'
-      +'Glosario del cliente</div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin:5px 0 14px;max-width:78ch">'
-      +'Las palabras con las que los prospectos de este mercado nombran su problema. '
-      +'Viaja a los prompts que escriben copy, para que los anuncios suenen escritos desde '
-      +'adentro del rubro.</div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
-      +'<input id="gl-decir" placeholder="Deci esto" style="'+inp+';flex:1;min-width:180px">'
-      +'<input id="gl-evitar" placeholder="En vez de" style="'+inp+';flex:1;min-width:150px">'
-      +'<input id="gl-nota" placeholder="Cuando aplica (opcional)" style="'+inp+';flex:1;min-width:150px" '
-        +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();glosAgregar('+c.id+');}">'
-      +'<button class="btn btn-sm btn-primary" onclick="glosAgregar('+c.id+')">Agregar</button>'
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;flex:1">'
+        +'Voz del mercado</div>'
+      +(t?('<span style="font-size:10px;color:var(--text3)">'+v.n+' leads &middot; '
+        +new Date(v.at).toLocaleDateString('es-AR')+'</span>'):'')
+      +(t?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="vozCopiar('+c.id+')">Copiar</button>'):'')
+      +'<button class="btn btn-sm'+(t?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
+        +'onclick="armarVoz('+c.id+')">'+(t?'Rehacer':'Armar desde las llamadas')+'</button>'
     +'</div>'
-    +(g.length?g.map(function(x){
-      return '<div style="display:flex;align-items:baseline;gap:10px;padding:8px 0;'
-        +'border-top:1px solid var(--border)">'
-        +'<span style="font-size:12.5px;color:var(--text)">'+esc(x.decir)+'</span>'
-        +(x.evitar?('<span style="font-size:11.5px;color:var(--text3)">en vez de '
-          +'<span style="text-decoration:line-through">'+esc(x.evitar)+'</span></span>'):'')
-        +(x.nota?('<span style="font-size:11px;color:var(--text3);opacity:.75">'+esc(x.nota)+'</span>'):'')
-        +'<span style="flex:1"></span>'
-        +'<button onclick="glosQuitar('+c.id+','+x.id+')" aria-label="Quitar" style="border:0;'
-          +'background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">&times;</button>'
-      +'</div>';
-    }).join('')
-    :'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding:8px 0;'
-     +'border-top:1px solid var(--border)">Todavia no cargaste ninguna. '
-     +'Podes escribirlas, o sumarlas desde la columna <b>De las llamadas</b> con el boton +, '
-     +'que se queda con la frase textual del prospecto.</div>')
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px;max-width:82ch">'
+      +'Un bloque listo para pegar arriba de cualquier prompt con el que escribas guiones o copy. '
+      +'Tambien se manda solo en el copy de landings y en las preguntas a las llamadas.</div>'
+    +'<div id="voz-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px;margin-bottom:8px"></div>'
+    +'<textarea id="voz-txt" rows="'+(t?16:5)+'" onblur="vozGuardar('+c.id+')" '
+      +'placeholder="Toca Armar desde las llamadas, o escribilo a mano. Se guarda solo al salir del campo." '
+      +'style="width:100%;resize:vertical;padding:11px 13px;border-radius:var(--radius);'
+      +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+      +'font-family:var(--font-mono,ui-monospace,monospace);font-size:11.5px;line-height:1.65">'
+      +esc(t)+'</textarea>'
   +'</div>';
 }
-
 
 // ---- Generador de landings ----------------------------------------------
 // No genera HTML. Produce el objeto COPY que llena una plantilla estable.
