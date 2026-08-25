@@ -10264,6 +10264,75 @@ function _torreVacio(titulo, texto){
     +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">'+texto+'</div></div>';
 }
 
+// ---- Prioridad ----------------------------------------------------------
+// Dos cosas separadas a proposito: el nivel lo elegis vos y no se toca solo;
+// la antiguedad suma aparte y se muestra. Si el envejecimiento pisara tu
+// eleccion en silencio, elegir dejaria de significar algo.
+var TK_NIVELES=[
+  {k:'alta',  l:'Alta',  col:'var(--redx)',   bg:'rgba(216,90,48,0.14)',  peso:0},
+  {k:'media', l:'Media', col:'var(--amberx)', bg:'rgba(240,168,48,0.14)', peso:1},
+  {k:'baja',  l:'Baja',  col:'var(--text3)',  bg:'var(--bg3)',            peso:2}
+];
+function _tkNivel(t){
+  var k=t.nivel||'media';
+  return TK_NIVELES.filter(function(x){return x.k===k;})[0]||TK_NIVELES[1];
+}
+// Cuanto lleva sin moverse. Cuenta desde el ultimo cambio de estado real,
+// no desde que se creo: una tarea que avanzo ayer no esta vieja.
+function _tkQuieta(t){
+  var ref=t.revisionAt||t.procesoAt||t.delegatedAt||t.createdAt;
+  if(!ref) return 0;
+  var d=new Date(ref);
+  if(isNaN(d.getTime())) return 0;
+  return Math.floor((Date.now()-d.getTime())/86400000);
+}
+// Escala: 0 no pasa nada, 1 sube un nivel, 2 sube dos. Vencida pesa mas que
+// quieta, porque hubo una fecha comprometida y se paso.
+function _tkEscala(t){
+  if(t.done||t.archivada) return {n:0};
+  var q=_tkQuieta(t);
+  var d=endOfDue(t), venc=d?Math.floor((Date.now()-d.getTime())/86400000):-1;
+  if(venc>=7)  return {n:2, txt:'vencida hace '+venc+' d'};
+  if(venc>=2)  return {n:1, txt:'vencida hace '+venc+' d'};
+  if(q>=14)    return {n:2, txt:'quieta '+q+' d'};
+  if(q>=7)     return {n:1, txt:'quieta '+q+' d'};
+  return {n:0, q:q};
+}
+// El peso con el que se ordena. El nivel manda; la escala lo sube, nunca lo baja.
+function _tkPeso(t){
+  var e=_tkEscala(t);
+  return Math.max(0, _tkNivel(t).peso - e.n);
+}
+function setTicketNivel(clientId, taskId, k){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
+  if(!t) return;
+  t.nivel=k;
+  // Al elegir a mano se suelta el orden por arrastre: si no, la posicion
+  // vieja seguiria mandando y el cambio de nivel no se veria.
+  delete t.prio;
+  save();
+  showTickets();
+}
+function ticketNivelMenu(clientId, taskId, el){
+  var m=document.getElementById('tk-nivel-menu');
+  if(m) m.remove();
+  var d=document.createElement('div');
+  d.id='tk-nivel-menu';
+  d.style.cssText='position:absolute;left:0;top:22px;z-index:60;background:var(--bg2);'
+    +'border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;min-width:104px;'
+    +'box-shadow:0 6px 18px rgba(0,0,0,.4)';
+  d.innerHTML=TK_NIVELES.map(function(n){
+    return '<div onclick="event.stopPropagation();setTicketNivel('+clientId+','+taskId+',\''+n.k+'\')" '
+      +'style="padding:7px 12px;font-size:12px;cursor:pointer;color:'+n.col+'">'+n.l+'</div>';
+  }).join('');
+  el.parentNode.appendChild(d);
+  setTimeout(function(){
+    document.addEventListener('click', function cerrar(){ d.remove(); document.removeEventListener('click',cerrar); });
+  },0);
+}
+
+
 function showTickets(){
   if(S.tkTab==='clientes') S.tkTab='tareas';
   var _torre=S.torreVista||'mirador';
@@ -10412,75 +10481,7 @@ function showTickets(){
   const fmtF=function(iso){ if(!iso) return '-'; const d=new Date(iso); return d.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}); };
 
   // --- Filas agrupadas por cliente (rediseno minimalista) ---
-  // ---- Prioridad ----------------------------------------------------------
-// Dos cosas separadas a proposito: el nivel lo elegis vos y no se toca solo;
-// la antiguedad suma aparte y se muestra. Si el envejecimiento pisara tu
-// eleccion en silencio, elegir dejaria de significar algo.
-var TK_NIVELES=[
-  {k:'alta',  l:'Alta',  col:'var(--redx)',   bg:'rgba(216,90,48,0.14)',  peso:0},
-  {k:'media', l:'Media', col:'var(--amberx)', bg:'rgba(240,168,48,0.14)', peso:1},
-  {k:'baja',  l:'Baja',  col:'var(--text3)',  bg:'var(--bg3)',            peso:2}
-];
-function _tkNivel(t){
-  var k=t.nivel||'media';
-  return TK_NIVELES.filter(function(x){return x.k===k;})[0]||TK_NIVELES[1];
-}
-// Cuanto lleva sin moverse. Cuenta desde el ultimo cambio de estado real,
-// no desde que se creo: una tarea que avanzo ayer no esta vieja.
-function _tkQuieta(t){
-  var ref=t.revisionAt||t.procesoAt||t.delegatedAt||t.createdAt;
-  if(!ref) return 0;
-  var d=new Date(ref);
-  if(isNaN(d.getTime())) return 0;
-  return Math.floor((Date.now()-d.getTime())/86400000);
-}
-// Escala: 0 no pasa nada, 1 sube un nivel, 2 sube dos. Vencida pesa mas que
-// quieta, porque hubo una fecha comprometida y se paso.
-function _tkEscala(t){
-  if(t.done||t.archivada) return {n:0};
-  var q=_tkQuieta(t);
-  var d=endOfDue(t), venc=d?Math.floor((Date.now()-d.getTime())/86400000):-1;
-  if(venc>=7)  return {n:2, txt:'vencida hace '+venc+' d'};
-  if(venc>=2)  return {n:1, txt:'vencida hace '+venc+' d'};
-  if(q>=14)    return {n:2, txt:'quieta '+q+' d'};
-  if(q>=7)     return {n:1, txt:'quieta '+q+' d'};
-  return {n:0, q:q};
-}
-// El peso con el que se ordena. El nivel manda; la escala lo sube, nunca lo baja.
-function _tkPeso(t){
-  var e=_tkEscala(t);
-  return Math.max(0, _tkNivel(t).peso - e.n);
-}
-function setTicketNivel(clientId, taskId, k){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  var t=c&&(c.tasks||[]).find(function(x){return x.id===taskId;});
-  if(!t) return;
-  t.nivel=k;
-  // Al elegir a mano se suelta el orden por arrastre: si no, la posicion
-  // vieja seguiria mandando y el cambio de nivel no se veria.
-  delete t.prio;
-  save();
-  showTickets();
-}
-function ticketNivelMenu(clientId, taskId, el){
-  var m=document.getElementById('tk-nivel-menu');
-  if(m) m.remove();
-  var d=document.createElement('div');
-  d.id='tk-nivel-menu';
-  d.style.cssText='position:absolute;left:0;top:22px;z-index:60;background:var(--bg2);'
-    +'border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;min-width:104px;'
-    +'box-shadow:0 6px 18px rgba(0,0,0,.4)';
-  d.innerHTML=TK_NIVELES.map(function(n){
-    return '<div onclick="event.stopPropagation();setTicketNivel('+clientId+','+taskId+',\''+n.k+'\')" '
-      +'style="padding:7px 12px;font-size:12px;cursor:pointer;color:'+n.col+'">'+n.l+'</div>';
-  }).join('');
-  el.parentNode.appendChild(d);
-  setTimeout(function(){
-    document.addEventListener('click', function cerrar(){ d.remove(); document.removeEventListener('click',cerrar); });
-  },0);
-}
-
-const _check='<svg viewBox=\"0 0 12 12\" fill=\"none\"><path d=\"M2.5 6.2l2.3 2.3 4.7-4.9\" stroke=\"#fff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
+  const _check='<svg viewBox=\"0 0 12 12\" fill=\"none\"><path d=\"M2.5 6.2l2.3 2.3 4.7-4.9\" stroke=\"#fff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
   const filaTarea=function(r,_i){
     const t=r.t, c=r.c;
     const d=endOfDue(t);
