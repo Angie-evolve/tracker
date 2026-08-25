@@ -704,6 +704,17 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .tk-pill{font-family:var(--mono,monospace);font-size:10.5px;padding:2px 8px;border-radius:20px;background:var(--bg3);color:var(--text3);flex-shrink:0}
 .tk-chip{font-size:9.5px;font-weight:500;padding:2px 9px;border-radius:20px;flex-shrink:0;cursor:pointer;white-space:nowrap;transition:opacity .15s ease}
 .tk-chip:hover{opacity:.75}
+/* ---- Board ---- */
+.bd-nodo{position:absolute;border-radius:8px;padding:9px 11px;cursor:move;user-select:none}
+.bd-nodo:hover .bd-tools{opacity:1}
+.bd-txt{font-size:12.5px;line-height:1.45;outline:none;white-space:pre-wrap;word-break:break-word;
+        cursor:text;user-select:text;min-height:18px}
+.bd-txt:empty::before{content:'Escribi...';color:var(--text3)}
+.bd-tools{position:absolute;right:5px;top:-11px;display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.bd-tools button{width:20px;height:20px;border-radius:5px;border:1px solid var(--border2);
+        background:var(--bg2);color:var(--text3);cursor:pointer;font-size:10px;line-height:1;padding:0}
+.bd-tools button:hover{color:var(--text);border-color:var(--text3)}
+@media(prefers-reduced-motion:reduce){.bd-tools{transition:none}}
 /* Los chips se alinean en columnas: cada uno mide segun su texto y sin ancho
    fijo la fila queda escalonada, distinta en cada tarea. El ancho se toma del
    texto mas largo de cada columna: "Media" y "Esperando aprobacion". */
@@ -17034,6 +17045,9 @@ function renderTab(){
         <div id="sh-landing" style="display:${_shHoja()==='landing'?'block':'none'}">
           ${landingHtml(c)}
         </div>
+        <div id="sh-board" style="display:${_shHoja()==='board'?'block':'none'}">
+          ${boardHtml(c)}
+        </div>
       </div>
 
       <div style="margin-top:30px;padding-top:18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
@@ -17472,6 +17486,12 @@ function renderTab(){
 
   else if(S.tab==='ventas'){
     renderVentasTab(c, el);
+  }
+
+  // El canvas no puede colgar sus escuchas mientras esta en display:none:
+  // el visor no tiene tamaño y el centrado saldria en cero.
+  if(S.tab==='success' && typeof _shHoja==='function' && _shHoja()==='board'){
+    setTimeout(function(){ if(typeof bdActivar==='function') bdActivar(); }, 0);
   }
 }
 
@@ -18959,7 +18979,8 @@ var SH_HOJAS=[
   {k:'tiempo',      l:'Linea de tiempo'},
   {k:'contexto',    l:'Contexto'},
   {k:'material',    l:'Material'},
-  {k:'landing',     l:'Landing'}
+  {k:'landing',     l:'Landing'},
+  {k:'board',       l:'Board'}
 ];
 function _shHoja(){
   var k=S._shHoja;
@@ -18978,6 +18999,9 @@ function setHojaSuccess(k){
     var c=DB.clients.find(function(x){return x.id===S._shCliente;});
     if(c) nav.outerHTML=successSubNav(c);
   }
+  // El canvas cuelga sus escuchas al mostrarse: no puede hacerlo antes
+  // porque el visor no tiene tamaño mientras esta en display:none.
+  if(k==='board') setTimeout(bdActivar, 0);
 }
 // El boton de reporte va al final de la misma fila: era lo unico util de la
 // cabecera que se saco, y aca no roba una linea entera de alto.
@@ -20033,6 +20057,266 @@ function landingHtml(c){
     +avisoHw
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +p1+p2;
+}
+
+// ---- Board: canvas libre por cliente ------------------------------------
+// Nodos que se arrastran, conectores, pan y zoom. Todo en coordenadas de
+// mundo: la vista es una transformacion, no se tocan los datos al mover.
+var BD_COLORES=[
+  {k:'gris',  bg:'var(--bg2)',            bd:'var(--border2)', tx:'var(--text)'},
+  {k:'verde', bg:'rgba(45,164,120,.14)',  bd:'var(--green)',   tx:'var(--text)'},
+  {k:'ambar', bg:'rgba(240,168,48,.14)',  bd:'var(--amberx)',  tx:'var(--text)'},
+  {k:'rojo',  bg:'rgba(216,90,48,.14)',   bd:'var(--redx)',    tx:'var(--text)'},
+  {k:'violeta',bg:'rgba(139,92,246,.14)', bd:'#8B5CF6',        tx:'var(--text)'}
+];
+var BD={ z:1, x:0, y:0, arrastre:null, conectando:null, cid:null };
+
+function _bdDatos(c){
+  if(!c.board) c.board={nodos:[], enlaces:[]};
+  if(!Array.isArray(c.board.nodos)) c.board.nodos=[];
+  if(!Array.isArray(c.board.enlaces)) c.board.enlaces=[];
+  return c.board;
+}
+function _bdCliente(){ return DB.clients.find(function(x){return x.id===BD.cid;}); }
+function _bdColor(k){ return BD_COLORES.filter(function(x){return x.k===k;})[0]||BD_COLORES[0]; }
+
+// Pantalla -> mundo. Sin esto, un nodo creado con zoom 0.5 aparece al doble
+// de distancia de donde tocaste.
+function _bdAMundo(px, py){
+  var r=document.getElementById('bd-visor').getBoundingClientRect();
+  return { x:(px-r.left-BD.x)/BD.z, y:(py-r.top-BD.y)/BD.z };
+}
+function _bdAplicarVista(){
+  var m=document.getElementById('bd-mundo');
+  if(m) m.style.transform='translate('+BD.x+'px,'+BD.y+'px) scale('+BD.z+')';
+  var z=document.getElementById('bd-zoom');
+  if(z) z.textContent=Math.round(BD.z*100)+'%';
+}
+
+function bdNodoNuevo(x, y, texto){
+  var c=_bdCliente(); if(!c) return;
+  var d=_bdDatos(c);
+  var n={id:Date.now()+Math.floor(Math.random()*999), x:Math.round(x), y:Math.round(y),
+         w:200, texto:texto||'', color:'gris'};
+  d.nodos.push(n);
+  save();
+  bdRender();
+  // Foco inmediato: un nodo nuevo vacio existe para escribir adentro.
+  setTimeout(function(){
+    var e=document.querySelector('[data-nid="'+n.id+'"] .bd-txt');
+    if(e){ e.focus(); document.execCommand&&document.execCommand('selectAll',false,null); }
+  },30);
+}
+function bdNodoTexto(id, texto){
+  var c=_bdCliente(); if(!c) return;
+  var n=_bdDatos(c).nodos.filter(function(x){return x.id===id;})[0];
+  if(!n || n.texto===texto) return;
+  n.texto=texto;
+  save();
+}
+function bdNodoColor(id){
+  var c=_bdCliente(); if(!c) return;
+  var n=_bdDatos(c).nodos.filter(function(x){return x.id===id;})[0];
+  if(!n) return;
+  var i=BD_COLORES.findIndex(function(x){return x.k===(n.color||'gris');});
+  n.color=BD_COLORES[(i+1)%BD_COLORES.length].k;
+  save(); bdRender();
+}
+function bdNodoBorrar(id){
+  var c=_bdCliente(); if(!c) return;
+  var d=_bdDatos(c);
+  d.nodos=d.nodos.filter(function(x){return x.id!==id;});
+  // Los enlaces sueltos no se ven pero quedan: se limpian con el nodo.
+  d.enlaces=d.enlaces.filter(function(e){return e.de!==id && e.a!==id;});
+  save(); bdRender();
+}
+function bdConectar(id){
+  if(BD.conectando===id){ BD.conectando=null; bdRender(); return; }
+  if(BD.conectando==null){ BD.conectando=id; bdRender(); return; }
+  var c=_bdCliente(); if(!c) return;
+  var d=_bdDatos(c);
+  var de=BD.conectando, a=id;
+  BD.conectando=null;
+  if(de===a){ bdRender(); return; }
+  var ya=d.enlaces.some(function(e){return (e.de===de&&e.a===a)||(e.de===a&&e.a===de);});
+  if(ya) d.enlaces=d.enlaces.filter(function(e){return !((e.de===de&&e.a===a)||(e.de===a&&e.a===de));});
+  else d.enlaces.push({de:de, a:a});
+  save(); bdRender();
+}
+
+// Trae los angulos ya sacados de las llamadas como nodos, en una columna.
+function bdImportarAngulos(){
+  var c=_bdCliente(); if(!c) return;
+  var ang=_angDeLlamadas(c);
+  if(!ang.length){ toast('No hay angulos cargados. Sacalos primero en Top of Funnel.'); return; }
+  var d=_bdDatos(c);
+  var ya={};
+  d.nodos.forEach(function(n){ ya[_n(n.texto||'')]=1; });
+  var y=40, sumados=0;
+  ang.forEach(function(a){
+    var txt=(a.a||'')+(a.frase?('\\n\\u201c'+a.frase+'\\u201d'):'');
+    if(ya[_n(txt)]) return;
+    d.nodos.push({id:Date.now()+Math.floor(Math.random()*9999), x:40, y:y, w:230,
+                  texto:txt, color:(a.tipo==='freno'?'ambar':(a.tipo==='dolor'?'rojo':'gris'))});
+    y+=130; sumados++;
+  });
+  if(!sumados){ toast('Ya estaban todos en el board'); return; }
+  save(); bdRender();
+  toast('Sumados '+sumados+' angulos');
+}
+
+function bdZoom(delta, cx, cy){
+  var antes=BD.z;
+  BD.z=Math.min(2.5, Math.max(0.25, BD.z*(delta>0?0.9:1.1)));
+  // Zoom hacia el puntero: sin esto el contenido se escapa de la pantalla.
+  if(cx!=null){
+    var r=document.getElementById('bd-visor').getBoundingClientRect();
+    var mx=(cx-r.left-BD.x)/antes, my=(cy-r.top-BD.y)/antes;
+    BD.x=cx-r.left-mx*BD.z;
+    BD.y=cy-r.top-my*BD.z;
+  }
+  _bdAplicarVista();
+}
+function bdCentrar(){
+  var c=_bdCliente(); if(!c) return;
+  var ns=_bdDatos(c).nodos;
+  if(!ns.length){ BD.z=1; BD.x=0; BD.y=0; _bdAplicarVista(); return; }
+  var x1=Math.min.apply(null,ns.map(function(n){return n.x;}));
+  var y1=Math.min.apply(null,ns.map(function(n){return n.y;}));
+  var x2=Math.max.apply(null,ns.map(function(n){return n.x+(n.w||200);}));
+  var y2=Math.max.apply(null,ns.map(function(n){return n.y+120;}));
+  var v=document.getElementById('bd-visor').getBoundingClientRect();
+  BD.z=Math.min(1, Math.min((v.width-80)/(x2-x1||1), (v.height-80)/(y2-y1||1)));
+  BD.x=(v.width-(x2-x1)*BD.z)/2 - x1*BD.z;
+  BD.y=(v.height-(y2-y1)*BD.z)/2 - y1*BD.z;
+  _bdAplicarVista();
+}
+
+// Los conectores se dibujan leyendo la altura real de cada nodo del DOM:
+// el texto puede ocupar una o cinco lineas y la curva tiene que salir del borde.
+function bdLineas(){
+  var c=_bdCliente(); if(!c) return;
+  var d=_bdDatos(c), svg=document.getElementById('bd-svg');
+  if(!svg) return;
+  var caja={};
+  d.nodos.forEach(function(n){
+    var el=document.querySelector('[data-nid="'+n.id+'"]');
+    caja[n.id]={x:n.x, y:n.y, w:(n.w||200), h:el?el.offsetHeight:80};
+  });
+  svg.innerHTML=d.enlaces.map(function(e){
+    var A=caja[e.de], B=caja[e.a];
+    if(!A||!B) return '';
+    var ax=A.x+A.w, ay=A.y+A.h/2, bx=B.x, by=B.y+B.h/2;
+    if(B.x+B.w/2 < A.x+A.w/2){ ax=A.x; bx=B.x+B.w; }
+    var dx=Math.max(40, Math.abs(bx-ax)*0.5);
+    var c1=ax+(bx>ax?dx:-dx), c2=bx+(bx>ax?-dx:dx);
+    return '<path d="M'+ax+','+ay+' C'+c1+','+ay+' '+c2+','+by+' '+bx+','+by+'" '
+      +'fill="none" stroke="var(--border2)" stroke-width="1.5"/>';
+  }).join('');
+}
+
+function bdRender(){
+  var c=_bdCliente(); if(!c) return;
+  var d=_bdDatos(c), cap=document.getElementById('bd-nodos');
+  if(!cap) return;
+  cap.innerHTML=d.nodos.map(function(n){
+    var col=_bdColor(n.color);
+    var act=(BD.conectando===n.id);
+    return '<div class="bd-nodo" data-nid="'+n.id+'" style="left:'+n.x+'px;top:'+n.y+'px;'
+      +'width:'+(n.w||200)+'px;background:'+col.bg+';border:1px solid '+(act?'var(--accent)':col.bd)+';'
+      +(act?'box-shadow:0 0 0 3px rgba(45,164,120,.25);':'')+'">'
+      +'<div class="bd-tools">'
+        +'<button onclick="event.stopPropagation();bdConectar('+n.id+')" title="Conectar con otro">'
+          +(act?'\\u2715':'\\u2192')+'</button>'
+        +'<button onclick="event.stopPropagation();bdNodoColor('+n.id+')" title="Color">\\u25cf</button>'
+        +'<button onclick="event.stopPropagation();bdNodoBorrar('+n.id+')" title="Borrar">\\u2715</button>'
+      +'</div>'
+      +'<div class="bd-txt" contenteditable="true" spellcheck="false" '
+        +'onblur="bdNodoTexto('+n.id+',this.innerText)" '
+        +'onmousedown="event.stopPropagation()" '
+        +'style="color:'+col.tx+'">'+esc(n.texto||'')+'</div>'
+    +'</div>';
+  }).join('');
+  bdLineas();
+}
+
+function boardHtml(c){
+  BD.cid=c.id;
+  var n=_bdDatos(c).nodos.length;
+  return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px">'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;flex:1">'
+      +'Board</div>'
+    +'<span style="font-size:11px;color:var(--text3)">'+n+' nodo'+(n===1?'':'s')+'</span>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" onclick="bdImportarAngulos()">'
+      +'Traer angulos</button>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" onclick="bdCentrar()">Centrar</button>'
+    +'<span id="bd-zoom" style="font-size:11px;color:var(--text3);min-width:38px;text-align:right">100%</span>'
+  +'</div>'
+  +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+    +'Doble clic en el fondo para crear. Arrastra los nodos, o el fondo para moverte. '
+    +'La rueda hace zoom. El \\u2192 de un nodo lo conecta con el siguiente que toques.</div>'
+  +'<div id="bd-visor" style="position:relative;height:min(72vh,760px);overflow:hidden;cursor:grab;'
+    +'background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);'
+    +'background-image:radial-gradient(var(--border) 1px,transparent 1px);background-size:22px 22px">'
+    +'<div id="bd-mundo" style="position:absolute;left:0;top:0;transform-origin:0 0">'
+      +'<svg id="bd-svg" style="position:absolute;left:-4000px;top:-4000px;width:9000px;height:9000px;'
+        +'overflow:visible;pointer-events:none" viewBox="-4000 -4000 9000 9000"></svg>'
+      +'<div id="bd-nodos"></div>'
+    +'</div>'
+  +'</div>';
+}
+
+// Un solo juego de escuchas para todo el canvas, colgado del visor.
+function bdActivar(){
+  var v=document.getElementById('bd-visor');
+  if(!v || v.dataset.listo) return;
+  v.dataset.listo='1';
+
+  v.addEventListener('mousedown', function(e){
+    var nodo=e.target.closest('.bd-nodo');
+    if(nodo && !e.target.closest('.bd-txt') && !e.target.closest('.bd-tools')){
+      var c=_bdCliente();
+      var n=_bdDatos(c).nodos.filter(function(x){return x.id===+nodo.dataset.nid;})[0];
+      if(n){ BD.arrastre={n:n, x0:e.clientX, y0:e.clientY, nx:n.x, ny:n.y}; e.preventDefault(); }
+      return;
+    }
+    if(!nodo){ BD.arrastre={pan:true, x0:e.clientX, y0:e.clientY, px:BD.x, py:BD.y}; v.style.cursor='grabbing'; }
+  });
+
+  window.addEventListener('mousemove', function(e){
+    var a=BD.arrastre; if(!a) return;
+    if(a.pan){ BD.x=a.px+(e.clientX-a.x0); BD.y=a.py+(e.clientY-a.y0); _bdAplicarVista(); return; }
+    // Dividido por el zoom: si no, con zoom 0.5 el nodo va al doble de rapido
+    // que el puntero.
+    a.n.x=Math.round(a.nx+(e.clientX-a.x0)/BD.z);
+    a.n.y=Math.round(a.ny+(e.clientY-a.y0)/BD.z);
+    var el=document.querySelector('[data-nid="'+a.n.id+'"]');
+    if(el){ el.style.left=a.n.x+'px'; el.style.top=a.n.y+'px'; }
+    bdLineas();
+  });
+
+  window.addEventListener('mouseup', function(){
+    if(!BD.arrastre) return;
+    var era=BD.arrastre;
+    BD.arrastre=null;
+    var v2=document.getElementById('bd-visor');
+    if(v2) v2.style.cursor='grab';
+    if(!era.pan) save();
+  });
+
+  v.addEventListener('dblclick', function(e){
+    if(e.target.closest('.bd-nodo')) return;
+    var p=_bdAMundo(e.clientX, e.clientY);
+    bdNodoNuevo(p.x-100, p.y-30, '');
+  });
+
+  v.addEventListener('wheel', function(e){
+    e.preventDefault();
+    bdZoom(e.deltaY, e.clientX, e.clientY);
+  }, {passive:false});
+
+  bdRender();
+  _bdAplicarVista();
 }
 
 function fathomCallsHTML(c){
