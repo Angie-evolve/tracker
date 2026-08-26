@@ -760,6 +760,13 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-tools button:disabled:hover{color:var(--text3);border-color:var(--border2)}
 /* El paso que acaba de cambiar de bloque se marca un segundo: cruzo la
    pantalla y sin esto uno lo pierde de vista. */
+/* El encabezado del bloque ahora es una fila: titulo editable + herramientas */
+.sop-bcab{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-left:34px}
+.sop-btit{flex:1;min-width:0;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3)}
+.sop-editando .sop-bcab:hover .sop-tools,.sop-editando .sop-bcab:focus-within .sop-tools{display:flex}
+.sop-bloque.recien .sop-caja{animation:sopRecien 1.2s ease-out}
+.sop-bloque.recien .sop-btit{animation:sopRecienTit 1.2s ease-out}
+@keyframes sopRecienTit{0%,45%{color:var(--accent)}100%{color:var(--text3)}}
 .sop-paso.recien .sop-caja{animation:sopRecien 1.2s ease-out}
 @keyframes sopRecien{
   0%,45%{border-color:var(--accent);box-shadow:0 0 0 3px rgba(78,207,160,.18),0 12px 26px -8px rgba(0,0,0,.75)}
@@ -20308,7 +20315,7 @@ function _sopCuenta(s){
   });
   return {tot:tot, n:n, pct:tot?Math.round(n/tot*100):0};
 }
-var SOP_EDIT=false, SOP_ABIERTO=null, _SOP_RECIEN=null;
+var SOP_EDIT=false, SOP_ABIERTO=null, _SOP_RECIEN=null, _SOP_RECIEN_B=null;
 
 function sopNuevo(){
   var s={ id:Date.now(), titulo:'SOP sin nombre', version:'v1',
@@ -20382,9 +20389,48 @@ function sopMoverPaso(id, bi, pi, d){
 // Cuando un paso cambia de bloque se va de la vista: hay que llevarlo a la
 // pantalla y marcarlo un segundo, o parece que se borro.
 function _sopIrRecien(){
-  var el=document.querySelector('.sop-paso.recien');
+  var el=document.querySelector('.sop-paso.recien, .sop-bloque.recien');
   if(el && el.scrollIntoView) el.scrollIntoView({block:'center', behavior:'smooth'});
-  _SOP_RECIEN=null;
+  _SOP_RECIEN=null; _SOP_RECIEN_B=null;
+}
+// Mover un bloque le cambia el indice a TODOS sus pasos y a los del bloque con
+// el que se cruza, y el id de un paso incluye ese indice. Por eso no alcanza
+// con mudar unas claves: hay que anotar quien estaba tildado antes de mover y
+// reconstruir "hechos" entero despues, ya con las posiciones nuevas.
+function sopMoverBloque(id, bi, d){
+  var s=_sop(id); if(!s) return;
+  var bj=bi+d;
+  if(bj<0 || bj>=s.bloques.length) return;
+  s.hechos=s.hechos||{};
+  var tildados=s.bloques.map(function(b,i){
+    return (b.pasos||[]).map(function(p){ return !!s.hechos[_sopIdPaso(i,p)]; });
+  });
+  s.bloques.splice(bj, 0, s.bloques.splice(bi,1)[0]);
+  tildados.splice(bj, 0, tildados.splice(bi,1)[0]);
+  var h={};
+  s.bloques.forEach(function(b,i){
+    (b.pasos||[]).forEach(function(p,pi){ if(tildados[i][pi]) h[_sopIdPaso(i,p)]=1; });
+  });
+  s.hechos=h;
+  _SOP_RECIEN_B=bj;
+  save(); _sopPintar(id); _sopIrRecien();
+}
+function sopBorrarBloque(id, bi){
+  var s=_sop(id); if(!s) return;
+  var b=s.bloques[bi]; if(!b) return;
+  var n=(b.pasos||[]).length;
+  if(n && !confirm('Borrar "'+(b.b||'el bloque')+'" con sus '+n+' pasos? No se puede deshacer.')) return;
+  s.hechos=s.hechos||{};
+  var tildados=s.bloques.map(function(bb,i){
+    return (bb.pasos||[]).map(function(p){ return !!s.hechos[_sopIdPaso(i,p)]; });
+  });
+  s.bloques.splice(bi,1); tildados.splice(bi,1);
+  var h={};
+  s.bloques.forEach(function(bb,i){
+    (bb.pasos||[]).forEach(function(p,pi){ if(tildados[i][pi]) h[_sopIdPaso(i,p)]=1; });
+  });
+  s.hechos=h;
+  save(); _sopPintar(id);
 }
 function sopBorrarPaso(id, bi, pi){
   var s=_sop(id); if(!s) return;
@@ -20591,11 +20637,18 @@ function _sopHtml(id){
       var llen=b.pasos.length?Math.round(hs/b.pasos.length*100):0;
       // El paso actual es el primero sin tildar: el que sobresale del carril
       var act=b.pasos.findIndex(function(p){return !s.hechos[_sopIdPaso(bi,p)];});
-      return '<div style="margin-bottom:26px">'
-        +'<div class="sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
-          +'onblur="sopTexto('+id+','+bi+',0,\'bloque\',this.innerText)" '
-          +'style="font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3);'
-          +'margin-bottom:12px;padding-left:34px">'+esc(b.b||'')+'</div>'
+      return '<div class="sop-bloque'+(bi===_SOP_RECIEN_B?' recien':'')+'" style="margin-bottom:26px">'
+        +'<div class="sop-bcab">'
+        +'<div class="sop-ed sop-btit" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
+          +'data-ph="Nombre del bloque" '
+          +'onblur="sopTexto('+id+','+bi+',0,\'bloque\',this.innerText)">'+esc(b.b||'')+'</div>'
+        +'<div class="sop-tools">'
+          +'<button onclick="sopMoverBloque('+id+','+bi+',-1)"'+(bi===0?' disabled':'')
+            +' title="Subir el bloque">&#8593;</button>'
+          +'<button onclick="sopMoverBloque('+id+','+bi+',1)"'+(bi===s.bloques.length-1?' disabled':'')
+            +' title="Bajar el bloque">&#8595;</button>'
+          +'<button onclick="sopBorrarBloque('+id+','+bi+')" title="Borrar el bloque">&times;</button>'
+        +'</div></div>'
         +'<div class="sop-riel" style="--llenado:'+llen+'%">'
         +b.pasos.map(function(p,pi){
           var kp=_sopIdPaso(bi,p);
