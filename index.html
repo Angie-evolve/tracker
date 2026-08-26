@@ -17967,9 +17967,22 @@ function _ncSubcuentaHtml(){
       +'<span>'
         +'<span style="font-size:13px;color:var(--text2)">Crear la subcuenta desde aca</span>'
         +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.5">'
-        +'GHL solo permite crearlas por API con plan Agency Pro y un token OAuth de agencia. '
-        +'El token actual es Private Integration y devuelve 403. '
-        +'Por ahora se crea a mano en GHL y se vincula abajo.</span>'
+        +'Los endpoints de agencia (crear subcuentas, snapshots, alta de usuarios) '
+        +'estan cerrados en el plan Unlimited. Se probo con token de agencia y de '
+        +'subcuenta, con y sin companyId: siempre 401. Requiere Agency Pro.</span>'
+      +'</span>'
+    +'</div>'
+    // El atajo: abre el alta de GHL con el snapshot ya cargado en la URL, que es
+    // el unico paso de la creacion manual que se puede automatizar.
+    +'<div style="margin-top:10px;padding-left:22px">'
+      +'<a href="'+esc(_ghlUrlNuevaSubcuenta())+'" target="_blank" rel="noopener" '
+      +'class="btn btn-sm" style="font-size:11.5px;text-decoration:none">'
+      +'Crear la subcuenta en GHL &rarr;</a>'
+      +'<span style="display:block;font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+      +(cfgAg().snapshotId
+        ? ('Se abre con el snapshot <b>'+esc(cfgAg().snapshotNombre||cfgAg().snapshotId)+'</b> ya elegido. '
+           +'Al volver, pega el Location ID aca abajo.')
+        : 'Cargá un snapshot por defecto en Integraciones y este link lo abre ya elegido.')
       +'</span>'
     +'</div>'
 
@@ -17988,15 +18001,18 @@ function _ncSubcuentaHtml(){
         +'oninput="_ncLocId()"></div>'
       +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin:-6px 0 12px">'
         +'Lo sacas de la URL cuando abris la subcuenta en GHL, despues de /location/.</div>'
-      +'<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">'
-        +'<input type="checkbox" id="nc-ghl-invitar" style="margin-top:2px" checked>'
+      // Antes esto era un tilde que prometia mandar las invitaciones solo. Nunca
+      // funciono: el alta de usuarios es endpoint de agencia. Se deja el camino
+      // manual, que es el que si anda.
+      +'<div style="display:flex;align-items:flex-start;gap:9px;opacity:.55">'
+        +'<span style="margin-top:1px;font-size:13px;line-height:1">&#128274;</span>'
         +'<span>'
-          +'<span style="font-size:13px;color:var(--text)">Invitar al equipo</span>'
+          +'<span style="font-size:13px;color:var(--text2)">Invitar al equipo desde aca</span>'
           +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.5">'
-          +'El contacto principal y los de Contactos que tengan mail reciben la invitacion. '
-          +'Los que no tengan mail se saltean.</span>'
+          +'Mismo limite del plan. Al guardar, desde la ficha del cliente copiás '
+          +'los mails y se abre el equipo de su subcuenta en GHL.</span>'
         +'</span>'
-      +'</label>'
+      +'</div>'
       +'<div id="nc-ghl-estado" style="font-size:12px;color:var(--text3);margin-top:8px;line-height:1.5"></div>'
     +'</div>'
   +'</div>';
@@ -18350,31 +18366,21 @@ async function createClient(){
     ghlLoc={id:_lid};
     if(_btn){ _btn.disabled=true; _btn.textContent='Vinculando...'; }
     try{
-    var _inv=document.getElementById('nc-ghl-invitar');
-      // El contacto principal tambien va. Su mail se usa para crear la
-      // subcuenta, pero eso no le da usuario: sin esto el dueño del cliente
-      // quedaba afuera y solo entraba su equipo.
+      // El contacto principal cuenta como uno mas a invitar: su mail se usa
+      // para crear la subcuenta, pero eso no le da usuario.
       var _lista=equipo.slice();
       if(email){
         var _yaEsta=_lista.some(function(p){ return _eqMail(p).toLowerCase()===email.toLowerCase(); });
         if(!_yaEsta) _lista.unshift({nombre:(contacto||email.split('@')[0]), email:email});
       }
       var _conMail=_lista.filter(function(p){ return _eqMail(p); });
-      if(_inv&&_inv.checked&&ghlLoc.id&&_conMail.length){
-        if(_est){ _est.textContent='Invitando a '+_conMail.length+' persona'+(_conMail.length===1?'':'s')+'...'; _est.style.color='var(--text3)'; }
-        var _ri=await invitarUsuariosGHL(ghlLoc.id, _conMail);
-        if(_est){
-          if(_ri.sinSoporte){
-            _est.textContent='Vinculada, pero tu proxy de agencia no tiene la accion create_user. '
-              +'El cliente se crea igual; las invitaciones hay que mandarlas desde GHL.';
-            _est.style.color='var(--amberx)';
-          }else{
-            _est.textContent='Vinculada &middot; '+_ri.ok+' invitacion'+(_ri.ok===1?'':'es')+' enviada'+(_ri.ok===1?'':'s')
-              +(_ri.fallaron.length?(' &middot; fallaron '+_ri.fallaron.length):'');
-            _est.style.color=_ri.fallaron.length?'var(--amberx)':'var(--accent)';
-            if(_ri.fallaron.length) console.warn('Invitaciones GHL que fallaron:', _ri.fallaron);
-          }
-        }
+      // Ya no se intenta invitar por API: el alta de usuarios es endpoint de
+      // agencia y esta cerrado. Se avisa cuantos quedan y donde resolverlo.
+      if(_est){
+        _est.innerHTML='Subcuenta vinculada.'
+          +(_conMail.length?(' Quedan <b>'+_conMail.length+'</b> por invitar: se hace desde la ficha del cliente, '
+            +'pesta&ntilde;a Material.'):'');
+        _est.style.color='var(--accent)';
       }
     }catch(e){
       // Que fallen las invitaciones ya no justifica abortar: la subcuenta
@@ -19996,14 +20002,59 @@ function _invAMano(c, mails){
   if(txt && navigator.clipboard) navigator.clipboard.writeText(txt).then(seguir, seguir);
   else seguir();
 }
+// ---- Camino manual a GHL --------------------------------------------------
+// La API de agencia (crear subcuentas, snapshots, alta de usuarios) esta
+// cerrada en el plan Unlimited: se probo con token de agencia y de subcuenta,
+// con y sin companyId, y siempre responde 401/403. Lo que si funciona es
+// hacerlo a mano en GHL. Estos links dejan el trabajo medio hecho: abren la
+// pantalla exacta con el snapshot o la subcuenta ya cargados.
+function _ghlUrlNuevaSubcuenta(){
+  var a=cfgAg();
+  var u='https://app.gohighlevel.com/accounts/add';
+  if(a.snapshotId) u+='?snapshot='+encodeURIComponent(a.snapshotId)+'&s_type=own';
+  return u;
+}
+function _ghlUrlEquipo(loc){
+  return loc?('https://app.gohighlevel.com/v2/location/'+encodeURIComponent(loc)+'/settings/staff'):'';
+}
+// Copia los mails y abre la pantalla de equipo de esa subcuenta. Es el reemplazo
+// honesto del boton de invitar: el trabajo manual queda en pegar y confirmar.
+function ghlInvitarAMano(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var pend=_invPendientes(c);
+  if(!pend.length){ toast('No queda nadie por invitar'); return; }
+  var mails=pend.map(function(p){ return p.email; });
+  var seguir=function(){
+    var u=_ghlUrlEquipo(_ghlLoc(c));
+    if(u) window.open(u,'_blank','noopener');
+    toast(mails.length+' mail'+(mails.length===1?'':'es')+' copiado'+(mails.length===1?'':'s')
+      +'. En GHL: Add Employee, pegar y confirmar.');
+  };
+  if(navigator.clipboard) navigator.clipboard.writeText(mails.join(', ')).then(seguir, seguir);
+  else seguir();
+}
+// Marcar a mano que ya se invito: sin esto el contador nunca baja y no se sabe
+// a quien falta, que es el unico dato que el tracker puede aportar aca.
+function ghlMarcarInvitado(clientId, i, email){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  _invMarcar(c, i, email);
+  save();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
 function _invBoton(c, i, email, invitadoAt){
   if(!email) return '';
-  if(invitadoAt) return '<span style="font-size:10px;color:var(--text3)" title="Invitado el '
+  if(invitadoAt) return '<span style="font-size:10px;color:var(--text3)" title="Marcado el '
     +esc(new Date(invitadoAt).toLocaleDateString('es-AR'))+'">invitado</span>';
   if(!_ghlLoc(c)) return '';
-  return '<button onclick="ghlInvitar('+c.id+','+i+')" title="Enviar la invitacion a la subcuenta de GHL" '
-    +'style="border:1px solid var(--border2);background:var(--bg3);color:var(--accent);'
-    +'border-radius:999px;cursor:pointer;font-size:10px;padding:2px 8px;font-family:inherit">invitar</button>';
+  // No dice "invitar" porque no invita: la invitacion se manda en GHL. Esto
+  // solo lleva la cuenta de a quien ya se le mando.
+  return '<button onclick="ghlMarcarInvitado('+c.id+','+i+',\''+esc(String(email).replace(/'/g,"\\'"))+'\')" '
+    +'title="Marcar que ya lo invitaste en GHL" '
+    +'style="border:1px solid var(--border2);background:var(--bg3);color:var(--text3);'
+    +'border-radius:999px;cursor:pointer;font-size:10px;padding:2px 8px;font-family:inherit">ya invitado</button>';
 }
 function _fichaHtml(c){
   var filas=[];
@@ -20084,8 +20135,9 @@ function _fichaHtml(c){
           +'Todos invitados a GHL</span>';
         return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;'
           +'border-color:var(--accent);color:var(--accent)" '
-          +'onclick="ghlInvitarTodos('+c.id+')" '
-          +'title="Enviar la invitacion a la subcuenta de GHL">Invitar a GHL &middot; '+pend.length+'</button>';
+          +'onclick="ghlInvitarAMano('+c.id+')" '
+          +'title="Copia los mails pendientes y abre el equipo de esa subcuenta en GHL">'
+          +'Invitar en GHL &middot; '+pend.length+'</button>';
       })()
       +(eq.length?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
         +'onclick="_copiarMails('+c.id+')">Copiar todos los mails</button>'):'')
