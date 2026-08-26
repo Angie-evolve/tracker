@@ -756,6 +756,14 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-tools button{width:22px;height:22px;padding:0;border-radius:6px;border:1px solid var(--border2);
   background:var(--bg3);color:var(--text3);cursor:pointer;font-size:10px;line-height:1}
 .sop-tools button:hover{color:var(--text);border-color:var(--text3)}
+.sop-tools button:disabled{opacity:.25;cursor:default}
+.sop-tools button:disabled:hover{color:var(--text3);border-color:var(--border2)}
+/* El paso que acaba de cambiar de bloque se marca un segundo: cruzo la
+   pantalla y sin esto uno lo pierde de vista. */
+.sop-paso.recien .sop-caja{animation:sopRecien 1.2s ease-out}
+@keyframes sopRecien{
+  0%,45%{border-color:var(--accent);box-shadow:0 0 0 3px rgba(78,207,160,.18),0 12px 26px -8px rgba(0,0,0,.75)}
+  100%{border-color:var(--border);box-shadow:0 8px 20px -10px rgba(0,0,0,.7)}}
 .sop-mas{display:none}
 .sop-editando .sop-mas{display:block}
 .sop-shot{margin-top:9px;border-radius:var(--radius);overflow:hidden;border:1px dashed var(--border2);
@@ -20300,7 +20308,7 @@ function _sopCuenta(s){
   });
   return {tot:tot, n:n, pct:tot?Math.round(n/tot*100):0};
 }
-var SOP_EDIT=false, SOP_ABIERTO=null;
+var SOP_EDIT=false, SOP_ABIERTO=null, _SOP_RECIEN=null;
 
 function sopNuevo(){
   var s={ id:Date.now(), titulo:'SOP sin nombre', version:'v1',
@@ -20345,12 +20353,38 @@ function sopAgregarBloque(id){
   s.bloques.push({b:'Bloque nuevo', pasos:[{t:'Primer paso', d:''}]});
   save(); _sopPintar(id);
 }
+// Las flechas cruzan de bloque: bajar en el ultimo paso lo deja primero del
+// bloque siguiente, subir en el primero lo deja ultimo del anterior. El id de
+// un paso incluye el numero de su bloque, asi que al cruzar hay que mudar la
+// clave de "hechos" o el paso se destildaria solo por haberlo movido.
 function sopMoverPaso(id, bi, pi, d){
   var s=_sop(id); if(!s) return;
   var ps=s.bloques[bi].pasos;
-  if(pi+d<0 || pi+d>=ps.length) return;
-  ps.splice(pi+d, 0, ps.splice(pi,1)[0]);
-  save(); _sopPintar(id);
+  var dest=pi+d;
+  if(dest>=0 && dest<ps.length){
+    ps.splice(dest, 0, ps.splice(pi,1)[0]);
+    _SOP_RECIEN=_sopIdPaso(bi, ps[dest]);
+  }else{
+    var bj=bi+d;
+    if(bj<0 || bj>=s.bloques.length) return;
+    var p=ps.splice(pi,1)[0];
+    var otro=s.bloques[bj].pasos||(s.bloques[bj].pasos=[]);
+    // Bajando entra por arriba del bloque siguiente; subiendo, por abajo del
+    // anterior. Asi el paso queda pegado a donde estaba y no salta lejos.
+    otro.splice(d>0?0:otro.length, 0, p);
+    s.hechos=s.hechos||{};
+    var viejo=_sopIdPaso(bi,p), nuevo=_sopIdPaso(bj,p);
+    if(s.hechos[viejo]){ delete s.hechos[viejo]; s.hechos[nuevo]=1; }
+    _SOP_RECIEN=nuevo;
+  }
+  save(); _sopPintar(id); _sopIrRecien();
+}
+// Cuando un paso cambia de bloque se va de la vista: hay que llevarlo a la
+// pantalla y marcarlo un segundo, o parece que se borro.
+function _sopIrRecien(){
+  var el=document.querySelector('.sop-paso.recien');
+  if(el && el.scrollIntoView) el.scrollIntoView({block:'center', behavior:'smooth'});
+  _SOP_RECIEN=null;
 }
 function sopBorrarPaso(id, bi, pi){
   var s=_sop(id); if(!s) return;
@@ -20564,8 +20598,15 @@ function _sopHtml(id){
           +'margin-bottom:12px;padding-left:34px">'+esc(b.b||'')+'</div>'
         +'<div class="sop-riel" style="--llenado:'+llen+'%">'
         +b.pasos.map(function(p,pi){
-          var ok=!!s.hechos[_sopIdPaso(bi,p)];
-          return '<div class="sop-paso'+(ok?' ok':'')+(pi===act?' act':'')+'">'
+          var kp=_sopIdPaso(bi,p);
+          var ok=!!s.hechos[kp];
+          // Los topes son los del SOP entero, no los del bloque: dentro del
+          // bloque la flecha ya no se apaga, cruza.
+          var tope0=(bi===0 && pi===0);
+          var tope1=(bi===s.bloques.length-1 && pi===b.pasos.length-1);
+          var cruzaSube=(pi===0 && bi>0), cruzaBaja=(pi===b.pasos.length-1 && bi<s.bloques.length-1);
+          return '<div class="sop-paso'+(ok?' ok':'')+(pi===act?' act':'')
+              +(kp===_SOP_RECIEN?' recien':'')+'">'
             +'<button class="sop-nodo" aria-pressed="'+ok+'" aria-label="'+esc(p.t)+'" '
               +'onclick="sopTildar('+id+','+bi+','+pi+')"></button>'
             +'<div class="sop-caja">'
@@ -20574,8 +20615,10 @@ function _sopHtml(id){
                   +'data-ph="Que hay que hacer" '
                   +'onblur="sopTexto('+id+','+bi+','+pi+',\'t\',this.innerText)">'+esc(p.t||'')+'</div>'
                 +'<div class="sop-tools">'
-                  +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',-1)" title="Subir">&#8593;</button>'
-                  +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',1)" title="Bajar">&#8595;</button>'
+                  +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',-1)"'+(tope0?' disabled':'')
+                    +' title="'+(cruzaSube?'Mover al bloque anterior':'Subir')+'">&#8593;</button>'
+                  +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',1)"'+(tope1?' disabled':'')
+                    +' title="'+(cruzaBaja?'Mover al bloque siguiente':'Bajar')+'">&#8595;</button>'
                   +'<button onclick="sopBorrarPaso('+id+','+bi+','+pi+')" title="Borrar">&times;</button>'
                 +'</div>'
               +'</div>'
