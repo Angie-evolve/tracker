@@ -850,6 +850,10 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .bd-nodo.sel .bd-tools{opacity:1}
 /* Franja invisible en el borde derecho: aparece el cursor al acercarse */
 .bd-ancho{position:absolute;right:-3px;top:0;bottom:0;width:8px;cursor:ew-resize}
+/* Un tablero embebido necesita estirarse a lo alto tambien: con el alto fijo
+   un mapa grande queda ilegible adentro del nodo. */
+.bd-alto{position:absolute;left:0;right:0;bottom:-3px;height:8px;cursor:ns-resize}
+.bd-alto:hover{background:linear-gradient(180deg,transparent,var(--accent));opacity:.35}
 .bd-ancho:hover{background:linear-gradient(90deg,transparent,var(--accent));opacity:.35}
 @media(prefers-reduced-motion:reduce){.bd-tools{transition:none}}
 /* Los chips se alinean en columnas: cada uno mide segun su texto y sin ancho
@@ -21502,7 +21506,7 @@ var BD_COLORES=[
   {k:'rojo',  bg:'rgba(216,90,48,.14)',   bd:'var(--redx)',    tx:'var(--text)'},
   {k:'violeta',bg:'rgba(139,92,246,.14)', bd:'#8B5CF6',        tx:'var(--text)'}
 ];
-var BD={ z:1, x:0, y:0, arrastre:null, conectando:null, cid:null, sel:null, pila:[] };
+var BD={ z:1, x:0, y:0, arrastre:null, conectando:null, cid:null, sel:null, pila:[], embVivo:null };
 
 // Deshacer: se guarda una foto del board antes de cada cambio. Con nodos de
 // texto el board es chico, asi que copiarlo entero es mas simple y seguro
@@ -21700,7 +21704,25 @@ function bdRender(){
         +'onfocus="bdSeleccionar('+n.id+')" '
         +'onmousedown="event.stopPropagation()" '
         +'style="color:'+col.tx+'">'+esc(n.texto||'')+'</div>'
+      // Nodo con tablero adentro. El iframe arranca inerte (pointer-events
+      // none): si no, se come la rueda y el arrastre, y no se puede ni mover el
+      // nodo ni hacer zoom en el board. Se activa al tocar "Usar".
+      +(n.emb?('<div class="bd-emb" style="position:relative">'
+        +'<iframe src="'+esc(_embedUrl(n.emb)||n.emb)+'" loading="lazy" allowfullscreen '
+          +'style="width:100%;height:'+(n.h||420)+'px;border:0;border-radius:8px;background:var(--bg2);'
+          +'display:block;pointer-events:'+(BD.embVivo===n.id?'auto':'none')+'"></iframe>'
+        +'<div style="display:flex;gap:6px;align-items:center;margin-top:6px">'
+          +'<button onclick="event.stopPropagation();bdEmbUsar('+n.id+')" '
+            +'style="border:1px solid var(--border2);background:var(--bg3);border-radius:999px;'
+            +'cursor:pointer;font-size:10px;padding:2px 9px;font-family:inherit;color:'
+            +(BD.embVivo===n.id?'var(--accent)':'var(--text3)')+'">'
+            +(BD.embVivo===n.id?'Listo':'Usar')+'</button>'
+          +'<a href="'+esc(n.emb)+'" target="_blank" rel="noopener" onmousedown="event.stopPropagation()" '
+            +'style="font-size:10px;color:var(--text3);text-decoration:none">Abrir en '+_embedNombre(n.emb)+'</a>'
+        +'</div>'
+      +'</div>'):'')
       +'<div class="bd-ancho" title="Ancho"></div>'
+      +(n.emb?'<div class="bd-alto" title="Alto"></div>':'')
     +'</div>';
   }).join('');
   bdLineas();
@@ -21793,24 +21815,34 @@ function _bdLinkPegado(txt){
   if(txt.split(/\s+/).length>60) return '';   // es un mapa largo, no un link
   return _embedUrl(u) ? u : '';
 }
-// Lo guarda en Material, que es donde vive lo que se ve embebido, y lo deja
-// abierto para no obligar a ir a buscarlo.
+// Entra como un nodo mas del board: es donde se pego y donde se espera verlo.
+// Se le puede poner titulo, moverlo, conectarlo con otros nodos y borrarlo
+// como a cualquiera.
 function bdGuardarEmbed(){
   var c=_bdCliente(); if(!c) return;
   var t=document.getElementById('bd-imp');
   var u=_bdLinkPegado(t?t.value:'');
   if(!u){ toast('No reconoci el link'); return; }
-  var nom=prompt('Como lo llamamos?', _embedNombre(u)+' de '+(c.name||'este cliente'));
+  var nom=prompt('Titulo del tablero:', _embedNombre(u)+' de '+(c.name||'este cliente'));
   if(nom===null) return;
-  c.material=c.material||[];
-  var id=Date.now();
-  c.material.unshift({id:id, label:String(nom).trim()||_embedNombre(u), url:u, at:new Date().toISOString()});
-  _MAT_ABIERTO=id;
+  bdFoto();
+  var d=_bdDatos(c);
+  var abajo=0;
+  d.nodos.forEach(function(n){ var b=n.y+(n.emb?(n.h||420):90); if(b>abajo) abajo=b; });
+  var n={ id:Date.now()+Math.floor(Math.random()*999), x:80, y:abajo+(d.nodos.length?60:20),
+          w:760, h:420, texto:String(nom).trim()||_embedNombre(u), emb:u, color:'gris' };
+  d.nodos.push(n);
   save();
   closeModal();
-  if(typeof renderClient==='function') renderClient();
-  else if(typeof renderTab==='function') renderTab();
-  toast('Guardado en Material, ya abierto. El board sigue viviendo en '+_embedNombre(u)+'.');
+  bdRender();
+  bdCentrar();
+  toast('Listo. Toca "Usar" en el nodo para navegar adentro del tablero.');
+}
+// Mientras un embed esta "vivo" se puede navegar adentro; el resto del board
+// queda quieto. Uno por vez, porque dos iframes activos se pelean el scroll.
+function bdEmbUsar(id){
+  BD.embVivo = (BD.embVivo===id) ? null : id;
+  bdRender();
 }
 function bdImportarModal(){
   var c=_bdCliente(); if(!c) return;
@@ -21823,8 +21855,8 @@ function bdImportarModal(){
         +'<b style="color:var(--text2)">Como lista indentada</b>, cada sangria es un nivel: '
         +'se crean los nodos aca y el mapa deja de depender de Whimsical. '
         +'Se agrega abajo de lo que ya haya, sin pisar nada.<br>'
-        +'Si pegas un link o un embed, lo guardo en Material y se ve embebido, '
-        +'pero el board sigue viviendo alla.</div>'
+        +'<b style="color:var(--text2)">Como link o embed</b>, entra como un nodo con el '
+        +'tablero adentro, pero sigue viviendo en Whimsical.</div>'
       +'<textarea id="bd-imp" spellcheck="false" placeholder="Mercado actual&#10;    Embudo A&#10;        CPL 14&#10;        Registros 68&#10;    Embudo B&#10;        Registros 184" '
         +'style="width:100%;box-sizing:border-box;height:230px;padding:11px 13px;border-radius:var(--radius);'
         +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
@@ -21845,10 +21877,11 @@ function bdImportarModal(){
     var link=_bdLinkPegado(t.value);
     if(link){
       // Es un embed: no hay nodos que crear, pero si hay algo util que hacer.
-      e.innerHTML='<b style="color:var(--amberx)">Eso es un embed, no un mapa en texto.</b><br>'
-        +'Guardado asi, el board se ve dentro del tracker pero sigue viviendo en '
-        +esc(_embedNombre(link))+' y te sigue ocupando el cupo. '
-        +'Para bajarlo de verdad, pega el contenido como lista indentada.';
+      e.innerHTML='Entra como un <b style="color:var(--text2)">nodo con el tablero adentro</b>, '
+        +'que podes mover y conectar con el resto.<br>'
+        +'<span style="color:var(--text3)">Ojo: el board sigue viviendo en '+esc(_embedNombre(link))
+        +' y te sigue ocupando el cupo. Para bajarlo de verdad, pega el contenido '
+        +'como lista indentada.</span>';
       if(b){ b.textContent='Guardar el embed'; b.setAttribute('onclick','bdGuardarEmbed()'); }
       return;
     }
@@ -21934,6 +21967,13 @@ function bdActivar(){
       if(nw){ bdFoto(); BD.arrastre={ancho:true, n:nw, x0:e.clientX, w0:(nw.w||200)}; e.preventDefault(); }
       return;
     }
+    // El borde de abajo estira el alto, y solo existe en los nodos con tablero.
+    if(nodo && e.target.closest('.bd-alto')){
+      var ch=_bdCliente();
+      var nh=_bdDatos(ch).nodos.filter(function(x){return x.id===+nodo.dataset.nid;})[0];
+      if(nh){ bdFoto(); BD.arrastre={alto:true, n:nh, y0:e.clientY, h0:(nh.h||420)}; e.preventDefault(); }
+      return;
+    }
     if(nodo) bdSeleccionar(+nodo.dataset.nid);
     else bdSeleccionar(null);
     if(nodo && !e.target.closest('.bd-txt') && !e.target.closest('.bd-tools')){
@@ -21948,6 +21988,13 @@ function bdActivar(){
   window.addEventListener('mousemove', function(e){
     var a=BD.arrastre; if(!a) return;
     if(a.pan){ BD.x=a.px+(e.clientX-a.x0); BD.y=a.py+(e.clientY-a.y0); _bdAplicarVista(); return; }
+    if(a.alto){
+      a.n.h=Math.max(160, Math.round(a.h0+(e.clientY-a.y0)/BD.z));
+      var eh=document.querySelector('[data-nid="'+a.n.id+'"] iframe');
+      if(eh) eh.style.height=a.n.h+'px';
+      bdLineas();
+      return;
+    }
     if(a.ancho){
       a.n.w=Math.max(120, Math.round(a.w0+(e.clientX-a.x0)/BD.z));
       var ew=document.querySelector('[data-nid="'+a.n.id+'"]');
