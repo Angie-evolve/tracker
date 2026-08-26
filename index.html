@@ -19706,6 +19706,12 @@ function _fichaHtml(c){
     +filas.join('')+eqHtml
   +'</div>';
 }
+function _copiarPlantilla(id, bi, pi, i){
+  var s=_sop(id); if(!s) return;
+  var e=((s.bloques[bi].pasos[pi]||{}).extras||[])[i];
+  if(!e) return;
+  _copiar(e.texto||'');
+}
 function _copiar(t){
   navigator.clipboard.writeText(t).then(function(){ toast('Copiado'); },function(){});
 }
@@ -20360,6 +20366,100 @@ function sopTexto(id, bi, pi, campo, txt){
   save(); _sopPintar(id);
 }
 
+// Un paso puede llevar links, plantillas de mensaje y datos de contacto.
+// Antes todo era texto plano: el link no se podia tocar y la plantilla habia
+// que seleccionarla a mano, que es justo lo que uno hace apurado en una llamada.
+function sopExtra(id, bi, pi, tipo){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  p.extras=p.extras||[];
+  if(tipo==='link'){
+    var u=prompt('Pega el link:'); if(!u||!u.trim()) return;
+    var l=prompt('Como se llama? (opcional)','')||'';
+    p.extras.push({t:'link', url:u.trim(), l:l.trim()});
+  }else if(tipo==='plantilla'){
+    var x=prompt('Pega el mensaje. Se va a poder copiar de un toque:'); 
+    if(!x||!x.trim()) return;
+    p.extras.push({t:'plantilla', texto:x.trim()});
+  }else{
+    var et=prompt('Que dato es? (ej: Location ID, Mail del cliente)','');
+    if(et===null) return;
+    var v=prompt('Valor:'); if(!v||!v.trim()) return;
+    p.extras.push({t:'dato', l:(et||'').trim(), v:v.trim()});
+  }
+  save(); _sopPintar(id);
+}
+function sopExtraQuitar(id, bi, pi, i){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p||!p.extras) return;
+  p.extras.splice(i,1);
+  save(); _sopPintar(id);
+}
+function sopExtraTexto(id, bi, pi, i, txt){
+  var s=_sop(id); if(!s) return;
+  var e=((s.bloques[bi].pasos[pi]||{}).extras||[])[i];
+  if(!e) return;
+  e.texto=String(txt||'').trim();
+  save();
+}
+// Los links sueltos dentro del detalle tambien se vuelven tocables: nadie los
+// va a mover a un campo aparte, pero se usan igual.
+function _sopEnlazar(t){
+  return esc(t).replace(/(https?:\/\/[^\s<]+)/g, function(u){
+    return '<a href="'+u+'" target="_blank" rel="noopener" '
+      +'style="color:var(--accent);text-decoration:none;word-break:break-all">'+u+'</a>';
+  });
+}
+function _sopExtrasHtml(id, bi, pi, p){
+  var ex=(p.extras||[]);
+  var out=ex.map(function(e,i){
+    var quitar=SOP_EDIT?('<button onclick="sopExtraQuitar('+id+','+bi+','+pi+','+i+')" '
+      +'aria-label="Quitar" style="border:0;background:none;color:var(--text3);cursor:pointer;'
+      +'font-size:13px;padding:0 3px;flex:none">&times;</button>'):'';
+    if(e.t==='link'){
+      var nom=e.l||e.url.replace(/^https?:\/\//,'').slice(0,42);
+      return '<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
+        +'<span style="font-size:11px;color:var(--text3);flex:none">&#128279;</span>'
+        +'<a href="'+esc(e.url)+'" target="_blank" rel="noopener" style="flex:1;min-width:0;'
+          +'font-size:12px;color:var(--accent);text-decoration:none;overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(nom)+'</a>'
+        +quitar+'</div>';
+    }
+    if(e.t==='dato'){
+      return '<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
+        +'<span style="font-size:11px;color:var(--text3);width:96px;flex:none">'+esc(e.l||'Dato')+'</span>'
+        +'<span style="flex:1;min-width:0;font-size:12px;color:var(--text);word-break:break-all">'
+          +esc(e.v||'')+'</span>'
+        +'<button class="btn btn-sm" style="font-size:10px;padding:2px 8px;flex:none" '
+          +'onclick="_copiar(\''+esc(String(e.v||'').replace(/'/g,"\\'"))+'\')">Copiar</button>'
+        +quitar+'</div>';
+    }
+    // Plantilla: editable en el lugar, porque el mensaje se ajusta seguido
+    return '<div style="margin-top:8px;background:var(--bg3);border:1px solid var(--border);'
+      +'border-radius:var(--radius);padding:9px 11px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">'
+        +'<span style="font-size:10px;color:var(--text3);flex:1">Mensaje para copiar</span>'
+        +'<button class="btn btn-sm" style="font-size:10px;padding:2px 8px" '
+          +'onclick="_copiarPlantilla('+id+','+bi+','+pi+','+i+')">Copiar</button>'
+        +quitar
+      +'</div>'
+      +'<div class="sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
+        +'onblur="sopExtraTexto('+id+','+bi+','+pi+','+i+',this.innerText)" '
+        +'style="font-size:12px;color:var(--text2);line-height:1.55;white-space:pre-wrap">'
+        +esc(e.texto||'')+'</div>'
+    +'</div>';
+  }).join('');
+  if(SOP_EDIT){
+    out+='<div style="display:flex;gap:5px;margin-top:9px">'
+      +['link','plantilla','dato'].map(function(t){
+        return '<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
+          +'onclick="sopExtra('+id+','+bi+','+pi+',\''+t+'\')">+ '+t+'</button>';
+      }).join('')
+    +'</div>';
+  }
+  return out;
+}
+
 function _sopPintar(id){
   var cont=document.getElementById('sop-cuerpo');
   if(cont) cont.innerHTML=_sopHtml(id);
@@ -20417,7 +20517,9 @@ function _sopHtml(id){
               +'</div>'
               +'<div class="sop-d sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
                 +'data-ph="Detalle: que hacer y por que" '
-                +'onblur="sopTexto('+id+','+bi+','+pi+',\'d\',this.innerText)">'+esc(p.d||'')+'</div>'
+                +'onblur="sopTexto('+id+','+bi+','+pi+',\'d\',this.innerText)">'
+                +(SOP_EDIT?esc(p.d||''):_sopEnlazar(p.d||''))+'</div>'
+              +_sopExtrasHtml(id,bi,pi,p)
               +(p.ojo?('<div class="sop-ojo sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
                 +'onblur="sopTexto('+id+','+bi+','+pi+',\'ojo\',this.innerText)">'+esc(p.ojo)+'</div>'):'')
               +(p.img
@@ -20494,6 +20596,11 @@ function sopExportar(id){
           +'<b>'+esc(p.t||'')+'</b>'
           +(p.d?('<p>'+esc(p.d)+'</p>'):'')
           +(p.ojo?('<p class="ojo">'+esc(p.ojo)+'</p>'):'')
+          +(p.extras||[]).map(function(e){
+            if(e.t==='link') return '<p><a href="'+esc(e.url)+'">'+esc(e.l||e.url)+'</a></p>';
+            if(e.t==='dato') return '<p><b style="color:#999;font-weight:400">'+esc(e.l||'')+':</b> '+esc(e.v||'')+'</p>';
+            return '<pre>'+esc(e.texto||'')+'</pre>';
+          }).join('')
           +(p.img?('<img src="'+esc(p.img)+'" alt="">'):'')
         +'</li>';
       }).join('')+'</ol>';
@@ -20516,6 +20623,8 @@ function sopExportar(id){
     +'p.ojo{color:#f0a830;background:rgba(240,168,48,.1);border:1px solid rgba(240,168,48,.3);'
     +'padding:8px 11px;border-radius:8px;font-size:12.5px}'
     +'img{width:100%;border-radius:8px;margin-top:8px;border:1px solid rgba(255,255,255,.08)}'
+    +'a{color:#4ecfa0}pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;color:#999;'
+    +'background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:9px 11px;margin-top:6px}'
     +'</style></head><body><h1>'+esc(s.titulo)+'</h1>'
     +'<div class="meta">'+(s.version||'v1')+' &middot; '+c.tot+' pasos</div>'
     +cuerpo+'</body></html>';
