@@ -760,6 +760,35 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-tools button:disabled:hover{color:var(--text3);border-color:var(--border2)}
 /* El paso que acaba de cambiar de bloque se marca un segundo: cruzo la
    pantalla y sin esto uno lo pierde de vista. */
+/* Etiqueta de cuando se hace el paso. En lectura es un cartelito; en edicion
+   es un boton que cicla: sin etiqueta -> Previa -> En la llamada. */
+.sop-fase{flex:none;border:1px solid transparent;border-radius:99px;padding:2px 8px;font-size:9.5px;
+  font-weight:500;text-transform:uppercase;letter-spacing:.06em;line-height:1.5;white-space:nowrap;
+  background:none;font-family:inherit}
+.sop-fase[disabled]{cursor:default}
+.sop-fase:not([disabled]){cursor:pointer}
+.sop-fase.f-previa{background:rgba(186,117,23,.15);color:var(--amberx);border-color:rgba(240,168,48,.3)}
+.sop-fase.f-durante{background:var(--bg3);color:var(--text2);border-color:var(--border2)}
+.sop-fase.f-sin{background:none;color:var(--text3);border-color:var(--border2);border-style:dashed}
+.sop-paso.ok .sop-fase{opacity:.4}
+/* Lo que hay que tener listo antes de entrar a la llamada, junto y arriba.
+   Los pasos siguen viviendo en su bloque: esto es un indice, no una copia. */
+.sop-prev{border:1px solid rgba(240,168,48,.3);background:rgba(186,117,23,.07);
+  border-radius:12px;padding:12px 15px;margin-bottom:26px}
+.sop-prev.full{border-color:var(--border);background:none}
+.sop-prev-cab{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--amberx);margin-bottom:9px}
+.sop-prev.full .sop-prev-cab{color:var(--text3)}
+.sop-prev-n{font-size:10.5px;color:var(--text3);letter-spacing:0;text-transform:none}
+.sop-prev-it{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:12.5px;color:var(--text)}
+.sop-prev-c{width:13px;height:13px;flex:none;border-radius:50%;border:1.5px solid var(--border2);
+  background:none;padding:0;cursor:pointer;transition:all .15s ease}
+.sop-prev-c:hover{border-color:var(--text3)}
+.sop-prev-it.ok .sop-prev-c{background:var(--accent);border-color:var(--accent)}
+.sop-prev-t{flex:1;min-width:0;cursor:pointer}
+.sop-prev-t:hover{color:var(--strong);text-decoration:underline;text-decoration-color:var(--border2)}
+.sop-prev-it.ok .sop-prev-t{color:var(--text3);text-decoration:line-through;text-decoration-color:#444}
+.sop-prev-b{flex:none;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
 /* El encabezado del bloque ahora es una fila: titulo editable + herramientas */
 .sop-bcab{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-left:34px}
 .sop-btit{flex:1;min-width:0;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3)}
@@ -20415,6 +20444,58 @@ function sopMoverBloque(id, bi, d){
   _SOP_RECIEN_B=bj;
   save(); _sopPintar(id); _sopIrRecien();
 }
+// Un SOP de llamada tiene dos tiempos mezclados: lo que hay que dejar listo
+// antes de entrar y lo que se hace con el cliente en linea. No los separo en
+// bloques porque los bloques agrupan por tema (GHL, Meta) y una previa puede
+// vivir en cualquiera: la etiqueta deja el paso donde esta y ademas lo junta
+// arriba, en la lista de preparacion.
+var SOP_FASES=['','previa','durante'];
+function sopFase(id, bi, pi){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  var i=SOP_FASES.indexOf(p.fase||'');
+  var f=SOP_FASES[(i+1)%SOP_FASES.length];
+  if(f) p.fase=f; else delete p.fase;
+  save(); _sopPintar(id);
+}
+function _sopPrevias(s){
+  var r=[];
+  (s.bloques||[]).forEach(function(b,bi){
+    (b.pasos||[]).forEach(function(p,pi){
+      if(p.fase==='previa') r.push({bi:bi, pi:pi, p:p, bloque:b.b||''});
+    });
+  });
+  return r;
+}
+// Desde la lista de preparacion se salta al paso: es el mismo destello que
+// cuando un paso cambia de bloque, asi que reuso ese camino.
+function sopIrPaso(id, bi, pi){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  _SOP_RECIEN=_sopIdPaso(bi,p);
+  _sopPintar(id); _sopIrRecien();
+}
+function _sopPrevHtml(id){
+  var s=_sop(id);
+  var pr=_sopPrevias(s);
+  if(!pr.length) return '';
+  var hs=pr.filter(function(x){ return s.hechos[_sopIdPaso(x.bi,x.p)]; }).length;
+  return '<div class="sop-prev'+(hs===pr.length?' full':'')+'">'
+    +'<div class="sop-prev-cab">'
+      +'<span>Para llegar preparado</span>'
+      +'<span class="sop-prev-n">'+hs+' de '+pr.length+'</span>'
+    +'</div>'
+    +pr.map(function(x){
+      var ok=!!s.hechos[_sopIdPaso(x.bi,x.p)];
+      return '<div class="sop-prev-it'+(ok?' ok':'')+'">'
+        +'<button class="sop-prev-c" aria-pressed="'+ok+'" aria-label="Tildar '+esc(x.p.t||'')+'" '
+          +'onclick="sopTildar('+id+','+x.bi+','+x.pi+')"></button>'
+        +'<span class="sop-prev-t" onclick="sopIrPaso('+id+','+x.bi+','+x.pi+')">'+esc(x.p.t||'')+'</span>'
+        +'<span class="sop-prev-b">'+esc(x.bloque)+'</span>'
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
 function sopBorrarBloque(id, bi){
   var s=_sop(id); if(!s) return;
   var b=s.bloques[bi]; if(!b) return;
@@ -20632,6 +20713,7 @@ function _sopHtml(id){
   var s=_sop(id); if(!s) return '';
   s.hechos=s.hechos||{};
   return '<div class="sop-centro '+(SOP_EDIT?'sop-editando':'')+'">'
+    +_sopPrevHtml(id)
     +(s.bloques||[]).map(function(b,bi){
       var hs=(b.pasos||[]).filter(function(p){return s.hechos[_sopIdPaso(bi,p)];}).length;
       var llen=b.pasos.length?Math.round(hs/b.pasos.length*100):0;
@@ -20667,6 +20749,13 @@ function _sopHtml(id){
                 +'<div class="sop-t sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
                   +'data-ph="Que hay que hacer" '
                   +'onblur="sopTexto('+id+','+bi+','+pi+',\'t\',this.innerText)">'+esc(p.t||'')+'</div>'
+                +((p.fase||SOP_EDIT)
+                  ?('<button class="sop-fase'+(p.fase?' f-'+p.fase:' f-sin')+'"'
+                    +(SOP_EDIT?'':' disabled')
+                    +' onclick="sopFase('+id+','+bi+','+pi+')"'
+                    +' title="'+(SOP_EDIT?'Cambiar cuando se hace':'')+'">'
+                    +(p.fase==='previa'?'Previa':(p.fase==='durante'?'En la llamada':'Cuando?'))
+                    +'</button>'):'')
                 +'<div class="sop-tools">'
                   +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',-1)"'+(tope0?' disabled':'')
                     +' title="'+(cruzaSube?'Mover al bloque anterior':'Subir')+'">&#8593;</button>'
@@ -20767,6 +20856,8 @@ function sopExportar(id){
       +(b.pasos||[]).map(function(p){
         return '<li'+((s.hechos||{})[_sopIdPaso(bi,p)]?' class="ok"':'')+'>'
           +'<b>'+esc(p.t||'')+'</b>'
+          +(p.fase?('<span class="fase '+p.fase+'">'
+            +(p.fase==='previa'?'Previa':'En la llamada')+'</span>'):'')
           +(p.d?('<p>'+esc(p.d)+'</p>'):'')
           +(p.ojo?('<p class="ojo">'+esc(p.ojo)+'</p>'):'')
           +(p.extras||[]).map(function(e){
@@ -20798,8 +20889,23 @@ function sopExportar(id){
     +'img{width:100%;border-radius:8px;margin-top:8px;border:1px solid rgba(255,255,255,.08)}'
     +'a{color:#4ecfa0}pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;color:#999;'
     +'background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:9px 11px;margin-top:6px}'
+    +'.fase{display:inline-block;margin-left:8px;border-radius:99px;padding:2px 8px;font-size:9.5px;'
+    +'text-transform:uppercase;letter-spacing:.06em;vertical-align:middle}'
+    +'.fase.previa{background:rgba(186,117,23,.15);color:#f0a830;border:1px solid rgba(240,168,48,.3)}'
+    +'.fase.durante{background:#1a1a1a;color:#999;border:1px solid rgba(255,255,255,.13)}'
+    +'.prev{border:1px solid rgba(240,168,48,.3);background:rgba(186,117,23,.07);border-radius:12px;'
+    +'padding:14px 18px;margin-bottom:8px}'
+    +'.prev h3{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:#f0a830;'
+    +'font-weight:500;margin:0 0 8px}'
+    +'.prev ul{margin:0;padding-left:18px}.prev li{margin:0 0 4px;font-size:13px;color:#ccc}'
     +'</style></head><body><h1>'+esc(s.titulo)+'</h1>'
     +'<div class="meta">'+(s.version||'v1')+' &middot; '+c.tot+' pasos</div>'
+    +(function(){
+      var pr=_sopPrevias(s);
+      if(!pr.length) return '';
+      return '<div class="prev"><h3>Para llegar preparado &middot; '+pr.length+' cosas</h3><ul>'
+        +pr.map(function(x){ return '<li>'+esc(x.p.t||'')+'</li>'; }).join('')+'</ul></div>';
+    })()
     +cuerpo+'</body></html>';
   var a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
