@@ -19814,40 +19814,109 @@ function _matHeredado(c){
 // Lo que se cargo en el alta y despues no se mostraba en ningun lado: mail,
 // contacto, telefono y equipo. Se necesita justo cuando hay que crear la
 // subcuenta a mano en GHL, que es el momento en que uno lo va a buscar.
+// Lo que se cargo en el alta y despues no se mostraba en ningun lado: mail,
+// contacto, telefono y equipo. Se necesita justo cuando hay que crear la
+// subcuenta a mano en GHL, que es el momento en que uno lo va a buscar.
+// Los campos se editan aca mismo: antes una fila vacia directamente no se
+// dibujaba, asi que un cliente cargado sin telefono no tenia donde ponerselo.
+function _telDigitos(v){ return String(v||'').replace(/[^0-9]/g,''); }
+// WhatsApp necesita el numero internacional. Un "(011) 4555 6677" da digitos
+// que arrancan en 0: eso abre un chat con nadie, asi que no se ofrece el link
+// y se avisa que falta el codigo de pais, que es lo unico accionable.
+function _telInternacional(tel){
+  var d=_telDigitos(tel);
+  if(!d) return '';
+  if(String(tel||'').trim().charAt(0)==='+') return d;
+  if(d.charAt(0)==='0') return '';      // numero local, sin pais
+  return d.length>=10?d:'';
+}
+function _waLink(tel){ var d=_telInternacional(tel); return d?('https://wa.me/'+d):''; }
+function fichaEditar(clientId, campo){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var etq={contacto:'Contacto', email:'Email', phone:'Telefono', industry:'Industria'}[campo]||campo;
+  var v=prompt(etq+(campo==='phone'?' (con codigo de pais: +54 9 11 ...)':'')+':', c[campo]||'');
+  if(v===null) return;
+  v=String(v).trim();
+  if(v) c[campo]=v; else delete c[campo];
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+// El equipo se cargaba pegando mails, asi que ninguno quedo con telefono.
+function eqTelEditar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c || !c.equipo) return;
+  var p=c.equipo[i];
+  if(p===undefined) return;
+  // Los mas viejos se guardaron como texto suelto: se pasan a objeto recien
+  // ahora, cuando hace falta guardarles algo mas que el nombre.
+  if(typeof p!=='object'){ p={nombre:String(p||''), email:''}; c.equipo[i]=p; }
+  var v=prompt('Telefono de '+(p.nombre||p.email||'este contacto')+' (con codigo de pais):', p.tel||'');
+  if(v===null) return;
+  v=String(v).trim();
+  if(v) p.tel=v; else delete p.tel;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
 function _fichaHtml(c){
   var filas=[];
-  var poner=function(l,v,copiable){
-    if(!v) return;
+  // Ahora se dibuja aunque este vacio: sin la fila no habia forma de cargarlo.
+  var poner=function(l,campo,v,copiable){
+    var wa=(campo==='phone')?_waLink(v):'';
     filas.push('<div style="display:flex;align-items:baseline;gap:12px;padding:7px 0;'
       +'border-bottom:1px solid var(--border)">'
       +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3)">'+l+'</span>'
-      +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);word-break:break-all">'
-        +esc(v)+'</span>'
-      +(copiable?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+      +(v
+        ?('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);word-break:break-all">'
+          +esc(v)+'</span>')
+        :('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text3)">Sin cargar</span>'))
+      +(wa?('<a href="'+esc(wa)+'" target="_blank" rel="noopener" class="btn btn-sm" '
+        +'style="font-size:10.5px;padding:2px 8px;text-decoration:none" title="Abrir WhatsApp">WhatsApp</a>')
+        :((campo==='phone'&&v)?('<span style="font-size:10.5px;color:var(--amberx)" '
+          +'title="Agregale el codigo de pais y se activa el boton de WhatsApp">falta el codigo de pais</span>'):''))
+      +((copiable&&v)?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
         +'onclick="_copiar(\''+esc(String(v).replace(/'/g,"\\'"))+'\')">Copiar</button>'):'')
+      +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+        +'onclick="fichaEditar('+c.id+',\''+campo+'\')">'+(v?'Editar':'Agregar')+'</button>'
     +'</div>');
   };
-  // Solo si aporta algo: en un cliente que es una persona, el contacto es
-  // el nombre y repetirlo no dice nada.
-  poner('Contacto', c.contacto);
-  poner('Email', c.email, true);
-  poner('Telefono', c.phone, true);
-  poner('Industria', c.industry);
+  poner('Contacto','contacto', c.contacto);
+  poner('Email','email', c.email, true);
+  poner('Telefono','phone', c.phone, true);
+  poner('Industria','industry', c.industry);
   var g=(c.ghl&&c.ghl.locationId)||'';
-  poner('Location ID', g, true);
+  if(g) filas.push('<div style="display:flex;align-items:baseline;gap:12px;padding:7px 0;'
+    +'border-bottom:1px solid var(--border)">'
+    +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3)">Location ID</span>'
+    +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);word-break:break-all">'+esc(g)+'</span>'
+    +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+      +'onclick="_copiar(\''+esc(String(g).replace(/'/g,"\\'"))+'\')">Copiar</button>'
+  +'</div>');
 
   var eq=(c.equipo||[]);
   var eqHtml=eq.length
     ? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">'
-       +eq.map(function(p){
-         var n=_eqNombre(p), m=_eqMail(p);
-         return '<span style="font-size:11.5px;border:1px solid var(--border2);border-radius:999px;'
-           +'padding:4px 11px;color:var(--text2)">'+esc(n)
-           +(m?('<span style="color:var(--text3)"> &middot; '+esc(m)+'</span>'):'')+'</span>';
+       +eq.map(function(p,i){
+         var n=_eqNombre(p), m=_eqMail(p), tel=(p&&typeof p==='object')?(p.tel||''):'';
+         var wa=_waLink(tel);
+         return '<span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;'
+           +'border:1px solid var(--border2);border-radius:999px;padding:4px 5px 4px 11px;color:var(--text2)">'
+           +esc(n)
+           +(m?('<span style="color:var(--text3)">&middot; '+esc(m)+'</span>'):'')
+           +(tel?('<span style="color:var(--text2)">&middot; '+esc(tel)+'</span>'):'')
+           +(wa?('<a href="'+esc(wa)+'" target="_blank" rel="noopener" title="Abrir WhatsApp" '
+             +'style="color:var(--accent);text-decoration:none;font-size:10.5px">wa</a>')
+             :(tel?('<span style="color:var(--amberx);font-size:10.5px" '
+               +'title="Falta el codigo de pais">sin pais</span>'):''))
+           +'<button onclick="eqTelEditar('+c.id+','+i+')" '
+             +'title="'+(tel?'Cambiar el telefono':'Agregar telefono')+'" '
+             +'style="border:1px solid var(--border2);background:var(--bg3);color:'
+             +(tel?'var(--text3)':'var(--amberx)')+';border-radius:999px;cursor:pointer;'
+             +'font-size:10px;padding:2px 8px;font-family:inherit">'+(tel?'tel':'+ tel')+'</button>'
+         +'</span>';
        }).join('')+'</div>')
     : '';
 
-  if(!filas.length && !eq.length) return '';
   return '<div style="margin-bottom:22px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">'
       +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
