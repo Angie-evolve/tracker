@@ -723,7 +723,38 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-panel{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg)}
 .sop-cab{flex:none;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--bg)}
 .sop-body{flex:1;min-height:0;overflow-y:auto;padding:24px}
-.sop-centro{max-width:640px;margin:0 auto}
+.sop-centro{max-width:912px;margin:0 auto}
+/* Dos columnas: indice fijo + lectura. La de lectura no pasa de 640px aunque
+   sobre pantalla; el ancho de mas se lo queda el indice, no el texto. */
+.sop-cols{display:grid;grid-template-columns:216px minmax(0,1fr);gap:36px;align-items:start}
+.sop-lee{min-width:0;max-width:640px}
+.sop-idx{position:sticky;top:0;align-self:start}
+.sop-idx-in{padding-right:4px}
+.sop-idx .eyebrow{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--text3);margin-bottom:10px}
+.sop-idx-b{display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;
+  padding:6px 0 6px 12px;margin-left:-12px;border:0;border-left:2px solid transparent;
+  background:none;font-family:inherit;font-size:12.5px;color:var(--text3);cursor:pointer;
+  line-height:1.35;transition:color .15s ease,border-color .15s ease}
+.sop-idx-b:hover{color:var(--text2)}
+.sop-idx-b.on{color:var(--strong);border-left-color:var(--accent)}
+.sop-idx-b.full .l{text-decoration:line-through;text-decoration-color:#3a3a3a}
+.sop-idx-b .l{flex:1;min-width:0}
+.sop-idx-b .n{flex:none;font-size:11px;color:var(--text3);font-variant-numeric:tabular-nums}
+.sop-idx-prep{margin-top:22px;padding-top:16px;border-top:1px solid var(--border)}
+.sop-idx-prep .sop-prev-cab{color:var(--amberx)}
+.sop-idx-prep.full .sop-prev-cab{color:var(--text3)}
+.sop-idx-prep .sop-prev-it{font-size:12px;align-items:flex-start;line-height:1.35}
+.sop-idx-prep .sop-prev-c{margin-top:3px}
+/* Abajo de 940px el indice no entra: se esconde y la preparacion vuelve arriba
+   del contenido, que es donde estaba antes de tener columna lateral. */
+.sop-prev-inline{display:none}
+@media (max-width:940px){
+  .sop-cols{grid-template-columns:minmax(0,1fr);gap:0}
+  .sop-idx{display:none}
+  .sop-prev-inline{display:block}
+  .sop-lee{max-width:none}
+}
 .sop-riel{position:relative;padding-left:34px}
 .sop-riel::before{content:'';position:absolute;left:9px;top:8px;bottom:8px;width:3px;border-radius:3px;
   background:var(--bg3);box-shadow:inset -1px 0 2px rgba(0,0,0,.6)}
@@ -20496,6 +20527,59 @@ function _sopPrevHtml(id){
     }).join('')
   +'</div>';
 }
+// El indice lateral llena el espacio que quedaba vacio a los costados sin
+// ensanchar el texto: la columna de lectura sigue en 640px, que es lo que se
+// lee comodo. Abajo del indice cuelga la preparacion, asi lo que hay que tener
+// listo antes de entrar esta siempre a la vista, no solo al abrir el SOP.
+function _sopIdxHtml(id){
+  var s=_sop(id); if(!s) return '';
+  var pr=_sopPrevias(s);
+  var hs=pr.filter(function(x){ return s.hechos[_sopIdPaso(x.bi,x.p)]; }).length;
+  return '<aside class="sop-idx"><div class="sop-idx-in">'
+    +'<span class="eyebrow">Bloques</span>'
+    +(s.bloques||[]).map(function(b,bi){
+      var n=(b.pasos||[]).filter(function(p){ return s.hechos[_sopIdPaso(bi,p)]; }).length;
+      var tot=(b.pasos||[]).length;
+      return '<button class="sop-idx-b'+(n&&n===tot?' full':'')+'" data-b="'+bi+'" '
+        +'onclick="sopIrBloque('+id+','+bi+')">'
+        +'<span class="l">'+esc(b.b||'Sin nombre')+'</span>'
+        +'<span class="n">'+n+'/'+tot+'</span></button>';
+    }).join('')
+    +(pr.length?('<div class="sop-idx-prep'+(hs===pr.length?' full':'')+'">'
+      +'<div class="sop-prev-cab"><span>Para llegar preparado</span>'
+        +'<span class="sop-prev-n">'+hs+'/'+pr.length+'</span></div>'
+      +pr.map(function(x){
+        var ok=!!s.hechos[_sopIdPaso(x.bi,x.p)];
+        return '<div class="sop-prev-it'+(ok?' ok':'')+'">'
+          +'<button class="sop-prev-c" aria-pressed="'+ok+'" aria-label="Tildar '+esc(x.p.t||'')+'" '
+            +'onclick="sopTildar('+id+','+x.bi+','+x.pi+')"></button>'
+          +'<span class="sop-prev-t" onclick="sopIrPaso('+id+','+x.bi+','+x.pi+')">'
+            +esc(x.p.t||'')+'</span></div>';
+      }).join('')+'</div>'):'')
+  +'</div></aside>';
+}
+function sopIrBloque(id, bi){
+  var el=document.getElementById('sopb-'+bi);
+  if(el && el.scrollIntoView) el.scrollIntoView({block:'start', behavior:'smooth'});
+}
+// Marca en el indice el bloque cuyo titulo ya paso por arriba: es donde esta
+// la vista, no el que ocupa mas pantalla.
+function _sopSpy(){
+  if(window._sopObs) window._sopObs.disconnect();
+  var raiz=document.getElementById('sop-cuerpo');
+  if(!raiz) return;
+  window._sopObs=new IntersectionObserver(function(es){
+    es.forEach(function(en){
+      if(!en.isIntersecting) return;
+      var bs=raiz.querySelectorAll('.sop-idx-b');
+      for(var i=0;i<bs.length;i++) bs[i].classList.remove('on');
+      var a=raiz.querySelector('.sop-idx-b[data-b="'+en.target.id.slice(5)+'"]');
+      if(a) a.classList.add('on');
+    });
+  },{root:raiz, rootMargin:'0px 0px -72% 0px'});
+  var bl=raiz.querySelectorAll('.sop-bloque');
+  for(var i=0;i<bl.length;i++) window._sopObs.observe(bl[i]);
+}
 function sopBorrarBloque(id, bi){
   var s=_sop(id); if(!s) return;
   var b=s.bloques[bi]; if(!b) return;
@@ -20686,6 +20770,7 @@ function _sopPintar(id){
   if(cont) cont.innerHTML=_sopHtml(id);
   var cab=document.getElementById('sop-cab');
   if(cab) cab.innerHTML=_sopCabecera(id);
+  _sopSpy();
 }
 function _sopCabecera(id){
   var s=_sop(id); if(!s) return '';
@@ -20712,14 +20797,16 @@ function _sopCabecera(id){
 function _sopHtml(id){
   var s=_sop(id); if(!s) return '';
   s.hechos=s.hechos||{};
-  return '<div class="sop-centro '+(SOP_EDIT?'sop-editando':'')+'">'
-    +_sopPrevHtml(id)
+  return '<div class="sop-centro sop-cols">'
+    +_sopIdxHtml(id)
+    +'<div class="sop-lee '+(SOP_EDIT?'sop-editando':'')+'">'
+    +'<div class="sop-prev-inline">'+_sopPrevHtml(id)+'</div>'
     +(s.bloques||[]).map(function(b,bi){
       var hs=(b.pasos||[]).filter(function(p){return s.hechos[_sopIdPaso(bi,p)];}).length;
       var llen=b.pasos.length?Math.round(hs/b.pasos.length*100):0;
       // El paso actual es el primero sin tildar: el que sobresale del carril
       var act=b.pasos.findIndex(function(p){return !s.hechos[_sopIdPaso(bi,p)];});
-      return '<div class="sop-bloque'+(bi===_SOP_RECIEN_B?' recien':'')+'" style="margin-bottom:26px">'
+      return '<div id="sopb-'+bi+'" class="sop-bloque'+(bi===_SOP_RECIEN_B?' recien':'')+'" style="margin-bottom:26px">'
         +'<div class="sop-bcab">'
         +'<div class="sop-ed sop-btit" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
           +'data-ph="Nombre del bloque" '
@@ -20784,7 +20871,7 @@ function _sopHtml(id){
     }).join('')
     +'<button class="btn btn-sm sop-mas" style="width:100%;border-style:dashed;font-size:11.5px" '
       +'onclick="sopAgregarBloque('+id+')">+ Agregar bloque</button>'
-  +'</div>';
+  +'</div></div>';
 }
 
 function abrirSop(id){
@@ -20801,14 +20888,16 @@ function abrirSop(id){
       closeModal();
     });
   }
-  // Pantalla completa, pero el texto no se estira: la columna queda en 640px,
-  // que es lo que se lee comodo. Con capturas anchas eso importa mas todavia.
+  // Pantalla completa, pero el texto no se estira: la columna de lectura queda
+  // en 640px, que es lo que se lee comodo. El ancho que sobra se lo lleva el
+  // indice de la izquierda, que ademas sostiene la lista de preparacion.
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay sop-overlay">'
     +'<div class="sop-panel">'
       +'<div id="sop-cab" class="sop-cab">'+_sopCabecera(id)+'</div>'
       +'<div id="sop-cuerpo" class="sop-body">'+_sopHtml(id)+'</div>'
     +'</div></div>';
+  _sopSpy();
 }
 
 function abrirSopsModal(){
