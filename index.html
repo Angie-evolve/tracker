@@ -7370,7 +7370,25 @@ async function probarConexionAgencia(){
     // 'locations' en vez de 'ping': el endpoint de snapshots devuelve 403 con este token.
     var r=await (await proxyFetch(_agUrl('locations'))).json();
     if(!r.ok) throw new Error(r.error||'respuesta invalida');
-    if(est){ est.textContent='Conectado \u00b7 '+(r.locations||[]).length+' subcuentas visibles'; est.style.color='var(--accent)'; }
+    var n=(r.locations||[]).length;
+    // Leer y crear son permisos distintos: el token puede listar subcuentas y
+    // no poder crearlas. Distinguirlo es la diferencia entre "algo falla" y
+    // saber que hay que tocar.
+    var puedeCrear=null;
+    try{
+      var p2=await (await proxyFetch(_agUrl('create_location',{name:'__prueba_evolve__', dryRun:'1'}))).json();
+      puedeCrear = !!p2.ok || !/403|forbidden/i.test(String(p2.error||''));
+    }catch(e2){ puedeCrear=null; }
+    if(est){
+      if(puedeCrear===false){
+        est.innerHTML='Lee bien ('+n+' subcuentas) pero <b>no puede crear</b>: al token le falta '
+          +'el permiso <b>locations.write</b>, o el proxy no reenvia esa accion.';
+        est.style.color='var(--amberx)';
+      }else{
+        est.textContent='Conectado \u00b7 '+n+' subcuentas visibles';
+        est.style.color='var(--accent)';
+      }
+    }
   }catch(e){
     if(est){ est.textContent='Error: '+e.message; est.style.color='var(--redx)'; }
   }
@@ -17857,7 +17875,17 @@ async function crearSubcuentaGHL(nombre, email, phone){
   if(a.pais) extra.country=a.pais;
   if(a.timezone) extra.timezone=a.timezone;
   var r=await (await fetch(_agUrl('create_location', extra))).json();
-  if(!r.ok) throw new Error(r.error||'La API no devolvio ok');
+  if(!r.ok){
+    var msg=String(r.error||'La API no devolvio ok');
+    // El JSON crudo de GHL no dice que hacer. 403 en create_location es
+    // siempre permiso del token, no el snapshot ni el nombre.
+    if(/403|forbidden/i.test(msg)){
+      throw new Error('GHL rechazo la creacion por permisos (403). El token de agencia '
+        +'necesita el scope locations.write y tiene que ser de agencia, no de una subcuenta. '
+        +'Probalo con "Probar conexion" en la tarjeta Agencia de GHL.');
+    }
+    throw new Error(msg);
+  }
   return { loc:r.location||{}, duplicado:!!r.duplicado, aviso:r.aviso||'' };
 }
 
