@@ -21705,6 +21705,138 @@ function bdRender(){
   if(BD.sel!=null) bdSeleccionar(BD.sel);
 }
 
+// ---- Importar un mapa desde texto indentado ------------------------------
+// Sirve para bajar al tracker los mapas hechos en Whimsical y liberar el cupo
+// del plan. Un mapa mental es, en el fondo, una lista indentada: cada sangria
+// es un nivel. Whimsical arma mapas pegando texto asi, con lo cual el mismo
+// formato sirve para ir y volver.
+//
+// Acepta tabs, espacios (de a 2 o 4) y vinetas con - * o •. El nivel se decide
+// por la sangria en caracteres y no por contar tabs: pegar de otra herramienta
+// suele mezclar los dos.
+function _bdParsearIndentado(txt){
+  var lineas=String(txt||'').replace(/\r/g,'').split('\n');
+  var items=[];
+  lineas.forEach(function(l){
+    if(!l.trim()) return;
+    var m=l.match(/^([\t ]*)(?:[-*\u2022]\s*)?(.*)$/);
+    var sangria=(m[1]||'').replace(/\t/g,'    ').length;   // tab = 4
+    var texto=(m[2]||'').trim();
+    if(!texto) return;
+    items.push({sangria:sangria, texto:texto});
+  });
+  if(!items.length) return [];
+  // Los anchos de sangria se deducen del propio texto: si alguien indenta de a
+  // 3 espacios, funciona igual. Se ordenan los valores vistos y su posicion es
+  // el nivel.
+  var vistos=[];
+  items.forEach(function(it){ if(vistos.indexOf(it.sangria)<0) vistos.push(it.sangria); });
+  vistos.sort(function(a,b){ return a-b; });
+  items.forEach(function(it){ it.nivel=vistos.indexOf(it.sangria); });
+  return items;
+}
+// Acomoda el arbol como un mapa mental: cada nivel una columna, y cada padre
+// centrado sobre sus hijos. Sin esto los nodos entran apilados y hay que
+// moverlos a mano uno por uno, que es justo lo que se quiere evitar.
+function _bdAcomodar(items, x0, y0){
+  var ANCHO=200, GAPX=80, GAPY=52;
+  var pilaPorNivel=[], nodos=[], filaLibre=0;
+  items.forEach(function(it, i){
+    var n={ idx:i, texto:it.texto, nivel:it.nivel, padre:null, hijos:[], y:0 };
+    if(it.nivel>0){
+      for(var k=it.nivel-1;k>=0;k--){
+        if(pilaPorNivel[k]!=null){ n.padre=pilaPorNivel[k]; break; }
+      }
+    }
+    if(n.padre!=null) nodos[n.padre].hijos.push(i);
+    pilaPorNivel[it.nivel]=i;
+    pilaPorNivel.length=it.nivel+1;
+    nodos.push(n);
+  });
+  // Las hojas definen el alto; los padres se centran despues, de abajo hacia
+  // arriba, para que el centrado use posiciones ya resueltas.
+  nodos.forEach(function(n){ if(!n.hijos.length){ n.y=filaLibre; filaLibre++; } });
+  for(var i=nodos.length-1;i>=0;i--){
+    var n=nodos[i];
+    if(n.hijos.length){
+      var pri=nodos[n.hijos[0]].y, ult=nodos[n.hijos[n.hijos.length-1]].y;
+      n.y=(pri+ult)/2;
+    }
+  }
+  // La columna sale de la profundidad real en el arbol, no del rango de
+  // sangria. Al pegar texto que mezcla tabs con espacios aparecen niveles
+  // intermedios que nadie escribio, y el mapa sale con columnas vacias.
+  nodos.forEach(function(n){
+    n.col = (n.padre==null) ? 0 : nodos[n.padre].col+1;
+  });
+  return nodos.map(function(n){
+    return { texto:n.texto, padreIdx:n.padre,
+             x:Math.round(x0 + n.col*(ANCHO+GAPX)),
+             y:Math.round(y0 + n.y*GAPY) };
+  });
+}
+function bdImportarModal(){
+  var c=_bdCliente(); if(!c) return;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Importar un mapa</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+        +'Pega el mapa como lista indentada: cada sangria es un nivel. '
+        +'Desde Whimsical, seleccionalo y copialo, o escribi el esquema a mano. '
+        +'Se agrega abajo de lo que ya haya en el board, sin pisar nada.</div>'
+      +'<textarea id="bd-imp" spellcheck="false" placeholder="Mercado actual&#10;    Embudo A&#10;        CPL 14&#10;        Registros 68&#10;    Embudo B&#10;        Registros 184" '
+        +'style="width:100%;box-sizing:border-box;height:230px;padding:11px 13px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+        +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;outline:none;resize:vertical"></textarea>'
+      +'<div id="bd-imp-prev" style="font-size:11.5px;color:var(--text3);margin-top:8px;min-height:18px"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="bdImportarConfirmar()">Importar</button>'
+      +'</div>'
+    +'</div></div>';
+  var t=document.getElementById('bd-imp');
+  // Vista previa en vivo: dice cuantos nodos y cuantos niveles van a entrar
+  // antes de crear nada, que es cuando todavia se puede corregir la sangria.
+  var prev=function(){
+    var it=_bdParsearIndentado(t.value);
+    var e=document.getElementById('bd-imp-prev');
+    if(!e) return;
+    if(!it.length){ e.textContent=''; return; }
+    var niv=0; it.forEach(function(x){ if(x.nivel+1>niv) niv=x.nivel+1; });
+    e.textContent=it.length+' nodo'+(it.length===1?'':'s')+' en '+niv+' nivel'+(niv===1?'':'es')+'.';
+  };
+  if(t){ t.addEventListener('input', prev); t.focus(); }
+}
+function bdImportarConfirmar(){
+  var c=_bdCliente(); if(!c) return;
+  var t=document.getElementById('bd-imp');
+  var items=_bdParsearIndentado(t?t.value:'');
+  if(!items.length){ toast('No encontre nada para importar'); return; }
+  if(items.length>300 && !confirm('Son '+items.length+' nodos. Seguro?')) return;
+  bdFoto();
+  var d=_bdDatos(c);
+  // Debajo de lo que ya existe: importar no tiene que tapar el trabajo previo.
+  var abajo=0;
+  d.nodos.forEach(function(n){ var b=n.y+90; if(b>abajo) abajo=b; });
+  var puestos=_bdAcomodar(items, 80, abajo+(d.nodos.length?70:40));
+  var ids=[];
+  puestos.forEach(function(p){
+    var n={ id:Date.now()+Math.floor(Math.random()*999999), x:p.x, y:p.y,
+            w:200, texto:p.texto, color:'gris' };
+    d.nodos.push(n);
+    ids.push(n.id);
+  });
+  puestos.forEach(function(p, i){
+    if(p.padreIdx!=null) d.enlaces.push({ de:ids[p.padreIdx], a:ids[i] });
+  });
+  save();
+  closeModal();
+  bdRender();
+  bdCentrar();
+  toast(items.length+' nodos importados');
+}
 function boardHtml(c){
   BD.cid=c.id;
   var n=_bdDatos(c).nodos.length;
@@ -21712,6 +21844,8 @@ function boardHtml(c){
     +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;flex:1">'
       +'Board</div>'
     +'<span id="bd-cuenta" style="font-size:11px;color:var(--text3)">'+n+' nodo'+(n===1?'':'s')+'</span>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" onclick="bdImportarModal()" '
+      +'title="Pegar un mapa como lista indentada">Importar</button>'
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" onclick="bdImportarAngulos()">'
       +'Traer angulos</button>'
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" onclick="bdCentrar()">Centrar</button>'
