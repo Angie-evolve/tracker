@@ -820,6 +820,13 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-prev-t:hover{color:var(--strong);text-decoration:underline;text-decoration-color:var(--border2)}
 .sop-prev-it.ok .sop-prev-t{color:var(--text3);text-decoration:line-through;text-decoration-color:#444}
 .sop-prev-b{flex:none;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+/* Pie de ejecucion: solo aparece cuando el SOP se abrio desde una tarea. */
+.sop-pie{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:26px;
+  padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--bg2)}
+.sop-pie.listo{border-color:rgba(78,207,160,.35);background:rgba(78,207,160,.06)}
+.sop-pie-t{flex:1;min-width:0;font-size:13px;color:var(--text)}
+.sop-pie.listo .sop-pie-t{color:var(--accent)}
+.sop-pie-t span{display:block;font-size:11px;color:var(--text3);margin-top:2px}
 /* El encabezado del bloque ahora es una fila: titulo editable + herramientas */
 .sop-bcab{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-left:34px}
 .sop-btit{flex:1;min-width:0;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3)}
@@ -8104,6 +8111,7 @@ function ticketGuardarEdicion(){
   // deberia quedar atada a la que se le puso al crearla.
   if(due) t.due=due; else delete t.due;
   if(nivel && nivel!==t.nivel){ t.nivel=nivel; delete t.prio; }
+  if(estado==='finalizada' && !t.done && sopFrenaCierre(t)){ estado=t.estado||''; }
   if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
   else if(t.done && estado){ t.done=false; delete t.doneAt; }
   t.attachments=(d.attachments||[]).slice();
@@ -10813,10 +10821,10 @@ function showTickets(){
           var a=sopAvanceTarea(t);
           if(!a) return '';
           var lleno=a.tot&&a.n===a.tot;
-          return '<button class=\\"btn btn-sm\\" style=\\"flex-shrink:0;'
-            +(lleno?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'\\" '
-            +'title=\\"'+esc(a.s.titulo)+'\\" onclick=\\"event.stopPropagation();abrirSop('
-            +a.s.id+','+c.id+','+t.id+')\\">&#9776; '+a.n+'/'+a.tot+'</button>';
+          return '<button class=\"btn btn-sm\" style=\"flex-shrink:0;'
+            +(lleno?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'\" '
+            +'title=\"'+esc(a.s.titulo)+'\" onclick=\"event.stopPropagation();abrirSop('
+            +a.s.id+','+c.id+','+t.id+')\">'+(lleno?'&#10003;':'&#9776;')+' '+a.n+'/'+a.tot+'</button>';
         })()
       +(function(){
           var n=_comLista(t).length, sinLeer=comSinLeer(c,t);
@@ -20896,12 +20904,40 @@ function _sopCabecera(id){
       +(SOP_EDIT?'Listo':'Editar')+'</button>'
     +(r?('<button class="btn btn-sm" onclick="sopDestildar('+id+')">Destildar</button>'):'')
     +'<button class="btn btn-sm" onclick="sopExportar('+id+')" title="Baja un HTML para compartir">Bajar</button>'
+    +((r&&c.tot&&c.n===c.tot)?('<button class="btn btn-sm btn-primary" onclick="sopTerminarTarea()">'
+        +'Dar la tarea por hecha</button>'):'')
     +(r?('<button class="btn btn-sm" onclick="abrirTareaDelSop()" title="Ver la tarea">La tarea</button>')
        :('<button class="btn btn-sm" onclick="abrirSopsModal()">Volver</button>'))
     // Con el modal a pantalla completa ya no hay fondo donde tocar para salir:
     // el cierre tiene que estar a la vista.
     +'<button class="btn btn-sm" onclick="closeModal()" aria-label="Cerrar" '
       +'style="padding:3px 9px">&times;</button>'
+  +'</div>';
+}
+// Terminar el ultimo paso y tener que ir a buscar la tarea al tablero para
+// cerrarla es un viaje al pedo: el cierre vive donde termina el trabajo.
+function sopTerminarTarea(){
+  var r=sopCtxTarea(); if(!r) return;
+  if(sopFrenaCierre(r.t)) return;
+  r.t.done=true; r.t.doneAt=new Date().toISOString(); r.t.estado='finalizada';
+  save(); closeModal();
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+  else if(typeof renderTab==='function') renderTab();
+  if(typeof toast==='function') toast('Tarea '+(r.t.ticket||'')+' cerrada');
+}
+// Pie del SOP cuando se ejecuta dentro de una tarea: dice que falta y cierra.
+function _sopPieHtml(id){
+  var r=sopCtxTarea(); if(!r) return '';
+  var c=_sopCuenta(_sop(id));
+  var listo=c.tot && c.n===c.tot;
+  return '<div class="sop-pie'+(listo?' listo':'')+'">'
+    +'<div class="sop-pie-t">'
+      +(listo?('Procedimiento completo &middot; '+c.tot+' de '+c.tot+' pasos')
+             :('Faltan '+(c.tot-c.n)+' paso'+((c.tot-c.n)===1?'':'s')+' de '+c.tot))
+      +'<span>'+esc(r.c.name)+' &middot; '+esc(r.t.ticket||'sin numero')+'</span>'
+    +'</div>'
+    +'<button class="btn btn-sm'+(listo?' btn-primary':'')+'" onclick="sopTerminarTarea()">'
+      +(listo?'Dar la tarea por hecha':'Cerrar igual')+'</button>'
   +'</div>';
 }
 function abrirTareaDelSop(){
@@ -20985,6 +21021,7 @@ function _sopHtml(id){
     }).join('')
     +'<button class="btn btn-sm sop-mas" style="width:100%;border-style:dashed;font-size:11.5px" '
       +'onclick="sopAgregarBloque('+id+')">+ Agregar bloque</button>'
+    +_sopPieHtml(id)
   +'</div></div>';
 }
 
@@ -30114,11 +30151,28 @@ function updateTaskStatus(clientId, taskId, status){
   toast('Estado actualizado: '+status);
 }
 
+// Una tarea con procedimiento no se da por hecha con pasos sin tildar: la
+// pregunta dice cuantos faltan y cuales, porque "te faltan 5" sin decir cuales
+// obliga a abrir el SOP igual. Avisa, no bloquea: a veces un paso no aplica.
+function sopFrenaCierre(t){
+  var a=sopAvanceTarea(t);
+  if(!a || !a.tot || a.n===a.tot) return false;
+  var faltan=[], h=t.sopHechos||{};
+  (a.s.bloques||[]).forEach(function(b,bi){
+    (b.pasos||[]).forEach(function(p){
+      if(!h[_sopIdPaso(bi,p)]) faltan.push('\u00b7 '+(p.t||'sin titulo'));
+    });
+  });
+  var lista=faltan.slice(0,6).join('\n')+(faltan.length>6?('\n\u00b7 y '+(faltan.length-6)+' mas'):'');
+  return !confirm('Faltan '+faltan.length+' paso'+(faltan.length===1?'':'s')+' de "'
+    +a.s.titulo+'":\n\n'+lista+'\n\nDarla por hecha igual?');
+}
 function toggleTask(clientId, taskId, checked){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.tasks) return;
   var t=c.tasks.find(function(x){return x.id===taskId;});
   if(t){
+    if(checked && sopFrenaCierre(t)) return;
     t.done=checked;
     if(checked) t.doneAt=new Date().toISOString(); else delete t.doneAt;
     save();
