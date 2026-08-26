@@ -7968,6 +7968,25 @@ function ticketArchivar(cid,tid){
   if(typeof showTickets==='function' && S.view==='tickets') showTickets();
 }
 
+// Selector de procedimiento para el alta y la edicion de una tarea. Vacio por
+// defecto: la mayoria de las tareas no siguen un SOP, y preseleccionar uno
+// haria que se enganche sin querer.
+function _sopSelect(idCampo, elegido){
+  var l=sops();
+  var est='width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:inherit;outline:none';
+  if(!l.length) return '<div style="font-size:11.5px;color:var(--text3);padding:8px 0">'
+    +'Todavia no hay procedimientos cargados.</div>';
+  return '<select id="'+idCampo+'" style="'+est+'">'
+    +'<option value="">Ninguno</option>'
+    +l.map(function(s){
+      var n=0; (s.bloques||[]).forEach(function(b){ n+=(b.pasos||[]).length; });
+      return '<option value="'+s.id+'"'+(+elegido===s.id?' selected':'')+'>'
+        +esc(s.titulo)+' \u00b7 '+n+' pasos</option>';
+    }).join('')
+    +'</select>';
+}
 function ticketEditarModal(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
@@ -8013,6 +8032,11 @@ function ticketEditarModal(cid,tid){
     +'<div><div style="'+lbl+'">Estado</div><select id="ted-estado" style="'+inp+'">'
     +estados.map(function(e){return '<option value="'+e[0]+'"'+((t.estado||'')===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')
     +'</select></div></div>'
+    +'<div style="margin-bottom:12px"><div style="'+lbl+'">Procedimiento</div>'
+    +_sopSelect('ted-sop', t.sopId||'')
+    +(t.sopId?('<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'
+      +'El avance vive en esta tarea. Si cambias de procedimiento se descarta.</div>'):'')
+    +'</div>'
     +'<div style="margin-bottom:14px"><div style="'+lbl+'">Archivos / material</div>'
     +'<div id="ted-attach" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>'
     +'<div style="display:flex;gap:6px"><input id="ted-newurl" placeholder="Pega un link (Drive, WeTransfer, etc.)" style="'+inp+';flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();_tedAddAttach();}">'
@@ -8083,6 +8107,18 @@ function ticketGuardarEdicion(){
   if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
   else if(t.done && estado){ t.done=false; delete t.doneAt; }
   t.attachments=(d.attachments||[]).slice();
+  // Cambiar de procedimiento invalida el avance: los ids de los pasos son de
+  // otro SOP y quedarian colgados. Se avisa antes de tirarlo.
+  var elSop=document.getElementById('ted-sop');
+  if(elSop){
+    var sp=+(elSop.value||0);
+    if(sp!==(t.sopId||0)){
+      var tenia=t.sopHechos && Object.keys(t.sopHechos).length;
+      if(!tenia || confirm('Cambiar el procedimiento descarta los '+tenia+' pasos ya tildados. Seguir?')){
+        if(sp){ t.sopId=sp; t.sopHechos={}; } else { delete t.sopId; delete t.sopHechos; }
+      }
+    }
+  }
   // Mover de cliente si cambio
   if(nuevoCid && nuevoCid!==d.cid){
     var nc=DB.clients.find(function(x){return x.id===nuevoCid;});
@@ -10771,6 +10807,17 @@ function showTickets(){
       +'</div>'
       +((t.revision&&!t.done)?'<button class=\"btn btn-sm\" style=\"flex-shrink:0;border-color:var(--accent);color:var(--accent)\" onclick=\"event.stopPropagation();rvAbrirTarea('+c.id+','+t.id+')\">Responder</button>':'')
       +chipPrio+chip
+      // Chip del procedimiento: muestra cuanto se avanzo y abre el SOP ya
+      // parado en esta tarea, que es donde se guarda el tildado.
+      +(function(){
+          var a=sopAvanceTarea(t);
+          if(!a) return '';
+          var lleno=a.tot&&a.n===a.tot;
+          return '<button class=\\"btn btn-sm\\" style=\\"flex-shrink:0;'
+            +(lleno?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'\\" '
+            +'title=\\"'+esc(a.s.titulo)+'\\" onclick=\\"event.stopPropagation();abrirSop('
+            +a.s.id+','+c.id+','+t.id+')\\">&#9776; '+a.n+'/'+a.tot+'</button>';
+        })()
       +(function(){
           var n=_comLista(t).length, sinLeer=comSinLeer(c,t);
           if(!n) return '<button class=\"btn btn-sm\" style=\"flex-shrink:0;color:var(--text3);opacity:.55\" '
@@ -20368,10 +20415,51 @@ function _sop(id){ return sops().filter(function(x){return x.id===id;})[0]; }
 function _sopIdPaso(bi,p){
   return bi+'|'+String(p.t||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,40);
 }
+// ---- Donde vive el avance ------------------------------------------------
+// El procedimiento es la plantilla y no lleva tildado: si lo llevara, engachar
+// el mismo SOP a la llamada de dos clientes haria que el segundo lo abra ya
+// completo. El avance vive en la tarea. Asi corregis un paso una sola vez y el
+// avance de cada cliente queda intacto.
+var SOP_CTX=null;              // {cid,tid} cuando el SOP se abrio desde una tarea
+var _SOP_SIN_TAREA={};         // avance de descarte: sin tarea no se guarda nada
+function sopCtxTarea(){
+  if(!SOP_CTX) return null;
+  var c=(DB.clients||[]).filter(function(x){return x.id===SOP_CTX.cid;})[0];
+  if(!c) return null;
+  var t=(c.tasks||[]).filter(function(x){return x.id===SOP_CTX.tid;})[0];
+  return t?{c:c,t:t}:null;
+}
+function _sopHechos(){
+  var r=sopCtxTarea();
+  if(!r) return _SOP_SIN_TAREA;
+  if(!r.t.sopHechos) r.t.sopHechos={};
+  return r.t.sopHechos;
+}
+function _sopVaciar(){
+  var h=_sopHechos();
+  Object.keys(h).forEach(function(k){ delete h[k]; });
+}
+// Mover o borrar bloques recalcula el avance entero: hay que volcarlo sobre el
+// mismo objeto, no reemplazarlo, porque cuelga de la tarea.
+function _sopReemplazar(nuevo){
+  _sopVaciar();
+  var h=_sopHechos();
+  Object.keys(nuevo).forEach(function(k){ h[k]=nuevo[k]; });
+}
+// Que SOP corresponde a una tarea, si tiene uno enganchado.
+function sopDeTarea(t){ return (t&&t.sopId)?_sop(t.sopId):null; }
+function sopAvanceTarea(t){
+  var s=sopDeTarea(t); if(!s) return null;
+  var h=t.sopHechos||{}, tot=0, n=0;
+  (s.bloques||[]).forEach(function(b,bi){
+    (b.pasos||[]).forEach(function(p){ tot++; if(h[_sopIdPaso(bi,p)]) n++; });
+  });
+  return {s:s, tot:tot, n:n, pct:tot?Math.round(n/tot*100):0};
+}
 function _sopCuenta(s){
   var tot=0, n=0;
   (s.bloques||[]).forEach(function(b,bi){
-    (b.pasos||[]).forEach(function(p){ tot++; if((s.hechos||{})[_sopIdPaso(bi,p)]) n++; });
+    (b.pasos||[]).forEach(function(p){ tot++; if(_sopHechos()[_sopIdPaso(bi,p)]) n++; });
   });
   return {tot:tot, n:n, pct:tot?Math.round(n/tot*100):0};
 }
@@ -20379,32 +20467,51 @@ var SOP_EDIT=false, SOP_ABIERTO=null, _SOP_RECIEN=null, _SOP_RECIEN_B=null;
 
 function sopNuevo(){
   var s={ id:Date.now(), titulo:'SOP sin nombre', version:'v1',
-          duenio:'', hechos:{}, creadoAt:new Date().toISOString(),
+          duenio:'', creadoAt:new Date().toISOString(),
           bloques:[{b:'Primer bloque', pasos:[{t:'Primer paso', d:''}]}] };
   sops().unshift(s);
   save();
   abrirSop(s.id);
 }
+// Tareas que hoy tienen enganchado este procedimiento. Sirve para no borrar
+// una plantilla que alguien esta usando sin avisar.
+function _sopUsos(sopId){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(t.sopId===sopId && !t.deleted) out.push({c:c, t:t});
+    });
+  });
+  return out;
+}
 function sopBorrar(id){
   var s=_sop(id); if(!s) return;
-  if(!confirm('Borrar "'+s.titulo+'"? No se puede deshacer.')) return;
+  var u=_sopUsos(id);
+  var av=u.length?('\n\nLo estan usando '+u.length+' tarea'+(u.length===1?'':'s')
+    +' ('+u.slice(0,3).map(function(x){return (x.t.ticket||x.c.name);}).join(', ')
+    +(u.length>3?'...':'')+'). Se les borra el procedimiento, no el avance.'):'';
+  if(!confirm('Borrar "'+s.titulo+'"? No se puede deshacer.'+av)) return;
+  u.forEach(function(x){ delete x.t.sopId; });
   DB.sops=sops().filter(function(x){return x.id!==id;});
   save();
   abrirSopsModal();
 }
 function sopTildar(id, bi, pi){
   var s=_sop(id); if(!s || SOP_EDIT) return;
+  if(!sopCtxTarea()){
+    if(typeof toast==='function') toast('El avance se lleva en la tarea. Enganchá este procedimiento a una y abrilo desde ahí.');
+    return;
+  }
   var p=s.bloques[bi].pasos[pi];
-  s.hechos=s.hechos||{};
   var k=_sopIdPaso(bi,p);
-  if(s.hechos[k]) delete s.hechos[k]; else s.hechos[k]=1;
+  if(_sopHechos()[k]) delete _sopHechos()[k]; else _sopHechos()[k]=1;
   save();
   _sopPintar(id);
 }
 function sopDestildar(id){
   var s=_sop(id); if(!s) return;
   if(!confirm('Destildar todo?')) return;
-  s.hechos={}; save(); _sopPintar(id);
+  _sopVaciar(); save(); _sopPintar(id);
 }
 function sopModoEdicion(id){
   SOP_EDIT=!SOP_EDIT;
@@ -20439,9 +20546,8 @@ function sopMoverPaso(id, bi, pi, d){
     // Bajando entra por arriba del bloque siguiente; subiendo, por abajo del
     // anterior. Asi el paso queda pegado a donde estaba y no salta lejos.
     otro.splice(d>0?0:otro.length, 0, p);
-    s.hechos=s.hechos||{};
-    var viejo=_sopIdPaso(bi,p), nuevo=_sopIdPaso(bj,p);
-    if(s.hechos[viejo]){ delete s.hechos[viejo]; s.hechos[nuevo]=1; }
+      var viejo=_sopIdPaso(bi,p), nuevo=_sopIdPaso(bj,p);
+    if(_sopHechos()[viejo]){ delete _sopHechos()[viejo]; _sopHechos()[nuevo]=1; }
     _SOP_RECIEN=nuevo;
   }
   save(); _sopPintar(id); _sopIrRecien();
@@ -20461,9 +20567,8 @@ function sopMoverBloque(id, bi, d){
   var s=_sop(id); if(!s) return;
   var bj=bi+d;
   if(bj<0 || bj>=s.bloques.length) return;
-  s.hechos=s.hechos||{};
   var tildados=s.bloques.map(function(b,i){
-    return (b.pasos||[]).map(function(p){ return !!s.hechos[_sopIdPaso(i,p)]; });
+    return (b.pasos||[]).map(function(p){ return !!_sopHechos()[_sopIdPaso(i,p)]; });
   });
   s.bloques.splice(bj, 0, s.bloques.splice(bi,1)[0]);
   tildados.splice(bj, 0, tildados.splice(bi,1)[0]);
@@ -20471,7 +20576,7 @@ function sopMoverBloque(id, bi, d){
   s.bloques.forEach(function(b,i){
     (b.pasos||[]).forEach(function(p,pi){ if(tildados[i][pi]) h[_sopIdPaso(i,p)]=1; });
   });
-  s.hechos=h;
+  _sopReemplazar(h);
   _SOP_RECIEN_B=bj;
   save(); _sopPintar(id); _sopIrRecien();
 }
@@ -20510,14 +20615,14 @@ function _sopPrevHtml(id){
   var s=_sop(id);
   var pr=_sopPrevias(s);
   if(!pr.length) return '';
-  var hs=pr.filter(function(x){ return s.hechos[_sopIdPaso(x.bi,x.p)]; }).length;
+  var hs=pr.filter(function(x){ return _sopHechos()[_sopIdPaso(x.bi,x.p)]; }).length;
   return '<div class="sop-prev'+(hs===pr.length?' full':'')+'">'
     +'<div class="sop-prev-cab">'
       +'<span>Para llegar preparado</span>'
       +'<span class="sop-prev-n">'+hs+' de '+pr.length+'</span>'
     +'</div>'
     +pr.map(function(x){
-      var ok=!!s.hechos[_sopIdPaso(x.bi,x.p)];
+      var ok=!!_sopHechos()[_sopIdPaso(x.bi,x.p)];
       return '<div class="sop-prev-it'+(ok?' ok':'')+'">'
         +'<button class="sop-prev-c" aria-pressed="'+ok+'" aria-label="Tildar '+esc(x.p.t||'')+'" '
           +'onclick="sopTildar('+id+','+x.bi+','+x.pi+')"></button>'
@@ -20534,11 +20639,11 @@ function _sopPrevHtml(id){
 function _sopIdxHtml(id){
   var s=_sop(id); if(!s) return '';
   var pr=_sopPrevias(s);
-  var hs=pr.filter(function(x){ return s.hechos[_sopIdPaso(x.bi,x.p)]; }).length;
+  var hs=pr.filter(function(x){ return _sopHechos()[_sopIdPaso(x.bi,x.p)]; }).length;
   return '<aside class="sop-idx"><div class="sop-idx-in">'
     +'<span class="eyebrow">Bloques</span>'
     +(s.bloques||[]).map(function(b,bi){
-      var n=(b.pasos||[]).filter(function(p){ return s.hechos[_sopIdPaso(bi,p)]; }).length;
+      var n=(b.pasos||[]).filter(function(p){ return _sopHechos()[_sopIdPaso(bi,p)]; }).length;
       var tot=(b.pasos||[]).length;
       return '<button class="sop-idx-b'+(n&&n===tot?' full':'')+'" data-b="'+bi+'" '
         +'onclick="sopIrBloque('+id+','+bi+')">'
@@ -20549,7 +20654,7 @@ function _sopIdxHtml(id){
       +'<div class="sop-prev-cab"><span>Para llegar preparado</span>'
         +'<span class="sop-prev-n">'+hs+'/'+pr.length+'</span></div>'
       +pr.map(function(x){
-        var ok=!!s.hechos[_sopIdPaso(x.bi,x.p)];
+        var ok=!!_sopHechos()[_sopIdPaso(x.bi,x.p)];
         return '<div class="sop-prev-it'+(ok?' ok':'')+'">'
           +'<button class="sop-prev-c" aria-pressed="'+ok+'" aria-label="Tildar '+esc(x.p.t||'')+'" '
             +'onclick="sopTildar('+id+','+x.bi+','+x.pi+')"></button>'
@@ -20585,16 +20690,15 @@ function sopBorrarBloque(id, bi){
   var b=s.bloques[bi]; if(!b) return;
   var n=(b.pasos||[]).length;
   if(n && !confirm('Borrar "'+(b.b||'el bloque')+'" con sus '+n+' pasos? No se puede deshacer.')) return;
-  s.hechos=s.hechos||{};
   var tildados=s.bloques.map(function(bb,i){
-    return (bb.pasos||[]).map(function(p){ return !!s.hechos[_sopIdPaso(i,p)]; });
+    return (bb.pasos||[]).map(function(p){ return !!_sopHechos()[_sopIdPaso(i,p)]; });
   });
   s.bloques.splice(bi,1); tildados.splice(bi,1);
   var h={};
   s.bloques.forEach(function(bb,i){
     (bb.pasos||[]).forEach(function(p,pi){ if(tildados[i][pi]) h[_sopIdPaso(i,p)]=1; });
   });
-  s.hechos=h;
+  _sopReemplazar(h);
   save(); _sopPintar(id);
 }
 function sopBorrarPaso(id, bi, pi){
@@ -20625,8 +20729,7 @@ function sopTexto(id, bi, pi, campo, txt){
     var viejo=_sopIdPaso(bi,p);
     p.t=txt;
     var nuevo=_sopIdPaso(bi,p);
-    s.hechos=s.hechos||{};
-    if(s.hechos[viejo]){ delete s.hechos[viejo]; s.hechos[nuevo]=1; }
+      if(_sopHechos()[viejo]){ delete _sopHechos()[viejo]; _sopHechos()[nuevo]=1; }
   }else{
     if(txt) p[campo]=txt; else delete p[campo];
   }
@@ -20775,37 +20878,48 @@ function _sopPintar(id){
 function _sopCabecera(id){
   var s=_sop(id); if(!s) return '';
   var c=_sopCuenta(s);
+  var r=sopCtxTarea();
   return '<div class="sop-centro" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
     +'<div style="flex:1;min-width:180px">'
       +'<div class="sop-ed" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
         +'onblur="sopTexto('+id+',0,0,\'titulo\',this.innerText)" '
         +'style="font-size:15px;font-weight:600;color:var(--strong)">'+esc(s.titulo)+'</div>'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+c.n+' de '+c.tot+' pasos</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+        // Sin tarea esto es la plantilla: no hay avance que mostrar, y decirlo
+        // evita que alguien tilde creyendo que se guarda.
+        +(r?(esc(r.c.name)+' &middot; '+esc(r.t.ticket||'sin numero')+' &middot; '+c.n+' de '+c.tot+' pasos')
+           :('El procedimiento &middot; '+c.tot+' pasos &middot; el avance se lleva desde una tarea'))
+      +'</div>'
     +'</div>'
-    +'<b style="font-size:1.05rem;color:var(--accent)">'+c.pct+'%</b>'
+    +(r?('<b style="font-size:1.05rem;color:var(--accent)">'+c.pct+'%</b>'):'')
     +'<button class="btn btn-sm'+(SOP_EDIT?' btn-primary':'')+'" onclick="sopModoEdicion('+id+')">'
       +(SOP_EDIT?'Listo':'Editar')+'</button>'
-    +'<button class="btn btn-sm" onclick="sopDestildar('+id+')">Destildar</button>'
+    +(r?('<button class="btn btn-sm" onclick="sopDestildar('+id+')">Destildar</button>'):'')
     +'<button class="btn btn-sm" onclick="sopExportar('+id+')" title="Baja un HTML para compartir">Bajar</button>'
-    +'<button class="btn btn-sm" onclick="abrirSopsModal()">Volver</button>'
+    +(r?('<button class="btn btn-sm" onclick="abrirTareaDelSop()" title="Ver la tarea">La tarea</button>')
+       :('<button class="btn btn-sm" onclick="abrirSopsModal()">Volver</button>'))
     // Con el modal a pantalla completa ya no hay fondo donde tocar para salir:
     // el cierre tiene que estar a la vista.
     +'<button class="btn btn-sm" onclick="closeModal()" aria-label="Cerrar" '
       +'style="padding:3px 9px">&times;</button>'
   +'</div>';
 }
+function abrirTareaDelSop(){
+  var r=sopCtxTarea(); if(!r) return;
+  closeModal();
+  if(typeof ticketEditarModal==='function') ticketEditarModal(r.c.id, r.t.id);
+}
 function _sopHtml(id){
   var s=_sop(id); if(!s) return '';
-  s.hechos=s.hechos||{};
   return '<div class="sop-centro sop-cols">'
     +_sopIdxHtml(id)
     +'<div class="sop-lee '+(SOP_EDIT?'sop-editando':'')+'">'
     +'<div class="sop-prev-inline">'+_sopPrevHtml(id)+'</div>'
     +(s.bloques||[]).map(function(b,bi){
-      var hs=(b.pasos||[]).filter(function(p){return s.hechos[_sopIdPaso(bi,p)];}).length;
+      var hs=(b.pasos||[]).filter(function(p){return _sopHechos()[_sopIdPaso(bi,p)];}).length;
       var llen=b.pasos.length?Math.round(hs/b.pasos.length*100):0;
       // El paso actual es el primero sin tildar: el que sobresale del carril
-      var act=b.pasos.findIndex(function(p){return !s.hechos[_sopIdPaso(bi,p)];});
+      var act=b.pasos.findIndex(function(p){return !_sopHechos()[_sopIdPaso(bi,p)];});
       return '<div id="sopb-'+bi+'" class="sop-bloque'+(bi===_SOP_RECIEN_B?' recien':'')+'" style="margin-bottom:26px">'
         +'<div class="sop-bcab">'
         +'<div class="sop-ed sop-btit" contenteditable="'+(SOP_EDIT?'true':'false')+'" '
@@ -20821,7 +20935,7 @@ function _sopHtml(id){
         +'<div class="sop-riel" style="--llenado:'+llen+'%">'
         +b.pasos.map(function(p,pi){
           var kp=_sopIdPaso(bi,p);
-          var ok=!!s.hechos[kp];
+          var ok=!!_sopHechos()[kp];
           // Los topes son los del SOP entero, no los del bloque: dentro del
           // bloque la flecha ya no se apaga, cruza.
           var tope0=(bi===0 && pi===0);
@@ -20874,8 +20988,9 @@ function _sopHtml(id){
   +'</div></div>';
 }
 
-function abrirSop(id){
+function abrirSop(id, cid, tid){
   SOP_ABIERTO=id; SOP_EDIT=false;
+  SOP_CTX=(cid!==undefined && tid!==undefined)?{cid:+cid, tid:+tid}:null;
   // Escape cierra: es lo que uno prueba primero en una pantalla completa.
   if(!window._sopEsc){
     window._sopEsc=true;
@@ -20911,16 +21026,16 @@ function abrirSopsModal(){
         +'y se van completando con capturas a medida que se usan.</div>'
       +(l.length?l.map(function(s){
         var c=_sopCuenta(s);
+        var usos=_sopUsos(s.id);
         return '<div style="display:flex;align-items:center;gap:12px;padding:11px 0;'
           +'border-top:1px solid var(--border)">'
           +'<div style="flex:1;min-width:0;cursor:pointer" onclick="abrirSop('+s.id+')">'
             +'<div style="font-size:13.5px;color:var(--text)">'+esc(s.titulo)+'</div>'
             +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+c.tot+' pasos &middot; '
-              +(s.version||'v1')+'</div>'
+              +(s.version||'v1')
+              +(usos.length?(' &middot; en '+usos.length+' tarea'+(usos.length===1?'':'s')):'')
+            +'</div>'
           +'</div>'
-          +'<div style="width:52px;height:4px;background:var(--bg3);border-radius:99px;overflow:hidden">'
-            +'<div style="height:100%;width:'+c.pct+'%;background:var(--accent)"></div></div>'
-          +'<span style="font-size:11px;color:var(--text3);min-width:32px;text-align:right">'+c.pct+'%</span>'
           +'<button class="btn btn-sm" onclick="abrirSop('+s.id+')">Abrir</button>'
           +'<button onclick="sopBorrar('+s.id+')" aria-label="Borrar" style="border:0;background:none;'
             +'color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px">&times;</button>'
@@ -20943,7 +21058,7 @@ function sopExportar(id){
   var cuerpo=(s.bloques||[]).map(function(b,bi){
     return '<h2>'+esc(b.b||'')+'</h2><ol>'
       +(b.pasos||[]).map(function(p){
-        return '<li'+((s.hechos||{})[_sopIdPaso(bi,p)]?' class="ok"':'')+'>'
+        return '<li'+(_sopHechos()[_sopIdPaso(bi,p)]?' class="ok"':'')+'>'
           +'<b>'+esc(p.t||'')+'</b>'
           +(p.fase?('<span class="fase '+p.fase+'">'
             +(p.fase==='previa'?'Previa':'En la llamada')+'</span>'):'')
@@ -30062,6 +30177,9 @@ function openNewTicketModal(){
     +'<input type="date" id="nt-due" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Responsable</div>'
     +_ntRespCampo()+'</div>'
+    +'<div style="grid-column:1/-1"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Procedimiento (opcional)</div>'
+    +_sopSelect('nt-sop','')
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">El avance de los pasos se guarda en esta tarea, no en el procedimiento.</div></div>'
     +'</div>'
     +'</div>'
     +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
@@ -30127,6 +30245,10 @@ function _ntLinks(){
 function _ntNewTask(text,resp,due,links){
   var t={id:Date.now()+Math.floor(Math.random()*100000),text:text,responsible:resp,due:due,done:false,source:'Manual',delegated:true,delegatedAt:new Date().toISOString(),ticket:'#'+nextTicketFromApp()};
   if(links&&links.length) t.attachments=links;
+  // Si el destino era un grupo, cada cliente recibe su copia de la tarea y por
+  // lo tanto su propio avance: el procedimiento es el mismo, el tildado no.
+  var sp=+((document.getElementById('nt-sop')||{}).value||0);
+  if(sp && _sop(sp)){ t.sopId=sp; t.sopHechos={}; }
   return t;
 }
 function createTicketOnly(){
