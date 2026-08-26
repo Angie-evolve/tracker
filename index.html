@@ -19869,6 +19869,91 @@ function eqTelEditar(clientId, i){
   save();
   if(typeof renderTab==='function') renderTab();
 }
+// ---- Invitaciones a la subcuenta de GHL ---------------------------------
+// invitarUsuariosGHL ya existia, pero solo corria al crear el cliente. Si
+// alguien se sumaba despues, o la invitacion fallaba ese dia, habia que entrar
+// a GHL a mano. Aca se puede mandar cuando haga falta, de a uno o a todos.
+// Se guarda a quien se le mando y cuando: sin eso uno reinvita al mismo tres
+// veces y no sabe si al que falta le llego.
+function _ghlLoc(c){ return (c && c.ghl && c.ghl.locationId) || ''; }
+function _invPendientes(c){
+  var out=[];
+  if(c.email && !(c.ghlInvite && c.ghlInvite[c.email]))
+    out.push({i:-1, nombre:c.contacto||c.email.split('@')[0], email:c.email});
+  (c.equipo||[]).forEach(function(p,i){
+    var m=_eqMail(p);
+    if(m && !(p && typeof p==='object' && p.ghlInvitadoAt))
+      out.push({i:i, nombre:_eqNombre(p)||m.split('@')[0], email:m});
+  });
+  return out;
+}
+function _invMarcar(c, i, email){
+  var cuando=new Date().toISOString();
+  if(i<0){ c.ghlInvite=c.ghlInvite||{}; c.ghlInvite[email]=cuando; return; }
+  var p=c.equipo[i];
+  if(typeof p!=='object'){ p={nombre:String(p||''), email:email}; c.equipo[i]=p; }
+  p.ghlInvitadoAt=cuando;
+}
+async function ghlInvitar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var loc=_ghlLoc(c);
+  if(!loc){ toast('Este cliente no tiene subcuenta de GHL vinculada','red'); return; }
+  var quien = (i<0)
+    ? {nombre:c.contacto||'', email:c.email||''}
+    : {nombre:_eqNombre(c.equipo[i]), email:_eqMail(c.equipo[i])};
+  if(!quien.email){ toast('Ese contacto no tiene mail'); return; }
+  toast('Invitando a '+quien.email+'...');
+  var r=await invitarUsuariosGHL(loc, [quien]);
+  if(r.ok){
+    _invMarcar(c, i, quien.email);
+    save();
+    toast('Invitacion enviada a '+quien.email);
+  }else if(r.sinSoporte){
+    toast('El proxy de GHL no soporta crear usuarios. Actualizalo o invitalo desde GHL.','red');
+  }else{
+    toast('No se pudo: '+(r.fallaron[0]||'error'),'red');
+  }
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
+async function ghlInvitarTodos(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var loc=_ghlLoc(c);
+  if(!loc){ toast('Este cliente no tiene subcuenta de GHL vinculada','red'); return; }
+  var pend=_invPendientes(c);
+  if(!pend.length){ toast('Ya estan todos invitados'); return; }
+  if(!confirm('Invitar a la subcuenta de '+c.name+':\n\n'
+    +pend.map(function(p){ return '\u00b7 '+(p.nombre?p.nombre+' \u00b7 ':'')+p.email; }).join('\n')
+    +'\n\nCada invitacion consume un usuario de tu plan de GHL.')) return;
+  toast('Enviando '+pend.length+' invitacion'+(pend.length===1?'':'es')+'...');
+  var enviadas=0, fallaron=[];
+  for(var k=0;k<pend.length;k++){
+    var r=await invitarUsuariosGHL(loc, [{nombre:pend[k].nombre, email:pend[k].email}]);
+    if(r.ok){ _invMarcar(c, pend[k].i, pend[k].email); enviadas++; }
+    else if(r.sinSoporte){
+      toast('El proxy de GHL no soporta crear usuarios. Actualizalo o invitalos desde GHL.','red');
+      break;
+    }
+    else fallaron.push(pend[k].email);
+  }
+  save();
+  if(enviadas) toast(enviadas+' invitacion'+(enviadas===1?'':'es')+' enviada'+(enviadas===1?'':'s')
+    +(fallaron.length?(' \u00b7 fallaron '+fallaron.length):''));
+  else if(fallaron.length) toast('No se pudo invitar a nadie','red');
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
+function _invBoton(c, i, email, invitadoAt){
+  if(!email) return '';
+  if(invitadoAt) return '<span style="font-size:10px;color:var(--text3)" title="Invitado el '
+    +esc(new Date(invitadoAt).toLocaleDateString('es-AR'))+'">invitado</span>';
+  if(!_ghlLoc(c)) return '';
+  return '<button onclick="ghlInvitar('+c.id+','+i+')" title="Enviar la invitacion a la subcuenta de GHL" '
+    +'style="border:1px solid var(--border2);background:var(--bg3);color:var(--accent);'
+    +'border-radius:999px;cursor:pointer;font-size:10px;padding:2px 8px;font-family:inherit">invitar</button>';
+}
 function _fichaHtml(c){
   var filas=[];
   // Ahora se dibuja aunque este vacio: sin la fila no habia forma de cargarlo.
@@ -19885,6 +19970,7 @@ function _fichaHtml(c){
         +'style="font-size:10.5px;padding:2px 8px;text-decoration:none" title="Abrir WhatsApp">WhatsApp</a>')
         :((campo==='phone'&&v)?('<span style="font-size:10.5px;color:var(--amberx)" '
           +'title="Agregale el codigo de pais y se activa el boton de WhatsApp">falta el codigo de pais</span>'):''))
+      +((campo==='email'&&v)?_invBoton(c, -1, v, (c.ghlInvite||{})[v]):'')
       +((copiable&&v)?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
         +'onclick="_copiar(\''+esc(String(v).replace(/'/g,"\\'"))+'\')">Copiar</button>'):'')
       +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
@@ -19921,6 +20007,7 @@ function _fichaHtml(c){
              +'style="color:var(--accent);text-decoration:none;font-size:10.5px">wa</a>')
              :(tel?('<span style="color:var(--amberx);font-size:10.5px" '
                +'title="Falta el codigo de pais">sin pais</span>'):''))
+           +_invBoton(c, i, m, (p&&typeof p==='object')?p.ghlInvitadoAt:'')
            +'<button onclick="eqTelEditar('+c.id+','+i+')" '
              +'title="'+(tel?'Cambiar el telefono':'Agregar telefono')+'" '
              +'style="border:1px solid var(--border2);background:var(--bg3);color:'
@@ -19934,6 +20021,17 @@ function _fichaHtml(c){
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">'
       +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:0.07em;flex:1">Ficha del cliente</div>'
+      +(function(){
+        var loc=_ghlLoc(c);
+        if(!loc) return '';
+        var pend=_invPendientes(c);
+        if(!pend.length) return '<span style="font-size:10.5px;color:var(--text3)">'
+          +'Todos invitados a GHL</span>';
+        return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;'
+          +'border-color:var(--accent);color:var(--accent)" '
+          +'onclick="ghlInvitarTodos('+c.id+')" '
+          +'title="Enviar la invitacion a la subcuenta de GHL">Invitar a GHL &middot; '+pend.length+'</button>';
+      })()
       +(eq.length?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
         +'onclick="_copiarMails('+c.id+')">Copiar todos los mails</button>'):'')
     +'</div>'
