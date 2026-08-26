@@ -18034,9 +18034,16 @@ async function invitarUsuariosGHL(locationId, gente){
       if(r&&r.ok) res.ok++;
       else{
         var msg=String((r&&r.error)||'error');
-        // El proxy viejo no conoce la accion: no tiene sentido intentar con
-        // los demas, van a fallar todos igual.
-        if(/accion|action|unknown|no soportad/i.test(msg)){ res.sinSoporte=true; break; }
+        res.ultimoError=msg;
+        // Antes alcanzaba con que el mensaje dijera "action" para dar por hecho
+        // que el proxy no conocia la accion. GHL responde "You do not have
+        // permission to perform this action" cuando el token no alcanza, asi
+        // que un problema de permisos se disfrazaba de proxy desactualizado y
+        // el error real nunca se veia. Ahora se exige que diga las dos cosas.
+        if(/(accion|action)[\s\S]{0,30}(desconocid|no reconocid|no soportad|not supported|unsupported|unknown|invalid)/i.test(msg)
+           || /(unknown|invalid|unsupported|desconocid)[\s\S]{0,30}(accion|action)/i.test(msg)){
+          res.sinSoporte=true; break;
+        }
         res.fallaron.push(mail+': '+msg);
       }
     }catch(e){ res.fallaron.push(mail+': '+e.message); }
@@ -19926,6 +19933,8 @@ async function ghlInvitar(clientId, i){
     save();
     toast('Invitacion enviada a '+quien.email);
   }else if(r.sinSoporte){
+    console.log('GHL create_user, respuesta del proxy:', r.ultimoError);
+    toast('El proxy no reconoce create_user: '+(r.ultimoError||'sin detalle'),'red');
     _invAMano(c, [quien.email]);
   }else{
     toast('No se pudo: '+(r.fallaron[0]||'error'),'red');
@@ -19949,6 +19958,8 @@ async function ghlInvitarTodos(clientId){
     var r=await invitarUsuariosGHL(loc, [{nombre:pend[k].nombre, email:pend[k].email}]);
     if(r.ok){ _invMarcar(c, pend[k].i, pend[k].email); enviadas++; }
     else if(r.sinSoporte){
+      console.log('GHL create_user, respuesta del proxy:', r.ultimoError);
+      toast('El proxy no reconoce create_user: '+(r.ultimoError||'sin detalle'),'red');
       _invAMano(c, pend.map(function(p){ return p.email; }));
       return;
     }
