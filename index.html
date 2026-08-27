@@ -19752,42 +19752,84 @@ async function calProbarYGuardar(){
     decir('No se pudo conectar. Revisa que este desplegado con acceso "Cualquiera".','var(--redx)');
   }
 }
-async function rutaAgendarEnCalendario(clientId){
+// Elegir cuales agendar en vez de mandarlas todas. Casi nunca queres las nueve
+// en el calendario: queres el lanzamiento y un par de hitos. Vienen tildadas
+// las que faltan, y destildas lo que no te interesa.
+function rutaAgendarEnCalendario(clientId, soloEsta){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!getCalProxy().url){ calConfigurar(); return; }
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho'; });
+  if(!et.length){ toast('No queda ninguna etapa por agendar'); return; }
+  var fila=function(x,i){
+    var pasada=(x.fecha<hoy);
+    // Lo que ya vencio viene destildado: agendar una fecha pasada no sirve,
+    // pero se muestra por si la queres reprogramar igual.
+    var tilde=soloEsta ? (x.l===soloEsta) : !pasada;
+    return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+      +'border-bottom:1px solid var(--border);cursor:pointer">'
+      +'<input type="checkbox" class="cal-et" value="'+i+'"'+(tilde?' checked':'')+'>'
+      +'<span style="flex:1;min-width:0;font-size:13px;color:var(--text)">'+esc(x.l)+'</span>'
+      +'<span style="font-size:11.5px;color:'+(pasada?'var(--redx)':'var(--text3)')+'">'
+        +_fechaDia(x.fecha)+(pasada?' &middot; ya paso':'')+'</span>'
+    +'</label>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">'
+        +'Agendar etapas de '+esc(c.name||'este cliente')+'</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+        +'Se crean en tu Google Calendar como eventos de dia completo. '
+        +'Si ya las agendaste antes, se actualizan en vez de duplicarse.</div>'
+      +'<div style="display:flex;gap:12px;margin-bottom:6px">'
+        +'<span onclick="document.querySelectorAll(\'.cal-et\').forEach(function(e){e.checked=true})" '
+          +'style="font-size:11px;color:var(--text3);cursor:pointer">Todas</span>'
+        +'<span onclick="document.querySelectorAll(\'.cal-et\').forEach(function(e){e.checked=false})" '
+          +'style="font-size:11px;color:var(--text3);cursor:pointer">Ninguna</span>'
+      +'</div>'
+      +'<div style="max-height:320px;overflow-y:auto">'+et.map(fila).join('')+'</div>'
+      +'<div id="cal-ag-est" style="font-size:11.5px;margin-top:12px;min-height:18px;color:var(--text3)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">'
+        +'<button class="btn btn-sm" onclick="calConfigurar()">Cambiar calendario</button>'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="calAgendarElegidas('+c.id+')">Agendar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+async function calAgendarElegidas(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var proxy=getCalProxy();
-  if(!proxy.url){ calConfigurar(); return; }
-  var hoy=new Date(); hoy.setHours(0,0,0,0);
-  var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho' && x.fecha>=hoy; });
-  if(!et.length){ toast('No queda ninguna etapa futura para agendar'); return; }
-  if(!confirm('Agendar '+et.length+' etapa'+(et.length===1?'':'s')+' de '+(c.name||'este cliente')
-    +' en tu Google Calendar?\n\n'+et.map(function(x){
-      return '\u00b7 '+x.l+' \u2014 '+_fechaDia(x.fecha); }).join('\n'))) return;
+  var e=document.getElementById('cal-ag-est');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho'; });
+  var idx=[].slice.call(document.querySelectorAll('.cal-et'))
+    .filter(function(x){ return x.checked; }).map(function(x){ return +x.value; });
+  if(!idx.length){ decir('No elegiste ninguna.','var(--amberx)'); return; }
   var slug=String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-');
-  var eventos=et.map(function(x){
+  var eventos=idx.map(function(i){
+    var x=et[i];
     return { uid:slug+'-'+String(x.l).toLowerCase().replace(/[^a-z0-9]+/g,'-'),
              titulo:(c.name||'Cliente')+' - '+x.l,
              fecha:_icsFecha(x.fecha) };
   });
-  toast('Agendando '+eventos.length+'...');
+  decir('Agendando '+eventos.length+'...');
   try{
     var r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
       +'&action=agendar&eventos='+encodeURIComponent(JSON.stringify(eventos)), 25000);
     if(r&&r.ok){
+      closeModal();
       toast(r.creados+' agendada'+(r.creados===1?'':'s')
         +(r.actualizados?(' \u00b7 '+r.actualizados+' actualizada'+(r.actualizados===1?'':'s')):''));
-    }else{
-      var m=String((r&&r.error)||'sin respuesta');
-      if(/secreto invalido/i.test(m)){
-        toast('El secreto no coincide con el del script.','red');
-        calConfigurar();
-      }else if(/accion desconocida/i.test(m)){
-        toast('Ese script no tiene la accion "agendar": revisa que sea el del calendario.','red');
-      }else{
-        toast('No se pudo: '+m,'red');
-      }
+      return;
     }
-  }catch(e){ toast('Error: '+e.message,'red'); }
+    var m=String((r&&r.error)||'sin respuesta');
+    if(/secreto invalido/i.test(m)) decir('El secreto no coincide con el del script.','var(--redx)');
+    else if(/accion desconocida/i.test(m)) decir('Ese script no tiene la accion "agendar".','var(--redx)');
+    else decir('No se pudo: '+esc(m),'var(--redx)');
+  }catch(err){ decir('Error: '+esc(err.message),'var(--redx)'); }
 }
 function rutaAgendarTodo(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -19859,8 +19901,8 @@ function rutaHtml(c){
         +(x.fecha
           ?((x.estado==='hecho')
             ?_fechaDia(x.fecha)
-            :('<span onclick="rutaAgendarUna('+c.id+',\''+esc(String(x.l).replace(/'/g,"\\'"))+'\')" '
-              +'title="Agendar en Google Calendar" style="cursor:pointer;border-bottom:1px dotted var(--border2)">'
+            :('<span onclick="rutaAgendarEnCalendario('+c.id+',\''+esc(String(x.l).replace(/'/g,"\\'"))+'\')" '
+              +'title="Agendar esta etapa" style="cursor:pointer;border-bottom:1px dotted var(--border2)">'
               +_fechaDia(x.fecha)+'</span>'))
           :'sin fecha')+'</div>'
       +(x.manual
