@@ -3204,6 +3204,24 @@ function hideClientFlyout(){
   if(el.dataset.min) el.style.width=el.dataset.min+'px';
   el.classList.remove('on');
 }
+// En que etapa esta el cliente: la primera de la ruta que todavia no se hizo.
+// Reemplaza al conteo de "lineas", que quedo sin uso cuando el historico
+// semanal tomo su lugar y mostraba 0 para todos.
+function _etapaActual(c){
+  var et;
+  try { et=_ruta(c); } catch(e){ return null; }
+  if(!et || !et.length) return null;
+  var pend=et.filter(function(x){ return x.estado!=='hecho'; });
+  if(!pend.length){
+    var ult=et[et.length-1];
+    return { l:'Terminado', color:'var(--green)', detalle:ult?ult.l:'' };
+  }
+  // La que esta atrasada manda sobre la que sigue: es la que hay que mirar.
+  var tarde=pend.filter(function(x){ return x.estado==='tarde'; });
+  var x=tarde.length?tarde[0]:pend[0];
+  return { l:x.l, color:(x.estado==='tarde'?'var(--redx)':'var(--sb-text-faint)'),
+           detalle:(x.estado==='tarde'?'atrasada':'') };
+}
 function renderSidebar(){
   var _lista=sidebarClients();
   document.getElementById('client-list').innerHTML=(_lista.length?_lista:[]).map((c,idx)=>`
@@ -3215,7 +3233,12 @@ function renderSidebar(){
       <div class="nav-item-icon client-av ${adsDot(c).live?'':'is-idle'}" style="font-size:11px">${c.avatar}</div>
       <div class="nav-item-info">
         <div class="nav-item-name">${c.name}</div>
-        <div class="nav-item-sub">${c.conversionLines?.length||0} lineas</div>
+        <div class="nav-item-sub" style="${(_etapaActual(c)||{}).color?('color:'+_etapaActual(c).color):''}">${
+          (function(){ var e=_etapaActual(c);
+            if(!e) return 'sin ruta';
+            return esc(e.l)+(e.detalle?(' &middot; '+esc(e.detalle)):'');
+          })()
+        }</div>
         <div class="client-peek">${clientPeekHtml(c)}</div>
       </div>
       ${adsDot(c).live
@@ -19583,9 +19606,15 @@ function _ruta(c){
       return e.re.test(String(x.tipo||'')+' '+String(x.title||''));
     }).map(function(x){ return parseDDMMYYYY(x.date); }).filter(Boolean).sort(function(a,b){return a-b;});
     var real=m.length?m[0]:null;
+    // No toda etapa es una llamada. El pago, el documento y el lanzamiento no
+    // generan ninguna, asi que nunca encontraban su match y quedaban en rojo
+    // para siempre por mas que estuvieran hechas. Marcarlas a mano manda sobre
+    // la deteccion automatica.
+    var aMano=parseDDMMYYYY(((c.rutaHechas||{})[e.l])||'');
     var prev=(k.arranque&&e.dia!==null)?new Date(k.arranque.getTime()+e.dia*86400000):null;
-    return {l:e.l, fecha:real||prev, manual:false,
-            estado:real?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
+    var f=real||aMano||prev;
+    return {l:e.l, fecha:f, manual:false, aMano:!!aMano && !real,
+            estado:(real||aMano)?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
   });
   // Los hitos cargados a mano entran como nodos mas de la misma linea: tienen
   // fecha propia y no habia razon para mostrarlos en una segunda linea aparte.
@@ -19599,6 +19628,24 @@ function _ruta(c){
   var con=etapas.filter(function(x){return x.fecha;}).sort(function(a,b){return a.fecha-b.fecha;});
   var sin=etapas.filter(function(x){return !x.fecha;});
   return con.concat(sin);
+}
+// Tildar una etapa que no es llamada. Guarda la fecha del dia, o la estimada si
+// se tilda una que todavia no vencio, para no inventar que paso hoy algo que
+// estaba previsto para la semana que viene.
+function rutaTildar(clientId, label){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.rutaHechas=c.rutaHechas||{};
+  if(c.rutaHechas[label]){
+    delete c.rutaHechas[label];
+  }else{
+    var et=_ruta(c).filter(function(x){ return x.l===label; })[0];
+    var d=(et&&et.fecha&&et.fecha>new Date())?et.fecha:new Date();
+    c.rutaHechas[label]=('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();
+  }
+  save();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
 }
 function rutaHtml(c){
   var et=_ruta(c);
@@ -19627,15 +19674,23 @@ function rutaHtml(c){
           +'style="cursor:pointer;color:var(--text3);margin-left:5px">&times;</span>'):'')+'</div>'
       +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'
         +(x.fecha?_fechaDia(x.fecha):'sin fecha')+'</div>'
-      +'<div style="font-size:10px;margin-top:1px;color:'
-        +(x.estado==='tarde'?'var(--redx)':'var(--text3)')+'">'
-        +(x.manual?'hito':(x.estado==='hecho'?'hecha':(x.estado==='tarde'?'atrasada':'estimada')))+'</div>'
+      +(x.manual
+        ?('<div style="font-size:10px;margin-top:1px;color:var(--text3)">hito</div>')
+        :('<div onclick="rutaTildar('+c.id+',\''+esc(String(x.l).replace(/'/g,"\\'"))+'\')" '
+          +'title="'+(x.estado==='hecho'?'Marcar como no hecha':'Marcar como hecha')+'" '
+          +'style="font-size:10px;margin-top:1px;cursor:pointer;color:'
+          +(x.estado==='tarde'?'var(--redx)':'var(--text3)')+'">'
+          +(x.estado==='hecho'?('hecha'+(x.aMano?' &check;':''))
+            :(x.estado==='tarde'?'atrasada':'estimada'))
+        +'</div>'))
     +'</div>';
   }).join('');
   var tarde=et.filter(function(x){return x.estado==='tarde';});
   var pie=tarde.length
     ? '<span style="color:var(--redx)">'+tarde.length+' etapa'+(tarde.length===1?'':'s')
       +' sin hacer que ya deberian estar: '+tarde.map(function(x){return esc(x.l);}).join(', ')+'.</span>'
+      +'<span style="color:var(--text3)"> Las que no son llamadas (el pago, el documento, '
+      +'el lanzamiento) no se detectan solas: tocá "atrasada" para marcarlas.</span>'
     : '<span style="color:var(--green)">Todas las etapas que ya vencieron estan hechas.</span>';
   return head
     +'<div style="overflow-x:auto;padding-bottom:8px"><div style="display:flex;gap:22px;min-width:max-content">'
