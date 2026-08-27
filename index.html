@@ -19657,13 +19657,73 @@ function rutaTildar(clientId, label){
   if(typeof renderClient==='function') renderClient();
   else if(typeof renderTab==='function') renderTab();
 }
+// ---- Llevar las etapas al calendario -------------------------------------
+// Dos caminos a proposito. Google Calendar de a una: un click, sin bajar nada,
+// util para la fecha que te importa hoy. El .ics con todas: entra en cualquier
+// calendario y es lo que sirve cuando arranca un cliente y queres bloquear el
+// mes entero de una.
+function _icsFecha(d){
+  return d.getFullYear()+('0'+(d.getMonth()+1)).slice(-2)+('0'+d.getDate()).slice(-2);
+}
+function _gcalUrl(titulo, d, detalle){
+  var ini=_icsFecha(d);
+  var f=new Date(d.getTime()+86400000);   // Google pide el dia siguiente como fin
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+    +'&text='+encodeURIComponent(titulo)
+    +'&dates='+ini+'/'+_icsFecha(f)
+    +(detalle?('&details='+encodeURIComponent(detalle)):'');
+}
+function rutaAgendarUna(clientId, label){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var et=_ruta(c).filter(function(x){ return x.l===label; })[0];
+  if(!et||!et.fecha){ toast('Esa etapa no tiene fecha'); return; }
+  window.open(_gcalUrl((c.name||'Cliente')+' - '+et.l, et.fecha,
+    'Etapa del plan en el tracker de EVOLVE.'),'_blank','noopener');
+}
+function rutaAgendarTodo(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  // Solo lo que falta: agendar algo que ya paso no le sirve a nadie.
+  var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho' && x.fecha>=hoy; });
+  if(!et.length){ toast('No queda ninguna etapa futura para agendar'); return; }
+  var slug=String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-');
+  var L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//EVOLVE//tracker//ES','CALSCALE:GREGORIAN'];
+  et.forEach(function(x){
+    var fin=new Date(x.fecha.getTime()+86400000);
+    // El UID es estable por cliente y etapa: si la fecha cambia y volves a
+    // importar, el calendario actualiza el evento en vez de duplicarlo.
+    L.push('BEGIN:VEVENT',
+      'UID:'+slug+'-'+String(x.l).toLowerCase().replace(/[^a-z0-9]+/g,'-')+'@evolve',
+      'DTSTAMP:'+_icsFecha(new Date())+'T000000Z',
+      'DTSTART;VALUE=DATE:'+_icsFecha(x.fecha),
+      'DTEND;VALUE=DATE:'+_icsFecha(fin),
+      'SUMMARY:'+(c.name||'Cliente')+' - '+String(x.l).replace(/[,;\\]/g,' '),
+      'DESCRIPTION:Etapa del plan en el tracker de EVOLVE.'+(x.estado==='tarde'?' Venia atrasada.':''),
+      'TRANSP:TRANSPARENT',
+      'END:VEVENT');
+  });
+  L.push('END:VCALENDAR');
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([L.join('\r\n')],{type:'text/calendar'}));
+  a.download=slug+'-etapas.ics';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+  toast(et.length+' etapa'+(et.length===1?'':'s')+' en el archivo. Abrilo y se suman al calendario.');
+}
 function rutaHtml(c){
   var et=_ruta(c);
   var head='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px">'
     +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
       +'letter-spacing:0.07em">Linea de tiempo</div>'
-    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-      +'onclick="openAddMilestoneModal('+c.id+')">Agregar hito</button>'
+    +'<div style="display:flex;gap:7px">'
+      +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="rutaAgendarTodo('+c.id+')" title="Baja un .ics con las etapas que faltan">'
+        +'Al calendario</button>'
+      +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="openAddMilestoneModal('+c.id+')">Agregar hito</button>'
+    +'</div>'
   +'</div>';
   if(!et.some(function(x){return x.fecha;})){
     return head+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
@@ -19683,7 +19743,13 @@ function rutaHtml(c){
         +(x.manual?('<span onclick="removeMilestone('+c.id+','+x.idx+')" '
           +'style="cursor:pointer;color:var(--text3);margin-left:5px">&times;</span>'):'')+'</div>'
       +'<div style="font-size:10px;color:var(--text3);margin-top:3px">'
-        +(x.fecha?_fechaDia(x.fecha):'sin fecha')+'</div>'
+        +(x.fecha
+          ?((x.estado==='hecho')
+            ?_fechaDia(x.fecha)
+            :('<span onclick="rutaAgendarUna('+c.id+',\''+esc(String(x.l).replace(/'/g,"\\'"))+'\')" '
+              +'title="Agendar en Google Calendar" style="cursor:pointer;border-bottom:1px dotted var(--border2)">'
+              +_fechaDia(x.fecha)+'</span>'))
+          :'sin fecha')+'</div>'
       +(x.manual
         ?('<div style="font-size:10px;margin-top:1px;color:var(--text3)">hito</div>')
         :('<div onclick="rutaTildar('+c.id+',\''+esc(String(x.l).replace(/'/g,"\\'"))+'\')" '
