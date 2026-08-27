@@ -19681,6 +19681,81 @@ function rutaAgendarUna(clientId, label){
   window.open(_gcalUrl((c.name||'Cliente')+' - '+et.l, et.fecha,
     'Etapa del plan en el tracker de EVOLVE.'),'_blank','noopener');
 }
+// Agenda las etapas directo en tu Google Calendar, via el proxy de lectura.
+// Ese script corre como vos (ya manda mails con MailApp desde tu cuenta), asi
+// que puede escribir en tu calendario sin OAuth ni nada configurado aparte.
+// Necesita la accion 'agendar' en el Apps Script; sin ella cae al .ics.
+// El calendario vive en su propio Apps Script, aparte del de lectura y del de
+// agencia. Se guarda igual que el proxy de GHL: en el navegador, no en la base.
+function getCalProxy(){
+  return { url:(localStorage.getItem('evold-cal-proxy-url')||'').trim(),
+           secret:(localStorage.getItem('evold-cal-proxy-secret')||'').trim() };
+}
+async function calConfigurar(){
+  var a=getCalProxy();
+  var u=prompt('URL de la Web App del proyecto Calendario (termina en /exec):', a.url||'');
+  if(u===null) return false;
+  u=String(u).trim();
+  if(u && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(u)){
+    if(!confirm('Esa URL no tiene la forma habitual de una Web App.\n\nUsarla igual?')) return false;
+  }
+  var sec=prompt('El CAL_SECRET que pusiste en ese script:', a.secret||'');
+  if(sec===null) return false;
+  localStorage.setItem('evold-cal-proxy-url',u);
+  localStorage.setItem('evold-cal-proxy-secret',String(sec).trim());
+  if(!u) return false;
+  // Se prueba en el momento: descubrir que la URL estaba mal recien cuando
+  // fallan diez eventos es peor que perder dos segundos ahora.
+  toast('Probando la conexion...');
+  try{
+    var r=await _fetchConLimite(u+'?secret='+encodeURIComponent(String(sec).trim())+'&action=ping', 20000);
+    if(r&&r.ok){ toast('Conectado al calendario "'+(r.calendario||'principal')+'".'); return true; }
+    toast('No respondio bien: '+String((r&&r.error)||'sin respuesta'),'red');
+    return false;
+  }catch(e){ toast('No se pudo conectar: '+e.message,'red'); return false; }
+}
+async function rutaAgendarEnCalendario(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var proxy=getCalProxy();
+  if(!proxy.url){
+    if(!confirm('Todavia no vinculaste tu calendario.\n\nHace falta un Apps Script propio '
+      +'(archivo "proxy-calendario.gs"). Lo configuramos ahora?')) return;
+    if(!await calConfigurar()) return;
+    proxy=getCalProxy();
+  }
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho' && x.fecha>=hoy; });
+  if(!et.length){ toast('No queda ninguna etapa futura para agendar'); return; }
+  if(!confirm('Agendar '+et.length+' etapa'+(et.length===1?'':'s')+' de '+(c.name||'este cliente')
+    +' en tu Google Calendar?\n\n'+et.map(function(x){
+      return '\u00b7 '+x.l+' \u2014 '+_fechaDia(x.fecha); }).join('\n'))) return;
+  var slug=String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-');
+  var eventos=et.map(function(x){
+    return { uid:slug+'-'+String(x.l).toLowerCase().replace(/[^a-z0-9]+/g,'-'),
+             titulo:(c.name||'Cliente')+' - '+x.l,
+             fecha:_icsFecha(x.fecha) };
+  });
+  toast('Agendando '+eventos.length+'...');
+  try{
+    var r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=agendar&eventos='+encodeURIComponent(JSON.stringify(eventos)), 25000);
+    if(r&&r.ok){
+      toast(r.creados+' agendada'+(r.creados===1?'':'s')
+        +(r.actualizados?(' \u00b7 '+r.actualizados+' actualizada'+(r.actualizados===1?'':'s')):''));
+    }else{
+      var m=String((r&&r.error)||'sin respuesta');
+      if(/secreto invalido/i.test(m)){
+        toast('El secreto no coincide con el del script.','red');
+        calConfigurar();
+      }else if(/accion desconocida/i.test(m)){
+        toast('Ese script no tiene la accion "agendar": revisa que sea el del calendario.','red');
+      }else{
+        toast('No se pudo: '+m,'red');
+      }
+    }
+  }catch(e){ toast('Error: '+e.message,'red'); }
+}
 function rutaAgendarTodo(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -19719,8 +19794,13 @@ function rutaHtml(c){
       +'letter-spacing:0.07em">Linea de tiempo</div>'
     +'<div style="display:flex;gap:7px">'
       +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-        +'onclick="rutaAgendarTodo('+c.id+')" title="Baja un .ics con las etapas que faltan">'
-        +'Al calendario</button>'
+        +'onclick="rutaAgendarEnCalendario('+c.id+')" '
+        +'oncontextmenu="event.preventDefault();calConfigurar()" '
+        +'title="Las crea en tu Google Calendar. Click derecho para cambiar la conexion.">'
+        +'Agendar</button>'
+      +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="rutaAgendarTodo('+c.id+')" title="Baja un .ics para cualquier calendario">'
+        +'.ics</button>'
       +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
         +'onclick="openAddMilestoneModal('+c.id+')">Agregar hito</button>'
     +'</div>'
