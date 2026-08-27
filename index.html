@@ -19691,39 +19691,72 @@ function getCalProxy(){
   return { url:(localStorage.getItem('evold-cal-proxy-url')||'').trim(),
            secret:(localStorage.getItem('evold-cal-proxy-secret')||'').trim() };
 }
-async function calConfigurar(){
+// Un modal y no dos prompt() encadenados: los prompt se cierran al tocar
+// afuera, asi que salir a buscar el secreto en otra pestaña borraba lo escrito
+// y volvia a empezar. Aca podes ir y venir.
+function calConfigurar(){
   var a=getCalProxy();
-  var u=prompt('URL de la Web App del proyecto Calendario (termina en /exec):', a.url||'');
-  if(u===null) return false;
-  u=String(u).trim();
-  if(u && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(u)){
-    if(!confirm('Esa URL no tiene la forma habitual de una Web App.\n\nUsarla igual?')) return false;
-  }
-  var sec=prompt('El CAL_SECRET que pusiste en ese script:', a.secret||'');
-  if(sec===null) return false;
-  localStorage.setItem('evold-cal-proxy-url',u);
-  localStorage.setItem('evold-cal-proxy-secret',String(sec).trim());
-  if(!u) return false;
-  // Se prueba en el momento: descubrir que la URL estaba mal recien cuando
-  // fallan diez eventos es peor que perder dos segundos ahora.
-  toast('Probando la conexion...');
+  var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Vincular tu calendario</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+        +'Del proyecto de Apps Script "Calendario". Los eventos se crean en tu '
+        +'Google Calendar, no en el de nadie mas.</div>'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.06em;margin-bottom:4px">URL de la Web App</div>'
+      +'<input id="cal-url" style="'+est+'" placeholder="https://script.google.com/macros/s/.../exec" '
+        +'value="'+esc(a.url||'')+'">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.06em;margin:12px 0 4px">Secreto</div>'
+      +'<input id="cal-sec" style="'+est+'" '
+        +'value="'+esc(a.secret||'cal-BGFM3PqzRZcKA67xdn8fmQDKbFYP')+'">'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+        +'Ya viene el que trae el archivo. Solo cambialo si pusiste otro en el script.</div>'
+      +'<div id="cal-est" style="font-size:11.5px;margin-top:12px;min-height:18px;color:var(--text3)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="calProbarYGuardar()">Probar y guardar</button>'
+      +'</div>'
+    +'</div></div>';
+  var u=document.getElementById('cal-url'); if(u) u.focus();
+}
+async function calProbarYGuardar(){
+  var u=String((document.getElementById('cal-url')||{}).value||'').trim();
+  var sec=String((document.getElementById('cal-sec')||{}).value||'').trim();
+  var e=document.getElementById('cal-est');
+  var decir=function(t,c){ if(e){ e.innerHTML=t; e.style.color=c||'var(--text3)'; } };
+  if(!u){ decir('Falta la URL.','var(--redx)'); return; }
+  if(!/\/exec\s*$/.test(u)) decir('Ojo: la URL deberia terminar en /exec.','var(--amberx)');
+  // Se prueba antes de guardar: descubrir que estaba mal recien cuando fallan
+  // diez eventos es peor que esperar dos segundos ahora.
+  decir('Probando...');
   try{
-    var r=await _fetchConLimite(u+'?secret='+encodeURIComponent(String(sec).trim())+'&action=ping', 20000);
-    if(r&&r.ok){ toast('Conectado al calendario "'+(r.calendario||'principal')+'".'); return true; }
-    toast('No respondio bien: '+String((r&&r.error)||'sin respuesta'),'red');
-    return false;
-  }catch(e){ toast('No se pudo conectar: '+e.message,'red'); return false; }
+    var r=await _fetchConLimite(u+'?secret='+encodeURIComponent(sec)+'&action=ping', 20000);
+    if(r&&r.ok){
+      localStorage.setItem('evold-cal-proxy-url',u);
+      localStorage.setItem('evold-cal-proxy-secret',sec);
+      closeModal();
+      toast('Vinculado al calendario "'+(r.calendario||'principal')+'".');
+      return;
+    }
+    var m=String((r&&r.error)||'sin respuesta');
+    if(/secreto invalido/i.test(m)) decir('El secreto no coincide con el del script.','var(--redx)');
+    else if(/accion desconocida/i.test(m)) decir('Ese script no tiene la accion "agendar": revisa que sea el del calendario.','var(--redx)');
+    else decir('No respondio bien: '+esc(m),'var(--redx)');
+  }catch(err){
+    decir('No se pudo conectar. Revisa que este desplegado con acceso "Cualquiera".','var(--redx)');
+  }
 }
 async function rutaAgendarEnCalendario(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var proxy=getCalProxy();
-  if(!proxy.url){
-    if(!confirm('Todavia no vinculaste tu calendario.\n\nHace falta un Apps Script propio '
-      +'(archivo "proxy-calendario.gs"). Lo configuramos ahora?')) return;
-    if(!await calConfigurar()) return;
-    proxy=getCalProxy();
-  }
+  if(!proxy.url){ calConfigurar(); return; }
   var hoy=new Date(); hoy.setHours(0,0,0,0);
   var et=_ruta(c).filter(function(x){ return x.fecha && x.estado!=='hecho' && x.fecha>=hoy; });
   if(!et.length){ toast('No queda ninguna etapa futura para agendar'); return; }
