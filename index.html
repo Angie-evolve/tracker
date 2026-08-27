@@ -19689,7 +19689,9 @@ function rutaAgendarUna(clientId, label){
 // agencia. Se guarda igual que el proxy de GHL: en el navegador, no en la base.
 function getCalProxy(){
   return { url:(localStorage.getItem('evold-cal-proxy-url')||'').trim(),
-           secret:(localStorage.getItem('evold-cal-proxy-secret')||'').trim() };
+           secret:(localStorage.getItem('evold-cal-proxy-secret')||'').trim(),
+           calId:(localStorage.getItem('evold-cal-id')||'').trim(),
+           calNombre:(localStorage.getItem('evold-cal-nombre')||'').trim() };
 }
 // Un modal y no dos prompt() encadenados: los prompt se cierran al tocar
 // afuera, asi que salir a buscar el secreto en otra pestaña borraba lo escrito
@@ -19717,10 +19719,17 @@ function calConfigurar(){
         +'value="'+esc(a.secret||'cal-BGFM3PqzRZcKA67xdn8fmQDKbFYP')+'">'
       +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
         +'Ya viene el que trae el archivo. Solo cambialo si pusiste otro en el script.</div>'
+      // El selector aparece recien despues de probar: la lista de calendarios
+      // la trae el propio script, no se puede escribir a mano.
+      +'<div id="cal-pick" style="display:none;margin-top:14px">'
+        +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:0.06em;margin-bottom:4px">Agendar en</div>'
+        +'<select id="cal-id" style="'+est+'"></select>'
+      +'</div>'
       +'<div id="cal-est" style="font-size:11.5px;margin-top:12px;min-height:18px;color:var(--text3)"></div>'
       +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-        +'<button class="btn btn-sm btn-primary" onclick="calProbarYGuardar()">Probar y guardar</button>'
+        +'<button id="cal-ok" class="btn btn-sm btn-primary" onclick="calProbarYGuardar()">Probar</button>'
       +'</div>'
     +'</div></div>';
   var u=document.getElementById('cal-url'); if(u) u.focus();
@@ -19740,8 +19749,21 @@ async function calProbarYGuardar(){
     if(r&&r.ok){
       localStorage.setItem('evold-cal-proxy-url',u);
       localStorage.setItem('evold-cal-proxy-secret',sec);
-      closeModal();
-      toast('Vinculado al calendario "'+(r.calendario||'principal')+'".');
+      var sel=document.getElementById('cal-id');
+      var caja=document.getElementById('cal-pick');
+      var lista=(r.calendarios&&r.calendarios.length)?r.calendarios
+        :[{id:r.calendarioId||'', nombre:r.calendario||'Principal'}];
+      var elegido=getCalProxy().calId||r.calendarioId||'';
+      if(sel&&caja){
+        sel.innerHTML=lista.map(function(x){
+          return '<option value="'+esc(x.id)+'"'+(x.id===elegido?' selected':'')+'>'
+            +esc(x.nombre)+'</option>';
+        }).join('');
+        caja.style.display='block';
+      }
+      var ok=document.getElementById('cal-ok');
+      if(ok){ ok.textContent='Guardar'; ok.setAttribute('onclick','calGuardarCalendario()'); }
+      decir('Conectado. Elegi en cual calendario agendar.','var(--accent)');
       return;
     }
     var m=String((r&&r.error)||'sin respuesta');
@@ -19755,6 +19777,14 @@ async function calProbarYGuardar(){
 // Elegir cuales agendar en vez de mandarlas todas. Casi nunca queres las nueve
 // en el calendario: queres el lanzamiento y un par de hitos. Vienen tildadas
 // las que faltan, y destildas lo que no te interesa.
+function calGuardarCalendario(){
+  var sel=document.getElementById('cal-id');
+  if(!sel||!sel.value){ toast('Elegi un calendario'); return; }
+  localStorage.setItem('evold-cal-id', sel.value);
+  localStorage.setItem('evold-cal-nombre', sel.options[sel.selectedIndex].text);
+  closeModal();
+  toast('Las etapas se van a agendar en "'+sel.options[sel.selectedIndex].text+'".');
+}
 function rutaAgendarEnCalendario(clientId, soloEsta){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -19781,7 +19811,8 @@ function rutaAgendarEnCalendario(clientId, soloEsta){
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">'
         +'Agendar etapas de '+esc(c.name||'este cliente')+'</div>'
       +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-        +'Se crean en tu Google Calendar como eventos de dia completo. '
+        +'Van a <b style="color:var(--text2)">'+esc(getCalProxy().calNombre||'tu calendario principal')
+        +'</b> como eventos de dia completo. '
         +'Si ya las agendaste antes, se actualizan en vez de duplicarse.</div>'
       +'<div style="display:flex;gap:12px;margin-bottom:6px">'
         +'<span onclick="document.querySelectorAll(\'.cal-et\').forEach(function(e){e.checked=true})" '
@@ -19818,11 +19849,13 @@ async function calAgendarElegidas(clientId){
   decir('Agendando '+eventos.length+'...');
   try{
     var r=await _fetchConLimite(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
-      +'&action=agendar&eventos='+encodeURIComponent(JSON.stringify(eventos)), 25000);
+      +'&action=agendar&eventos='+encodeURIComponent(JSON.stringify(eventos))
+      +(proxy.calId?('&calId='+encodeURIComponent(proxy.calId)):''), 25000);
     if(r&&r.ok){
       closeModal();
       toast(r.creados+' agendada'+(r.creados===1?'':'s')
-        +(r.actualizados?(' \u00b7 '+r.actualizados+' actualizada'+(r.actualizados===1?'':'s')):''));
+        +(r.actualizados?(' \u00b7 '+r.actualizados+' actualizada'+(r.actualizados===1?'':'s')):'')
+        +(r.calendario?(' en '+r.calendario):''));
       return;
     }
     var m=String((r&&r.error)||'sin respuesta');
