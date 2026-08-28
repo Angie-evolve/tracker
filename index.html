@@ -20228,6 +20228,44 @@ function fichaEditar(clientId, campo){
   else if(typeof renderTab==='function') renderTab();
 }
 // El equipo se cargaba pegando mails, asi que ninguno quedo con telefono.
+// Vinculo de cada persona con la empresa del cliente. Texto libre, pero con
+// los de siempre a mano: escribirlos cada vez lleva a que uno diga "Socio" y
+// otro "socio fundador" y despues no se pueda filtrar.
+var ROLES_SUGERIDOS='Socio, CEO, Manager de ventas, Lider de marketing, Operaciones, Administracion, Tecnico';
+function eqRolEditar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c || !c.equipo) return;
+  var p=c.equipo[i];
+  if(p===undefined) return;
+  if(typeof p!=='object'){ p={nombre:String(p||''), email:''}; c.equipo[i]=p; }
+  var v=prompt('Que hace '+(p.nombre||p.email||'esta persona')+' en la empresa?\n\n'
+    +'Los mas usados: '+ROLES_SUGERIDOS, p.rol||'');
+  if(v===null) return;
+  v=String(v).trim();
+  if(v) p.rol=v; else delete p.rol;
+  save();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
+function eqAgregar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var nom=prompt('Nombre de la persona:','');
+  if(nom===null) return;
+  nom=String(nom).trim();
+  if(!nom){ toast('Sin nombre no se puede sumar'); return; }
+  var mail=prompt('Su mail (opcional, pero es lo que se usa para invitarlo a GHL):','');
+  if(mail===null) mail='';
+  var rol=prompt('Que hace en la empresa? (opcional)\n\nLos mas usados: '+ROLES_SUGERIDOS,'');
+  if(rol===null) rol='';
+  c.equipo=c.equipo||[];
+  var p={ nombre:nom, email:String(mail).trim() };
+  if(String(rol).trim()) p.rol=String(rol).trim();
+  c.equipo.push(p);
+  save();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
 function eqTelEditar(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c || !c.equipo) return;
@@ -20432,31 +20470,50 @@ function _fichaHtml(c){
     +'title="Abrir el equipo de esta subcuenta en GHL">Abrir en GHL</a></div>');
 
   var eq=(c.equipo||[]);
-  var eqHtml=eq.length
-    ? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">'
-       +eq.map(function(p,i){
-         var n=_eqNombre(p), m=_eqMail(p), tel=(p&&typeof p==='object')?(p.tel||''):'';
-         var wa=_waLink(tel);
-         // Si el nombre es el mail (contacto viejo), se muestra una sola vez.
-         var soloMail=(n===m);
-         return '<span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;'
-           +'border:1px solid var(--border2);border-radius:999px;padding:4px 5px 4px 11px;color:var(--text2)">'
-           +(soloMail?'':esc(n))
-           +(m?('<span style="color:var(--text3)">'+(soloMail?'':'&middot; ')+esc(m)+'</span>'):'')
-           +(tel?('<span style="color:var(--text2)">&middot; '+esc(tel)+'</span>'):'')
-           +(wa?('<a href="'+esc(wa)+'" target="_blank" rel="noopener" title="Abrir WhatsApp" '
-             +'style="color:var(--accent);text-decoration:none;font-size:10.5px">wa</a>')
-             :(tel?('<span style="color:var(--amberx);font-size:10.5px" '
-               +'title="Falta el codigo de pais">sin pais</span>'):''))
-           +_invBoton(c, i, m, (p&&typeof p==='object')?p.ghlInvitadoAt:'')
-           +'<button onclick="eqTelEditar('+c.id+','+i+')" '
-             +'title="'+(tel?'Cambiar el telefono':'Agregar telefono')+'" '
-             +'style="border:1px solid var(--border2);background:var(--bg3);color:'
-             +(tel?'var(--text3)':'var(--amberx)')+';border-radius:999px;cursor:pointer;'
-             +'font-size:10px;padding:2px 8px;font-family:inherit">'+(tel?'tel':'+ tel')+'</button>'
-         +'</span>';
-       }).join('')+'</div>')
-    : '';
+  // El equipo pasa a ser una fila mas de la ficha, con su rotulo, en vez de
+  // chips sueltos colgando abajo. Y cada uno lleva su vinculo: saber que Nacho
+  // es el socio y Ricardo el lider de marketing cambia a quien le escribis.
+  var eqHtml='<div style="display:flex;align-items:flex-start;gap:12px;padding:9px 0;'
+    +'border-bottom:1px solid var(--border)">'
+    +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3);margin-top:5px">Equipo</span>'
+    +'<div style="flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px">'
+    +(eq.length?eq.map(function(p,i){
+       var n=_eqNombre(p), m=_eqMail(p);
+       var tel=(p&&typeof p==='object')?(p.tel||''):'';
+       var rol=(p&&typeof p==='object')?(p.rol||''):'';
+       var wa=_waLink(tel);
+       var soloMail=(n===m);
+       return '<span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;'
+         +'border:1px solid var(--border2);border-radius:999px;padding:4px 5px 4px 11px;color:var(--text2)">'
+         +(soloMail?'':esc(n))
+         // El vinculo va primero y en verde: es lo que uno busca cuando mira
+         // la lista para decidir a quien escribirle.
+         +(rol?('<span style="color:var(--accent);font-size:10px;text-transform:uppercase;'
+           +'letter-spacing:.05em">'+esc(rol)+'</span>'):'')
+         +(m?('<span style="color:var(--text3)">'+((soloMail&&!rol)?'':'&middot; ')+esc(m)+'</span>'):'')
+         +(tel?('<span style="color:var(--text2)">&middot; '+esc(tel)+'</span>'):'')
+         +(wa?('<a href="'+esc(wa)+'" target="_blank" rel="noopener" title="Abrir WhatsApp" '
+           +'style="color:var(--accent);text-decoration:none;font-size:10.5px">wa</a>')
+           :(tel?('<span style="color:var(--amberx);font-size:10.5px" '
+             +'title="Falta el codigo de pais">sin pais</span>'):''))
+         +_invBoton(c, i, m, (p&&typeof p==='object')?p.ghlInvitadoAt:'')
+         +'<button onclick="eqRolEditar('+c.id+','+i+')" '
+           +'title="'+(rol?'Cambiar el vinculo':'Poner que hace en la empresa')+'" '
+           +'style="border:1px solid var(--border2);background:var(--bg3);color:'
+           +(rol?'var(--text3)':'var(--amberx)')+';border-radius:999px;cursor:pointer;'
+           +'font-size:10px;padding:2px 8px;font-family:inherit">'+(rol?'rol':'+ rol')+'</button>'
+         +'<button onclick="eqTelEditar('+c.id+','+i+')" '
+           +'title="'+(tel?'Cambiar el telefono':'Agregar telefono')+'" '
+           +'style="border:1px solid var(--border2);background:var(--bg3);color:'
+           +(tel?'var(--text3)':'var(--amberx)')+';border-radius:999px;cursor:pointer;'
+           +'font-size:10px;padding:2px 8px;font-family:inherit">'+(tel?'tel':'+ tel')+'</button>'
+       +'</span>';
+     }).join('')
+     :'<span style="font-size:12.5px;color:var(--text3);margin-top:4px">Sin cargar</span>')
+    +'</div>'
+    +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;flex:none" '
+      +'onclick="eqAgregar('+c.id+')">Sumar</button>'
+  +'</div>';
 
   return '<div style="margin-bottom:22px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">'
@@ -21291,6 +21348,7 @@ function _fichaJson(c){
   if(c.archived) f.archivado=true;
   var eq=(c.equipo||[]).map(function(p){
     var o={ nombre:_eqNombre(p), email:_eqMail(p) };
+    if(p&&typeof p==='object'&&p.rol) o.rol=p.rol;
     if(p&&typeof p==='object'&&p.tel) o.telefono=p.tel;
     return o;
   }).filter(function(o){ return o.nombre||o.email; });
