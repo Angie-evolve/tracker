@@ -7231,6 +7231,20 @@ function integracionesAppHtml(){
         action2:'personasModal()', action2Label:'Personas'});
     })(),
     (function(){
+      // Fichas en JSON. Lo que se carga al dar de alta un cliente termina
+      // encerrado en el navegador; esto lo saca en un formato que otra
+      // herramienta pueda leer. Es exportar datos, no un backup: el respaldo
+      // completo de la base esta aparte.
+      var act=DB.clients.filter(function(c){ return !c.archived; });
+      var conFicha=act.filter(function(c){
+        return c.email||c.contacto||c.phone||(c.ghl&&c.ghl.locationId);
+      }).length;
+      return card({name:'Fichas de clientes', st:act.length?(conFicha?'ok':'partial'):'no',
+        desc:'Exporta en JSON los datos que se cargan al dar de alta: contacto, mail, telefono, industria, subcuenta de GHL y el equipo del cliente.',
+        detail:act.length?(conFicha+' de '+act.length+' con ficha cargada'):'Sin clientes activos',
+        action:'fichasExportarModal()', actionLabel:'Exportar'});
+    })(),
+    (function(){
       // Personas del equipo. Es la libreta de la que salen todos los mails y
       // numeros del resto de la app, para no tipearlos de nuevo en cada lugar.
       var ps=personas();
@@ -21261,6 +21275,76 @@ function sopExportarTodos(){
   if(!l.length){ toast('No hay procedimientos'); return; }
   if(l.length>1 && !confirm('Bajar '+l.length+' archivos, uno por procedimiento?')) return;
   l.forEach(function(x,i){ setTimeout(function(){ sopExportar(x.id); }, i*350); });
+}
+// ---- Exportar las fichas -------------------------------------------------
+// Solo los datos del alta, no la base entera: contacto, mail, telefono,
+// industria, subcuenta de GHL y el equipo. Lo que uno querria pasarle a otra
+// herramienta o tener afuera del navegador.
+function _fichaJson(c){
+  var f={ id:c.id, nombre:c.name||'' };
+  if(c.contacto) f.contacto=c.contacto;
+  if(c.email)    f.email=c.email;
+  if(c.phone)    f.telefono=c.phone;
+  if(c.industry) f.industria=c.industry;
+  if(c.ghl&&c.ghl.locationId) f.ghlLocationId=c.ghl.locationId;
+  if(c.altaAt)   f.altaAt=c.altaAt;
+  if(c.archived) f.archivado=true;
+  var eq=(c.equipo||[]).map(function(p){
+    var o={ nombre:_eqNombre(p), email:_eqMail(p) };
+    if(p&&typeof p==='object'&&p.tel) o.telefono=p.tel;
+    return o;
+  }).filter(function(o){ return o.nombre||o.email; });
+  if(eq.length) f.equipo=eq;
+  return f;
+}
+function fichasExportarModal(){
+  var act=DB.clients.filter(function(c){ return !c.archived; });
+  var arch=DB.clients.filter(function(c){ return c.archived; });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:540px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Exportar fichas</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'Sale un JSON con lo que se carga al dar de alta: contacto, mail, telefono, '
+        +'industria, subcuenta de GHL y el equipo de cada cliente. '
+        +'No incluye tareas, llamadas ni facturacion.</div>'
+      +'<label style="display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer">'
+        +'<input type="checkbox" id="fx-arch"'+(arch.length?'':' disabled')+'>'
+        +'<span style="font-size:13px;color:'+(arch.length?'var(--text)':'var(--text3)')+'">'
+          +'Incluir los archivados'+(arch.length?(' ('+arch.length+')'):' (no hay)')+'</span>'
+      +'</label>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-top:8px;padding-top:10px;'
+        +'border-top:1px solid var(--border)">'
+        +act.length+' cliente'+(act.length===1?'':'s')+' activo'+(act.length===1?'':'s')
+        +'. Los campos vacios no se incluyen, para que el archivo diga solo lo que hay.</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm" onclick="fichasExportar(true)">Copiar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="fichasExportar(false)">Bajar JSON</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function fichasExportar(copiar){
+  var incArch=!!(document.getElementById('fx-arch')||{}).checked;
+  var l=DB.clients.filter(function(c){ return incArch || !c.archived; });
+  if(!l.length){ toast('No hay clientes para exportar'); return; }
+  var out={ generado:new Date().toISOString(), total:l.length,
+            clientes:l.map(_fichaJson) };
+  var txt=JSON.stringify(out,null,2);
+  if(copiar){
+    if(navigator.clipboard) navigator.clipboard.writeText(txt);
+    closeModal();
+    toast(l.length+' ficha'+(l.length===1?'':'s')+' en el portapapeles');
+    return;
+  }
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([txt],{type:'application/json'}));
+  a.download='fichas-clientes-'+new Date().toISOString().split('T')[0]+'.json';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+  closeModal();
+  toast(l.length+' ficha'+(l.length===1?'':'s')+' exportada'+(l.length===1?'':'s'));
 }
 function sopBorrar(id){
   var s=_sop(id); if(!s) return;
