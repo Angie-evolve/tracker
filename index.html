@@ -21298,37 +21298,74 @@ function _fichaJson(c){
   return f;
 }
 function fichasExportarModal(){
-  var act=DB.clients.filter(function(c){ return !c.archived; });
-  var arch=DB.clients.filter(function(c){ return c.archived; });
+  var act=DB.clients.filter(function(c){ return !c.archived; })
+    .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var arch=DB.clients.filter(function(c){ return c.archived; })
+    .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  // Los archivados van en la misma lista pero apagados y destildados: si
+  // estuvieran en otro lado habria que acordarse de mirar dos partes.
+  var todos=act.concat(arch);
+  var fila=function(c){
+    var f=_fichaJson(c);
+    var campos=Object.keys(f).filter(function(k){ return k!=='id'&&k!=='nombre'&&k!=='archivado'; }).length;
+    return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+      +'border-bottom:1px solid var(--border);cursor:pointer'+(c.archived?';opacity:.55':'')+'">'
+      +'<input type="checkbox" class="fx-c" value="'+c.id+'"'+(c.archived?'':' checked')+'>'
+      +'<span style="flex:1;min-width:0;font-size:13px;color:var(--text);overflow:hidden;'
+        +'text-overflow:ellipsis;white-space:nowrap">'+esc(c.name||'Sin nombre')
+        +(c.archived?'<span style="color:var(--text3);font-size:11px"> &middot; archivado</span>':'')+'</span>'
+      +'<span style="font-size:11px;color:'+(campos?'var(--text3)':'var(--amberx)')+'">'
+        +(campos?(campos+' dato'+(campos===1?'':'s')):'ficha vacia')+'</span>'
+    +'</label>';
+  };
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:540px">'
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
         +'Exportar fichas</div>'
-      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
         +'Sale un JSON con lo que se carga al dar de alta: contacto, mail, telefono, '
-        +'industria, subcuenta de GHL y el equipo de cada cliente. '
-        +'No incluye tareas, llamadas ni facturacion.</div>'
-      +'<label style="display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer">'
-        +'<input type="checkbox" id="fx-arch"'+(arch.length?'':' disabled')+'>'
-        +'<span style="font-size:13px;color:'+(arch.length?'var(--text)':'var(--text3)')+'">'
-          +'Incluir los archivados'+(arch.length?(' ('+arch.length+')'):' (no hay)')+'</span>'
-      +'</label>'
-      +'<div style="font-size:11.5px;color:var(--text3);margin-top:8px;padding-top:10px;'
-        +'border-top:1px solid var(--border)">'
-        +act.length+' cliente'+(act.length===1?'':'s')+' activo'+(act.length===1?'':'s')
-        +'. Los campos vacios no se incluyen, para que el archivo diga solo lo que hay.</div>'
-      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+        +'industria, subcuenta de GHL y el equipo. No incluye tareas, llamadas ni facturacion.</div>'
+      +'<div style="display:flex;gap:14px;margin-bottom:4px">'
+        +'<span onclick="document.querySelectorAll(\'.fx-c\').forEach(function(e){e.checked=true});fichasContar()" '
+          +'style="font-size:11px;color:var(--text3);cursor:pointer">Todos</span>'
+        +'<span onclick="document.querySelectorAll(\'.fx-c\').forEach(function(e){e.checked=false});fichasContar()" '
+          +'style="font-size:11px;color:var(--text3);cursor:pointer">Ninguno</span>'
+        +'<span onclick="fichasSoloConDatos()" '
+          +'style="font-size:11px;color:var(--text3);cursor:pointer">Solo los que tienen ficha</span>'
+      +'</div>'
+      +'<div onchange="fichasContar()" style="max-height:340px;overflow-y:auto">'
+        +todos.map(fila).join('')+'</div>'
+      +'<div id="fx-n" style="font-size:11.5px;color:var(--text3);margin-top:10px"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
         +'<button class="btn btn-sm" onclick="fichasExportar(true)">Copiar</button>'
         +'<button class="btn btn-sm btn-primary" onclick="fichasExportar(false)">Bajar JSON</button>'
       +'</div>'
     +'</div></div>';
+  fichasContar();
+}
+function fichasContar(){
+  var n=document.querySelectorAll('.fx-c:checked').length;
+  var e=document.getElementById('fx-n');
+  if(e) e.textContent=n?(n+' cliente'+(n===1?'':'s')+' seleccionado'+(n===1?'':'s')
+    +'. Los campos vacios no se incluyen.'):'No hay ninguno seleccionado.';
+}
+// Los que no tienen ningun dato del alta solo aportan el nombre, y en un
+// archivo para otra herramienta son ruido.
+function fichasSoloConDatos(){
+  [].slice.call(document.querySelectorAll('.fx-c')).forEach(function(e){
+    var c=DB.clients.filter(function(x){ return String(x.id)===e.value; })[0];
+    var f=c?_fichaJson(c):{};
+    e.checked=Object.keys(f).filter(function(k){
+      return k!=='id'&&k!=='nombre'&&k!=='archivado'; }).length>0;
+  });
+  fichasContar();
 }
 function fichasExportar(copiar){
-  var incArch=!!(document.getElementById('fx-arch')||{}).checked;
-  var l=DB.clients.filter(function(c){ return incArch || !c.archived; });
-  if(!l.length){ toast('No hay clientes para exportar'); return; }
+  var ids=[].slice.call(document.querySelectorAll('.fx-c:checked')).map(function(e){ return e.value; });
+  var l=DB.clients.filter(function(c){ return ids.indexOf(String(c.id))>=0; });
+  if(!l.length){ toast('No elegiste ningun cliente'); return; }
   var out={ generado:new Date().toISOString(), total:l.length,
             clientes:l.map(_fichaJson) };
   var txt=JSON.stringify(out,null,2);
@@ -21340,7 +21377,12 @@ function fichasExportar(copiar){
   }
   var a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([txt],{type:'application/json'}));
-  a.download='fichas-clientes-'+new Date().toISOString().split('T')[0]+'.json';
+  // Con un solo cliente el nombre del archivo lo dice, asi no hay que abrirlo
+  // para saber cual es.
+  a.download=(l.length===1
+      ? 'ficha-'+String(l[0].name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-')
+      : 'fichas-clientes')
+    +'-'+new Date().toISOString().split('T')[0]+'.json';
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
   closeModal();
