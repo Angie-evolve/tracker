@@ -21446,6 +21446,218 @@ function fichasExportar(copiar){
   closeModal();
   toast(l.length+' ficha'+(l.length===1?'':'s')+' exportada'+(l.length===1?'':'s'));
 }
+// ---- Actualizar un SOP con lo que pasó en las llamadas -------------------
+// Las llamadas grabadas son donde el procedimiento real se ve funcionar: ahi
+// aparecen los pasos que faltaban y los que ya no van. Esto compara el SOP
+// contra las transcripciones y propone cambios; nada se aplica solo.
+function _sopLlamadasDisponibles(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      if(cl.transcript && String(cl.transcript).length>400)
+        out.push({ cid:c.id, cliente:c.name||'', id:cl.id,
+                   titulo:cl.title||cl.tipo||'Llamada', fecha:cl.date||'',
+                   url:cl.url||cl.link||'', largo:String(cl.transcript).length });
+    });
+  });
+  return out.sort(function(a,b){ return String(b.fecha).localeCompare(String(a.fecha)); });
+}
+function sopDesdeLlamadasModal(id){
+  var s=_sop(id); if(!s) return;
+  if(!localStorage.getItem('evold-anthropic-key')){
+    toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return;
+  }
+  var ll=_sopLlamadasDisponibles();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Actualizar con las llamadas</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Lee las transcripciones y propone pasos que faltan en <b style="color:var(--text2)">'
+        +esc(s.titulo)+'</b>. Vos decidis cuales entran: no se toca nada sin que lo aceptes.</div>'
+      +(ll.length
+        ?('<div onchange="sopLlContar()" style="max-height:300px;overflow-y:auto">'
+          +ll.map(function(x,i){
+            return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+              +'border-bottom:1px solid var(--border);cursor:pointer">'
+              +'<input type="checkbox" class="sopll" value="'+i+'">'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+                +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.titulo)
+                +'<span style="color:var(--text3)"> &middot; '+esc(x.cliente)+'</span></span>'
+              +'<span style="font-size:11px;color:var(--text3)">'+esc(x.fecha)+'</span>'
+            +'</label>';
+          }).join('')+'</div>'
+          +'<div id="sopll-n" style="font-size:11.5px;color:var(--text3);margin-top:10px">'
+            +'Elegi una o dos. Con muchas, la respuesta se vuelve generica.</div>')
+        :('<div style="font-size:12.5px;color:var(--amberx);line-height:1.6;padding:10px 0">'
+          +'No hay llamadas con transcripcion cargada. Las de Fathom llegan resumidas; '
+          +'la transcripcion completa hace falta para esto.</div>'))
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +(ll.length?('<button class="btn btn-sm btn-primary" onclick="sopDesdeLlamadas('+id+')">'
+          +'Buscar cambios</button>'):'')
+      +'</div>'
+    +'</div></div>';
+}
+function sopLlContar(){
+  var n=document.querySelectorAll('.sopll:checked').length;
+  var e=document.getElementById('sopll-n');
+  if(!e) return;
+  e.textContent = n>3
+    ? (n+' llamadas es mucho: la respuesta se vuelve generica. Con dos alcanza.')
+    : (n?(n+' seleccionada'+(n===1?'':'s')+'.'):'Elegi una o dos.');
+  e.style.color = n>3 ? 'var(--amberx)' : 'var(--text3)';
+}
+async function sopDesdeLlamadas(id){
+  var s=_sop(id); if(!s) return;
+  var ll=_sopLlamadasDisponibles();
+  var idx=[].slice.call(document.querySelectorAll('.sopll:checked')).map(function(e){ return +e.value; });
+  if(!idx.length){ toast('Elegi al menos una llamada'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var elegidas=idx.map(function(i){ return ll[i]; });
+  var trs=elegidas.map(function(x){
+    var c=DB.clients.filter(function(y){return y.id===x.cid;})[0]||{};
+    var cl=(c.fathomCalls||[]).filter(function(y){return y.id===x.id;})[0]||{};
+    // Un techo por llamada: sin esto dos transcripciones largas se comen el
+    // limite y la respuesta llega cortada por la mitad.
+    return { titulo:x.titulo, fecha:x.fecha,
+             texto:String(cl.transcript||'').slice(0,45000) };
+  });
+  var sopPlano=(s.bloques||[]).map(function(b,bi){
+    return { bloque:b.b||'', i:bi,
+             pasos:(b.pasos||[]).map(function(p){ return p.t||''; }) };
+  });
+  var e=document.getElementById('sopll-n');
+  if(e){ e.textContent='Leyendo las transcripciones...'; e.style.color='var(--text3)'; }
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:3000,messages:[{role:'user',content:
+        'Sos parte de una agencia. Tenemos un procedimiento (SOP) que seguimos en las llamadas '
+        +'de configuracion de sistemas, y transcripciones de llamadas reales donde se ejecuto.\n\n'
+        +'Compara el SOP contra lo que realmente paso y detecta:\n'
+        +'1. Pasos que se hicieron en la llamada y NO estan en el SOP.\n'
+        +'2. Pasos del SOP que en la practica se hacen distinto.\n\n'
+        +'Reglas: no inventes. Si algo no surge claramente de la transcripcion, no lo propongas. '
+        +'No propongas pasos que ya existen aunque esten redactados distinto. '
+        +'El texto de cada paso va en imperativo y corto, como los que ya estan. '
+        +'"momento" es el minuto aproximado de la transcripcion donde aparece, formato mm:ss.\n\n'
+        +'Devolve SOLO un JSON, sin markdown:\n'
+        +'{"nuevos":[{"bloque":<indice del bloque donde iria>,"texto":"...","detalle":"...",'
+        +'"llamada":"titulo de la llamada","momento":"12:30","porque":"por que hace falta"}],'
+        +'"cambios":[{"bloque":<i>,"paso":"texto del paso actual","sugerencia":"...",'
+        +'"llamada":"...","momento":"12:30"}]}\n\n'
+        +'SOP ACTUAL:\n'+JSON.stringify(sopPlano)
+        +'\n\nTRANSCRIPCIONES:\n'+JSON.stringify(trs)}]})
+    });
+    var d=await r.json();
+    if(d.error){ if(e){ e.textContent='La IA respondio con error: '+(d.error.message||''); e.style.color='var(--redx)'; } return; }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+    if(a<0||z<=a){ if(e){ e.textContent='No pude leer la respuesta.'; e.style.color='var(--redx)'; } return; }
+    var res=JSON.parse(txt.slice(a,z+1));
+    _SOP_PROP={ res:res, llamadas:elegidas };
+    sopPropuestasModal(id);
+  }catch(err){
+    if(e){ e.textContent='Error: '+err.message; e.style.color='var(--redx)'; }
+  }
+}
+var _SOP_PROP=null;
+function sopPropuestasModal(id){
+  var s=_sop(id); if(!s || !_SOP_PROP) return;
+  var nuevos=_SOP_PROP.res.nuevos||[], cambios=_SOP_PROP.res.cambios||[];
+  var nomBloque=function(i){ var b=(s.bloques||[])[i]; return b?(b.b||'Sin nombre'):'(bloque nuevo)'; };
+  // El link al minuto exacto de la grabacion vale mas que una captura: se ve
+  // el paso haciendose, con contexto de lo que se dijo antes y despues.
+  var linkMomento=function(x){
+    var ll=(_SOP_PROP.llamadas||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
+    if(!ll||!ll.url||!x.momento) return '';
+    var p=String(x.momento).split(':');
+    var seg=(p.length===2)?(parseInt(p[0],10)*60+parseInt(p[1],10)):0;
+    if(!seg) return '';
+    var u=ll.url+(ll.url.indexOf('?')>=0?'&':'?')+'timestamp='+seg;
+    return '<a href="'+esc(u)+'" target="_blank" rel="noopener" '
+      +'style="font-size:10.5px;color:var(--accent);text-decoration:none">ver el momento</a>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:10px">'
+        +(nuevos.length+cambios.length)+' cosa'+((nuevos.length+cambios.length)===1?'':'s')+' para revisar</div>'
+      +(nuevos.length?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.07em;margin-bottom:4px">Pasos que faltan</div>'
+        +nuevos.map(function(x,i){
+          return '<label style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);'
+            +'cursor:pointer;align-items:flex-start">'
+            +'<input type="checkbox" class="sp-n" value="'+i+'" checked style="margin-top:3px">'
+            +'<span style="flex:1;min-width:0">'
+              +'<span style="display:block;font-size:13px;color:var(--text)">'+esc(x.texto||'')+'</span>'
+              +(x.porque?('<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+                +esc(x.porque)+'</span>'):'')
+              +'<span style="display:block;font-size:10.5px;color:var(--text3);margin-top:3px">'
+                +'en '+esc(nomBloque(x.bloque))+(x.momento?(' &middot; '+esc(x.momento)):'')+' '
+                +linkMomento(x)+'</span>'
+            +'</span></label>';
+        }).join('')):'')
+      +(cambios.length?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.07em;margin:14px 0 4px">Se hacen distinto</div>'
+        +cambios.map(function(x){
+          return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">'
+            +'<span style="display:block;font-size:12.5px;color:var(--text3);'
+              +'text-decoration:line-through">'+esc(x.paso||'')+'</span>'
+            +'<span style="display:block;font-size:13px;color:var(--text);margin-top:3px">'
+              +esc(x.sugerencia||'')+'</span>'
+            +'<span style="display:block;font-size:10.5px;color:var(--text3);margin-top:3px">'
+              +esc(nomBloque(x.bloque))+(x.momento?(' &middot; '+esc(x.momento)):'')+' '
+              +linkMomento(x)+'</span>'
+          +'</div>';
+        }).join('')
+        +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">'
+        +'Los cambios de redaccion no se aplican solos: mira el momento y edita el paso vos.</div>'):'')
+      +((!nuevos.length&&!cambios.length)
+        ?'<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+         +'No encontro nada que agregar. El SOP cubre lo que pasó en esas llamadas.</div>':'')
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+        +(nuevos.length?('<button class="btn btn-sm btn-primary" onclick="sopAplicarPropuestas('+id+')">'
+          +'Agregar los tildados</button>'):'')
+      +'</div>'
+    +'</div></div>';
+}
+function sopAplicarPropuestas(id){
+  var s=_sop(id); if(!s || !_SOP_PROP) return;
+  var nuevos=_SOP_PROP.res.nuevos||[];
+  var idx=[].slice.call(document.querySelectorAll('.sp-n:checked')).map(function(e){ return +e.value; });
+  if(!idx.length){ toast('No tildaste ninguno'); return; }
+  // Entra como version nueva: el SOP viejo queda entero por si la IA se paso
+  // de creativa y hay que volver.
+  s.versiones=s.versiones||[];
+  s.versiones.unshift({ version:s.version||'v1', at:new Date().toISOString(),
+                        titulo:s.titulo, bloques:JSON.parse(JSON.stringify(s.bloques||[])) });
+  if(s.versiones.length>12) s.versiones=s.versiones.slice(0,12);
+  s.version=_sopSiguienteVersion(s.version||'v1');
+  idx.forEach(function(i){
+    var x=nuevos[i]; if(!x) return;
+    var bi=(typeof x.bloque==='number' && s.bloques[x.bloque])?x.bloque:(s.bloques.length-1);
+    if(bi<0){ s.bloques.push({b:'Nuevos', pasos:[]}); bi=0; }
+    var paso={ t:String(x.texto||'').trim(), d:String(x.detalle||'').trim() };
+    // El link al momento queda pegado al paso: es la prueba de donde salio.
+    var ll=(_SOP_PROP.llamadas||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
+    if(ll&&ll.url&&x.momento){
+      var p=String(x.momento).split(':');
+      var seg=(p.length===2)?(parseInt(p[0],10)*60+parseInt(p[1],10)):0;
+      if(seg) paso.extras=[{ t:'link', l:'De la llamada, '+x.momento,
+        url:ll.url+(ll.url.indexOf('?')>=0?'&':'?')+'timestamp='+seg }];
+    }
+    s.bloques[bi].pasos.push(paso);
+  });
+  save(); closeModal(); _sopPintar(id);
+  toast(idx.length+' paso'+(idx.length===1?'':'s')+' agregado'+(idx.length===1?'':'s')
+    +'. Quedo como '+s.version+'.');
+}
 function sopBorrar(id){
   var s=_sop(id); if(!s) return;
   var u=_sopUsos(id);
@@ -22005,6 +22217,8 @@ function _sopCabecera(id){
     +'<button class="btn btn-sm'+(SOP_EDIT?' btn-primary':'')+'" onclick="sopModoEdicion('+id+')">'
       +(SOP_EDIT?'Listo':'Editar')+'</button>'
     +(r?('<button class="btn btn-sm" onclick="sopDestildar('+id+')">Destildar</button>'):'')
+    +'<button class="btn btn-sm" onclick="sopDesdeLlamadasModal('+id+')" '
+      +'title="Compara el SOP con lo que pasó en las llamadas grabadas">Con las llamadas</button>'
     +'<button class="btn btn-sm" onclick="sopExportar('+id+')" title="Baja un HTML para compartir">Bajar</button>'
     +((r&&c.tot&&c.n===c.tot)?('<button class="btn btn-sm btn-primary" onclick="sopTerminarTarea()">'
         +'Dar la tarea por hecha</button>'):'')
