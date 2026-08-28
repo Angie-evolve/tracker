@@ -22031,6 +22031,34 @@ function _briefHtml(d, c, llamadas){
 }
 
 // Elegir las llamadas y disparar el analisis.
+// Cierra un JSON que llego cortado. Devuelve null si no hay nada rescatable.
+function _jsonCerrar(t){
+  var ab=0, cor=0, dentro=false, escap=false;
+  for(var k=0;k<t.length;k++){
+    var ch=t[k];
+    if(escap){ escap=false; continue; }
+    if(ch==='\\'){ escap=true; continue; }
+    if(ch==='"'){ dentro=!dentro; continue; }
+    if(dentro) continue;
+    if(ch==='{') ab++; else if(ch==='}') ab--;
+    else if(ch==='[') cor++; else if(ch===']') cor--;
+  }
+  if(dentro) t+='"';
+  while(cor-->0) t+=']';
+  while(ab-->0) t+='}';
+  return t;
+}
+function _jsonRescatar(txt){
+  var t=txt;
+  for(var i=0;i<200 && t.length>2;i++){
+    var limpio=t.replace(/[\s,]+$/,'');
+    try{ return JSON.parse(_jsonCerrar(limpio)); }catch(e){}
+    var corte=Math.max(limpio.lastIndexOf(','), limpio.lastIndexOf('}'), limpio.lastIndexOf(']'));
+    if(corte<=0) break;
+    t=limpio.slice(0, corte);
+  }
+  return null;
+}
 function briefModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -22091,10 +22119,15 @@ async function briefGenerar(clientId){
   if(ok){ ok.disabled=true; ok.textContent='Analizando...'; }
   var llamadas=idx.map(function(i){
     var x=ll[i];
+    // Menos texto por llamada cuando son varias: el brief entero tiene que
+    // entrar en la respuesta, y con tres transcripciones largas se corta.
+    var tope = (idx.length>=3) ? 22000 : (idx.length===2 ? 34000 : 50000);
     return { titulo:x.title||x.tipo||'Llamada', fecha:x.date||'', url:x.url||x.link||'',
-             texto:String(x.transcript||'').slice(0,50000) };
+             texto:String(x.transcript||'').slice(0,tope) };
   });
   decir('Leyendo '+llamadas.length+' llamada'+(llamadas.length===1?'':'s')+'. Tarda un minuto.');
+  var chars=llamadas.reduce(function(a,x){ return a+x.texto.length; },0);
+  console.log('Brief \u00b7 '+llamadas.length+' llamadas, '+Math.round(chars/1000)+'k caracteres de transcripcion');
   var esquema='{"kicker":"","titulo":"","subtitulo":"","resumen":"",'
     +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
     +'"producto":{"titulo":"","texto":"","citas":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]},'
@@ -22117,7 +22150,7 @@ async function briefGenerar(clientId){
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':localStorage.getItem('evold-anthropic-key'),
                'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:16000,messages:[{role:'user',content:
         'Sos parte de una agencia de marketing. Te paso transcripciones de llamadas con un cliente '
         +'y necesito un brief interno para preparar la proxima reunion.\n\n'
         +'COMO TRABAJAR:\n'
@@ -22135,13 +22168,32 @@ async function briefGenerar(clientId){
         +'\n\nLLAMADAS:\n'+JSON.stringify(llamadas)}]})
     });
     var d=await r.json();
-    if(d.error){ decir('La IA respondio con error: '+(d.error.message||''),'var(--redx)');
-      if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; } return; }
+    // La respuesta cruda va a la consola siempre: cuando algo falla, "no pude
+    // leer" no alcanza para saber si fue el modelo, el largo o el formato.
+    console.log('Brief \u00b7 respuesta de la IA:', d);
+    var fin=function(){ if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; } };
+    if(d.error){ decir('La IA respondio: '+(d.error.message||JSON.stringify(d.error)),'var(--redx)'); fin(); return; }
     var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    if(!txt){ decir('La IA no devolvio texto. stop_reason: '+(d.stop_reason||'?'),'var(--redx)'); fin(); return; }
     var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
-    if(a<0||z<=a){ decir('No pude leer la respuesta.','var(--redx)');
-      if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; } return; }
-    var datos=JSON.parse(txt.slice(a,z+1));
+    if(a<0){ decir('La respuesta no trae JSON. Empieza asi: '+esc(txt.slice(0,90)),'var(--redx)'); fin(); return; }
+    var datos;
+    try{ datos=JSON.parse(txt.slice(a,z+1)); }
+    catch(pe){
+      // Cortada por largo: se cierran las llaves y corchetes que quedaron
+      // abiertos y se salva lo que si llego, en vez de perder todo el analisis.
+      // Cortada por largo: se cierran las llaves abiertas y, si aun asi no
+      // parsea, se va cortando hacia atras hasta el ultimo elemento completo.
+      // Preferible medio brief que perder el analisis entero.
+      datos=_jsonRescatar(txt.slice(a));
+      if(datos) toast('La respuesta se corto por largo: el brief sale incompleto. '
+        +'Proba con menos llamadas.');
+      if(!datos){
+        decir('No pude leer el JSON'+(d.stop_reason?(' (stop_reason: '+d.stop_reason+')'):'')
+          +'. Mira la consola con F12.','var(--redx)');
+        fin(); return;
+      }
+    }
     var html=_briefHtml(datos, c, llamadas);
     var el=document.createElement('a');
     el.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
