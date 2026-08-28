@@ -21181,9 +21181,153 @@ function sopDestildar(id){
   if(!confirm('Destildar todo?')) return;
   _sopVaciar(); save(); _sopPintar(id);
 }
+// ---- Versiones de un SOP -------------------------------------------------
+// No se pregunta en cada tecla: eso seria insoportable, porque cada campo
+// guarda al salir de el. Se saca una foto al ENTRAR en modo edicion y se
+// compara al salir. Si cambio algo, ahi se decide una sola vez que hacer con
+// la version anterior.
+var SOP_ANTES=null;
+function _sopFoto(s){
+  return JSON.stringify({ titulo:s.titulo, version:s.version, bloques:s.bloques });
+}
 function sopModoEdicion(id){
-  SOP_EDIT=!SOP_EDIT;
-  _sopPintar(id);
+  var s=_sop(id); if(!s) return;
+  if(!SOP_EDIT){
+    SOP_EDIT=true;
+    SOP_ANTES=_sopFoto(s);
+    _sopPintar(id);
+    return;
+  }
+  // Saliendo de edicion: si no cambio nada, no molestar.
+  if(SOP_ANTES===null || _sopFoto(s)===SOP_ANTES){
+    SOP_EDIT=false; SOP_ANTES=null; _sopPintar(id);
+    return;
+  }
+  sopGuardarModal(id);
+}
+function sopGuardarModal(id){
+  var s=_sop(id); if(!s) return;
+  var previa={};
+  try{ previa=JSON.parse(SOP_ANTES)||{}; }catch(e){}
+  var vVieja=previa.version||s.version||'v1';
+  var vNueva=_sopSiguienteVersion(vVieja);
+  var n=(s.versiones||[]).length;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay">'
+    +'<div class="modal" style="max-width:540px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Cambiaste el procedimiento</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:16px">'
+        +'Podes conservar <b style="color:var(--text2)">'+esc(vVieja)+'</b> como estaba y seguir '
+        +'con <b style="color:var(--text2)">'+esc(vNueva)+'</b>, o pisar la version actual si '
+        +'fue solo un arreglo de redaccion.'
+        +(n?(' Ya hay '+n+' version'+(n===1?'':'es')+' guardada'+(n===1?'':'s')+'.'):'')
+      +'</div>'
+      +'<button class="btn" onclick="sopGuardarComoNueva('+id+')" '
+        +'style="width:100%;text-align:left;padding:11px 14px;margin-bottom:8px">'
+        +'<span style="display:block;font-size:13px;color:var(--strong)">Archivar '+esc(vVieja)
+          +' y seguir con '+esc(vNueva)+'</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'La anterior queda guardada y se puede restaurar cuando quieras.</span>'
+      +'</button>'
+      +'<button class="btn" onclick="sopGuardarPisando('+id+')" '
+        +'style="width:100%;text-align:left;padding:11px 14px;margin-bottom:8px">'
+        +'<span style="display:block;font-size:13px;color:var(--text)">Seguir en '+esc(vVieja)+'</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'Para correcciones chicas que no cambian como se hace la tarea.</span>'
+      +'</button>'
+      +'<button class="btn" onclick="sopDescartarCambios('+id+')" '
+        +'style="width:100%;text-align:left;padding:11px 14px">'
+        +'<span style="display:block;font-size:13px;color:var(--redx)">Descartar los cambios</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'Vuelve a como estaba al entrar a editar.</span>'
+      +'</button>'
+    +'</div></div>';
+}
+// v1 -> v2. Si alguien puso "Octubre 2026" no se inventa nada: se le suma un
+// sufijo y que lo renombre si quiere.
+function _sopSiguienteVersion(v){
+  var m=String(v||'').match(/^v(\d+)$/i);
+  if(m) return 'v'+(parseInt(m[1],10)+1);
+  var m2=String(v||'').match(/^(.*?)(\d+)$/);
+  if(m2) return m2[1]+(parseInt(m2[2],10)+1);
+  return String(v||'v1')+' (2)';
+}
+function sopGuardarComoNueva(id){
+  var s=_sop(id); if(!s) return;
+  var previa={};
+  try{ previa=JSON.parse(SOP_ANTES)||{}; }catch(e){}
+  s.versiones=s.versiones||[];
+  s.versiones.unshift({ version:previa.version||s.version||'v1',
+                        at:new Date().toISOString(),
+                        titulo:previa.titulo||s.titulo,
+                        bloques:previa.bloques||[] });
+  // Un techo para no llenar la base: en la practica nadie vuelve doce versiones
+  // atras, y esto vive en el navegador.
+  if(s.versiones.length>12) s.versiones=s.versiones.slice(0,12);
+  s.version=_sopSiguienteVersion(previa.version||s.version||'v1');
+  SOP_EDIT=false; SOP_ANTES=null;
+  save(); closeModal(); _sopPintar(id);
+  toast('Guardado como '+s.version+'. La anterior queda en el historial.');
+}
+function sopGuardarPisando(id){
+  SOP_EDIT=false; SOP_ANTES=null;
+  save(); closeModal(); _sopPintar(id);
+  toast('Cambios guardados en la misma version.');
+}
+function sopDescartarCambios(id){
+  var s=_sop(id); if(!s) return;
+  var previa={};
+  try{ previa=JSON.parse(SOP_ANTES)||{}; }catch(e){ return; }
+  s.titulo=previa.titulo; s.version=previa.version; s.bloques=previa.bloques;
+  SOP_EDIT=false; SOP_ANTES=null;
+  save(); closeModal(); _sopPintar(id);
+  toast('Cambios descartados.');
+}
+// Historial. Restaurar nunca pierde nada: lo que esta hoy se archiva antes de
+// traer lo viejo, asi se puede ir y volver.
+function sopVersiones(id){
+  var s=_sop(id); if(!s) return;
+  var vs=s.versiones||[];
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">'
+        +'Versiones de '+esc(s.titulo)+'</div>'
+      +'<div style="font-size:12px;color:var(--text3);margin-bottom:14px">'
+        +'Ahora estas en <b style="color:var(--accent)">'+esc(s.version||'v1')+'</b>. '
+        +'Restaurar archiva la actual primero: no se pierde nada.</div>'
+      +(vs.length?vs.map(function(v,i){
+        var np=(v.bloques||[]).reduce(function(a,b){ return a+((b.pasos||[]).length); },0);
+        return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;'
+          +'border-top:1px solid var(--border)">'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;color:var(--text)">'+esc(v.version||'sin nombre')+'</div>'
+            +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+              +esc(new Date(v.at).toLocaleDateString('es-AR'))+' &middot; '+np+' pasos</div>'
+          +'</div>'
+          +'<button class="btn btn-sm" onclick="sopRestaurar('+id+','+i+')">Restaurar</button>'
+        +'</div>';
+      }).join(''):'<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+        +'Todavia no hay versiones archivadas. Se guarda una cada vez que edites '
+        +'y elijas conservar la anterior.</div>')
+      +'<div style="display:flex;justify-content:flex-end;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function sopRestaurar(id, i){
+  var s=_sop(id); if(!s) return;
+  var v=(s.versiones||[])[i]; if(!v) return;
+  if(!confirm('Volver a '+(v.version||'esa version')+'?\n\nLa actual ('+(s.version||'v1')
+    +') se archiva antes, asi que podes deshacerlo.')) return;
+  s.versiones.unshift({ version:s.version||'v1', at:new Date().toISOString(),
+                        titulo:s.titulo, bloques:s.bloques });
+  s.versiones.splice(i+1,1);
+  s.titulo=v.titulo||s.titulo; s.bloques=v.bloques||[]; s.version=v.version;
+  if(s.versiones.length>12) s.versiones=s.versiones.slice(0,12);
+  save(); closeModal(); _sopPintar(id);
+  toast('Restaurado '+s.version+'.');
 }
 function sopAgregarPaso(id, bi){
   var s=_sop(id); if(!s) return;
@@ -21555,8 +21699,12 @@ function _sopCabecera(id){
       +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
         // Sin tarea esto es la plantilla: no hay avance que mostrar, y decirlo
         // evita que alguien tilde creyendo que se guarda.
+        +'<span onclick="sopVersiones('+id+')" title="Ver el historial de versiones" '
+          +'style="cursor:pointer;border-bottom:1px dotted var(--border2)">'+esc(s.version||'v1')
+          +((s.versiones||[]).length?(' &middot; '+s.versiones.length+' anterior'
+            +((s.versiones.length===1)?'':'es')):'')+'</span> &middot; '
         +(r?(esc(r.c.name)+' &middot; '+esc(r.t.ticket||'sin numero')+' &middot; '+c.n+' de '+c.tot+' pasos')
-           :('El procedimiento &middot; '+c.tot+' pasos &middot; el avance se lleva desde una tarea'))
+           :(c.tot+' pasos &middot; el avance se lleva desde una tarea'))
       +'</div>'
     +'</div>'
     +(r?('<b style="font-size:1.05rem;color:var(--accent)">'+c.pct+'%</b>'):'')
@@ -21697,6 +21845,13 @@ function abrirSop(id, cid, tid){
       var act=document.activeElement;
       // No mientras se escribe: ahi Escape es "salir del campo".
       if(act && act.getAttribute && act.getAttribute('contenteditable')==='true'){ act.blur(); return; }
+      // Con edicion abierta y cambios sin decidir, Escape lleva a la pregunta
+      // en vez de cerrar: si no, la version anterior se pierde sin aviso.
+      if(SOP_EDIT && SOP_ABIERTO!=null && SOP_ANTES!==null){
+        var sx=_sop(SOP_ABIERTO);
+        if(sx && _sopFoto(sx)!==SOP_ANTES){ sopGuardarModal(SOP_ABIERTO); return; }
+        SOP_EDIT=false; SOP_ANTES=null;
+      }
       closeModal();
     });
   }
@@ -21730,6 +21885,8 @@ function abrirSopsModal(){
             +'<div style="font-size:13.5px;color:var(--text)">'+esc(s.titulo)+'</div>'
             +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+c.tot+' pasos &middot; '
               +(s.version||'v1')
+              +((s.versiones||[]).length?(' &middot; '+s.versiones.length+' version'
+                +((s.versiones.length===1)?'':'es')+' atras'):'')
               +(usos.length?(' &middot; en '+usos.length+' tarea'+(usos.length===1?'':'s')):'')
             +'</div>'
           +'</div>'
@@ -22504,7 +22661,8 @@ var PREG_DEFAULT=[
   'Objeciones abiertas | ¿Que objeciones o dudas quedaron sin responder?',
   'Cambios desde la venta | ¿Que cambio respecto de lo que se hablo en la venta?',
   'Señales de riesgo | ¿Hay señales de que el cliente esta incomodo o en riesgo?',
-  'Accesos que faltan | ¿Que datos o accesos nos faltan de su lado?'
+  'Accesos que faltan | ¿Que datos o accesos nos faltan de su lado?',
+  'Plata y cobro | ¿Que se acordo sobre el dinero? Monto total y en que moneda. En cuantos pagos se divide y de cuanto es cada uno. Cuando vence cada pago y si alguno ya se cobro. Por que medio paga: transferencia, Stripe, Mercado Pago, cripto, factura. Si hay un fee mensual aparte del setup, desde cuando corre y cada cuanto. Si se hablo de descuento, bonificacion, periodo de prueba o condiciones de salida. Citar la llamada y el momento de cada dato, y decir explicitamente que quedo sin definir.'
 ];
 function _pgTexto(q){
   var s=String(q||''); var i=s.indexOf('|');
