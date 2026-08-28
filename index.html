@@ -21152,6 +21152,116 @@ function _sopUsos(sopId){
   });
   return out;
 }
+// ---- Importar y exportar ------------------------------------------------
+// Los HTML que exporta la app traen el SOP en JSON adentro, asi que la vuelta
+// es exacta: se recuperan links, datos, plantillas y fases. Si el archivo no
+// lo trae (venia de otro lado o es una version vieja), se lee la estructura de
+// las etiquetas y se avisa que los extras no vinieron.
+function _sopDesdeHtml(txt, nombreArchivo){
+  var doc;
+  try{ doc=new DOMParser().parseFromString(txt,'text/html'); }
+  catch(e){ return null; }
+
+  var semilla=doc.getElementById('sop-data');
+  if(semilla){
+    try{
+      var d=JSON.parse(semilla.textContent||'{}');
+      if(d && d.bloques) return { s:d, exacto:true };
+    }catch(e2){}
+  }
+
+  // Respaldo: titulo del h1, bloques de los h2, pasos de los <b> de cada li.
+  var t=(doc.querySelector('h1')||{}).textContent
+     || String(nombreArchivo||'SOP importado').replace(/\.html?$/i,'');
+  var bloques=[];
+  var hs=doc.querySelectorAll('h2');
+  for(var i=0;i<hs.length;i++){
+    var pasos=[];
+    var ol=hs[i].nextElementSibling;
+    if(ol && ol.tagName==='OL'){
+      var lis=ol.querySelectorAll('li');
+      for(var j=0;j<lis.length;j++){
+        var b=lis[j].querySelector('b');
+        var fa=lis[j].querySelector('.fase');
+        var pd=lis[j].querySelector('p');
+        var paso={ t:(b?b.textContent:lis[j].textContent).trim() };
+        if(pd) paso.d=pd.textContent.trim();
+        if(fa) paso.fase=/previa/i.test(fa.textContent)?'previa':'durante';
+        if(paso.t) pasos.push(paso);
+      }
+    }
+    if(pasos.length) bloques.push({ b:hs[i].textContent.trim(), pasos:pasos });
+  }
+  if(!bloques.length) return null;
+  return { s:{ titulo:String(t).trim(), version:'v1', bloques:bloques }, exacto:false };
+}
+function sopImportar(){
+  var inp=document.createElement('input');
+  inp.type='file'; inp.accept='.html,.htm,text/html'; inp.multiple=true;
+  inp.onchange=function(){
+    var files=[].slice.call(inp.files||[]);
+    if(!files.length) return;
+    var leidos=0, nuevos=0, versiones=0, fallados=[], sinExtras=0;
+    files.forEach(function(f){
+      var fr=new FileReader();
+      fr.onload=function(){
+        var r=_sopDesdeHtml(String(fr.result||''), f.name);
+        if(!r){ fallados.push(f.name); }
+        else{
+          if(!r.exacto) sinExtras++;
+          // Si ya existe uno con el mismo titulo, no se duplica: entra como
+          // version nueva del que ya esta. Es lo que uno quiere cuando le
+          // mandan el SOP actualizado por mail.
+          var ya=sops().filter(function(x){
+            return String(x.titulo||'').trim().toLowerCase()===String(r.s.titulo||'').trim().toLowerCase();
+          })[0];
+          if(ya){
+            ya.versiones=ya.versiones||[];
+            ya.versiones.unshift({ version:ya.version||'v1', at:new Date().toISOString(),
+                                   titulo:ya.titulo, bloques:ya.bloques });
+            if(ya.versiones.length>12) ya.versiones=ya.versiones.slice(0,12);
+            ya.bloques=r.s.bloques;
+            ya.version=r.s.version&&r.s.version!==ya.version
+              ? r.s.version : _sopSiguienteVersion(ya.version||'v1');
+            versiones++;
+          }else{
+            sops().unshift({ id:Date.now()+Math.floor(Math.random()*99999),
+                             titulo:r.s.titulo||'SOP importado',
+                             version:r.s.version||'v1', duenio:r.s.duenio||'',
+                             creadoAt:new Date().toISOString(),
+                             bloques:r.s.bloques||[] });
+            nuevos++;
+          }
+        }
+        leidos++;
+        if(leidos===files.length){
+          save();
+          abrirSopsModal();
+          var m=[];
+          if(nuevos) m.push(nuevos+' nuevo'+(nuevos===1?'':'s'));
+          if(versiones) m.push(versiones+' actualizado'+(versiones===1?'':'s')+' como version nueva');
+          if(fallados.length) m.push(fallados.length+' sin poder leer');
+          toast(m.length?m.join(' \u00b7 '):'No se importo nada',
+                fallados.length?'red':undefined);
+          if(sinExtras) setTimeout(function(){
+            toast(sinExtras+' archivo'+(sinExtras===1?'':'s')+' no traia los datos internos: '
+              +'entraron los pasos, pero sin links ni plantillas.');
+          }, 2600);
+        }
+      };
+      fr.readAsText(f);
+    });
+  };
+  inp.click();
+}
+// Uno por archivo y no un zip: sin libreria externa un zip habria que armarlo a
+// mano, y bajar cuatro archivos sueltos resuelve lo mismo.
+function sopExportarTodos(){
+  var l=sops();
+  if(!l.length){ toast('No hay procedimientos'); return; }
+  if(l.length>1 && !confirm('Bajar '+l.length+' archivos, uno por procedimiento?')) return;
+  l.forEach(function(x,i){ setTimeout(function(){ sopExportar(x.id); }, i*350); });
+}
 function sopBorrar(id){
   var s=_sop(id); if(!s) return;
   var u=_sopUsos(id);
@@ -21897,9 +22007,17 @@ function abrirSopsModal(){
       }).join('')
       :'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding:10px 0;'
        +'border-top:1px solid var(--border)">Todavia no hay ninguno.</div>')
-      +'<div class="modal-footer">'
-        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
-        +'<button class="btn btn-primary" onclick="sopNuevo()">Nuevo procedimiento</button>'
+      +'<div class="modal-footer" style="justify-content:space-between">'
+        +'<div style="display:flex;gap:8px">'
+          +'<button class="btn btn-sm" onclick="sopImportar()" '
+            +'title="Subir uno o varios HTML exportados">Importar</button>'
+          +(l.length?('<button class="btn btn-sm" onclick="sopExportarTodos()" '
+            +'title="Baja un HTML por procedimiento">Bajar todos</button>'):'')
+        +'</div>'
+        +'<div style="display:flex;gap:8px">'
+          +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+          +'<button class="btn btn-primary" onclick="sopNuevo()">Nuevo procedimiento</button>'
+        +'</div>'
       +'</div>'
     +'</div></div>';
 }
@@ -21966,6 +22084,14 @@ function sopExportar(id){
     })()
     +cuerpo+'</body></html>';
   var a=document.createElement('a');
+  // El HTML lleva el SOP adentro en JSON. Sin esto, importarlo de vuelta
+  // significaria adivinar la estructura leyendo las etiquetas, y los extras
+  // (links, datos, plantillas) se perderian. Con esto la vuelta es exacta.
+  var semilla='<script type="application/json" id="sop-data">'
+    +JSON.stringify({ titulo:s.titulo, version:s.version, duenio:s.duenio,
+                      bloques:s.bloques }).replace(/</g,'\\u003c')
+    +'<\/script>';
+  html=html.replace('</body>', semilla+'</body>');
   a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
   a.download=String(s.titulo||'sop').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.html';
   a.click();
