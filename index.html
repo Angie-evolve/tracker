@@ -19366,9 +19366,9 @@ function successSubNav(c){
       // preparar la llamada siguiente.
       +(c.lastReport?('<button class="btn btn-sm" onclick="showCallReport('+c.id+')">'
         +'Ver ultimo'+(c.lastReport.generatedAt?(' \u00b7 '+esc(c.lastReport.generatedAt)):'')+'</button>'):'')
-      +'<button class="btn btn-sm btn-primary" onclick="generateCallReport('+c.id+')" '
-      +'title="Genera un reporte con IA a partir de objetivos, hitos, cambios y llamadas">'
-      +(c.lastReport?'Regenerar reporte':'Generar reporte')+'</button>'):'')
+      +'<button class="btn btn-sm btn-primary" onclick="briefModal('+c.id+')" '
+      +'title="Elegi las llamadas y arma un brief en HTML para preparar la proxima">'
+      +'Brief de llamadas</button>'):'')
   +'</div>';
 }
 
@@ -21744,6 +21744,419 @@ function sopAplicarPropuestas(id){
   toast(idx.length+' paso'+(idx.length===1?'':'s')+' agregado'+(idx.length===1?'':'s')
     +'. Quedo como '+s.version+'.');
 }
+
+// ---- Brief de llamadas ---------------------------------------------------
+// Reemplaza al reporte generico. Elegis las llamadas y sale un HTML autonomo,
+// con la estructura del brief de OBD: lo que dijo, lo que no dijo, avatares a
+// validar, preguntas para la proxima y compromisos ya asumidos.
+function _briefCSS(){
+  return ':root{--bg:#0a0a0a;--surface:#111;--surface-2:#1a1a1a;'
+   +'--border:rgba(255,255,255,.08);--border-hover:rgba(255,255,255,.15);'
+   +'--text-primary:#f0f0f0;--text-secondary:#888;--text-muted:#555;'
+   +'--lime:#c8f542;--teal:#4af0c4;--amber:#f0904a;--red:#f0564a;'
+   +'--ease-out:cubic-bezier(.23,1,.32,1)}'
+   +'*{margin:0;padding:0;box-sizing:border-box}'
+   +'body{background:var(--bg);color:var(--text-primary);font-family:Geist,-apple-system,sans-serif;'
+   +'line-height:1.55;-webkit-font-smoothing:antialiased}'
+   +'.wrap{max-width:1000px;margin:0 auto;padding:0 24px 96px}'
+   +'header{padding:56px 0 32px;border-bottom:1px solid var(--border)}'
+   +'.kicker{font-family:"Geist Mono",monospace;font-size:11px;letter-spacing:.14em;'
+   +'text-transform:uppercase;color:var(--text-muted);margin-bottom:14px}'
+   +'h1{font-size:36px;font-weight:500;letter-spacing:-.02em;line-height:1.15}'
+   +'h1 span{color:var(--text-muted)}'
+   +'.sub{color:var(--text-secondary);font-size:15px;margin-top:12px;max-width:620px}'
+   +'.meta-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}'
+   +'.pill{font-family:"Geist Mono",monospace;font-size:11px;padding:5px 10px;'
+   +'border:1px solid var(--border);border-radius:5px;color:var(--text-secondary)}'
+   +'.pill.hot{border-color:rgba(200,245,66,.3);color:var(--lime)}'
+   +'.pill.warn{border-color:rgba(240,86,74,.3);color:var(--red)}'
+   +'.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}'
+   +'.lnk{display:flex;align-items:center;gap:9px;text-decoration:none;background:var(--surface);'
+   +'border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;'
+   +'color:var(--text-secondary);transition:border-color .2s var(--ease-out)}'
+   +'.lnk:hover{border-color:var(--border-hover);color:var(--text-primary)}'
+   +'.lk{font-family:"Geist Mono",monospace;font-size:10px;letter-spacing:.09em;'
+   +'text-transform:uppercase;color:var(--lime)}'
+   +'nav{position:sticky;top:0;background:rgba(10,10,10,.92);backdrop-filter:blur(12px);'
+   +'border-bottom:1px solid var(--border);z-index:50;margin-bottom:40px}'
+   +'.tabs{max-width:1000px;margin:0 auto;padding:0 24px;display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}'
+   +'.tabs::-webkit-scrollbar{display:none}'
+   +'.tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);'
+   +'font-family:Geist,sans-serif;font-size:13.5px;padding:16px 14px;cursor:pointer;white-space:nowrap;'
+   +'transition:color .2s var(--ease-out),border-color .2s var(--ease-out)}'
+   +'.tab:hover{color:var(--text-secondary)}'
+   +'.tab.active{color:var(--text-primary);border-bottom-color:var(--lime)}'
+   +'.panel{display:none;animation:fade .3s var(--ease-out)}.panel.active{display:block}'
+   +'@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}'
+   +'h2{font-size:13px;font-family:"Geist Mono",monospace;letter-spacing:.1em;text-transform:uppercase;'
+   +'color:var(--text-muted);margin:44px 0 18px;font-weight:500}h2:first-child{margin-top:0}'
+   +'h3{font-size:17px;font-weight:500;margin-bottom:8px;letter-spacing:-.01em}'
+   +'p{color:var(--text-secondary);font-size:14.5px}p+p{margin-top:10px}'
+   +'strong{color:var(--text-primary);font-weight:500}'
+   +'.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:22px;'
+   +'transition:border-color .2s var(--ease-out)}.card:hover{border-color:var(--border-hover)}'
+   +'.grid{display:grid;gap:12px}.g2{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:repeat(3,1fr)}'
+   +'@media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}'
+   +'.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px}'
+   +'.stat .n{font-family:"Geist Mono",monospace;font-size:26px;font-weight:500;display:block;line-height:1.1}'
+   +'.stat .l{font-size:12.5px;color:var(--text-muted);margin-top:7px;display:block}'
+   +'.n.lime{color:var(--lime)}.n.red{color:var(--red)}.n.teal{color:var(--teal)}.n.amber{color:var(--amber)}'
+   +'blockquote{border-left:2px solid var(--border);padding:2px 0 2px 16px;margin:14px 0;'
+   +'color:var(--text-primary);font-size:14.5px}'
+   +'blockquote cite{display:block;font-family:"Geist Mono",monospace;font-size:11px;'
+   +'color:var(--text-muted);font-style:normal;margin-top:7px;letter-spacing:.03em}'
+   +'blockquote a{color:var(--lime);text-decoration:none}'
+   +'ul.clean{list-style:none}ul.clean li{position:relative;padding-left:18px;color:var(--text-secondary);'
+   +'font-size:14.5px;margin-bottom:9px}'
+   +'ul.clean li::before{content:"";position:absolute;left:0;top:9px;width:5px;height:5px;'
+   +'border-radius:50%;background:var(--text-muted)}ul.clean li:last-child{margin-bottom:0}'
+   +'.acc{border-left:2px solid var(--lime)}.acc.teal{border-left-color:var(--teal)}'
+   +'.acc.amber{border-left-color:var(--amber)}.acc.red{border-left-color:var(--red)}'
+   +'table{width:100%;border-collapse:collapse;font-size:14px}'
+   +'th{text-align:left;font-family:"Geist Mono",monospace;font-size:10.5px;letter-spacing:.09em;'
+   +'text-transform:uppercase;color:var(--text-muted);font-weight:500;padding:0 12px 10px 0;'
+   +'border-bottom:1px solid var(--border)}'
+   +'td{padding:12px 12px 12px 0;border-bottom:1px solid var(--border);color:var(--text-secondary);'
+   +'vertical-align:top}td:first-child{color:var(--text-primary)}tr:last-child td{border-bottom:none}'
+   +'.qgroup{margin-bottom:32px}.qhead{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}'
+   +'.qhead h3{margin:0}'
+   +'.badge{font-family:"Geist Mono",monospace;font-size:10px;letter-spacing:.08em;'
+   +'text-transform:uppercase;padding:3px 7px;border-radius:4px}'
+   +'.b-crit{background:rgba(240,86,74,.14);color:var(--red)}'
+   +'.b-op{background:rgba(240,144,74,.12);color:var(--amber)}'
+   +'.b-com{background:rgba(74,240,196,.12);color:var(--teal)}'
+   +'.q{display:flex;gap:13px;padding:13px 15px;background:var(--surface);border:1px solid var(--border);'
+   +'border-radius:8px;margin-bottom:8px;cursor:pointer;transition:border-color .2s var(--ease-out),opacity .2s}'
+   +'.q:hover{border-color:var(--border-hover)}.q.done{opacity:.4}.q.done .qt{text-decoration:line-through}'
+   +'.box{flex-shrink:0;width:16px;height:16px;border:1px solid var(--border-hover);border-radius:4px;'
+   +'margin-top:3px;position:relative;transition:all .2s var(--ease-out)}'
+   +'.q.done .box{background:var(--lime);border-color:var(--lime)}'
+   +'.q.done .box::after{content:"";position:absolute;left:5px;top:1.5px;width:4px;height:8px;'
+   +'border:solid #0a0a0a;border-width:0 2px 2px 0;transform:rotate(45deg)}'
+   +'.qt{font-size:14.5px;color:var(--text-primary)}'
+   +'.qw{font-size:13px;color:var(--text-muted);margin-top:5px}'
+   +'.counter{position:fixed;bottom:22px;right:22px;background:var(--surface-2);'
+   +'border:1px solid var(--border-hover);border-radius:8px;padding:9px 14px;'
+   +'font-family:"Geist Mono",monospace;font-size:12px;color:var(--text-secondary);z-index:60}'
+   +'.counter b{color:var(--lime)}'
+   +'.big{font-size:22px;font-weight:400;line-height:1.4;color:var(--text-primary);max-width:680px}'
+   +'.note{font-size:13px;color:var(--text-muted);margin-top:10px;font-family:"Geist Mono",monospace;line-height:1.5}'
+   +'.divider{height:1px;background:var(--border);margin:36px 0}';
+}
+
+// Arma el HTML a partir del JSON que devuelve la IA. Si una seccion no vino,
+// no se dibuja: un brief con titulos vacios se lee como que falto informacion
+// cuando en realidad no habia nada que decir de eso.
+function _briefHtml(d, c, llamadas){
+  var E=esc;
+  var q=function(x){
+    if(!x||!x.texto) return '';
+    var cita=[x.quien,x.llamada,x.momento].filter(Boolean).join(' \u00b7 ');
+    var ll=(llamadas||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
+    var link='';
+    if(ll&&ll.url&&x.momento){
+      var p=String(x.momento).split(':');
+      var seg=(p.length===2)?(parseInt(p[0],10)*60+parseInt(p[1],10)):0;
+      if(seg) link=ll.url+(ll.url.indexOf('?')>=0?'&':'?')+'timestamp='+seg;
+    }
+    return '<blockquote>'+E(x.texto)
+      +(cita?('<cite>'+(link?('<a href="'+E(link)+'" target="_blank" rel="noopener">'+E(cita)+'</a>')
+        :E(cita))+'</cite>'):'')
+      +'</blockquote>';
+  };
+  var lista=function(a){
+    if(!a||!a.length) return '';
+    return '<ul class="clean">'+a.map(function(x){ return '<li>'+E(x)+'</li>'; }).join('')+'</ul>';
+  };
+  var card=function(t,cuerpo,acc){
+    if(!cuerpo) return '';
+    return '<div class="card'+(acc?(' acc '+acc):' acc')+'">'
+      +(t?('<h3>'+E(t)+'</h3>'):'')+cuerpo+'</div>';
+  };
+  var sec=function(t,cuerpo){ return cuerpo?('<h2>'+E(t)+'</h2>'+cuerpo):''; };
+
+  // --- p1: el cliente
+  var p1=sec('Qué es y de dónde viene',
+      card(d.producto&&d.producto.titulo, ((d.producto&&d.producto.texto)?('<p>'+E(d.producto.texto)+'</p>'):'')
+        +((d.producto&&d.producto.citas||[]).map(q).join('')) ))
+    +sec('Números de la operación',
+      (d.numeros&&d.numeros.length)
+        ?('<div class="grid g3">'+d.numeros.map(function(n){
+            return '<div class="stat"><span class="n '+(n.color||'')+'">'+E(n.valor)+'</span>'
+              +'<span class="l">'+E(n.rotulo)+'</span></div>';
+          }).join('')+'</div>'):'')
+    +sec('Situación', card(null, ((d.situacion&&d.situacion.texto)?('<p>'+E(d.situacion.texto)+'</p>'):'')
+        +lista(d.situacion&&d.situacion.puntos)
+        +((d.situacion&&d.situacion.citas||[]).map(q).join('')), 'amber'))
+    +sec('Temperatura', card(d.temperatura&&d.temperatura.titulo,
+        ((d.temperatura&&d.temperatura.texto)?('<p>'+E(d.temperatura.texto)+'</p>'):'')
+        +lista(d.temperatura&&d.temperatura.senales), 'red'));
+
+  // --- p2: donde esta parado
+  var p2=sec('Qué intentó y cómo le fue',
+      (d.intentos&&d.intentos.length)
+      ?('<table><thead><tr><th style="width:26%">Intento</th><th style="width:38%">Qué pasó</th>'
+        +'<th>Lectura</th></tr></thead><tbody>'
+        +d.intentos.map(function(x){
+          return '<tr><td>'+E(x.intento)+'</td><td>'+E(x.resultado)+'</td><td>'+E(x.lectura||'')+'</td></tr>';
+        }).join('')+'</tbody></table>'):'')
+    +sec('Su lectura del problema', card(null,
+        ((d.lecturaPropia&&d.lecturaPropia.citas||[]).map(q).join(''))
+        +((d.lecturaPropia&&d.lecturaPropia.texto)?('<p>'+E(d.lecturaPropia.texto)+'</p>'):'')))
+    +sec('Competencia y mercado', card(null,
+        ((d.mercado&&d.mercado.texto)?('<p>'+E(d.mercado.texto)+'</p>'):'')
+        +((d.mercado&&d.mercado.citas||[]).map(q).join(''))
+        +((d.mercado&&d.mercado.falta)?('<p class="note">'+E(d.mercado.falta)+'</p>'):''), 'teal'));
+
+  // --- p3: lo que no dijo
+  var p3=(d.contradiccion?('<h2>Lo que hay que resolver</h2>'
+      +'<div class="card acc red"><p class="big">'+E(d.contradiccion.titular)+'</p>'
+      +'<div class="divider"></div>'
+      +(d.contradiccion.texto?('<p>'+E(d.contradiccion.texto)+'</p>'):'')
+      +(d.contradiccion.queHacer?('<p><strong>Qué hacer con esto:</strong> '
+        +E(d.contradiccion.queHacer)+'</p>'):'')+'</div>'):'')
+    +sec('Activos ocultos', lista(d.activos))
+    +sec('Lo que evitó o no tiene', lista(d.faltantes))
+    +sec('Riesgos',
+      (d.riesgos&&d.riesgos.length)
+      ?('<table><thead><tr><th style="width:30%">Riesgo</th><th style="width:14%">Nivel</th>'
+        +'<th>Cómo mitigarlo</th></tr></thead><tbody>'
+        +d.riesgos.map(function(x){
+          var col=(x.nivel==='Alto')?'var(--red)':((x.nivel==='Medio')?'var(--amber)':'var(--text-muted)');
+          return '<tr><td>'+E(x.riesgo)+'</td><td style="color:'+col+'">'+E(x.nivel||'')+'</td>'
+            +'<td>'+E(x.mitigacion||'')+'</td></tr>';
+        }).join('')+'</tbody></table>'):'');
+
+  // --- p4: avatares
+  var p4=(d.avatares&&d.avatares.length)
+    ?('<p class="big" style="margin-bottom:28px">'+E(d.avataresNota||'Candidatos a validar. '
+      +'El objetivo es salir con uno priorizado, no con todos.')+'</p>'
+      +'<div class="grid g3">'+d.avatares.map(function(a,i){
+        var accs=['','teal','amber'];
+        return '<div class="card acc '+(accs[i%3])+'"><h3>'+(i+1)+' · '+E(a.nombre)+'</h3>'
+          +(a.base?('<p class="note" style="margin:6px 0 12px">Base: '+E(a.base)+'</p>'):'')
+          +(a.puntoA?('<p><strong>Punto A:</strong> '+E(a.puntoA)+'</p>'):'')
+          +(a.dolor?('<p><strong>Dolor urgente:</strong> '+E(a.dolor)+'</p>'):'')
+          +(a.objecion?('<p><strong>Objeción:</strong> '+E(a.objecion)+'</p>'):'')
+          +(a.nota?('<p class="note">'+E(a.nota)+'</p>'):'')
+        +'</div>';
+      }).join('')+'</div>'):'';
+
+  // --- p5: preguntas
+  var badge={critico:'b-crit', operativo:'b-op', comercial:'b-com'};
+  var p5=(d.preguntas&&d.preguntas.length)
+    ?(d.preguntas.map(function(g){
+        return '<div class="qgroup"><div class="qhead"><h3>'+E(g.grupo)+'</h3>'
+          +'<span class="badge '+(badge[String(g.tipo||'').toLowerCase()]||'b-com')+'">'
+          +E(g.tipo||'')+'</span></div>'
+          +(g.items||[]).map(function(x){
+            return '<div class="q" data-q><div class="box"></div><div>'
+              +'<div class="qt">'+E(x.pregunta)+'</div>'
+              +(x.porque?('<div class="qw">'+E(x.porque)+'</div>'):'')
+            +'</div></div>';
+          }).join('')
+        +'</div>';
+      }).join('')):'';
+
+  // --- p6: compromisos
+  var p6=sec('Lo que ya se acordó',
+      (d.compromisos&&d.compromisos.length)
+      ?('<table><thead><tr><th style="width:32%">Concepto</th><th>Acordado</th></tr></thead><tbody>'
+        +d.compromisos.map(function(x){
+          return '<tr><td>'+E(x.concepto)+'</td><td>'+E(x.acordado)+'</td></tr>';
+        }).join('')+'</tbody></table>'):'')
+    +sec('Entregables', (d.entregables&&(d.entregables.si||d.entregables.no))
+      ?('<div class="grid g2">'
+        +card('Lo que sí hacemos', lista(d.entregables.si))
+        +'<div class="card acc red"><h3>Lo que no</h3>'+lista(d.entregables.no)+'</div>'
+      +'</div>'):'')
+    +sec('Frases para tener presente',
+      (d.frasesClave&&d.frasesClave.length)
+      ?('<div class="card acc amber">'+d.frasesClave.map(q).join('')+'</div>'):'');
+
+  var tabs=[['El cliente',p1],['Dónde está parado',p2],['Lo que no dijo',p3],
+            ['Avatares',p4],['Preguntas',p5],['Compromisos',p6]]
+    .filter(function(t){ return t[1] && String(t[1]).trim(); });
+
+  return '<!DOCTYPE html><html lang="es-AR"><head><meta charset="UTF-8">'
+    +'<meta name="viewport" content="width=device-width,initial-scale=1">'
+    +'<title>Brief \u2014 '+E(c.name||'Cliente')+'</title>'
+    +'<link rel="preconnect" href="https://fonts.googleapis.com">'
+    +'<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    +'<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600'
+    +'&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">'
+    +'<style>'+_briefCSS()+'</style></head><body>'
+    +'<div class="wrap"><header>'
+      +'<div class="kicker">Brief interno \u00b7 '+E(d.kicker||'Preparaci\u00f3n de llamada')+'</div>'
+      +'<h1>'+E(d.titulo||c.name||'Cliente')
+        +(d.subtitulo?(' <span>\u2014 '+E(d.subtitulo)+'</span>'):'')+'</h1>'
+      +(d.resumen?('<p class="sub">'+E(d.resumen)+'</p>'):'')
+      +((d.pills&&d.pills.length)?('<div class="meta-row">'+d.pills.map(function(p){
+          return '<span class="pill'+(p.tipo==='hot'?' hot':(p.tipo==='warn'?' warn':''))+'">'
+            +E(p.texto)+'</span>';
+        }).join('')+'</div>'):'')
+      +((llamadas&&llamadas.length)?('<div class="links">'+llamadas.map(function(l,i){
+          return l.url?('<a class="lnk" href="'+E(l.url)+'" target="_blank" rel="noopener">'
+            +'<span class="lk">Call '+(i+1)+'</span>'+E(l.titulo)
+            +(l.fecha?(' \u00b7 '+E(l.fecha)):'')+'</a>'):'';
+        }).join('')+'</div>'):'')
+    +'</header></div>'
+    +'<nav><div class="tabs">'+tabs.map(function(t,i){
+        return '<button class="tab'+(i===0?' active':'')+'" data-p="p'+i+'">'+E(t[0])+'</button>';
+      }).join('')+'</div></nav>'
+    +'<div class="wrap">'+tabs.map(function(t,i){
+        return '<section class="panel'+(i===0?' active':'')+'" id="p'+i+'">'+t[1]+'</section>';
+      }).join('')+'</div>'
+    +((d.preguntas&&d.preguntas.length)
+      ?'<div class="counter"><b id="cdone">0</b> / <span id="ctotal">0</span> preguntas</div>':'')
+    +'<script>'
+    +'document.querySelectorAll(".tab").forEach(function(t){t.addEventListener("click",function(){'
+    +'document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});'
+    +'document.querySelectorAll(".panel").forEach(function(x){x.classList.remove("active")});'
+    +'t.classList.add("active");document.getElementById(t.dataset.p).classList.add("active");'
+    +'window.scrollTo({top:0,behavior:"smooth"});});});'
+    +'var qs=document.querySelectorAll("[data-q]");var ct=document.getElementById("ctotal");'
+    +'if(ct)ct.textContent=qs.length;'
+    // El tildado se guarda: el brief se usa durante la llamada y recargar sin
+    // querer no tiene que borrar lo que ya preguntaste.
+    +'var K="brief-"+location.pathname;'
+    +'var st={};try{st=JSON.parse(localStorage.getItem(K)||"{}")}catch(e){}'
+    +'function ref(){var d=document.getElementById("cdone");'
+    +'if(d)d.textContent=document.querySelectorAll("[data-q].done").length;}'
+    +'qs.forEach(function(q,i){if(st[i])q.classList.add("done");'
+    +'q.addEventListener("click",function(){q.classList.toggle("done");'
+    +'st[i]=q.classList.contains("done");'
+    +'try{localStorage.setItem(K,JSON.stringify(st))}catch(e){}ref();});});ref();'
+    +'<\/script></body></html>';
+}
+
+// Elegir las llamadas y disparar el analisis.
+function briefModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!localStorage.getItem('evold-anthropic-key')){
+    toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return;
+  }
+  var ll=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Brief de '+esc(c.name||'este cliente')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Lee las llamadas que elijas y arma un HTML para preparar la proxima: lo que dijo, '
+        +'lo que evito, avatares a validar, preguntas y lo que ya se le prometio.</div>'
+      +(ll.length
+        ?('<div onchange="briefContar()" style="max-height:280px;overflow-y:auto">'
+          +ll.map(function(x,i){
+            return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+              +'border-bottom:1px solid var(--border);cursor:pointer">'
+              +'<input type="checkbox" class="brf" value="'+i+'"'+(i<2?' checked':'')+'>'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+                +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.title||x.tipo||'Llamada')+'</span>'
+              +'<span style="font-size:11px;color:var(--text3)">'+esc(x.date||'')+'</span>'
+            +'</label>';
+          }).join('')+'</div>'
+          +'<div id="brf-n" style="font-size:11.5px;color:var(--text3);margin-top:10px"></div>')
+        :('<div style="font-size:12.5px;color:var(--amberx);line-height:1.6;padding:10px 0">'
+          +'Este cliente no tiene llamadas con transcripcion cargada.</div>'))
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +(ll.length?('<button id="brf-ok" class="btn btn-sm btn-primary" '
+          +'onclick="briefGenerar('+c.id+')">Armar el brief</button>'):'')
+      +'</div>'
+    +'</div></div>';
+  briefContar();
+}
+function briefContar(){
+  var n=document.querySelectorAll('.brf:checked').length;
+  var e=document.getElementById('brf-n');
+  if(!e) return;
+  // Con muchas llamadas la respuesta se diluye y ademas se corta por largo.
+  e.textContent = n>4 ? (n+' llamadas es mucho: el brief sale generico. Con dos o tres alcanza.')
+    : (n?(n+' seleccionada'+(n===1?'':'s')+'.'):'Elegi al menos una.');
+  e.style.color = n>4 ? 'var(--amberx)' : 'var(--text3)';
+}
+async function briefGenerar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var ll=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var idx=[].slice.call(document.querySelectorAll('.brf:checked')).map(function(e){ return +e.value; });
+  if(!idx.length){ toast('Elegi al menos una llamada'); return; }
+  var e=document.getElementById('brf-n');
+  var ok=document.getElementById('brf-ok');
+  var decir=function(t,col){ if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; } };
+  if(ok){ ok.disabled=true; ok.textContent='Analizando...'; }
+  var llamadas=idx.map(function(i){
+    var x=ll[i];
+    return { titulo:x.title||x.tipo||'Llamada', fecha:x.date||'', url:x.url||x.link||'',
+             texto:String(x.transcript||'').slice(0,50000) };
+  });
+  decir('Leyendo '+llamadas.length+' llamada'+(llamadas.length===1?'':'s')+'. Tarda un minuto.');
+  var esquema='{"kicker":"","titulo":"","subtitulo":"","resumen":"",'
+    +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
+    +'"producto":{"titulo":"","texto":"","citas":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]},'
+    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|"}],'
+    +'"situacion":{"texto":"","puntos":[""],"citas":[]},'
+    +'"temperatura":{"titulo":"","texto":"","senales":[""]},'
+    +'"intentos":[{"intento":"","resultado":"","lectura":""}],'
+    +'"lecturaPropia":{"texto":"","citas":[]},'
+    +'"mercado":{"texto":"","citas":[],"falta":""},'
+    +'"contradiccion":{"titular":"","texto":"","queHacer":""},'
+    +'"activos":[""],"faltantes":[""],'
+    +'"riesgos":[{"riesgo":"","nivel":"Alto|Medio|Bajo","mitigacion":""}],'
+    +'"avataresNota":"","avatares":[{"nombre":"","base":"","puntoA":"","dolor":"","objecion":"","nota":""}],'
+    +'"preguntas":[{"grupo":"","tipo":"critico|operativo|comercial","items":[{"pregunta":"","porque":""}]}],'
+    +'"compromisos":[{"concepto":"","acordado":""}],'
+    +'"entregables":{"si":[""],"no":[""]},'
+    +'"frasesClave":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]}';
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':localStorage.getItem('evold-anthropic-key'),
+               'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
+        'Sos parte de una agencia de marketing. Te paso transcripciones de llamadas con un cliente '
+        +'y necesito un brief interno para preparar la proxima reunion.\n\n'
+        +'COMO TRABAJAR:\n'
+        +'- Distingui lo que el cliente DIJO de lo que se INFIERE. No presentes una inferencia como un hecho.\n'
+        +'- Marca explicitamente lo que FALTA: los huecos son la parte mas util del brief.\n'
+        +'- Las citas tienen que ser textuales y con el momento (mm:ss) donde aparecen.\n'
+        +'- Si el cliente se contradijo, decilo. Si dijo dos cosas incompatibles, ponelas juntas.\n'
+        +'- Las preguntas van agrupadas y ordenadas: primero las que bloquean el trabajo.\n'
+        +'- Los avatares son HIPOTESIS a validar, no conclusiones. Deci en que se basa cada uno.\n'
+        +'- En "compromisos" va solo lo que YA se le prometio en las llamadas. Nada nuevo.\n'
+        +'- Si una seccion no tiene material real, devolvela vacia. Preferible corto y cierto.\n'
+        +'- Escribi en rioplatense, directo, sin adjetivos de mas.\n\n'
+        +'Devolve SOLO este JSON, sin markdown ni explicacion:\n'+esquema
+        +'\n\nCLIENTE: '+(c.name||'')+(c.industry?(' \u00b7 '+c.industry):'')
+        +'\n\nLLAMADAS:\n'+JSON.stringify(llamadas)}]})
+    });
+    var d=await r.json();
+    if(d.error){ decir('La IA respondio con error: '+(d.error.message||''),'var(--redx)');
+      if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; } return; }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+    if(a<0||z<=a){ decir('No pude leer la respuesta.','var(--redx)');
+      if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; } return; }
+    var datos=JSON.parse(txt.slice(a,z+1));
+    var html=_briefHtml(datos, c, llamadas);
+    var el=document.createElement('a');
+    el.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+    el.download='brief-'+String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-')
+      +'-'+new Date().toISOString().split('T')[0]+'.html';
+    el.click();
+    setTimeout(function(){ URL.revokeObjectURL(el.href); },1500);
+    closeModal();
+    toast('Brief listo. Se bajo el HTML.');
+  }catch(err){
+    decir('Error: '+err.message,'var(--redx)');
+    if(ok){ ok.disabled=false; ok.textContent='Armar el brief'; }
+  }
+}
+
 function sopBorrar(id){
   var s=_sop(id); if(!s) return;
   var u=_sopUsos(id);
