@@ -20193,7 +20193,7 @@ function fichaEditar(clientId, campo){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var etq={name:'Nombre de la empresa', contacto:'Contacto', email:'Email',
-           phone:'Telefono', industry:'Industria',
+           phone:'Telefono', industry:'Industria', web:'Sitio web',
            locid:'Location ID de la subcuenta de GHL'}[campo]||campo;
   var actual=(campo==='locid')?((c.ghl&&c.ghl.locationId)||''):(c[campo]||'');
   var pista=(campo==='phone')?' (con codigo de pais: +54 9 11 ...)'
@@ -20201,7 +20201,8 @@ function fichaEditar(clientId, campo){
   pedirTexto({
     titulo:etq,
     ayuda:(campo==='phone')?'Con codigo de pais (+54 9 11 ...), si no el boton de WhatsApp no se activa.'
-         :((campo==='locid')?'Podes pegar la URL entera de la subcuenta: el id sale de ahi.':''),
+         :((campo==='locid')?'Podes pegar la URL entera de la subcuenta: el id sale de ahi.'
+         :((campo==='web')?'El sitio institucional. De aca se lee la marca para el quiz.':'')),
     valor:actual,
     onOk:function(v){ _fichaGuardar(clientId, campo, v); }
   });
@@ -20210,6 +20211,11 @@ function _fichaGuardar(clientId, campo, v){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   v=String(v||'').trim();
+  if(campo==='web'){
+    // Sin http no se puede visitar, y con la barra final se duplica en los links.
+    if(v && !/^https?:\/\//i.test(v)) v='https://'+v;
+    v=v.replace(/\/$/,'');
+  }
   if(campo==='locid'){
     // Lo natural es copiar la URL de la subcuenta, no cazar el id adentro:
     // si viene una URL, se saca solo el tramo que sigue a /location/.
@@ -20547,6 +20553,9 @@ function _fichaHtml(c){
   poner('Email','email', c.email, true);
   poner('Telefono','phone', c.phone, true);
   poner('Industria','industry', c.industry);
+  // De aca sale el sitio que se lee para la marca del quiz y para investigar la
+  // landing. Sin esto habia que adivinarlo desde el nombre del cliente.
+  poner('Sitio web','web', c.web, true);
   // Antes solo se dibujaba si ya tenia id, asi que un cliente sin subcuenta no
   // tenia donde vincularla y los botones de invitar no aparecian nunca.
   var g=(c.ghl&&c.ghl.locationId)||'';
@@ -22879,9 +22888,16 @@ async function quizLeerSitio(clientId){
   var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
   if(!apiKey){ decir('Falta la clave de Anthropic en Configuracion de agencia.','var(--redx)'); return; }
   // Los links que ya tiene el cliente cargados en Material, mas su nombre.
+  // El sitio del cliente primero. Sin el, lo unico que queda es el nombre, y
+  // buscar "Fede Jose Tanco" en la web puede traer cualquier cosa.
   var links=[];
-  (c.material||[]).forEach(function(m){ if(m&&m.url) links.push(m.url); });
   if(c.web) links.push(c.web);
+  (c.material||[]).forEach(function(m){ if(m&&m.url) links.push(m.url); });
+  if(!c.web){
+    if(!confirm('Este cliente no tiene el sitio web cargado.\n\nSin eso solo puedo buscar por '
+      +'el nombre "'+(c.name||'')+'", y puede traer una empresa que no es.\n\n'
+      +'Conviene cargarlo en Material > Ficha del cliente. Buscar igual?')) return;
+  }
   var btn=document.getElementById('qm-leer');
   if(btn){ btn.disabled=true; btn.textContent='Leyendo...'; }
   decir('Entrando al sitio de '+esc(c.name||'')+'. Tarda medio minuto.');
@@ -22893,9 +22909,13 @@ async function quizLeerSitio(clientId){
       body:JSON.stringify({model:'claude-sonnet-5',max_tokens:3000,
         tools:[{type:'web_search_20250305',name:'web_search',max_uses:6}],
         messages:[{role:'user',content:
-          'Entra al sitio de la empresa "'+(c.name||'')+'"'
-          +(c.industry?(', del rubro '+c.industry):'')+'.'
-          +(links.length?(' Links conocidos: '+links.slice(0,6).join(', ')+'.'):'')
+          (c.web
+            ? ('Entra al sitio '+c.web+' de la empresa "'+(c.name||'')+'".')
+            : ('Buscá el sitio de la empresa "'+(c.name||'')+'"'
+               +(c.industry?(', del rubro '+c.industry):'')
+               +'. Si no estas seguro de haber encontrado la empresa correcta, deci que no '
+               +'la encontraste en vez de traer datos de otra.'))
+          +(links.length>1?(' Otros links: '+links.slice(1,6).join(', ')+'.'):'')
           +'\n\nNecesito replicar su identidad visual en una pagina nueva. Sacá del sitio:\n'
           +'1. El color de acento: el de los botones principales y los links. En hexadecimal.\n'
           +'2. Si el sitio es de fondo claro u oscuro.\n'
