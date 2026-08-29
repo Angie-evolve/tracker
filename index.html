@@ -23821,6 +23821,58 @@ function _quizPasoTpl(c){
     +'<div style="max-width:230px;margin-top:10px">'+_tplPreview(act.html||'', 120)+'</div>'
     +_tplSlotsHtml(act.html||'');
 }
+// Los archivos propios de este cliente para los requisitos del diseno elegido.
+function quizReqsModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=quizTplDe(c);
+  var r=t?tplReqs(t):[];
+  if(!r.length){ toast('Este diseno no pide nada.'); return; }
+  var val=(c.quiz&&c.quiz.reqs)||{};
+  var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:var(--font);outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Archivos de '+esc(c.name||'')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'El diseno <b style="color:var(--text2)">'+esc(t.nombre||'')+'</b> los pide. '
+        +'Al generar, el archivo de la plantilla se cambia por el que pongas aca.</div>'
+      +r.map(function(x){
+        return '<div style="margin-bottom:14px">'
+          +'<div style="font-size:12.5px;color:var(--text)">'+esc(x.l)+'</div>'
+          +(x.ayuda?('<div style="font-size:11px;color:var(--text3);margin:3px 0 6px;'
+            +'line-height:1.5">'+esc(x.ayuda)+'</div>'):'<div style="height:5px"></div>')
+          +'<input class="qrq" data-k="'+esc(x.k)+'" style="'+est+'" '
+            +'placeholder="URL del archivo del cliente" value="'+esc(val[x.k]||'')+'">'
+          +(x.buscar?('<div style="font-size:10.5px;color:var(--text3);margin-top:4px">'
+            +'Reemplaza a <span class="mono">'+esc(x.buscar)+'</span></div>'):'')
+        +'</div>';
+      }).join('')
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.55;padding-top:10px;'
+        +'border-top:1px solid var(--border)">'
+        +'Tienen que ser URLs publicas: el quiz corre en el navegador del lead. '
+        +'Subilas a Media Storage de GHL y pega el link.</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizReqsGuardar('+c.id+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizReqsGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var o={};
+  [].slice.call(document.querySelectorAll('.qrq')).forEach(function(x){
+    var v=String(x.value||'').trim();
+    if(v) o[x.getAttribute('data-k')]=v;
+  });
+  c.quiz=c.quiz||{}; c.quiz.reqs=o;
+  save(); closeModal(); dibujarQuiz(c);
+  toast('Guardado.');
+}
 function quizConfigHtml(c){
   var cfg=_quizCfg(c), q=c.quiz, g=c.ghl||{};
   var paso=function(n,titulo,hecho,texto,botones){
@@ -23892,7 +23944,27 @@ function quizConfigHtml(c){
       b(quizMarca(c).acento?'Editar':'Cargar la marca','quizMarcaModal('+c.id+')',
         !quizMarca(c).acento))
     +paso(7,'El diseno del quiz', !!quizTpl(c), _quizPasoTpl(c), '')
-    +paso(8,'Generar y publicar', false,
+    +(function(){
+      var t=quizTplDe(c);
+      var r=t?tplReqs(t):[];
+      if(!r.length) return '';
+      var val=(c.quiz&&c.quiz.reqs)||{};
+      var listos=r.filter(function(x){ return String(val[x.k]||'').trim(); }).length;
+      return paso(8,'Lo que pide este diseno', listos===r.length,
+        'El diseno <b style="color:var(--text2)">'+esc(t.nombre||'')+'</b> trae archivos que son '
+        +'de otro cliente. Hay que reemplazarlos o el quiz sale con el material equivocado.'
+        +'<div style="margin-top:9px">'+r.map(function(x){
+          var v=String(val[x.k]||'').trim();
+          return '<div style="display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px">'
+            +'<span style="color:'+(v?'var(--accent)':'var(--amberx)')+';width:14px;flex:none">'
+              +(v?'&#10003;':'&bull;')+'</span>'
+            +'<span style="flex:1;color:var(--text2)">'+esc(x.l)
+              +(v?'':(x.ayuda?(' <span style="color:var(--text3)">&mdash; '+esc(x.ayuda)+'</span>'):''))
+            +'</span></div>';
+        }).join('')+'</div>',
+        b(listos?'Cambiar los archivos':'Cargar los archivos','quizReqsModal('+c.id+')', !listos));
+    })()
+    +paso(9,'Generar y publicar', false,
       'Sale el archivo con el CONFIG de este cliente. Se pega en el step del embudo y se publica. '
       +'Guardar no alcanza.',
       (q&&quizTpl(c))?b('Generar el quiz','quizGenerar('+c.id+')',true)
@@ -24191,6 +24263,34 @@ function _tplSlotsHtml(html){
         +(o[x.k]?'':'sin ')+esc(x.l.toLowerCase())+'</span>';
     }).join('')+'</div>';
 }
+// Requisitos de un diseno: archivos que trae y que hay que reemplazar por los
+// del cliente. El caso que lo motivo es un fondo generado con IA: si nadie lo
+// cambia, el quiz sale con el fondo de otro cliente y parece que anda.
+function tplReqs(t){ if(!Array.isArray(t.reqs)) t.reqs=[]; return t.reqs; }
+// Busca en la plantilla los archivos externos: son los candidatos a requisito.
+function _tplMedios(html){
+  var out=[], vis={};
+  var re=/(?:src|href|url\()\s*=?\s*["']?([^"')\s]+\.(?:mp4|webm|mov|png|jpe?g|webp|svg|gif))/gi, m;
+  while((m=re.exec(String(html||')')))!==null){
+    var u=m[1];
+    if(/^data:/.test(u)) continue;
+    if(vis[u]) continue; vis[u]=1;
+    out.push(u);
+  }
+  return out;
+}
+function _tplReqsHtml(t, c){
+  var r=tplReqs(t);
+  if(!r.length) return '';
+  var val=(c&&c.quiz&&c.quiz.reqs)||{};
+  var faltan=r.filter(function(x){ return !String(val[x.k]||'').trim(); });
+  return '<div style="font-size:10.5px;margin-top:6px;line-height:1.5;color:'
+    +(faltan.length?'var(--amberx)':'var(--accent)')+'">'
+    +(faltan.length?('Requiere '+faltan.length+' archivo'+(faltan.length===1?'':'s')
+      +' propio'+(faltan.length===1?'':'s'))
+      :('Requisitos cubiertos'))
+    +'</div>';
+}
 function _tplPreview(html, alto){
   var solo=String(html).replace(/<script[\s\S]*?<\/script>/gi,'');
   return '<div style="position:relative;height:'+alto+'px;overflow:hidden;'
@@ -24230,8 +24330,15 @@ function quizTplModal(clientId){
                 +'text-overflow:ellipsis;white-space:nowrap">'+esc(t.nombre||'Sin nombre')+'</div>'
               +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
                 +Math.round(t.html.length/1024)+' KB'
-                +(usa?' &middot; <span style="color:var(--accent)">en uso</span>':'')+'</div>'
+                +(usa?' &middot; <span style="color:var(--accent)">en uso</span>':'')
+                +(function(){
+                    if(!t.deId) return '';
+                    var p=l.filter(function(x){ return x.id===t.deId; })[0];
+                    return p?(' &middot; de '+esc(p.nombre||'')):'';
+                  })()
+                +'</div>'
               +_tplSlotsHtml(t.html)
+              +_tplReqsHtml(t, c)
               +'<div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">'
                 +(c&&!usa?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
                   +'onclick="quizTplUsar('+(c?c.id:0)+','+t.id+',1)">Usar</button>'):'')
@@ -24239,6 +24346,16 @@ function quizTplModal(clientId){
                   +'onclick="quizTplVer('+t.id+')">Ver</button>'
                 +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
                   +'onclick="quizTplRenombrar('+t.id+')">Nombre</button>'
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+                  +'onclick="quizTplDuplicar('+t.id+','+(c?c.id:0)+')" '
+                  +'title="Copiarla para editarla sin tocar la original">Duplicar</button>'
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+                  +'onclick="quizTplEditar('+t.id+')" title="Editar el HTML">Editar</button>'
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px'
+                  +(tplReqs(t).length?'':';color:var(--text3)')+'" '
+                  +'onclick="quizTplReqsModal('+t.id+','+(c?c.id:0)+')" '
+                  +'title="Archivos que hay que reemplazar por cada cliente">Requisitos'
+                  +(tplReqs(t).length?(' '+tplReqs(t).length):'')+'</button>'
                 +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;'
                   +'color:var(--redx)" onclick="quizTplBorrar('+t.id+')">&times;</button>'
               +'</div>'
@@ -24284,6 +24401,149 @@ function quizTplVer(tplId){
   // sistema del cliente al que pertenezca esa plantilla.
   w.document.write(String(t.html).replace(/<script[\s\S]*?<\/script>/gi,''));
   w.document.close();
+}
+// Duplicar en vez de editar la original: los disenos se usan en varios
+// clientes, y tocar uno para probar algo rompe los que ya estaban publicados.
+function quizTplReqsModal(tplId, clientId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var r=tplReqs(t);
+  var medios=_tplMedios(t.html);
+  var est='width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px;'
+    +'font-family:var(--font);outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay">'
+    +'<div class="modal" style="max-width:600px;max-height:86vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Requisitos de '+esc(t.nombre||'')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'Archivos que este diseno trae y que hay que reemplazar por los del cliente. '
+        +'Si no se reemplazan, el quiz sale con el material de otro y parece que funciona.</div>'
+      +(r.length?r.map(function(x,i){
+        return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+          +'padding:11px 13px;margin-bottom:8px">'
+          +'<div style="display:flex;gap:8px;align-items:center">'
+            +'<span style="flex:1;font-size:13px;color:var(--text)">'+esc(x.l||'')+'</span>'
+            +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;color:var(--redx)" '
+              +'onclick="quizTplReqBorrar('+t.id+','+i+','+(clientId||0)+')">&times;</button>'
+          +'</div>'
+          +(x.ayuda?('<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">'
+            +esc(x.ayuda)+'</div>'):'')
+          +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px">Reemplaza en el HTML: '
+            +'<span class="mono">'+esc(x.buscar||'(nada)')+'</span></div>'
+        +'</div>';
+      }).join(''):'<div style="font-size:12.5px;color:var(--text3);padding:6px 0">'
+        +'Este diseno no tiene requisitos: se puede usar tal cual.</div>')
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:16px 0 6px">Sumar uno</div>'
+      +'<input id="qr-l" style="'+est+'" placeholder="Que es. Ej: Fondo en video (Seedance)">'
+      +'<input id="qr-a" style="'+est+';margin-top:7px" '
+        +'placeholder="Como se consigue. Ej: generar en Seedance, 8s, vertical y horizontal">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:12px 0 5px">Que reemplaza</div>'
+      +(medios.length
+        ?('<select id="qr-b" style="'+est+'">'
+          +'<option value="">Elegi el archivo que trae la plantilla</option>'
+          +medios.map(function(u){ return '<option value="'+esc(u)+'">'+esc(u)+'</option>'; }).join('')
+          +'</select>'
+          +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+          +'Encontre '+medios.length+' archivo'+(medios.length===1?'':'s')+' en el HTML. '
+          +'Al generar, el que elijas se cambia por el del cliente.</div>')
+        :('<input id="qr-b" style="'+est+'" placeholder="Texto exacto a reemplazar en el HTML">'
+          +'<div style="font-size:11px;color:var(--amberx);margin-top:5px;line-height:1.5">'
+          +'No encontre archivos externos en esta plantilla. Podes escribir a mano el texto '
+          +'que hay que reemplazar.</div>'))
+      +'<div id="qr-err" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">'
+        +'<button class="btn btn-sm" onclick="quizTplModal('+(clientId||0)+')">Volver</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizTplReqAgregar('+t.id+','
+          +(clientId||0)+')">Agregar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizTplReqAgregar(tplId, clientId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var v=function(i){ return String((document.getElementById(i)||{}).value||'').trim(); };
+  var e=document.getElementById('qr-err');
+  var l=v('qr-l');
+  if(!l){ if(e) e.textContent='Poné que es.'; return; }
+  tplReqs(t).push({ k:'r'+Date.now(), l:l, ayuda:v('qr-a'), buscar:v('qr-b') });
+  save(); quizTplReqsModal(tplId, clientId);
+  toast('Requisito agregado.');
+}
+function quizTplReqBorrar(tplId, i, clientId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  tplReqs(t).splice(i,1);
+  save(); quizTplReqsModal(tplId, clientId);
+}
+function quizTplDuplicar(tplId, clientId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var base=String(t.nombre||'Diseno');
+  // "Hollywood copia 2" y no "Hollywood copia copia".
+  var m=base.match(/^(.*?)\s+copia(?:\s+(\d+))?$/);
+  if(m) base=m[1];
+  var n=1, nombre;
+  do{ n++; nombre=base+' copia'+(n>2?(' '+(n-1)):''); }
+  while(quizTpls().some(function(x){ return x.nombre===nombre; }));
+  var nueva={ id:Date.now(), nombre:nombre, html:t.html, at:new Date().toISOString(),
+              deId:t.id };
+  DB.quizTpls.push(nueva);
+  save();
+  quizTplModal(clientId||undefined);
+  toast('"'+nombre+'" creada. Editala sin miedo: la original queda intacta.');
+}
+function quizTplEditar(tplId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var usan=(DB.clients||[]).filter(function(c){ return c.quiz&&c.quiz.tplId===tplId; });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay">'
+    +'<div class="modal" style="max-width:720px;max-height:88vh;display:flex;flex-direction:column">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">'
+        +'Editar '+esc(t.nombre||'')+'</div>'
+      +(usan.length
+        ?('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;margin-bottom:10px">'
+          +'La usan '+usan.length+' cliente'+(usan.length===1?'':'s')+': '
+          +esc(usan.map(function(c){return c.name;}).join(', '))
+          +'. Los cambios les llegan al volver a generar. Si es una prueba, duplicala primero.</div>')
+        :('<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
+          +'No la usa ningun cliente todavia.</div>'))
+      +'<textarea id="qte-txt" spellcheck="false" style="flex:1;min-height:340px;width:100%;'
+        +'box-sizing:border-box;padding:11px 13px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:11px;'
+        +'font-family:ui-monospace,Menlo,monospace;line-height:1.6;outline:none;resize:vertical">'
+        +esc(t.html)+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:7px;line-height:1.5">'
+        +'Para que el tracker sepa donde va cada cosa, poneles id a los lugares: '
+        +'<span class="mono">q-logo</span>, <span class="mono">q-foto</span>, '
+        +'<span class="mono">q-prueba</span>, <span class="mono">q-testimonios</span>, '
+        +'<span class="mono">q-redes</span>.</div>'
+      +'<div id="qte-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">'
+        +'<button class="btn btn-sm" onclick="quizTplModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizTplEditarGuardar('+t.id+')">'
+          +'Guardar cambios</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizTplEditarGuardar(tplId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var txt=String((document.getElementById('qte-txt')||{}).value||'').trim();
+  var e=document.getElementById('qte-err');
+  if(!txt){ if(e) e.textContent='Quedo vacio.'; return; }
+  if(txt.indexOf(QUIZ_MARCA_INI)<0 || txt.indexOf(QUIZ_MARCA_FIN)<0){
+    if(e) e.textContent='Se perdieron las marcas de CONFIG y ESTADO: sin ellas no se puede '
+      +'reemplazar el bloque de cada cliente.'; return;
+  }
+  if(txt.indexOf('</html>')<0){ if(e) e.textContent='No termina en </html>.'; return; }
+  t.html=txt; t.editadoAt=new Date().toISOString();
+  save(); quizTplModal();
+  toast('Guardado. Los clientes que la usan lo reciben al volver a generar.');
 }
 function quizTplRenombrar(tplId){
   var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
@@ -24383,6 +24643,24 @@ function quizGenerar(clientId){
   var html=tpl.slice(0,i)+fus.texto+tpl.slice(f);
   var mar=_quizAplicarMarca(html, c);
   html=mar.html;
+  // Los requisitos del diseno: si falta uno, el archivo sale con el material
+  // de otro cliente y no da ningun error. Es lo mas parecido a publicar el
+  // fondo de LogicalMinds en la pagina de otro.
+  var tObj=quizTplDe(c), reqs=tObj?tplReqs(tObj):[];
+  var val=(q.reqs)||{};
+  var sinCubrir=[];
+  reqs.forEach(function(x){
+    var v=String(val[x.k]||'').trim();
+    if(!v){ sinCubrir.push(x.l); return; }
+    if(!x.buscar) return;
+    if(html.indexOf(x.buscar)<0){
+      avisos.push('"'+x.l+'": no encontre '+x.buscar+' en la plantilla. Cambio el diseno?');
+      return;
+    }
+    html=html.split(x.buscar).join(v);
+  });
+  if(sinCubrir.length) avisos.push('Sin reemplazar: '+sinCubrir.join(', ')
+    +'. El archivo sale con el material del cliente anterior y no va a dar ningun error.');
   if(mar.sin.length) avisos.push('La plantilla no tiene donde poner: '+mar.sin.join(', ')
     +'. Esa parte queda como estaba.');
   if(!quizMarca(c).acento) avisos.push('Sin marca cargada: el quiz sale con los colores y la '
