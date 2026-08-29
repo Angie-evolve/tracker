@@ -22081,6 +22081,9 @@ function _quizCfg(c){
            promesasAb:ab.fieldId||q.promesasAb||'', sf:q.sf };
 }
 // Mismo parseo que la torre: el bloque que escupe el instalador.
+// Se guarda el bloque tal cual lo escupe el instalador, con sus comentarios.
+// Reservarlo entero y no re-serializarlo evita perder los "// reusa ..." que
+// marcan los campos prestados, que es informacion que hace falta despues.
 function _quizParsear(txt){
   var uno=function(re){ var m=String(txt).match(re); return m?m[1].trim():''; };
   var cfg={ key:uno(/GHL_KEY\s*=\s*['"]([^'"]+)['"]/),
@@ -22089,6 +22092,13 @@ function _quizParsear(txt){
             pipe:uno(/GHL_PIPE\s*=\s*['"]([^'"]+)['"]/),
             promesasAb:uno(/FIELD_AB\s*=\s*['"]([^'"]+)['"]/),
             sf:{} };
+  cfg.raw=String(txt).trim();
+  cfg.wa=uno(/WA_URL\s*=\s*['"]([^'"]+)['"]/);
+  cfg.agenda=uno(/AGENDA_URL\s*=\s*['"]([^'"]+)['"]/);
+  // Ids sueltos del bloque: sirven para el chequeo cruzado entre clientes.
+  cfg.ids=(String(txt).match(/'[A-Za-z0-9-]{18,40}'/g)||[])
+    .map(function(x){ return x.slice(1,-1); })
+    .filter(function(x){ return !/^pit-/.test(x); });
   var b=String(txt).match(/SF\s*=\s*\{([\s\S]*?)\}/);
   if(b){
     var pares=b[1].match(/(\w+)\s*:\s*['"]([^'"]+)['"]/g)||[];
@@ -22167,7 +22177,8 @@ function quizGuardarCfg(clientId){
   c.ghl=c.ghl||{};
   if(cfg.key) c.ghl.token=cfg.key;
   if(cfg.loc) c.ghl.locationId=cfg.loc;
-  c.quiz={ pipe:cfg.pipe, sf:cfg.sf };
+  c.quiz={ pipe:cfg.pipe, sf:cfg.sf, raw:cfg.raw, ids:cfg.ids,
+           wa:cfg.wa, agenda:cfg.agenda };
   save(); closeModal();
   S._middleCargado=null;
   if(S._hoja==='middle') dibujarMiddle(c);
@@ -22256,13 +22267,19 @@ function quizHtml(c){
       +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;max-width:600px">'
       +'Este cliente todavia no tiene el quiz conectado. Pegá el bloque CONFIG que devuelve '
       +'el instalador y vas a ver el embudo aca, junto al gasto de Meta.</div>'
-      +'<button class="btn btn-sm btn-primary" style="margin-top:14px" '
-      +'onclick="quizConfigModal('+c.id+')">Conectar el quiz</button>';
+      +'<div style="display:flex;gap:8px;margin-top:14px">'
+      +'<button class="btn btn-sm btn-primary" onclick="quizConfigModal('+c.id+')">Conectar el quiz</button>'
+      +'<button class="btn btn-sm" onclick="quizTplModal()">'
+      +(quizTpl()?'Ver la plantilla':'Cargar la plantilla')+'</button></div>';
   }
   var d=_QUIZ[c.id];
-  head+='<button class="btn btn-sm" onclick="quizCargar('+c.id+')">'
+  head+='<button class="btn btn-sm btn-primary" onclick="quizGenerar('+c.id+')" '
+      +'title="Baja el quiz con el CONFIG de este cliente">Generar el quiz</button>'
+    +'<button class="btn btn-sm" onclick="quizCargar('+c.id+')">'
       +(d&&d.cargando?'Cargando...':'Actualizar')+'</button>'
     +'<button class="btn btn-sm" onclick="quizConfigModal('+c.id+')">Configuracion</button>'
+    +'<button class="btn btn-sm" onclick="quizTplModal()" title="El HTML base, uno para todos">'
+      +'Plantilla</button>'
     +(d&&d.at?('<span style="font-size:10.5px;color:var(--text3)">'
       +d.at.toLocaleTimeString('es-AR')+'</span>'):'')
     +'</div>';
@@ -22347,6 +22364,147 @@ function quizHtml(c){
       +'<span>Etapa</span><span style="text-align:right">Personas</span>'
       +'<span style="text-align:right">Del total</span><span style="text-align:right">Fuga</span></div>'
     +filas+'</div>'+nota;
+}
+// ---- Generar el archivo del quiz ----------------------------------------
+// La plantilla se guarda una vez y vale para todos: lo unico que cambia entre
+// clientes es el bloque CONFIG. Reemplazarlo a mano es donde nace el error mas
+// caro del SOP: un id del cliente anterior que sobrevive no falla, escribe en
+// la cuenta equivocada.
+function quizTpl(){ return DB.quizTpl||null; }
+var QUIZ_MARCA_INI='// ═══════════════ CONFIG ═══════════════';
+var QUIZ_MARCA_FIN='// ═══════════════ ESTADO ═══════════════';
+function quizTplModal(){
+  var t=quizTpl();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Plantilla del quiz</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Pegá el HTML de un quiz que ya funcione. Se guarda una sola vez: de ahi en mas, '
+        +'cada cliente sale con su propio bloque CONFIG puesto.'
+        +(t?('<br><b style="color:var(--text2)">Ya hay una cargada</b> de '
+          +Math.round(t.length/1024)+' KB. Pegar otra la reemplaza.'):'')
+      +'</div>'
+      +'<textarea id="qt-txt" spellcheck="false" placeholder="&lt;!DOCTYPE html&gt;..." '
+        +'style="width:100%;box-sizing:border-box;height:200px;padding:11px 13px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-size:11px;font-family:ui-monospace,Menlo,monospace;'
+        +'line-height:1.6;outline:none;resize:vertical"></textarea>'
+      +'<div id="qt-err" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizTplGuardar()">Guardar plantilla</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizTplGuardar(){
+  var txt=String((document.getElementById('qt-txt')||{}).value||'').trim();
+  var e=document.getElementById('qt-err');
+  var decir=function(m){ if(e) e.textContent=m; };
+  if(!txt){ decir('Pegá el HTML del quiz.'); return; }
+  // Sin las dos marcas no se puede saber donde termina el CONFIG, y reemplazar
+  // a ojo es peor que no reemplazar.
+  if(txt.indexOf(QUIZ_MARCA_INI)<0 || txt.indexOf(QUIZ_MARCA_FIN)<0){
+    decir('No encontre las marcas de CONFIG y ESTADO. La plantilla tiene que tenerlas para saber que reemplazar.');
+    return;
+  }
+  if(txt.indexOf('</html>')<0){
+    decir('El archivo no termina en </html>: se cortó al copiar. Pegalo completo.');
+    return;
+  }
+  DB.quizTpl=txt;
+  save(); closeModal();
+  S._middleCargado=null;
+  if(S._hoja==='middle'&&S._hojaCliente) dibujarMiddle(S._hojaCliente);
+  toast('Plantilla guardada ('+Math.round(txt.length/1024)+' KB).');
+}
+// Antes de bajar nada: que ningun id del bloque pertenezca a otro cliente.
+// Es la comprobacion que hoy solo se detecta cuando los datos aparecen en la
+// subcuenta equivocada, y para entonces ya hay contactos creados de mas.
+function _quizIdsAjenos(c){
+  var mios=(c.quiz&&c.quiz.ids)||[];
+  var choques=[];
+  (DB.clients||[]).forEach(function(o){
+    if(o.id===c.id||!o.quiz||!o.quiz.ids) return;
+    o.quiz.ids.forEach(function(id){
+      if(mios.indexOf(id)>=0) choques.push({id:id, cliente:o.name||'otro cliente'});
+    });
+  });
+  return choques;
+}
+function quizGenerar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var tpl=quizTpl();
+  if(!tpl){ toast('Primero cargá la plantilla del quiz.','red'); quizTplModal(); return; }
+  var q=c.quiz;
+  if(!q||!q.raw){ toast('Este cliente no tiene el bloque CONFIG cargado.','red'); return; }
+
+  var avisos=[];
+  var choques=_quizIdsAjenos(c);
+  if(choques.length){
+    var quien={};
+    choques.forEach(function(x){ quien[x.cliente]=(quien[x.cliente]||0)+1; });
+    avisos.push('Hay '+choques.length+' identificador'+(choques.length===1?'':'es')
+      +' que tambien usa '+Object.keys(quien).join(', ')
+      +'. Si el bloque quedo a medio reemplazar, el quiz va a escribir en esa cuenta.');
+  }
+  if(/PEGAR_LINK|PEGAR_/.test(q.raw)) avisos.push('El bloque todavia tiene un texto de relleno sin completar (PEGAR_...).');
+  if(!q.wa) avisos.push('Falta el WA_URL: el boton final no va a abrir WhatsApp.');
+  if(q.wa && /\+|\s|-|\(/.test(String(q.wa).replace(/^https?:\/\/wa\.me\//,'').split('?')[0]))
+    avisos.push('El numero de WA_URL tiene simbolos o espacios. WhatsApp solo acepta digitos y falla en silencio.');
+  if(/FALTA/.test(q.raw)) avisos.push('El instalador dejo un FALTA en el bloque: no lo uses asi.');
+  var ab=(c.ab||{});
+  if(ab.contactId && q.raw.indexOf(ab.contactId)<0)
+    avisos.push('El SISTEMA_ID del bloque no coincide con el contacto de sistema del test de promesas.');
+
+  var i=tpl.indexOf(QUIZ_MARCA_INI), f=tpl.indexOf(QUIZ_MARCA_FIN);
+  var html=tpl.slice(0,i)+QUIZ_MARCA_INI+'\n'
+    +q.raw.replace(QUIZ_MARCA_INI,'').trim()+'\n\n'+tpl.slice(f);
+
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Quiz de '+esc(c.name||'este cliente')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'La plantilla con el bloque CONFIG de este cliente ya puesto. '
+        +Math.round(html.length/1024)+' KB. Pegalo en el step del embudo y publicá.</div>'
+      +(avisos.length
+        ?('<div style="background:rgba(240,168,48,.08);border:1px solid rgba(240,168,48,.3);'
+          +'border-radius:var(--radius);padding:12px 14px;margin-bottom:14px">'
+          +'<div style="font-size:12px;color:var(--amberx);font-weight:600;margin-bottom:6px">'
+          +'Revisá esto antes de publicar</div>'
+          +avisos.map(function(a){ return '<div style="font-size:11.5px;color:var(--text2);'
+            +'line-height:1.55;margin-top:4px">&middot; '+esc(a)+'</div>'; }).join('')
+          +'</div>')
+        :('<div style="font-size:11.5px;color:var(--accent);margin-bottom:14px">'
+          +'Sin identificadores de otros clientes ni campos sin completar.</div>'))
+      +'<div style="display:flex;justify-content:flex-end;gap:8px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm" onclick="quizCopiar('+c.id+')">Copiar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizBajar('+c.id+')">Bajar el HTML</button>'
+      +'</div>'
+    +'</div></div>';
+  window._QUIZ_HTML=html;
+}
+function quizCopiar(){
+  if(!window._QUIZ_HTML) return;
+  if(navigator.clipboard) navigator.clipboard.writeText(window._QUIZ_HTML);
+  closeModal();
+  toast('Quiz copiado. Pegalo en el bloque de codigo del step.');
+}
+function quizBajar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!window._QUIZ_HTML||!c) return;
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([window._QUIZ_HTML],{type:'text/html'}));
+  a.download='quiz-'+String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.html';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+  closeModal();
+  toast('Listo. Acordate de publicar, no alcanza con guardar.');
 }
 function briefModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
