@@ -22862,8 +22862,12 @@ function quizMarcaModal(clientId){
       +'<div style="'+rot+'">Promesa por defecto</div>'
       +'<textarea id="qm-headline" style="'+est+';height:70px;resize:vertical" '
         +'placeholder="Descubri que areas de tu empresa...">'+esc(m.headline||'')+'</textarea>'
-      +'<div style="margin-top:7px"><button class="btn btn-sm" '
-        +'onclick="quizPromesaModal('+c.id+')">Escribirla desde las llamadas</button></div>'
+      +'<div style="margin-top:7px;display:flex;gap:8px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm" onclick="quizPromesaModal('+c.id+')">'
+          +'Escribirla desde las llamadas</button>'
+        +'<button class="btn btn-sm" onclick="quizPreguntasModal('+c.id+')">'
+          +((c.quiz&&c.quiz.preguntas)?'Ver las preguntas':'Armar las preguntas')+'</button>'
+      +'</div>'
       +ayuda('La que se ve si el test A/B no carga. Podes usar &lt;em&gt; para resaltar.')
 
       +'<div style="'+rot+'">Bajada</div>'
@@ -23400,11 +23404,8 @@ async function quizPromesaGenerar(clientId){
       '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
       +'letter-spacing:.06em;margin:14px 0 6px">Elegi una</div>'
       +(o.promesas||[]).map(function(p,i){
-        return '<div onclick="quizPromesaElegir('+clientId+','+i+')" '
-          +'style="border:1px solid var(--border2);border-radius:var(--radius);padding:12px 14px;'
-          +'margin-bottom:8px;cursor:pointer" '
-          +'onmouseover="this.style.borderColor=\'var(--accent)\'" '
-          +'onmouseout="this.style.borderColor=\'var(--border2)\'">'
+        return '<div style="border:1px solid var(--border2);border-radius:var(--radius);'
+          +'padding:12px 14px;margin-bottom:8px">'
           +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:'
             +(ang[p.angulo]||'var(--text3)')+';margin-bottom:5px">'+esc(p.angulo||'')+'</div>'
           +'<div style="font-size:14px;color:var(--strong);line-height:1.4">'+p.texto+'</div>'
@@ -23413,6 +23414,10 @@ async function quizPromesaGenerar(clientId){
           +(p.cita?('<div style="font-size:11px;color:var(--text3);margin-top:6px;'
             +'border-left:2px solid var(--border2);padding-left:9px;line-height:1.5">'
             +esc(p.cita)+'</div>'):'')
+          // Un boton y no la tarjeta entera: sin algo que diga "tocá aca" no
+          // hay forma de saber que se puede elegir.
+          +'<div style="margin-top:10px"><button class="btn btn-sm btn-primary" '
+            +'onclick="quizPromesaElegir('+clientId+','+i+')">Usar esta</button></div>'
         +'</div>';
       }).join('');
     if(btn){ btn.disabled=false; btn.textContent='Proponer otras'; }
@@ -23433,6 +23438,192 @@ function quizPromesaElegir(clientId, i){
   save();
   quizMarcaModal(clientId);
   toast('Promesa cargada. Podes editarla antes de guardar.');
+}
+// ---- Las preguntas -------------------------------------------------------
+// El paso 2.2 al 2.4 del SOP. Se proponen desde el mismo material que la
+// promesa, respetando las dos reglas que el SOP marca como no negociables:
+// mas puntos es mas dolor, y todas las ramas con la misma cantidad de
+// preguntas que puntuan.
+function quizPreguntasModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var pr=(c.quiz&&c.quiz.preguntas)||null;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Preguntas del quiz</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Doce preguntas: dos o tres de contexto, tres o cuatro que puntuan, una que define '
+        +'la rama, dos por rama, y tres o cuatro numericas para el calculo.</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+        +'<button id="qp-ok" class="btn btn-sm'+(pr?'':' btn-primary')+'" '
+          +'onclick="quizPreguntasGenerar('+c.id+')">'+(pr?'Proponer otras':'Proponer')+'</button>'
+        +(pr?('<button class="btn btn-sm" onclick="quizPreguntasCopiar('+c.id+')">Copiar</button>'):'')
+        +'<button class="btn btn-sm" onclick="quizMarcaModal('+c.id+')">Volver</button>'
+      +'</div>'
+      +'<div id="qp-est" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--text3)"></div>'
+      +'<div id="qp-out">'+(pr?_quizPreguntasHtml(pr):'')+'</div>'
+    +'</div></div>';
+}
+function _quizPreguntasHtml(pr){
+  var badge=function(t,col){ return '<span style="font-size:9.5px;text-transform:uppercase;'
+    +'letter-spacing:.06em;color:'+col+';border:1px solid '+col+';border-radius:99px;'
+    +'padding:1px 7px;margin-left:7px;opacity:.8">'+t+'</span>'; };
+  var tipoCol={contexto:'var(--text3)', diagnostico:'var(--redx)', rama:'var(--accent)',
+               condicional:'var(--amberx)', numerica:'var(--text2)'};
+  var bloque=function(titulo, items){
+    if(!items||!items.length) return '';
+    return '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin:16px 0 8px">'+esc(titulo)+'</div>'
+      +items.map(function(q,i){
+        return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+          +'padding:11px 13px;margin-bottom:7px">'
+          +'<div style="font-size:13px;color:var(--text);line-height:1.4">'+esc(q.pregunta||'')
+            +badge(q.tipo||'', tipoCol[q.tipo]||'var(--text3)')+'</div>'
+          +((q.opciones||[]).length?('<div style="margin-top:7px">'+q.opciones.map(function(o){
+            var p=(o.puntos===undefined||o.puntos===null)?'':o.puntos;
+            return '<div style="display:flex;gap:9px;align-items:baseline;padding:2px 0;'
+              +'font-size:12px;color:var(--text2)">'
+              +'<span style="width:20px;flex:none;text-align:right;color:'
+                +(p>=3?'var(--redx)':(p===0?'var(--text3)':'var(--amberx)'))+'">'
+                +(p===''?'&mdash;':p)+'</span>'
+              +'<span style="flex:1">'+esc(o.texto||'')+'</span></div>';
+          }).join('')+'</div>'):'')
+          +(q.valor!==undefined?('<div style="font-size:11px;color:var(--text3);margin-top:5px">'
+            +'Alimenta el calculo, no puntua</div>'):'')
+        +'</div>';
+      }).join('');
+  };
+  var todas=(pr.preguntas||[]);
+  var porRama='';
+  (pr.ramas||[]).forEach(function(r){
+    porRama+=bloque('Rama: '+r.nombre, r.preguntas);
+  });
+  var avisos='';
+  // El propio SOP dice que estas dos cosas se replican solas si nadie las mira.
+  var punt=todas.filter(function(q){ return (q.opciones||[]).some(function(o){ return o.puntos>0; }); });
+  var cant=(pr.ramas||[]).map(function(r){ return (r.preguntas||[]).length; });
+  if(cant.length && Math.min.apply(null,cant)!==Math.max.apply(null,cant))
+    avisos+='<div style="font-size:11.5px;color:var(--redx);line-height:1.55;margin-top:10px">'
+      +'Las ramas no tienen la misma cantidad de preguntas ('+cant.join(', ')+'). '
+      +'Los puntajes dejan de ser comparables y un lead suma de mas solo por la rama que eligio.</div>';
+  var maxT=todas.concat([].concat.apply([],(pr.ramas||[]).map(function(r){return r.preguntas||[];})))
+    .reduce(function(a,q){ return a+Math.max.apply(null,[0].concat((q.opciones||[])
+      .map(function(o){ return +o.puntos||0; }))); },0);
+  return (pr.promesa?('<div style="font-size:12px;color:var(--text3);margin-top:12px">'
+      +'Para la promesa: <span style="color:var(--text2)">'+esc(pr.promesa)+'</span></div>'):'')
+    +bloque('Contexto y diagnostico', todas)
+    +porRama
+    +bloque('Para el calculo', pr.numericas)
+    +((pr.niveles||[]).length?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin:16px 0 8px">Niveles &middot; maximo '+maxT+' puntos</div>'
+      +pr.niveles.map(function(n){
+        return '<div style="display:flex;gap:10px;padding:4px 0;font-size:12.5px">'
+          +'<span style="width:64px;flex:none;color:var(--text3)">'+esc(n.rango||'')+'</span>'
+          +'<span style="color:var(--text)">'+esc(n.nombre||'')+'</span></div>';
+      }).join('')):'')
+    +avisos;
+}
+async function quizPreguntasGenerar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var e=document.getElementById('qp-est');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  if(!apiKey){ decir('Falta la clave de Anthropic.','var(--redx)'); return; }
+  var m=quizMarca(c);
+  if(!m.headline){ decir('Primero elegi la promesa: de ahi sale la estructura de las preguntas.',
+    'var(--amberx)'); return; }
+  // El mismo material que se uso para la promesa, si sigue cargado.
+  var mat=_PROM_ADJ.slice();
+  var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); }).slice(0,2);
+  lls.forEach(function(x){ mat.push({nombre:x.title||'Llamada',
+    texto:String(x.transcript||'').slice(0,18000)}); });
+  var btn=document.getElementById('qp-ok');
+  if(btn){ btn.disabled=true; btn.textContent='Pensando...'; }
+  decir('Armando las preguntas. Tarda un minuto.');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
+        'Arma las preguntas de un quiz de diagnostico para "'+(c.name||'')+'"'
+        +(c.industry?(', rubro '+c.industry):'')+'.\n\n'
+        +'LA PROMESA es: "'+String(m.headline).replace(/<[^>]+>/g,'')+'"\n'
+        +'La promesa define la estructura: si promete descubrir areas, el quiz ramifica por area.\n\n'
+        +'ESTRUCTURA: 2 o 3 de contexto (faciles, arrancan el compromiso), 3 o 4 de '
+        +'diagnostico que puntuan, 1 que define la rama, 2 por rama, y 3 o 4 numericas '
+        +'que no puntuan y alimentan el calculo.\n\n'
+        +'DOS REGLAS QUE NO SE NEGOCIAN:\n'
+        +'1. Mas puntos = mas dolor = mejor prospecto. La opcion que describe la PEOR '
+        +'situacion vale MAS. El nivel alto lo recibe quien mas nos necesita, no quien esta '
+        +'mas ordenado.\n'
+        +'2. Todas las ramas con la MISMA cantidad de preguntas que puntuan, o los puntajes '
+        +'dejan de ser comparables.\n\n'
+        +'Los niveles se nombran con identidad, no con juicio: "Base ordenada" no castiga a '
+        +'nadie. Apuntá a que entre 20% y 30% caiga en el nivel alto.\n\n'
+        +'Usa el vocabulario del material, no inventes uno nuevo.\n\n'
+        +'Devolve SOLO este JSON, sin markdown:\n'
+        +'{"promesa":"la que te pase","preguntas":[{"pregunta":"","tipo":"contexto|diagnostico|rama",'
+        +'"opciones":[{"texto":"","puntos":0}]}],'
+        +'"ramas":[{"nombre":"","preguntas":[{"pregunta":"","tipo":"condicional",'
+        +'"opciones":[{"texto":"","puntos":0}]}]}],'
+        +'"numericas":[{"pregunta":"","tipo":"numerica","valor":"que alimenta",'
+        +'"opciones":[{"texto":"","valor":0}]}],'
+        +'"niveles":[{"rango":"0-5","nombre":""}]}\n\nMATERIAL:\n'+JSON.stringify(mat)}]})
+    });
+    var d=await r.json();
+    console.log('Preguntas \u00b7 respuesta:', d);
+    var fin=function(){ if(btn){ btn.disabled=false; btn.textContent='Proponer otras'; } };
+    if(d.error){ decir('La IA respondio: '+esc(d.error.message||''),'var(--redx)'); fin(); return; }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('{');
+    var o=null;
+    if(a>=0){ try{ o=JSON.parse(txt.slice(a,txt.lastIndexOf('}')+1)); }
+      catch(pe){ o=_jsonRescatar(txt.slice(a)); } }
+    if(!o||!(o.preguntas||[]).length){
+      decir('No pude leer la respuesta'
+        +(d.stop_reason==='max_tokens'?', se corto por largo':'')+'. Mira la consola con F12.',
+        'var(--redx)'); fin(); return; }
+    c.quiz=c.quiz||{}; c.quiz.preguntas=o;
+    save();
+    document.getElementById('qp-out').innerHTML=_quizPreguntasHtml(o);
+    decir('Listo. Revisá los puntajes antes de usarlas.','var(--accent)');
+    fin();
+  }catch(err){
+    decir('Error: '+esc(err.message),'var(--redx)');
+    if(btn){ btn.disabled=false; btn.textContent='Proponer'; }
+  }
+}
+function quizPreguntasCopiar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var pr=c&&c.quiz&&c.quiz.preguntas; if(!pr) return;
+  var L=[];
+  L.push('PREGUNTAS - '+(c.name||''));
+  L.push('Promesa: '+(pr.promesa||''));
+  var vol=function(t,items){
+    if(!items||!items.length) return;
+    L.push(''); L.push('== '+t+' ==');
+    items.forEach(function(q){
+      L.push(''); L.push(q.pregunta+'  ['+(q.tipo||'')+']');
+      (q.opciones||[]).forEach(function(o){
+        L.push('   '+(o.puntos!==undefined?('('+o.puntos+') '):'')+o.texto);
+      });
+    });
+  };
+  vol('Contexto y diagnostico', pr.preguntas);
+  (pr.ramas||[]).forEach(function(r){ vol('Rama: '+r.nombre, r.preguntas); });
+  vol('Para el calculo', pr.numericas);
+  if((pr.niveles||[]).length){
+    L.push(''); L.push('== Niveles ==');
+    pr.niveles.forEach(function(n){ L.push('   '+n.rango+'  '+n.nombre); });
+  }
+  if(navigator.clipboard) navigator.clipboard.writeText(L.join('\n'));
+  toast('Preguntas copiadas.');
 }
 function quizMarcaGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
