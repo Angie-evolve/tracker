@@ -22632,7 +22632,10 @@ function _instBloque(c){
   return "const GHL_KEY  = '"+(g.token||'')+"';\n"
     +"const GHL_LOC  = '"+(g.locationId||'')+"';\n"
     +"const GHL_PIPE = '"+(q.pipe||'')+"';\n"
-    +"const AGENDA_URL = '"+(q.agenda||'PEGAR_LINK_DEL_CALENDARIO')+"';\n"
+    // Sin calendario va vacia, no con un texto de relleno: dejar el quiz sin
+    // agenda es una decision valida, y el aviso de "falta completar" hacia
+    // parecer que algo estaba a medio hacer.
+    +"const AGENDA_URL = '"+(q.agenda||'')+"';\n"
     +'const WA_URL     = '+(q.wa||"'https://wa.me/PEGAR_NUMERO?text='")+';\n\n'
     +obj('STAGES', q.stages)+'\n\n'
     +obj('FIELDS', q.campos)+'\n\n'
@@ -23752,14 +23755,16 @@ function quizConfigHtml(c){
           +(c.web?(' El sitio ya esta cargado: se puede leer solo.'):'')),
       b(quizMarca(c).acento?'Editar':'Cargar la marca','quizMarcaModal('+c.id+')',
         !quizMarca(c).acento))
-    +paso(7,'La plantilla del quiz', !!quizTpl(),
-      quizTpl()?('Cargada, '+Math.round(quizTpl().length/1024)+' KB. Es una sola para todos los clientes.')
-        :'El HTML de un quiz que ya funcione. Se carga una vez y sirve para todos.',
-      b(quizTpl()?'Cambiar la plantilla':'Cargar la plantilla','quizTplModal()', !quizTpl()))
+    +paso(7,'La plantilla del quiz', !!quizTpl(c),
+      quizTpl(c)?('Usa <b style="color:var(--text2)">'+esc((quizTplDe(c)||{}).nombre||'')+'</b>, '
+        +Math.round(quizTpl(c).length/1024)+' KB. Hay '+quizTpls().length+' guardada'
+        +(quizTpls().length===1?'':'s')+'.')
+        :'El HTML de un quiz que ya funcione. Podes guardar varios disenos y elegir cual usa cada cliente.',
+      b(quizTpl(c)?'Ver las plantillas':'Cargar una plantilla','quizTplModal('+c.id+')', !quizTpl(c)))
     +paso(8,'Generar y publicar', false,
       'Sale el archivo con el CONFIG de este cliente. Se pega en el step del embudo y se publica. '
       +'Guardar no alcanza.',
-      (q&&quizTpl())?b('Generar el quiz','quizGenerar('+c.id+')',true)
+      (q&&quizTpl(c))?b('Generar el quiz','quizGenerar('+c.id+')',true)
         :'<span style="font-size:11px;color:var(--text3)">Faltan los pasos de arriba.</span>')
     +'</div>';
 }
@@ -23984,39 +23989,152 @@ function _quizFusionar(tpl, nuevo){
   return {texto:out, cambiadas:cambiadas, agregadas:agregadas, nombres:nombres};
 }
 
-function quizTpl(){ return DB.quizTpl||null; }
+// ---- Biblioteca de plantillas -------------------------------------------
+// Varias, con nombre y vista previa. Cada cliente usa la que le corresponde:
+// antes habia una sola y cambiarla afectaba a todos.
+function quizTpls(){
+  if(!Array.isArray(DB.quizTpls)) DB.quizTpls=[];
+  // La unica que habia antes entra a la biblioteca en vez de perderse.
+  if(DB.quizTpl && !DB.quizTpls.length){
+    DB.quizTpls.push({ id:Date.now(), nombre:'Plantilla original',
+      html:DB.quizTpl, at:new Date().toISOString() });
+    delete DB.quizTpl; save();
+  }
+  return DB.quizTpls;
+}
+function quizTpl(c){
+  var l=quizTpls();
+  if(!l.length) return null;
+  if(c && c.quiz && c.quiz.tplId){
+    var m=l.filter(function(x){ return x.id===c.quiz.tplId; })[0];
+    if(m) return m.html;
+  }
+  return l[0].html;
+}
+function quizTplDe(c){
+  var l=quizTpls();
+  if(!l.length) return null;
+  if(c && c.quiz && c.quiz.tplId){
+    var m=l.filter(function(x){ return x.id===c.quiz.tplId; })[0];
+    if(m) return m;
+  }
+  return l[0];
+}
+// La vista previa es la plantilla misma, en un iframe sin permiso de ejecutar
+// scripts. Se ve la primera pantalla tal cual, y de paso no puede llamar a GHL
+// ni contar una visita falsa mientras la mirás.
+function _tplPreview(html, alto){
+  var solo=String(html).replace(/<script[\s\S]*?<\/script>/gi,'');
+  return '<div style="position:relative;height:'+alto+'px;overflow:hidden;'
+    +'border-radius:var(--radius);border:1px solid var(--border);background:#fff">'
+    +'<iframe sandbox srcdoc="'+esc(solo)+'" '
+      +'style="width:200%;height:'+(alto*2)+'px;border:0;transform:scale(.5);'
+      +'transform-origin:0 0;pointer-events:none"></iframe>'
+    +'</div>';
+}
 var QUIZ_MARCA_INI='// ═══════════════ CONFIG ═══════════════';
 var QUIZ_MARCA_FIN='// ═══════════════ ESTADO ═══════════════';
-function quizTplModal(){
-  var t=quizTpl();
+function quizTplModal(clientId){
+  var c=clientId?DB.clients.find(function(x){return x.id===clientId;}):S._hojaCliente;
+  var l=quizTpls();
+  var actual=quizTplDe(c);
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:620px">'
+    +'<div class="modal" style="max-width:640px;max-height:86vh;overflow-y:auto">'
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
-        +'Plantilla del quiz</div>'
-      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
-        +'Pegá el HTML de un quiz que ya funcione. Se guarda una sola vez: de ahi en mas, '
-        +'cada cliente sale con su propio bloque CONFIG puesto.'
-        +(t?('<br><b style="color:var(--text2)">Ya hay una cargada</b> de '
-          +Math.round(t.length/1024)+' KB. Pegar otra la reemplaza.'):'')
-      +'</div>'
-      +'<textarea id="qt-txt" spellcheck="false" placeholder="&lt;!DOCTYPE html&gt;..." '
-        +'style="width:100%;box-sizing:border-box;height:200px;padding:11px 13px;'
+        +'Plantillas del quiz</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'Guardá varios disenos y elegi cual usa cada cliente. La vista previa es la '
+        +'plantilla de verdad, sin ejecutar su codigo.</div>'
+      +(l.length
+        ?('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));'
+          +'gap:12px">'
+          +l.map(function(t){
+            var usa=(c && actual && actual.id===t.id);
+            return '<div style="border:1px solid '+(usa?'var(--accent)':'var(--border2)')
+              +';border-radius:var(--radius);padding:9px">'
+              +_tplPreview(t.html, 130)
+              +'<div style="font-size:12.5px;color:var(--text);margin-top:8px;overflow:hidden;'
+                +'text-overflow:ellipsis;white-space:nowrap">'+esc(t.nombre||'Sin nombre')+'</div>'
+              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
+                +Math.round(t.html.length/1024)+' KB'
+                +(usa?' &middot; <span style="color:var(--accent)">en uso</span>':'')+'</div>'
+              +'<div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">'
+                +(c&&!usa?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+                  +'onclick="quizTplUsar('+(c?c.id:0)+','+t.id+')">Usar</button>'):'')
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+                  +'onclick="quizTplVer('+t.id+')">Ver</button>'
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+                  +'onclick="quizTplRenombrar('+t.id+')">Nombre</button>'
+                +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;'
+                  +'color:var(--redx)" onclick="quizTplBorrar('+t.id+')">&times;</button>'
+              +'</div>'
+            +'</div>';
+          }).join('')+'</div>')
+        :('<div style="font-size:12.5px;color:var(--text3);padding:8px 0">'
+          +'Todavia no hay ninguna.</div>'))
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:18px 0 6px">Sumar una</div>'
+      +'<input id="qt-nombre" placeholder="Nombre del diseno" '
+        +'style="width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;'
+        +'font-family:var(--font);outline:none;margin-bottom:8px">'
+      +'<textarea id="qt-txt" spellcheck="false" placeholder="Pega el HTML del quiz..." '
+        +'style="width:100%;box-sizing:border-box;height:110px;padding:11px 13px;'
         +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
         +'color:var(--text);font-size:11px;font-family:ui-monospace,Menlo,monospace;'
         +'line-height:1.6;outline:none;resize:vertical"></textarea>'
-      +'<div id="qt-err" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--redx)"></div>'
-      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
-        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-        +'<button class="btn btn-sm btn-primary" onclick="quizTplGuardar()">Guardar plantilla</button>'
+      +'<div id="qt-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizTplGuardar('+(c?c.id:0)+')">'
+          +'Guardar plantilla</button>'
       +'</div>'
     +'</div></div>';
 }
-function quizTplGuardar(){
+function quizTplUsar(clientId, tplId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.quiz=c.quiz||{}; c.quiz.tplId=tplId;
+  save(); quizTplModal(clientId); dibujarQuiz(c);
+  toast('Este cliente usa esa plantilla.');
+}
+function quizTplVer(tplId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var w=window.open('','_blank');
+  if(!w){ toast('El navegador bloqueo la ventana.','red'); return; }
+  // Sin los scripts: abrirla entera contaria una visita en el contacto de
+  // sistema del cliente al que pertenezca esa plantilla.
+  w.document.write(String(t.html).replace(/<script[\s\S]*?<\/script>/gi,''));
+  w.document.close();
+}
+function quizTplRenombrar(tplId){
+  var t=quizTpls().filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  pedirTexto({ titulo:'Nombre del diseno', valor:t.nombre||'',
+    onOk:function(v){ if(v){ t.nombre=v; save(); quizTplModal(S._hojaCliente&&S._hojaCliente.id); } } });
+}
+function quizTplBorrar(tplId){
+  var l=quizTpls();
+  var t=l.filter(function(x){ return x.id===tplId; })[0];
+  if(!t) return;
+  var usan=(DB.clients||[]).filter(function(c){ return c.quiz&&c.quiz.tplId===tplId; });
+  if(!confirm('Borrar "'+(t.nombre||'sin nombre')+'"?'
+    +(usan.length?('\n\nLa usan '+usan.length+' cliente'+(usan.length===1?'':'s')
+      +': '+usan.map(function(c){return c.name;}).join(', ')
+      +'. Van a pasar a la primera de la lista.'):''))) return;
+  DB.quizTpls=l.filter(function(x){ return x.id!==tplId; });
+  usan.forEach(function(c){ delete c.quiz.tplId; });
+  save(); quizTplModal(S._hojaCliente&&S._hojaCliente.id);
+}
+function quizTplGuardar(clientId){
   var txt=String((document.getElementById('qt-txt')||{}).value||'').trim();
+  var nombre=String((document.getElementById('qt-nombre')||{}).value||'').trim();
   var e=document.getElementById('qt-err');
   var decir=function(m){ if(e) e.textContent=m; };
   if(!txt){ decir('Pegá el HTML del quiz.'); return; }
+  if(!nombre){ decir('Ponele un nombre: con tres disenos sin nombre no se distinguen.'); return; }
   // Sin las dos marcas no se puede saber donde termina el CONFIG, y reemplazar
   // a ojo es peor que no reemplazar.
   if(txt.indexOf(QUIZ_MARCA_INI)<0 || txt.indexOf(QUIZ_MARCA_FIN)<0){
@@ -24027,10 +24145,15 @@ function quizTplGuardar(){
     decir('El archivo no termina en </html>: se cortó al copiar. Pegalo completo.');
     return;
   }
-  DB.quizTpl=txt;
-  save(); closeModal();
-  dibujarQuiz(S._hojaCliente);
-  toast('Plantilla guardada ('+Math.round(txt.length/1024)+' KB).');
+  var l=quizTpls();
+  var nueva={ id:Date.now(), nombre:nombre, html:txt, at:new Date().toISOString() };
+  l.push(nueva);
+  // El cliente que estabas mirando pasa a usarla: es lo que uno espera despues
+  // de cargar un diseno estando parado en un cliente.
+  var c=clientId?DB.clients.find(function(x){return x.id===clientId;}):null;
+  if(c){ c.quiz=c.quiz||{}; c.quiz.tplId=nueva.id; }
+  save(); quizTplModal(clientId);
+  toast('"'+nombre+'" guardada ('+Math.round(txt.length/1024)+' KB).');
 }
 // Antes de bajar nada: que ningun id del bloque pertenezca a otro cliente.
 // Es la comprobacion que hoy solo se detecta cuando los datos aparecen en la
@@ -24049,8 +24172,11 @@ function _quizIdsAjenos(c){
 function quizGenerar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var tpl=quizTpl();
-  if(!tpl){ toast('Primero cargá la plantilla del quiz.','red'); quizTplModal(); return; }
+  // El bloque se rearma con lo que este guardado hoy: si cambiaste el numero de
+  // WhatsApp o el calendario despues de correr el instalador, el raw quedo viejo.
+  if(c.quiz && c.quiz.campos) c.quiz.raw=_instBloque(c);
+  var tpl=quizTpl(c);
+  if(!tpl){ toast('Primero cargá una plantilla.','red'); quizTplModal(c.id); return; }
   var q=c.quiz;
   if(!q||!q.raw){ toast('Este cliente no tiene el bloque CONFIG cargado.','red'); return; }
 
@@ -24063,7 +24189,11 @@ function quizGenerar(clientId){
       +' que tambien usa '+Object.keys(quien).join(', ')
       +'. Si el bloque quedo a medio reemplazar, el quiz va a escribir en esa cuenta.');
   }
-  if(/PEGAR_LINK|PEGAR_/.test(q.raw)) avisos.push('El bloque todavia tiene un texto de relleno sin completar (PEGAR_...).');
+  var relleno=(String(q.raw).match(/PEGAR_[A-Z_]+/g)||[])
+    .filter(function(x){ return x!=='PEGAR_LINK_DEL_CALENDARIO'; });
+  if(relleno.length) avisos.push('El bloque todavia tiene sin completar: '+relleno.join(', ')+'.');
+  if(!q.agenda) avisos.push('Sin calendario: el embudo llega hasta "Solicito informe por '
+    +'WhatsApp" y de ahi lo mueve una persona. Es valido, pero tenelo presente.');
   if(!q.wa) avisos.push('Falta el WA_URL: el boton final no va a abrir WhatsApp.');
   if(q.wa && /\+|\s|-|\(/.test(String(q.wa).replace(/^https?:\/\/wa\.me\//,'').split('?')[0]))
     avisos.push('El numero de WA_URL tiene simbolos o espacios. WhatsApp solo acepta digitos y falla en silencio.');
