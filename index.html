@@ -17312,9 +17312,6 @@ function renderTab(){
         <div id="sh-landing" style="display:${_shHoja()==='landing'?'block':'none'}">
           ${landingHtml(c)}
         </div>
-        <div id="sh-quiz" style="display:${_shHoja()==='quiz'?'block':'none'}">
-          ${quizHtml(c)}
-        </div>
         <div id="sh-board" style="display:${_shHoja()==='board'?'block':'none'}">
           ${boardHtml(c)}
         </div>
@@ -19327,7 +19324,6 @@ var SH_HOJAS=[
   {k:'contexto',    l:'Contexto'},
   {k:'material',    l:'Material'},
   {k:'landing',     l:'Landing'},
-  {k:'quiz',        l:'Quiz'},
   {k:'board',       l:'Board'}
 ];
 function _shHoja(){
@@ -22069,7 +22065,21 @@ function _jsonRescatar(txt){
 // localStorage de cada navegador. Aca se guardan en el cliente: se pega el
 // bloque CONFIG una vez y queda para todas las maquinas, al lado del gasto de
 // Meta, que es el numero que a la torre le falta para cerrar la cuenta.
-function _quizCfg(c){ return c.quiz||null; }
+// El contacto de sistema, el token y la subcuenta ya viven en el cliente: el
+// A/B de promesas los usa (c.ab.contactId, c.ghl). El quiz solo agrega lo que
+// falta: el pipeline y los seis contadores. Guardar el SISTEMA_ID dos veces es
+// justo el error que el SOP marca como el mas fragil de todo el montaje.
+function _quizCfg(c){
+  var q=c.quiz;
+  if(!q||!q.sf) return null;
+  var ab=(c.ab||{}), g=(c.ghl||{});
+  var sistema=ab.contactId||q.sistema||'';
+  var key=g.token||q.key||'';
+  var loc=g.locationId||q.loc||'';
+  if(!sistema||!key||!loc) return null;
+  return { key:key, loc:loc, sistema:sistema, pipe:q.pipe||'',
+           promesasAb:ab.fieldId||q.promesasAb||'', sf:q.sf };
+}
 // Mismo parseo que la torre: el bloque que escupe el instalador.
 function _quizParsear(txt){
   var uno=function(re){ var m=String(txt).match(re); return m?m[1].trim():''; };
@@ -22141,10 +22151,26 @@ function quizGuardarCfg(clientId){
   var cfg=_quizParsear(txt);
   var err=_quizFalta(cfg);
   if(err){ if(e) e.textContent=err; return; }
-  c.quiz=cfg;
+  // El paso 4 bis del SOP se resuelve solo: si el quiz suma en un contacto y la
+  // torre lee de otro, no hay error visible, solo ceros. Aca se compara.
+  var ab=(c.ab||{});
+  if(ab.contactId && cfg.sistema && ab.contactId!==cfg.sistema){
+    if(!confirm('Ojo: el SISTEMA_ID del bloque no coincide con el contacto de sistema '
+      +'que ya usa el test de promesas.\n\nBloque: '+cfg.sistema+'\nPromesas: '+ab.contactId
+      +'\n\nSi seguis, se usa el del bloque para las dos cosas. Si estas seguro de que el '
+      +'del bloque es el bueno, dale. Si no, cancelá y revisá el instalador.')) return;
+  }
+  // Se completa lo que falta en la config comun, no se duplica.
+  c.ab=c.ab||{contactId:'',fieldId:'',promesas:''};
+  if(cfg.sistema) c.ab.contactId=cfg.sistema;
+  if(cfg.promesasAb && !c.ab.fieldId) c.ab.fieldId=cfg.promesasAb;
+  c.ghl=c.ghl||{};
+  if(cfg.key) c.ghl.token=cfg.key;
+  if(cfg.loc) c.ghl.locationId=cfg.loc;
+  c.quiz={ pipe:cfg.pipe, sf:cfg.sf };
   save(); closeModal();
-  if(typeof renderClient==='function') renderClient();
-  else if(typeof renderTab==='function') renderTab();
+  S._middleCargado=null;
+  if(S._hoja==='middle') dibujarMiddle(c);
   quizCargar(clientId);
 }
 function quizDesconectar(clientId){
@@ -22153,8 +22179,8 @@ function quizDesconectar(clientId){
   if(!confirm('Se saca la configuracion del quiz de este cliente. El quiz publicado sigue funcionando.')) return;
   delete c.quiz;
   save(); closeModal();
-  if(typeof renderClient==='function') renderClient();
-  else if(typeof renderTab==='function') renderTab();
+  S._middleCargado=null;
+  if(S._hoja==='middle') dibujarMiddle(c);
 }
 // Un solo pedido por los contadores y uno por pagina de oportunidades. La
 // torre vieja hacia ~270 pedidos por minuto y chocaba el limite de la API.
@@ -22163,7 +22189,7 @@ async function quizCargar(clientId){
   var cfg=c&&_quizCfg(c);
   if(!cfg) return;
   _QUIZ[clientId]={cargando:true};
-  if(typeof renderTab==='function') renderTab();
+  quizRepintar(clientId);
   var H={Authorization:'Bearer '+cfg.key, 'Version':'2021-07-28'};
   var api=async function(p){
     var r=await fetch('https://services.leadconnectorhq.com'+p,{headers:H});
@@ -22213,7 +22239,12 @@ async function quizCargar(clientId){
   }catch(e){
     _QUIZ[clientId]={ error:e.message };
   }
-  if(typeof renderTab==='function') renderTab();
+  quizRepintar(clientId);
+}
+function quizRepintar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var el=document.getElementById('quiz-box');
+  if(el&&c) el.innerHTML=quizHtml(c);
 }
 function quizHtml(c){
   var cfg=_quizCfg(c);
@@ -25918,15 +25949,24 @@ function dibujarMiddle(c){
   var a=abCfg(c);
   var tabla=lpTablaLandingsHtml(c);
   if(!a.contactId||!a.fieldId||!c.ghl||!c.ghl.token){
-    body.innerHTML=tabla+middleConfigHtml(c);
+    body.innerHTML=tabla+middleConfigHtml(c)
+      +'<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
+      +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
     return;
   }
-  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=tabla+S._middleHtml; return; }
-  body.innerHTML=tabla+'<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>';
+  // El quiz va abajo del A/B: los dos miden el mismo tramo del embudo y
+  // comparten el contacto de sistema, asi que verlos separados obliga a cruzar
+  // dos pantallas para una sola pregunta.
+  var caja='<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
+    +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
+  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=tabla+S._middleHtml+caja; return; }
+  body.innerHTML=tabla+'<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>'+caja;
   cargarAB(c).then(function(html){
     S._middleCargado=c.id; S._middleHtml=html;
     var b=document.getElementById('hoja-middle-body');
-    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html;
+    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html
+      +'<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
+      +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
   }).catch(function(e){
     var b=document.getElementById('hoja-middle-body');
     if(b) b.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo leer: '+esc(e.message)+'</div>'
