@@ -22403,6 +22403,312 @@ function ghlClienteGuardar(clientId){
   if(S._hoja==='quiz') dibujarQuiz(c); else renderTab();
   toast('Subcuenta de '+(c.name||'el cliente')+' guardada.');
 }
+// ---- Instalador nativo ---------------------------------------------------
+// Las mismas llamadas que hacia el HTML suelto, pero adentro: el bloque CONFIG
+// no se copia ni se pega, se guarda directo en el cliente. Eso saca de encima
+// el error mas caro del SOP, que es un identificador del cliente anterior que
+// sobrevive al reemplazo manual.
+// Las claves son las que usa el quiz (empleados, oppFrias, ...), no las del
+// instalador viejo: asi se termina la deuda de los campos "reusados", donde el
+// campo se llamaba "Clientes activos" y guardaba la cantidad de empleados.
+var QUIZ_CAMPOS=[
+  {k:'etapa',      n:'Quiz - Etapa del funnel',            t:'TEXT'},
+  {k:'score',      n:'Quiz - Score total',                 t:'NUMERICAL'},
+  {k:'nivel',      n:'Quiz - Nivel de calificacion',       t:'TEXT'},
+  {k:'whatsapp',   n:'Quiz - WhatsApp',                    t:'TEXT'},
+  {k:'rubro',      n:'Quiz - Rubro',                       t:'TEXT'},
+  {k:'instagram',  n:'Quiz - Instagram o sitio web',       t:'TEXT'},
+  {k:'negocio',    n:'Quiz - Nombre del negocio',          t:'TEXT'},
+  {k:'factura',    n:'Quiz - Facturacion mensual',         t:'TEXT'},
+  {k:'empleados',  n:'Quiz - Cantidad de empleados',       t:'TEXT'},
+  {k:'sistemas',   n:'Quiz - Sistemas que usa hoy',        t:'TEXT'},
+  {k:'dependencia',n:'Quiz - Dependencia del dueno',       t:'TEXT'},
+  {k:'area',       n:'Quiz - Area que mas frena',          t:'TEXT'},
+  {k:'rama',       n:'Quiz - Rama condicional',            t:'TEXT'},
+  {k:'c1',         n:'Quiz - Respuesta condicional 1',     t:'TEXT'},
+  {k:'c2',         n:'Quiz - Respuesta condicional 2',     t:'TEXT'},
+  {k:'horasSem',   n:'Quiz - Horas manuales por semana',   t:'NUMERICAL'},
+  {k:'oppFrias',   n:'Quiz - Oportunidades frias por mes', t:'NUMERICAL'},
+  {k:'ticket',     n:'Quiz - Ticket promedio',             t:'NUMERICAL'},
+  {k:'horas',      n:'Quiz - Horas liberables semana',     t:'NUMERICAL'},
+  {k:'ingreso',    n:'Quiz - Ingreso adicional estimado',  t:'NUMERICAL'},
+  {k:'foco',       n:'Quiz - Foco problematica principal', t:'TEXT'},
+  {k:'resumen',    n:'Quiz - Resumen del informe',         t:'TEXT'},
+  {k:'publicidad', n:'Quiz - Invierte en publicidad',      t:'TEXT'},
+  {k:'presupuesto',n:'Quiz - Presupuesto ads',             t:'TEXT'}
+];
+var QUIZ_CONTADORES=[
+  {k:'visitas',n:'Sistema - Visitas quiz'},
+  {k:'empezar',n:'Sistema - Clicks empezar'},
+  {k:'p1',     n:'Sistema - Completaron p1'},
+  {k:'p2',     n:'Sistema - Completaron p2'},
+  {k:'informe',n:'Sistema - Vieron informe'},
+  {k:'agendar',n:'Sistema - Clicks agendar'}
+];
+// El JSON del test crece: si se crea numerico, GHL rechaza la escritura en
+// silencio y el test nunca se guarda.
+var QUIZ_TORRE=[
+  {k:'blobAB',  n:'Sistema - Test AB (JSON)', t:'LARGE_TEXT'},
+  {k:'variante',n:'Sistema - Variante vista', t:'TEXT'}
+];
+// Las etapas se buscan por nombre y no por posicion: el SOP dice que el mapeo
+// por posicion sale corrido casi siempre, porque los pipelines de los clientes
+// no tienen el orden del molde.
+var QUIZ_ETAPAS=[
+  {k:'ingreso',  nombres:['ingreso al quiz','ingreso','nuevo registro']},
+  {k:'datos',    nombres:['completo datos personales','datos personales','registro']},
+  {k:'escaneo',  nombres:['completo escaneo','escaneo','completo el quiz']},
+  {k:'sinAccion',nombres:['vio informe sin accion','sin accion','vio informe']},
+  {k:'whatsapp', nombres:['solicito informe por whatsapp','whatsapp','pidio informe']},
+  {k:'agendado', nombres:['agendo reunion','agendo','reunion agendada','1ra llamada programada']}
+];
+function _qNorm(t){ return String(t||'').toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+var _INST={};
+async function _ghlCli(c, m, p, body){
+  var g=c.ghl||{};
+  var r=await fetch('https://services.leadconnectorhq.com'+p,{
+    method:m, headers:{Authorization:'Bearer '+g.token,'Content-Type':'application/json',
+      'Version':'2021-07-28'}, body:body?JSON.stringify(body):undefined});
+  return {status:r.status, data:await r.json().catch(function(){return null;})};
+}
+function instEstado(txt, col){
+  var e=document.getElementById('inst-est');
+  if(e){ e.innerHTML=txt; e.style.color=col||'var(--text3)'; }
+}
+async function instVerificar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var g=c.ghl||{};
+  if(!g.token||!g.locationId){ toast('Falta el token o el Location ID','red'); return; }
+  instEstado('Verificando...');
+  try{
+    var r=await _ghlCli(c,'GET','/opportunities/pipelines?locationId='+encodeURIComponent(g.locationId));
+    if(r.status===401){ instEstado('401: el token es invalido, es de la agencia, o le faltan '
+      +'permisos de oportunidades.','var(--redx)'); return; }
+    if(r.status!==200){ instEstado('Error '+r.status+'. Revisá el Location ID.','var(--redx)'); return; }
+    var ps=(r.data&&r.data.pipelines)||[];
+    if(!ps.length){ instEstado('El token anda, pero esta subcuenta no tiene ningun pipeline. '
+      +'Creá el del quiz y volvé.','var(--amberx)'); return; }
+    _INST[clientId]={pipelines:ps, sel:0};
+    dibujarQuiz(c);
+  }catch(e){
+    // El navegador puede bloquear la llamada por CORS desde este dominio.
+    instEstado('No se pudo llamar a GHL desde el navegador: '+esc(e.message)
+      +'. Si es un bloqueo de CORS, usá el instalador en una pestaña aparte.','var(--redx)');
+  }
+}
+function instSelPipe(clientId, i){
+  if(_INST[clientId]) _INST[clientId].sel=parseInt(i,10)||0;
+  dibujarQuiz(DB.clients.find(function(x){return x.id===clientId;}));
+}
+// Empareja cada etapa del quiz con la del pipeline por nombre. Devuelve
+// tambien las que no encontro, para poder decir cual falta y como llamarla.
+function _instMapearEtapas(stages){
+  var out={}, faltan=[], usados={};
+  // Dos pasadas: primero los nombres exactos y despues los parecidos. Sin esto
+  // "Vio informe" se lleva la etapa de "Vio informe sin accion" solo por estar
+  // antes en la lista, y el lead termina en el cajon equivocado.
+  var buscar=function(e, exacto){
+    for(var i=0;i<stages.length;i++){
+      if(usados[stages[i].id]) continue;
+      var n=_qNorm(stages[i].name);
+      for(var j=0;j<e.nombres.length;j++){
+        if(exacto ? (n===e.nombres[j]) : (n.indexOf(e.nombres[j])>=0)) return stages[i];
+      }
+    }
+    return null;
+  };
+  QUIZ_ETAPAS.forEach(function(e){
+    var hit=buscar(e,true);
+    if(hit){ out[e.k]=hit.id; usados[hit.id]=1; }
+  });
+  QUIZ_ETAPAS.forEach(function(e){
+    if(out[e.k]) return;
+    var hit=buscar(e,false);
+    if(hit){ out[e.k]=hit.id; usados[hit.id]=1; } else faltan.push(e);
+  });
+  return {map:out, faltan:faltan};
+}
+async function instCrear(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var st=_INST[clientId];
+  if(!c||!st) return;
+  var g=c.ghl||{};
+  var p=st.pipelines[st.sel];
+  var todos=QUIZ_CAMPOS.concat(QUIZ_CONTADORES.map(function(x){return {k:x.k,n:x.n,t:'NUMERICAL'};}))
+    .concat(QUIZ_TORRE);
+  var ids={}, fallados=[];
+  try{
+    instEstado('Leyendo los campos que ya existen...');
+    var ex=await _ghlCli(c,'GET','/locations/'+encodeURIComponent(g.locationId)+'/customFields?model=contact');
+    var ya={};
+    ((ex.data&&ex.data.customFields)||[]).forEach(function(f){ ya[f.name]=f.id; });
+    for(var i=0;i<todos.length;i++){
+      var f=todos[i];
+      instEstado('Creando '+(i+1)+' de '+todos.length+': '+esc(f.n));
+      if(ya[f.n]){ ids[f.k]=ya[f.n]; continue; }
+      var r=await _ghlCli(c,'POST','/locations/'+encodeURIComponent(g.locationId)+'/customFields',
+        {name:f.n, dataType:f.t||'TEXT'});
+      var id=(r.data&&r.data.customField&&r.data.customField.id)||(r.data&&r.data.id)||null;
+      if(id) ids[f.k]=id; else fallados.push(f.n);
+      await new Promise(function(res){ setTimeout(res,120); });   // no chocar el limite
+    }
+    // Contacto de sistema. Se busca por el tag y no por email: el filtro
+    // ?email= del listado devuelve 422 en la v2, que es el error que el SOP
+    // marca como el mas caro de todos.
+    instEstado('Buscando el contacto de sistema...');
+    var sistema=null;
+    for(var pag=1; pag<=5 && !sistema; pag++){
+      var rc=await _ghlCli(c,'GET','/contacts/?locationId='+encodeURIComponent(g.locationId)
+        +'&limit=100&page='+pag);
+      var cs=(rc.data&&rc.data.contacts)||[];
+      for(var k=0;k<cs.length;k++){
+        if((cs[k].tags||[]).some(function(t){ return _qNorm(t)==='sistema-metricas'; })){
+          sistema=cs[k].id; break;
+        }
+      }
+      if(cs.length<100) break;
+    }
+    var enCero=QUIZ_CONTADORES.filter(function(x){ return ids[x.k]; })
+      .map(function(x){ return {id:ids[x.k], value:'0'}; });
+    if(sistema){
+      await _ghlCli(c,'PUT','/contacts/'+sistema,{customFields:enCero});
+    }else{
+      instEstado('Creando el contacto de sistema...');
+      var nc=await _ghlCli(c,'POST','/contacts/',{
+        firstName:'Sistema', lastName:'Metricas del quiz',
+        email:'sistema.quiz.'+String(g.locationId).toLowerCase().slice(0,8)+'@internal.noreply',
+        locationId:g.locationId, tags:['sistema-metricas'], customFields:enCero});
+      sistema=(nc.data&&nc.data.contact&&nc.data.contact.id)||null;
+    }
+    if(!sistema){ instEstado('No se pudo crear el contacto de sistema.','var(--redx)'); return; }
+
+    var et=_instMapearEtapas(p.stages||[]);
+    // Se guarda directo en el cliente: no hay bloque que copiar ni pegar, asi
+    // que no puede sobrevivir un id del cliente anterior.
+    c.ab=c.ab||{contactId:'',fieldId:'',promesas:''};
+    c.ab.contactId=sistema;
+    if(ids.blobAB) c.ab.fieldId=ids.blobAB;
+    c.quiz={ pipe:p.id, sf:{}, campos:ids, stages:et.map,
+             variante:ids.variante||'', creadoAt:new Date().toISOString() };
+    QUIZ_CONTADORES.forEach(function(x){ if(ids[x.k]) c.quiz.sf[x.k]=ids[x.k]; });
+    c.quiz.sf.whatsapp=c.quiz.sf.agendar||c.quiz.sf.whatsapp;
+    c.quiz.raw=_instBloque(c);
+    c.quiz.ids=Object.keys(ids).map(function(k){ return ids[k]; })
+      .concat([sistema, p.id]).concat(Object.keys(et.map).map(function(k){ return et.map[k]; }));
+    save();
+    var m=[];
+    if(fallados.length) m.push(fallados.length+' campo'+(fallados.length===1?'':'s')+' sin crear');
+    if(et.faltan.length) m.push(et.faltan.length+' etapa'+(et.faltan.length===1?'':'s')+' sin encontrar');
+    _INST[clientId]=null;
+    S._quizSub='config';
+    dibujarQuiz(c);
+    toast(m.length?('Listo, con avisos: '+m.join(' y ')):'Listo. El quiz quedo configurado.');
+  }catch(e){
+    instEstado('Error: '+esc(e.message),'var(--redx)');
+  }
+}
+// El bloque CONFIG se arma desde lo guardado, para poder pegarlo en un quiz
+// que ya este publicado sin volver a correr nada.
+function _instBloque(c){
+  var g=c.ghl||{}, q=c.quiz||{}, ab=c.ab||{};
+  var pad=function(s,n){ while(s.length<n) s+=' '; return s; };
+  var obj=function(nombre, o){
+    return 'const '+nombre+' = {\n'+Object.keys(o||{}).map(function(k){
+      return '  '+pad(k+':',14)+"'"+o[k]+"',";
+    }).join('\n')+'\n};';
+  };
+  return "const GHL_KEY  = '"+(g.token||'')+"';\n"
+    +"const GHL_LOC  = '"+(g.locationId||'')+"';\n"
+    +"const GHL_PIPE = '"+(q.pipe||'')+"';\n"
+    +"const AGENDA_URL = '"+(q.agenda||'PEGAR_LINK_DEL_CALENDARIO')+"';\n"
+    +"const WA_URL     = '"+(q.wa||'https://wa.me/PEGAR_NUMERO?text=')+"';\n\n"
+    +obj('STAGES', q.stages)+'\n\n'
+    +obj('FIELDS', q.campos)+'\n\n'
+    +"const SISTEMA_ID = '"+(ab.contactId||'')+"';\n"
+    +"const FIELD_AB       = '"+(ab.fieldId||'')+"';\n"
+    +"const FIELD_VARIANTE = '"+(q.variante||'')+"';\n"
+    +obj('SF', q.sf);
+}
+// El paso 3 cambia de cara segun donde estes: sin verificar, con el pipeline
+// elegido, o ya hecho.
+function _instPaso3(c){
+  var q=c.quiz, g=c.ghl||{}, st=_INST[c.id];
+  var est='<div id="inst-est" style="font-size:11.5px;color:var(--text3);'
+    +'margin-top:8px;min-height:16px"></div>';
+  if(q) return 'Los campos y el contacto de sistema ya estan creados en la subcuenta. '
+    +'Correrlo de nuevo reutiliza lo que exista.'
+    +'<div style="margin-top:9px"><button class="btn btn-sm" '
+    +'onclick="instVerificar('+c.id+')">Correr de nuevo</button></div>'+est;
+  if(!g.token||!g.locationId) return 'Primero cargá el token y el Location ID.';
+  if(!st) return 'Crea los ~32 campos, el contacto de sistema y lee las etapas del pipeline. '
+    +'Los campos que ya existan se reutilizan.'
+    +'<div style="margin-top:9px"><button class="btn btn-sm btn-primary" '
+    +'onclick="instVerificar('+c.id+')">Verificar la subcuenta</button></div>'+est;
+  var p=st.pipelines[st.sel]||{};
+  var et=_instMapearEtapas(p.stages||[]);
+  var filas=QUIZ_ETAPAS.map(function(e){
+    var id=et.map[e.k];
+    var nom='';
+    if(id) (p.stages||[]).forEach(function(x){ if(x.id===id) nom=x.name; });
+    return '<div style="display:flex;gap:10px;align-items:center;padding:4px 0;font-size:11.5px">'
+      +'<span style="width:78px;flex:none;color:var(--text3)">'+e.k+'</span>'
+      +'<span style="flex:1;color:'+(id?'var(--text2)':'var(--amberx)')+'">'
+        +(id?esc(nom):'sin encontrar &mdash; llamala "'+esc(e.nombres[0])+'"')+'</span>'
+    +'</div>';
+  }).join('');
+  return 'Elegí el pipeline. Las etapas se emparejan <b style="color:var(--text2)">por nombre</b>, '
+    +'no por posicion, asi que el orden no importa.'
+    +'<select onchange="instSelPipe('+c.id+',this.value)" style="width:100%;max-width:380px;'
+    +'margin-top:9px;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);outline:none">'
+    +st.pipelines.map(function(x,i){
+      return '<option value="'+i+'"'+(i===st.sel?' selected':'')+'>'+esc(x.name)
+        +' &middot; '+((x.stages||[]).length)+' etapas</option>';
+    }).join('')+'</select>'
+    +'<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">'+filas+'</div>'
+    +(et.faltan.length?('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;'
+      +'margin-top:8px">Faltan '+et.faltan.length+' etapa'+(et.faltan.length===1?'':'s')+'. '
+      +'Podes crearlas en el pipeline con esos nombres y volver a verificar, o seguir igual: '
+      +'las que falten no se mueven y el lead se queda en la anterior.</div>'):'')
+    +'<div style="margin-top:11px"><button class="btn btn-sm btn-primary" '
+    +'onclick="instCrear('+c.id+')">Crear los campos</button></div>'+est;
+}
+function _instFaltantes(c){
+  var q=c.quiz||{};
+  var f=QUIZ_ETAPAS.filter(function(e){ return !(q.stages||{})[e.k]; });
+  if(!f.length) return 'Las seis etapas emparejadas.';
+  return '<span style="color:var(--amberx)">Sin etapa: '+f.map(function(e){return e.k;}).join(', ')
+    +'.</span>';
+}
+function quizVerBloque(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.quiz) return;
+  var txt=c.quiz.raw||_instBloque(c);
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Bloque CONFIG de '+esc(c.name||'')+'</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+        +'No hace falta pegarlo en ningun lado: «Generar el quiz» ya lo mete en el archivo. '
+        +'Esta aca por si lo necesitas para un quiz que ya publicaste.</div>'
+      +'<pre style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);'
+        +'padding:13px;font-size:11px;line-height:1.6;color:var(--text2);max-height:340px;'
+        +'overflow:auto;white-space:pre">'+esc(txt)+'</pre>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizCopiarBloque('+c.id+')">Copiar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizCopiarBloque(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.quiz) return;
+  if(navigator.clipboard) navigator.clipboard.writeText(c.quiz.raw||_instBloque(c));
+  closeModal(); toast('Bloque copiado.');
+}
 function quizConfigHtml(c){
   var cfg=_quizCfg(c), q=c.quiz, g=c.ghl||{};
   var paso=function(n,titulo,hecho,texto,botones){
@@ -22429,17 +22735,15 @@ function quizConfigHtml(c){
       g.locationId?('<a class="btn btn-sm" target="_blank" rel="noopener" '
         +'href="https://app.gohighlevel.com/v2/location/'+esc(g.locationId)+'/opportunities/list">'
         +'Abrir Oportunidades</a>'):'')
-    +paso(3,'Correr el instalador', !!q,
-      'Crea los campos y el contacto de sistema, y devuelve el bloque CONFIG. '
-      +'Se abre con el token y la subcuenta de <b style="color:var(--text2)">'+esc(c.name||'')
-      +'</b> ya puestos.',
-      b('Abrir el instalador','quizAbrirInstalador('+c.id+')', !q)
-      +b(DB.quizInstalador?'Cambiar el instalador':'Cargar el instalador','quizInstaladorModal()'))
-    +paso(4,'Pegar el bloque CONFIG', !!q,
-      q?('Cargado. Contacto de sistema <span class="mono">'+esc(cfg?cfg.sistema:'')+'</span>'
-         +(q.pipe?(' &middot; pipeline <span class="mono">'+esc(q.pipe)+'</span>'):'')+'.')
-       :'Lo que devuelve el instalador al final, con el boton de copiar.',
-      b(q?'Reemplazar':'Pegar el bloque','quizConfigModal('+c.id+')', !q))
+    +paso(3,'Crear los campos en GHL', !!q, _instPaso3(c), '')
+    +paso(4,'El bloque CONFIG', !!q,
+      q?('Armado solo, sin copiar ni pegar. Contacto de sistema '
+         +'<span class="mono">'+esc(cfg?cfg.sistema:'')+'</span>'
+         +(q.pipe?(' &middot; pipeline <span class="mono">'+esc(q.pipe)+'</span>'):'')+'. '
+         +_instFaltantes(c))
+       :'Sale del paso anterior. Tambien se puede pegar a mano uno viejo.',
+      (q?b('Ver el bloque','quizVerBloque('+c.id+')'):'')
+      +b(q?'Pegar otro a mano':'Pegar uno a mano','quizConfigModal('+c.id+')'))
     +paso(5,'La plantilla del quiz', !!quizTpl(),
       quizTpl()?('Cargada, '+Math.round(quizTpl().length/1024)+' KB. Es una sola para todos los clientes.')
         :'El HTML de un quiz que ya funcione. Se carga una vez y sirve para todos.',
