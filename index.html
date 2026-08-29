@@ -22094,6 +22094,7 @@ function _quizParsear(txt){
             sf:{} };
   cfg.raw=String(txt).trim();
   cfg.wa=uno(/WA_URL\s*=\s*['"]([^'"]+)['"]/);
+  var mNum=String(txt).match(/wa\.me\/(\d+)/); if(mNum) cfg.waNum=mNum[1];
   cfg.agenda=uno(/AGENDA_URL\s*=\s*['"]([^'"]+)['"]/);
   // Ids sueltos del bloque: sirven para el chequeo cruzado entre clientes.
   cfg.ids=(String(txt).match(/'[A-Za-z0-9-]{18,40}'/g)||[])
@@ -22178,7 +22179,7 @@ function quizGuardarCfg(clientId){
   if(cfg.key) c.ghl.token=cfg.key;
   if(cfg.loc) c.ghl.locationId=cfg.loc;
   c.quiz={ pipe:cfg.pipe, sf:cfg.sf, raw:cfg.raw, ids:cfg.ids,
-           wa:cfg.wa, agenda:cfg.agenda };
+           wa:cfg.wa, waNum:cfg.waNum, agenda:cfg.agenda };
   save(); closeModal();
   S._quizSub='embudo';
   dibujarQuiz(c);
@@ -22623,7 +22624,7 @@ function _instBloque(c){
     +"const GHL_LOC  = '"+(g.locationId||'')+"';\n"
     +"const GHL_PIPE = '"+(q.pipe||'')+"';\n"
     +"const AGENDA_URL = '"+(q.agenda||'PEGAR_LINK_DEL_CALENDARIO')+"';\n"
-    +"const WA_URL     = '"+(q.wa||'https://wa.me/PEGAR_NUMERO?text=')+"';\n\n"
+    +'const WA_URL     = '+(q.wa||"'https://wa.me/PEGAR_NUMERO?text='")+';\n\n'
     +obj('STAGES', q.stages)+'\n\n'
     +obj('FIELDS', q.campos)+'\n\n'
     +"const SISTEMA_ID = '"+(ab.contactId||'')+"';\n"
@@ -22709,6 +22710,73 @@ function quizCopiarBloque(clientId){
   if(navigator.clipboard) navigator.clipboard.writeText(c.quiz.raw||_instBloque(c));
   closeModal(); toast('Bloque copiado.');
 }
+// El numero y el link del calendario dejan de escribirse en el codigo. Se
+// piden aca y el bloque se rearma solo. WhatsApp no acepta el mas, ni espacios,
+// ni guiones: falla en silencio, asi que el numero se limpia al guardar.
+function quizUrlsModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var q=c.quiz||{};
+  var num='', msg='Hola, quiero recibir mi diagnostico';
+  if(q.wa){
+    var m1=String(q.wa).match(/wa\.me\/(\d+)/); if(m1) num=m1[1];
+    var m2=String(q.wa).match(/text=(.*)$/);
+    if(m2){ try{ msg=decodeURIComponent(m2[1].replace(/'\s*\+\s*encodeURIComponent\('/,'')
+      .replace(/'\s*$/,'')); }catch(e){} }
+  }
+  var est='width:100%;box-sizing:border-box;padding:10px 13px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;'
+    +'font-family:var(--font);outline:none';
+  var rot='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'WhatsApp y calendario</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'A donde manda el quiz cuando el lead termina. Se guardan en el cliente y entran '
+        +'solos en el archivo.</div>'
+      +'<div style="'+rot+'">Numero de WhatsApp del cliente</div>'
+      +'<input id="qu-num" style="'+est+'" placeholder="+54 9 11 5698-2747" value="'+esc(num)+'">'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+        +'Escribilo como quieras: se limpian el mas, los espacios y los guiones.</div>'
+      +'<div style="'+rot+';margin-top:14px">Mensaje que ya viene escrito</div>'
+      +'<input id="qu-msg" style="'+est+'" value="'+esc(msg)+'">'
+      +'<div style="'+rot+';margin-top:14px">Link del calendario <span style="text-transform:none;'
+        +'letter-spacing:0">(opcional)</span></div>'
+      +'<input id="qu-cal" style="'+est+'" placeholder="https://api.leadconnectorhq.com/widget/booking/..." '
+        +'value="'+esc(q.agenda&&q.agenda.indexOf('PEGAR')<0?q.agenda:'')+'">'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+        +'Si el cliente agenda a mano desde WhatsApp, dejalo vacio. El embudo llega hasta '
+        +'"Solicito informe" y de ahi lo mueve una persona.</div>'
+      +'<div id="qu-err" style="font-size:11.5px;margin-top:12px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizUrlsGuardar('+c.id+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+  var i=document.getElementById('qu-num'); if(i) i.focus();
+}
+function quizUrlsGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.quiz) return;
+  var v=function(i){ return String((document.getElementById(i)||{}).value||'').trim(); };
+  var e=document.getElementById('qu-err');
+  var num=v('qu-num').replace(/\D/g,'');
+  if(!num){ if(e) e.textContent='Falta el numero de WhatsApp.'; return; }
+  // Un numero argentino sin codigo de pais no falla al guardar, falla cuando el
+  // lead toca el boton. Mejor avisar ahora.
+  if(num.length<10){ if(e) e.textContent='Ese numero parece corto: '+num.length+' digitos. '
+    +'Tiene que llevar el codigo de pais, por ejemplo 5491156982747.'; return; }
+  var msg=v('qu-msg')||'Hola, quiero recibir mi diagnostico';
+  var cal=v('qu-cal');
+  c.quiz.wa="'https://wa.me/"+num+"?text=' + encodeURIComponent('"+msg.replace(/'/g,"\\'")+"')";
+  c.quiz.waNum=num;
+  if(cal) c.quiz.agenda=cal; else delete c.quiz.agenda;
+  c.quiz.raw=_instBloque(c);
+  save(); closeModal(); dibujarQuiz(c);
+  toast('Guardado. Ya entra solo en el archivo.');
+}
 function quizConfigHtml(c){
   var cfg=_quizCfg(c), q=c.quiz, g=c.ghl||{};
   var paso=function(n,titulo,hecho,texto,botones){
@@ -22744,11 +22812,20 @@ function quizConfigHtml(c){
        :'Sale del paso anterior. Tambien se puede pegar a mano uno viejo.',
       (q?b('Ver el bloque','quizVerBloque('+c.id+')'):'')
       +b(q?'Pegar otro a mano':'Pegar uno a mano','quizConfigModal('+c.id+')'))
-    +paso(5,'La plantilla del quiz', !!quizTpl(),
+    +paso(5,'WhatsApp y calendario', !!(c.quiz&&c.quiz.waNum),
+      (c.quiz&&c.quiz.waNum)
+        ?('WhatsApp <span class="mono">'+esc(c.quiz.waNum)+'</span>'
+          +((c.quiz.agenda&&c.quiz.agenda.indexOf('PEGAR')<0)?' &middot; con calendario'
+            :' &middot; sin calendario, agenda a mano')+'.')
+        :'A donde manda el quiz al terminar. Sin esto, el archivo sale con PEGAR_NUMERO '
+         +'y el boton final no abre nada.',
+      c.quiz?b((c.quiz.waNum?'Cambiar':'Cargar')+' los links','quizUrlsModal('+c.id+')',
+        !c.quiz.waNum):'<span style="font-size:11px;color:var(--text3)">Falta el paso 3.</span>')
+    +paso(6,'La plantilla del quiz', !!quizTpl(),
       quizTpl()?('Cargada, '+Math.round(quizTpl().length/1024)+' KB. Es una sola para todos los clientes.')
         :'El HTML de un quiz que ya funcione. Se carga una vez y sirve para todos.',
       b(quizTpl()?'Cambiar la plantilla':'Cargar la plantilla','quizTplModal()', !quizTpl()))
-    +paso(6,'Generar y publicar', false,
+    +paso(7,'Generar y publicar', false,
       'Sale el archivo con el CONFIG de este cliente. Se pega en el step del embudo y se publica. '
       +'Guardar no alcanza.',
       (q&&quizTpl())?b('Generar el quiz','quizGenerar('+c.id+')',true)
