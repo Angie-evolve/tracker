@@ -22180,8 +22180,8 @@ function quizGuardarCfg(clientId){
   c.quiz={ pipe:cfg.pipe, sf:cfg.sf, raw:cfg.raw, ids:cfg.ids,
            wa:cfg.wa, agenda:cfg.agenda };
   save(); closeModal();
-  S._middleCargado=null;
-  if(S._hoja==='middle') dibujarMiddle(c);
+  S._quizSub='embudo';
+  dibujarQuiz(c);
   quizCargar(clientId);
 }
 function quizDesconectar(clientId){
@@ -22190,8 +22190,8 @@ function quizDesconectar(clientId){
   if(!confirm('Se saca la configuracion del quiz de este cliente. El quiz publicado sigue funcionando.')) return;
   delete c.quiz;
   save(); closeModal();
-  S._middleCargado=null;
-  if(S._hoja==='middle') dibujarMiddle(c);
+  S._quizSub='config';
+  dibujarQuiz(c);
 }
 // Un solo pedido por los contadores y uno por pagina de oportunidades. La
 // torre vieja hacia ~270 pedidos por minuto y chocaba el limite de la API.
@@ -22254,8 +22254,226 @@ async function quizCargar(clientId){
 }
 function quizRepintar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
-  var el=document.getElementById('quiz-box');
-  if(el&&c) el.innerHTML=quizHtml(c);
+  if(c && S._hoja==='quiz') dibujarQuiz(c);
+}
+// ---- La hoja Quiz --------------------------------------------------------
+// Todo el quiz en un solo lugar: el embudo, los leads, las promesas y la
+// configuracion. Antes esto vivia repartido entre Middle of Funnel, un HTML
+// publicado en GHL y un instalador suelto en la compu.
+function dibujarQuiz(c){
+  var body=document.getElementById('hoja-quiz-body');
+  if(!body) return;
+  if(!c){ body.innerHTML='<div style="padding:20px 0;font-size:12px;color:var(--text3)">'
+    +'Elegi un cliente en el costado.</div>'; return; }
+  body.innerHTML=quizHojaHtml(c);
+}
+function quizSub(k){ S._quizSub=k; dibujarQuiz(S._hojaCliente); }
+function quizHojaHtml(c){
+  var cfg=_quizCfg(c);
+  var sub=S._quizSub||'embudo';
+  if(!cfg) sub='config';
+  var pill=function(k,l){
+    var on=(sub===k);
+    return '<button onclick="quizSub(\''+k+'\')" style="font-size:12px;padding:6px 13px;'
+      +'border-radius:99px;cursor:pointer;font-family:var(--font);'
+      +'border:1px solid '+(on?'transparent':'var(--border2)')+';'
+      +'background:'+(on?'var(--accent)':'transparent')+';'
+      +'color:'+(on?'var(--on-accent)':'var(--text2)')+'">'+l+'</button>';
+  };
+  var nav='<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:18px">'
+    +(cfg?(pill('embudo','Embudo')+pill('leads','Leads')+pill('promesas','Promesas')):'')
+    +pill('config','Configuracion')+'</div>';
+  var cuerpo='';
+  if(sub==='config') cuerpo=quizConfigHtml(c);
+  else if(sub==='leads') cuerpo=quizLeadsHtml(c);
+  else if(sub==='promesas') cuerpo=quizPromesasHtml(c);
+  else cuerpo=quizHtml(c);
+  return nav+cuerpo;
+}
+// El instalador deja de ser un archivo suelto en Descargas. Se abre desde aca
+// con el token y el Location ID del cliente ya puestos, que es justamente lo
+// que el SOP advierte que hay que verificar dos veces para no crear los campos
+// en la subcuenta de otro.
+function quizAbrirInstalador(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var tpl=DB.quizInstalador;
+  if(!tpl){ toast('Primero cargá el instalador.','red'); quizInstaladorModal(); return; }
+  var g=c.ghl||{};
+  var html=tpl
+    .replace(/id="api-key"([^>]*?)value=""/, 'id="api-key"$1value="'+esc(g.token||'')+'"')
+    .replace(/id="loc-id"([^>]*?)value=""/,  'id="loc-id"$1value="'+esc(g.locationId||'')+'"')
+    .replace(/<h1>Setup GHL<\/h1>/,
+      '<h1>Setup GHL</h1><p style="font-size:12px;color:#c8ff47;margin-bottom:6px">'
+      +esc(c.name||'')+'</p>');
+  var w=window.open('','_blank');
+  if(!w){ toast('El navegador bloqueo la ventana. Permitila y proba de nuevo.','red'); return; }
+  w.document.write(html); w.document.close();
+}
+function quizInstaladorModal(){
+  var t=DB.quizInstalador;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Instalador</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Pegá el HTML del instalador. Se guarda una vez y despues se abre desde aca, '
+        +'con el token y la subcuenta de cada cliente ya puestos.'
+        +(t?('<br><b style="color:var(--text2)">Ya hay uno cargado</b> de '
+          +Math.round(t.length/1024)+' KB.'):'')
+      +'</div>'
+      +'<textarea id="qi-txt" spellcheck="false" placeholder="&lt;!DOCTYPE html&gt;..." '
+        +'style="width:100%;box-sizing:border-box;height:180px;padding:11px 13px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-size:11px;font-family:ui-monospace,Menlo,monospace;'
+        +'line-height:1.6;outline:none;resize:vertical"></textarea>'
+      +'<div id="qi-err" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizInstaladorGuardar()">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizInstaladorGuardar(){
+  var txt=String((document.getElementById('qi-txt')||{}).value||'').trim();
+  var e=document.getElementById('qi-err');
+  if(!txt){ if(e) e.textContent='Pegá el HTML del instalador.'; return; }
+  if(txt.indexOf('id="api-key"')<0 || txt.indexOf('id="loc-id"')<0){
+    if(e) e.textContent='No parece el instalador: le faltan los campos de token y Location ID.';
+    return;
+  }
+  if(txt.indexOf('</html>')<0){ if(e) e.textContent='El archivo se corto al copiar. Pegalo completo.'; return; }
+  DB.quizInstalador=txt;
+  save(); closeModal(); dibujarQuiz(S._hojaCliente);
+  toast('Instalador guardado.');
+}
+// Todo lo que hay que configurar, en orden y con el estado de cada paso a la
+// vista. Antes estaba repartido entre tres lugares distintos.
+function quizConfigHtml(c){
+  var cfg=_quizCfg(c), q=c.quiz, g=c.ghl||{};
+  var paso=function(n,titulo,hecho,texto,botones){
+    return '<div style="display:flex;gap:13px;padding:13px 0;border-top:1px solid var(--border)">'
+      +'<span style="width:18px;flex:none;font-size:11px;color:'
+        +(hecho?'var(--accent)':'var(--text3)')+';margin-top:2px">'+(hecho?'&#10003;':n)+'</span>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13px;color:var(--text)">'+titulo+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:3px">'+texto+'</div>'
+        +(botones?('<div style="display:flex;gap:7px;margin-top:9px;flex-wrap:wrap">'+botones+'</div>'):'')
+      +'</div></div>';
+  };
+  var b=function(l,fn,pri){ return '<button class="btn btn-sm'+(pri?' btn-primary':'')+'" onclick="'+fn+'">'+l+'</button>'; };
+  return '<div style="max-width:720px">'
+    +paso(1,'La subcuenta de GHL', !!(g.token&&g.locationId),
+      g.token&&g.locationId
+        ?('Subcuenta <span class="mono">'+esc(g.locationId)+'</span> con su token cargado.')
+        :('Falta el token y el Location ID de este cliente. Se cargan en Integraciones y '
+          +'los usan tambien el instalador y el resto del tracker.'),
+      b('Integraciones','S.tab=\'integraciones\';renderTab()'))
+    +paso(2,'El pipeline', true,
+      'Se crea a mano en Oportunidades, antes del instalador, porque el instalador lee sus etapas. '
+      +'Si el cliente ya tiene uno comercial, conviene usar ese y agregarle las etapas del quiz.',
+      g.locationId?('<a class="btn btn-sm" target="_blank" rel="noopener" '
+        +'href="https://app.gohighlevel.com/v2/location/'+esc(g.locationId)+'/opportunities/list">'
+        +'Abrir Oportunidades</a>'):'')
+    +paso(3,'Correr el instalador', !!q,
+      'Crea los campos y el contacto de sistema, y devuelve el bloque CONFIG. '
+      +'Se abre con el token y la subcuenta de <b style="color:var(--text2)">'+esc(c.name||'')
+      +'</b> ya puestos.',
+      b('Abrir el instalador','quizAbrirInstalador('+c.id+')', !q)
+      +b(DB.quizInstalador?'Cambiar el instalador':'Cargar el instalador','quizInstaladorModal()'))
+    +paso(4,'Pegar el bloque CONFIG', !!q,
+      q?('Cargado. Contacto de sistema <span class="mono">'+esc(cfg?cfg.sistema:'')+'</span>'
+         +(q.pipe?(' &middot; pipeline <span class="mono">'+esc(q.pipe)+'</span>'):'')+'.')
+       :'Lo que devuelve el instalador al final, con el boton de copiar.',
+      b(q?'Reemplazar':'Pegar el bloque','quizConfigModal('+c.id+')', !q))
+    +paso(5,'La plantilla del quiz', !!quizTpl(),
+      quizTpl()?('Cargada, '+Math.round(quizTpl().length/1024)+' KB. Es una sola para todos los clientes.')
+        :'El HTML de un quiz que ya funcione. Se carga una vez y sirve para todos.',
+      b(quizTpl()?'Cambiar la plantilla':'Cargar la plantilla','quizTplModal()', !quizTpl()))
+    +paso(6,'Generar y publicar', false,
+      'Sale el archivo con el CONFIG de este cliente. Se pega en el step del embudo y se publica. '
+      +'Guardar no alcanza.',
+      (q&&quizTpl())?b('Generar el quiz','quizGenerar('+c.id+')',true)
+        :'<span style="font-size:11px;color:var(--text3)">Faltan los pasos de arriba.</span>')
+    +'</div>';
+}
+function quizLeadsHtml(c){
+  var d=_QUIZ[c.id];
+  if(!d||d.cargando) { if(!d) setTimeout(function(){ quizCargar(c.id); },50);
+    return '<div style="font-size:12.5px;color:var(--text3)">Leyendo los leads...</div>'; }
+  if(d.error) return '<div style="font-size:12.5px;color:var(--redx)">'+esc(d.error)+'</div>';
+  var l=d.leads||[];
+  if(!l.length) return '<div style="font-size:12.5px;color:var(--text3);line-height:1.6">'
+    +'Todavia no entro nadie al quiz.'
+    +(!(c.quiz&&c.quiz.pipe)?' Ojo: falta el GHL_PIPE en el bloque CONFIG, y los leads salen de '
+      +'las oportunidades del pipeline.':'')+'</div>';
+  var tieneTag=function(x,t){ return (x.tags||[]).some(function(y){
+    return String(y).toLowerCase().indexOf(t)>=0; }); };
+  var nivel=function(x){
+    if(tieneTag(x,'calificacion-alta'))  return {l:'Prioridad critica',c:'var(--redx)'};
+    if(tieneTag(x,'calificacion-media')) return {l:'Oportunidad clara',c:'var(--accent)'};
+    if(tieneTag(x,'calificacion-baja'))  return {l:'Base ordenada',c:'var(--text3)'};
+    return {l:'sin nivel',c:'var(--text3)'};
+  };
+  return '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+    +'letter-spacing:.06em;margin-bottom:8px">'+l.length+' leads</div>'
+    +'<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">'
+    +l.slice(0,120).map(function(x,i){
+      var n=nivel(x);
+      var env=tieneTag(x,'califica-meta');
+      return '<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;'
+        +(i?'border-top:1px solid var(--border)':'')+'">'
+        +'<span style="flex:1;min-width:0;font-size:13px;color:var(--text);overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.nombre||x.email||'sin nombre')+'</span>'
+        +'<span style="font-size:11px;color:'+n.c+'">'+n.l+'</span>'
+        +'<span style="font-size:11px;color:var(--text3);width:76px;text-align:right">'
+          +(x.at?new Date(x.at).toLocaleDateString('es-AR'):'')+'</span>'
+        +(env?'<span style="font-size:10.5px;color:var(--accent);width:64px;text-align:right">enviado</span>'
+           :'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+            +'onclick="quizMarcarMeta('+c.id+',\''+esc(x.id)+'\',this)">A Meta</button>')
+      +'</div>';
+    }).join('')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:12px;max-width:640px">'
+    +'El boton le pone el tag <b style="color:var(--text2)">api-califica-meta</b> al lead. '
+    +'Un workflow de GHL escuchando ese tag es el que dispara el evento. '
+    +'Marcá solo a los que valen: Meta optimiza hacia lo que le decis que es bueno.</div>';
+}
+// Un PUT con tags pisa la lista entera, asi que se manda completa.
+async function quizMarcarMeta(clientId, leadId, btn){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var cfg=c&&_quizCfg(c); if(!cfg) return;
+  var d=_QUIZ[clientId]; var l=(d&&d.leads||[]).filter(function(x){return x.id===leadId;})[0];
+  if(!l) return;
+  if(btn){ btn.disabled=true; btn.textContent='...'; }
+  try{
+    var tags=(l.tags||[]).slice();
+    if(tags.indexOf('api-califica-meta')<0) tags.push('api-califica-meta');
+    var r=await fetch('https://services.leadconnectorhq.com/contacts/'+leadId,{
+      method:'PUT', headers:{Authorization:'Bearer '+cfg.key,'Content-Type':'application/json',
+        'Version':'2021-07-28'}, body:JSON.stringify({tags:tags})});
+    if(r.status>=400) throw new Error('HTTP '+r.status);
+    l.tags=tags;
+    dibujarQuiz(c);
+    toast('Marcado para Meta.');
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='A Meta'; }
+    toast('No se pudo marcar: '+e.message,'red');
+  }
+}
+function quizPromesasHtml(c){
+  var cfg=_quizCfg(c);
+  if(!cfg||!cfg.promesasAb) return '<div style="font-size:12.5px;color:var(--amberx);line-height:1.6;'
+    +'max-width:640px">Falta el <b>FIELD_AB</b>: el instalador lo entrega al final del bloque, '
+    +'en los comentarios "Para el CONFIG de la torre de control". Pegá el bloque de nuevo.</div>';
+  // El test de promesas ya vive en Middle of Funnel, contra el mismo contacto
+  // de sistema. Duplicarlo aca seria tener dos editores del mismo dato.
+  return '<div style="font-size:12.5px;color:var(--text3);line-height:1.7;max-width:640px">'
+    +'Las promesas del quiz se editan en <b style="color:var(--text2)">Middle of Funnel</b>, '
+    +'contra el mismo contacto de sistema <span class="mono">'+esc(cfg.sistema)+'</span>. '
+    +'Ahi estan la tasa por promesa, el vs control y el historial de tests.</div>'
+    +'<button class="btn btn-sm" style="margin-top:12px" '
+    +'onclick="setHoja(\'middle\')">Ir a Middle of Funnel</button>';
 }
 function quizHtml(c){
   var cfg=_quizCfg(c);
@@ -22263,23 +22481,15 @@ function quizHtml(c){
     +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
       +'letter-spacing:0.07em;flex:1">Quiz funnel</div>';
   if(!cfg){
-    return head+'</div>'
-      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;max-width:600px">'
-      +'Este cliente todavia no tiene el quiz conectado. Pegá el bloque CONFIG que devuelve '
-      +'el instalador y vas a ver el embudo aca, junto al gasto de Meta.</div>'
-      +'<div style="display:flex;gap:8px;margin-top:14px">'
-      +'<button class="btn btn-sm btn-primary" onclick="quizConfigModal('+c.id+')">Conectar el quiz</button>'
-      +'<button class="btn btn-sm" onclick="quizTplModal()">'
-      +(quizTpl()?'Ver la plantilla':'Cargar la plantilla')+'</button></div>';
+    return '<div style="font-size:12.5px;color:var(--text3);line-height:1.65;max-width:600px">'
+      +'Este cliente todavia no tiene el quiz conectado. Segui los pasos de Configuracion y '
+      +'el embudo aparece aca, junto al gasto de Meta.</div>'
+      +'<button class="btn btn-sm btn-primary" style="margin-top:14px" '
+      +'onclick="quizSub(\'config\')">Ir a Configuracion</button>';
   }
   var d=_QUIZ[c.id];
-  head+='<button class="btn btn-sm btn-primary" onclick="quizGenerar('+c.id+')" '
-      +'title="Baja el quiz con el CONFIG de este cliente">Generar el quiz</button>'
-    +'<button class="btn btn-sm" onclick="quizCargar('+c.id+')">'
+  head+='<button class="btn btn-sm" onclick="quizCargar('+c.id+')">'
       +(d&&d.cargando?'Cargando...':'Actualizar')+'</button>'
-    +'<button class="btn btn-sm" onclick="quizConfigModal('+c.id+')">Configuracion</button>'
-    +'<button class="btn btn-sm" onclick="quizTplModal()" title="El HTML base, uno para todos">'
-      +'Plantilla</button>'
     +(d&&d.at?('<span style="font-size:10.5px;color:var(--text3)">'
       +d.at.toLocaleTimeString('es-AR')+'</span>'):'')
     +'</div>';
@@ -22454,8 +22664,7 @@ function quizTplGuardar(){
   }
   DB.quizTpl=txt;
   save(); closeModal();
-  S._middleCargado=null;
-  if(S._hoja==='middle'&&S._hojaCliente) dibujarMiddle(S._hojaCliente);
+  dibujarQuiz(S._hojaCliente);
   toast('Plantilla guardada ('+Math.round(txt.length/1024)+' KB).');
 }
 // Antes de bajar nada: que ningun id del bloque pertenezca a otro cliente.
@@ -25788,7 +25997,7 @@ function embudoSubNav(){
   return '<div style="display:flex;gap:8px;margin-bottom:18px;align-items:center;flex-wrap:wrap">'
     +inf
     +'<span style="width:1px;height:18px;background:var(--border);margin:0 3px"></span>'
-    +topConMenu(sel)+b('middle','Middle of Funnel')+bottomConMenu(sel)+b('records','Records')+b('arbol','Arbol de diagnostico')
+    +topConMenu(sel)+b('middle','Middle of Funnel')+bottomConMenu(sel)+b('records','Records')+b('quiz','Quiz')+b('arbol','Arbol de diagnostico')
     +ctrl+'</div>';
 }
 
@@ -25888,6 +26097,7 @@ function embudoHojasHtml(topHtml, c){
     +'<div id="hoja-top-body" style="display:'+(sel==='top'?'block':'none')+'">'+topHtml+'<div id="mm-top-host"></div></div>'
     +'<div id="hoja-ventas-body" style="display:'+((sel==='bottom'||sel==='records'||sel==='cap')?'block':'none')+'"></div>'
     +'<div id="hoja-middle-body" style="display:'+(sel==='middle'?'block':'none')+'"></div>'
+    +'<div id="hoja-quiz-body" style="display:'+(sel==='quiz'?'block':'none')+'"></div>'
     +'<div id="hoja-arbol-body" style="display:'+(sel==='arbol'?'block':'none')+'"></div>'
     +'<div id="hoja-guion-body" style="display:'+(sel==='guion'?'block':'none')+'"></div>'
     +'<div id="hoja-mercado-body" style="display:'+(sel==='mercado'?'block':'none')+'"></div>'
@@ -25974,6 +26184,7 @@ function setHoja(k){
   var top=document.getElementById('hoja-top-body');
   var ven=document.getElementById('hoja-ventas-body');
   var mid=document.getElementById('hoja-middle-body');
+  var qz=document.getElementById('hoja-quiz-body');
   var arb=document.getElementById('hoja-arbol-body');
   var gui=document.getElementById('hoja-guion-body');
   var mer=document.getElementById('hoja-mercado-body');
@@ -25982,6 +26193,7 @@ function setHoja(k){
   if(top) top.style.display=(S._hoja==='top')?'block':'none';
   if(ven) ven.style.display=esVentas?'block':'none';
   if(mid) mid.style.display=(S._hoja==='middle')?'block':'none';
+  if(qz) qz.style.display=(S._hoja==='quiz')?'block':'none';
   if(arb) arb.style.display=(S._hoja==='arbol')?'block':'none';
   if(gui) gui.style.display=(S._hoja==='guion')?'block':'none';
   if(mer) mer.style.display=(S._hoja==='mercado')?'block':'none';
@@ -25990,6 +26202,7 @@ function setHoja(k){
   if(S._hoja==='top'){ dibujarMmTop(S._hojaCliente); kpiMarquesina(); }
   if(S._hoja==='arbol') dibujarArbol(S._hojaCliente);
   if(S._hoja==='middle') dibujarMiddle(S._hojaCliente);
+  if(S._hoja==='quiz') dibujarQuiz(S._hojaCliente);
   if(vac) vac.style.display=(S._hoja==='informes')?'block':'none';
   if(S._hoja==='informes' && S._hojaCliente) kickLiveRefresh(S._hojaCliente);
   _repintarSubNav();   // solo las pildoras, para no rearmar todo el contenido
@@ -26173,24 +26386,15 @@ function dibujarMiddle(c){
   var a=abCfg(c);
   var tabla=lpTablaLandingsHtml(c);
   if(!a.contactId||!a.fieldId||!c.ghl||!c.ghl.token){
-    body.innerHTML=tabla+middleConfigHtml(c)
-      +'<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
-      +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
+    body.innerHTML=tabla+middleConfigHtml(c);
     return;
   }
-  // El quiz va abajo del A/B: los dos miden el mismo tramo del embudo y
-  // comparten el contacto de sistema, asi que verlos separados obliga a cruzar
-  // dos pantallas para una sola pregunta.
-  var caja='<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
-    +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
-  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=tabla+S._middleHtml+caja; return; }
-  body.innerHTML=tabla+'<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>'+caja;
+  if(S._middleCargado===c.id && S._middleHtml){ body.innerHTML=tabla+S._middleHtml; return; }
+  body.innerHTML=tabla+'<div style="padding:20px 0;font-size:12px;color:var(--text3)">Leyendo metricas de la landing...</div>';
   cargarAB(c).then(function(html){
     S._middleCargado=c.id; S._middleHtml=html;
     var b=document.getElementById('hoja-middle-body');
-    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html
-      +'<div id="quiz-box" style="margin-top:26px;padding-top:20px;'
-      +'border-top:1px solid var(--border)">'+quizHtml(c)+'</div>';
+    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html;
   }).catch(function(e){
     var b=document.getElementById('hoja-middle-body');
     if(b) b.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo leer: '+esc(e.message)+'</div>'
