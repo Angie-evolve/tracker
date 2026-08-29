@@ -23257,7 +23257,7 @@ function quizPromesaModal(clientId){
         +'analisis de mercado</button>'
       +'<div id="prm-adj" style="font-size:11.5px;color:var(--text3);margin-top:6px"></div>'
       +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
-        +'Archivos de texto: .md, .txt, .json. Tambien sirve pegar el HTML de un dataset.</div>'
+        +'Word (.docx), .md, .txt, .json o el HTML de un dataset.</div>'
       +'<div id="prm-est" style="font-size:11.5px;margin-top:14px;min-height:16px;color:var(--text3)"></div>'
       +'<div id="prm-out"></div>'
       +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
@@ -23267,22 +23267,56 @@ function quizPromesaModal(clientId){
       +'</div>'
     +'</div></div>';
 }
+// El navegador no lee .docx como texto: hace falta una libreria, que se baja
+// sola la primera vez. Los guiones suelen venir en Word, asi que vale la pena.
+function _cargarMammoth(){
+  if(window.mammoth) return Promise.resolve(window.mammoth);
+  return new Promise(function(res,rej){
+    var sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js';
+    sc.onload=function(){ res(window.mammoth); };
+    sc.onerror=function(){ rej(new Error('no se pudo bajar el lector de Word')); };
+    document.head.appendChild(sc);
+  });
+}
 function quizPromAdjuntar(){
   var inp=document.createElement('input');
-  inp.type='file'; inp.multiple=true; inp.accept='.md,.txt,.json,.html,.htm,.csv';
+  inp.type='file'; inp.multiple=true;
+  inp.accept='.md,.txt,.json,.html,.htm,.csv,.docx,.rtf';
   inp.onchange=async function(){
     var fs=[].slice.call(inp.files||[]);
-    for(var i=0;i<fs.length;i++){
-      var t=await fs[i].text();
-      // Del HTML solo el texto: las etiquetas gastan lugar y no dicen nada.
-      if(/\.html?$/i.test(fs[i].name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
-        .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
-      _PROM_ADJ.push({nombre:fs[i].name, texto:t.slice(0,30000)});
-    }
     var e=document.getElementById('prm-adj');
-    if(e) e.textContent=_PROM_ADJ.length
-      ? ('Adjunto: '+_PROM_ADJ.map(function(x){return x.nombre;}).join(', '))
-      : '';
+    var fallados=[];
+    for(var i=0;i<fs.length;i++){
+      var f=fs[i], t='';
+      try{
+        if(/\.docx$/i.test(f.name)){
+          if(e) e.textContent='Abriendo '+f.name+'...';
+          var mm=await _cargarMammoth();
+          var buf=await f.arrayBuffer();
+          var r=await mm.extractRawText({arrayBuffer:buf});
+          t=(r&&r.value)||'';
+        }else if(/\.doc$/i.test(f.name)){
+          fallados.push(f.name+' (es .doc viejo: guardalo como .docx)'); continue;
+        }else{
+          t=await f.text();
+          // Del HTML solo el texto: las etiquetas gastan lugar y no dicen nada.
+          if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
+            .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+        }
+      }catch(err){ fallados.push(f.name+' ('+err.message+')'); continue; }
+      if(!String(t).trim()){ fallados.push(f.name+' (vino vacio)'); continue; }
+      _PROM_ADJ.push({nombre:f.name, texto:String(t).slice(0,30000)});
+    }
+    if(e){
+      e.innerHTML=(_PROM_ADJ.length
+        ? ('Adjunto: '+_PROM_ADJ.map(function(x){
+            return esc(x.nombre)+' <span style="color:var(--text3)">('
+              +Math.round(x.texto.length/1000)+'k)</span>'; }).join(', '))
+        : '')
+        +(fallados.length?('<div style="color:var(--amberx);margin-top:4px">No pude leer: '
+          +esc(fallados.join(', '))+'</div>'):'');
+    }
   };
   inp.click();
 }
@@ -23299,20 +23333,23 @@ async function quizPromesaGenerar(clientId){
   if(!idx.length && !_PROM_ADJ.length){
     decir('Elegi al menos una llamada o subi un archivo.','var(--amberx)'); return;
   }
-  var tope=idx.length>=3?18000:30000;
+  var tope=idx.length>=4?12000:(idx.length===3?18000:30000);
   var mat=idx.map(function(i){
     return {tipo:'llamada', titulo:lls[i].title||'Llamada', fecha:lls[i].date||'',
             texto:String(lls[i].transcript||'').slice(0,tope)};
   }).concat(_PROM_ADJ.map(function(a){ return {tipo:'documento', titulo:a.nombre, texto:a.texto}; }));
   var btn=document.getElementById('prm-ok');
   if(btn){ btn.disabled=true; btn.textContent='Pensando...'; }
-  decir('Leyendo '+mat.length+' fuente'+(mat.length===1?'':'s')+'. Tarda medio minuto.');
+  var chars=mat.reduce(function(a,x){ return a+x.texto.length; },0);
+  console.log('Promesa \u00b7 '+mat.length+' fuentes, '+Math.round(chars/1000)+'k caracteres');
+  decir('Leyendo '+mat.length+' fuente'+(mat.length===1?'':'s')+', '
+    +Math.round(chars/1000)+'k caracteres. Tarda medio minuto.');
   try{
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2500,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,messages:[{role:'user',content:
         'Trabajamos para "'+(c.name||'')+'"'+(c.industry?(', rubro '+c.industry):'')+'. '
         +'Vamos a publicar un quiz de diagnostico: el lead responde doce preguntas y recibe '
         +'un informe con cuanto le cuesta su problema hoy.\n\n'
@@ -23335,17 +23372,27 @@ async function quizPromesaGenerar(clientId){
         +'"rubros":["",""],"aviso":""}\n\nMATERIAL:\n'+JSON.stringify(mat)}]})
     });
     var d=await r.json();
-    if(d.error){ decir('La IA respondio: '+esc(d.error.message||''),'var(--redx)');
-      if(btn){ btn.disabled=false; btn.textContent='Proponer'; } return; }
+    console.log('Promesa \u00b7 respuesta de la IA:', d);
+    var fin=function(){ if(btn){ btn.disabled=false; btn.textContent='Proponer'; } };
+    if(d.error){ decir('La IA respondio: '+esc(d.error.message||JSON.stringify(d.error)),'var(--redx)');
+      fin(); return; }
     var txt=(d.content||[]).filter(function(b){return b.type==='text';})
       .map(function(b){return b.text;}).join('');
+    if(!txt){ decir('La IA no devolvio texto. stop_reason: '+esc(d.stop_reason||'?'),'var(--redx)');
+      fin(); return; }
     var a=txt.indexOf('{');
     var o=null;
     if(a>=0){ try{ o=JSON.parse(txt.slice(a,txt.lastIndexOf('}')+1)); }
       catch(pe){ o=_jsonRescatar(txt.slice(a)); } }
-    if(!o||!(o.promesas||[]).length){ decir('No pude leer la respuesta.','var(--redx)');
-      console.log('Promesa:', d);
-      if(btn){ btn.disabled=false; btn.textContent='Proponer'; } return; }
+    if(!o||!(o.promesas||[]).length){
+      // Decir que llego, no solo que fallo: sin esto no hay forma de saber si
+      // se corto por largo, si contesto otra cosa, o si no habia material.
+      decir('No pude leer la respuesta'
+        +(d.stop_reason==='max_tokens'?', se corto por largo. Proba con menos llamadas'
+          :(d.stop_reason?(' (stop_reason: '+esc(d.stop_reason)+')'):''))
+        +'.<br><span style="color:var(--text3)">Empieza asi: '+esc(txt.slice(0,120))+'</span>',
+        'var(--redx)');
+      fin(); return; }
     window._PROM_RES=o;
     decir(o.aviso?esc(o.aviso):'', o.aviso?'var(--amberx)':'var(--text3)');
     var ang={dolor:'var(--redx)', resultado:'var(--accent)', numero:'var(--amberx)'};
