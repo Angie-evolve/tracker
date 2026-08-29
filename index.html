@@ -17312,6 +17312,9 @@ function renderTab(){
         <div id="sh-landing" style="display:${_shHoja()==='landing'?'block':'none'}">
           ${landingHtml(c)}
         </div>
+        <div id="sh-quiz" style="display:${_shHoja()==='quiz'?'block':'none'}">
+          ${quizHtml(c)}
+        </div>
         <div id="sh-board" style="display:${_shHoja()==='board'?'block':'none'}">
           ${boardHtml(c)}
         </div>
@@ -19324,6 +19327,7 @@ var SH_HOJAS=[
   {k:'contexto',    l:'Contexto'},
   {k:'material',    l:'Material'},
   {k:'landing',     l:'Landing'},
+  {k:'quiz',        l:'Quiz'},
   {k:'board',       l:'Board'}
 ];
 function _shHoja(){
@@ -22058,6 +22062,260 @@ function _jsonRescatar(txt){
     t=limpio.slice(0, corte);
   }
   return null;
+}
+// ---- Quiz funnel ---------------------------------------------------------
+// Los contadores del quiz viven en un contacto de sistema de GHL. La torre de
+// control los lee desde un HTML publicado aparte, con la config en el
+// localStorage de cada navegador. Aca se guardan en el cliente: se pega el
+// bloque CONFIG una vez y queda para todas las maquinas, al lado del gasto de
+// Meta, que es el numero que a la torre le falta para cerrar la cuenta.
+function _quizCfg(c){ return c.quiz||null; }
+// Mismo parseo que la torre: el bloque que escupe el instalador.
+function _quizParsear(txt){
+  var uno=function(re){ var m=String(txt).match(re); return m?m[1].trim():''; };
+  var cfg={ key:uno(/GHL_KEY\s*=\s*['"]([^'"]+)['"]/),
+            loc:uno(/GHL_LOC\s*=\s*['"]([^'"]+)['"]/),
+            sistema:uno(/SISTEMA_ID\s*=\s*['"]([^'"]+)['"]/),
+            pipe:uno(/GHL_PIPE\s*=\s*['"]([^'"]+)['"]/),
+            promesasAb:uno(/FIELD_AB\s*=\s*['"]([^'"]+)['"]/),
+            sf:{} };
+  var b=String(txt).match(/SF\s*=\s*\{([\s\S]*?)\}/);
+  if(b){
+    var pares=b[1].match(/(\w+)\s*:\s*['"]([^'"]+)['"]/g)||[];
+    pares.forEach(function(p){
+      var m=p.match(/(\w+)\s*:\s*['"]([^'"]+)['"]/);
+      if(m) cfg.sf[m[1]==='agendar'?'whatsapp':m[1]]=m[2];
+    });
+  }
+  return cfg;
+}
+function _quizFalta(cfg){
+  if(!cfg||!cfg.key||!cfg.loc||!cfg.sistema) return 'Faltan el token, el Location ID o el contacto de sistema.';
+  var req=['visitas','empezar','p1','p2','informe','whatsapp'];
+  var f=req.filter(function(k){ return !cfg.sf||!cfg.sf[k]; });
+  if(f.length) return 'Faltan estos contadores en el bloque SF: '+f.join(', ')+'.';
+  if(!/^pit-/.test(cfg.key)) return 'El token no empieza con "pit-": los viejos no sirven con la API v2.';
+  return '';
+}
+var QUIZ_PASOS=[['visitas','Abrieron el quiz'],['empezar','Tocaron empezar'],
+  ['p1','Dejaron sus datos'],['p2','Completaron el escaneo'],
+  ['informe','Vieron el informe'],['whatsapp','Pidieron por WhatsApp']];
+var _QUIZ={};
+function quizConfigModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_quizCfg(c);
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Conectar el quiz de '+esc(c.name||'este cliente')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Corré el instalador, tocá «Copiar al portapapeles» y pegá el bloque entero. '
+        +'Se guarda en el cliente, asi que sirve desde cualquier maquina.</div>'
+      +(cfg?('<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
+        +'Ya hay uno cargado: subcuenta <span class="mono">'+esc(cfg.loc)+'</span> &middot; '
+        +'contacto de sistema <span class="mono">'+esc(cfg.sistema)+'</span>. Pegar otro lo reemplaza.</div>'):'')
+      +'<textarea id="qz-txt" spellcheck="false" placeholder="const GHL_KEY  = \'pit-...\';&#10;'
+        +'const GHL_LOC  = \'...\';&#10;const SISTEMA_ID = \'...\';" '
+        +'style="width:100%;box-sizing:border-box;height:200px;padding:11px 13px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-size:11.5px;font-family:ui-monospace,Menlo,monospace;'
+        +'line-height:1.6;outline:none;resize:vertical"></textarea>'
+      +'<div id="qz-err" style="font-size:11.5px;margin-top:10px;min-height:16px;color:var(--redx)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
+        +(cfg?('<button class="btn btn-sm" style="margin-right:auto;color:var(--redx)" '
+          +'onclick="quizDesconectar('+c.id+')">Desconectar</button>'):'')
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="quizGuardarCfg('+c.id+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+  var t=document.getElementById('qz-txt'); if(t) t.focus();
+}
+function quizGuardarCfg(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var txt=String((document.getElementById('qz-txt')||{}).value||'').trim();
+  var e=document.getElementById('qz-err');
+  if(!txt){ if(e) e.textContent='Pegá el bloque CONFIG del instalador.'; return; }
+  var cfg=_quizParsear(txt);
+  var err=_quizFalta(cfg);
+  if(err){ if(e) e.textContent=err; return; }
+  c.quiz=cfg;
+  save(); closeModal();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+  quizCargar(clientId);
+}
+function quizDesconectar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!confirm('Se saca la configuracion del quiz de este cliente. El quiz publicado sigue funcionando.')) return;
+  delete c.quiz;
+  save(); closeModal();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
+// Un solo pedido por los contadores y uno por pagina de oportunidades. La
+// torre vieja hacia ~270 pedidos por minuto y chocaba el limite de la API.
+async function quizCargar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var cfg=c&&_quizCfg(c);
+  if(!cfg) return;
+  _QUIZ[clientId]={cargando:true};
+  if(typeof renderTab==='function') renderTab();
+  var H={Authorization:'Bearer '+cfg.key, 'Version':'2021-07-28'};
+  var api=async function(p){
+    var r=await fetch('https://services.leadconnectorhq.com'+p,{headers:H});
+    return {status:r.status, data:await r.json().catch(function(){return null;})};
+  };
+  try{
+    var s1=await api('/contacts/'+cfg.sistema);
+    if(s1.status!==200) throw new Error('No pude leer el contacto de sistema (HTTP '+s1.status+')');
+    var cf=(s1.data&&s1.data.contact&&s1.data.contact.customFields)||[];
+    var cont={};
+    Object.keys(cfg.sf).forEach(function(k){
+      var f=cf.filter(function(x){return x.id===cfg.sf[k];})[0];
+      cont[k]=f?(parseInt(f.value,10)||0):0;
+    });
+    // Los leads salen de las oportunidades del pipeline: el listado de
+    // contactos no siempre trae los tags y filtrar por ahi daba cero.
+    var leads=[], vistos={};
+    if(cfg.pipe){
+      for(var pag=1; pag<=3; pag++){
+        var r2=await api('/opportunities/search?location_id='+encodeURIComponent(cfg.loc)
+          +'&pipeline_id='+encodeURIComponent(cfg.pipe)+'&limit=100&page='+pag);
+        if(r2.status!==200) break;
+        var os=(r2.data&&r2.data.opportunities)||[];
+        os.forEach(function(o){
+          var ct=o.contact||{};
+          var id=ct.id||o.contactId;
+          if(!id||vistos[id]) return;
+          if(String(ct.name||'').toUpperCase().indexOf('SISTEMA')>=0) return;
+          vistos[id]=1;
+          leads.push({ id:id, nombre:ct.name||ct.email||'', email:ct.email||'',
+                       tags:ct.tags||[], at:o.createdAt||o.dateAdded });
+        });
+        if(os.length<100) break;
+      }
+    }
+    // El gasto lo tiene el tracker, no GHL: es lo que le falta a la torre para
+    // poder decir cuanto costo cada lead calificado.
+    var gasto=null;
+    try{
+      if(typeof fetchMetaSpendPeriod==='function'){
+        var g=await fetchMetaSpendPeriod(clientId,'30d');
+        if(g&&typeof g.total==='number') gasto=g.total;
+        else if(g&&typeof g.spend==='number') gasto=g.spend;
+      }
+    }catch(eg){}
+    _QUIZ[clientId]={ cont:cont, leads:leads, gasto:gasto, at:new Date() };
+  }catch(e){
+    _QUIZ[clientId]={ error:e.message };
+  }
+  if(typeof renderTab==='function') renderTab();
+}
+function quizHtml(c){
+  var cfg=_quizCfg(c);
+  var head='<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">'
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em;flex:1">Quiz funnel</div>';
+  if(!cfg){
+    return head+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;max-width:600px">'
+      +'Este cliente todavia no tiene el quiz conectado. Pegá el bloque CONFIG que devuelve '
+      +'el instalador y vas a ver el embudo aca, junto al gasto de Meta.</div>'
+      +'<button class="btn btn-sm btn-primary" style="margin-top:14px" '
+      +'onclick="quizConfigModal('+c.id+')">Conectar el quiz</button>';
+  }
+  var d=_QUIZ[c.id];
+  head+='<button class="btn btn-sm" onclick="quizCargar('+c.id+')">'
+      +(d&&d.cargando?'Cargando...':'Actualizar')+'</button>'
+    +'<button class="btn btn-sm" onclick="quizConfigModal('+c.id+')">Configuracion</button>'
+    +(d&&d.at?('<span style="font-size:10.5px;color:var(--text3)">'
+      +d.at.toLocaleTimeString('es-AR')+'</span>'):'')
+    +'</div>';
+  if(!d) { setTimeout(function(){ quizCargar(c.id); },50);
+    return head+'<div style="font-size:12.5px;color:var(--text3)">Leyendo los contadores...</div>'; }
+  if(d.cargando) return head+'<div style="font-size:12.5px;color:var(--text3)">Leyendo los contadores...</div>';
+  if(d.error) return head+'<div style="font-size:12.5px;color:var(--redx);line-height:1.6">'
+    +esc(d.error)+'<br><span style="color:var(--text3)">Revisá que el token y los IDs sean de la '
+    +'subcuenta de este cliente.</span></div>';
+
+  var v=d.cont.visitas||0;
+  var pct=function(n,de,dec){ return de>0?((n/de*100).toFixed(dec===undefined?1:dec)+'%'):'\u2014'; };
+  var nf=function(n){ return (n||0).toLocaleString('es-AR'); };
+  var stat=function(k,n,sub,hl){
+    return '<div style="background:var(--bg2);border:1px solid '
+      +(hl?'rgba(78,207,160,.25)':'var(--border)')+';border-radius:12px;padding:14px 16px">'
+      +'<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;'
+        +'color:var(--text3);margin-bottom:8px">'+k+'</div>'
+      +'<div style="font-size:24px;font-weight:600;line-height:1;color:'
+        +(hl?'var(--accent)':'var(--strong)')+'">'+n+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px">'+sub+'</div></div>';
+  };
+  // Calificados: los que la torre marca como buenos. Es el denominador que
+  // convierte el gasto en un costo que se puede comparar entre clientes.
+  var calif=d.leads.filter(function(l){
+    return (l.tags||[]).some(function(t){ return String(t).toLowerCase().indexOf('califica-meta')>=0; });
+  }).length;
+  var cpl=(d.gasto&&d.cont.p1)?(d.gasto/d.cont.p1):null;
+  var cpc=(d.gasto&&calif)?(d.gasto/calif):null;
+
+  var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));'
+    +'gap:10px;margin-bottom:22px">'
+    +stat('Visitas',nf(v),'Abrieron el quiz')
+    +stat('Leads',nf(d.cont.p1),pct(d.cont.p1,v)+' de las visitas')
+    +stat('Completaron',nf(d.cont.p2),pct(d.cont.p2,v)+' de las visitas',true)
+    +stat('Calificados',nf(calif),'Marcados para Meta')
+    +(cpc!=null?stat('Costo por calificado','$'+Math.round(cpc).toLocaleString('es-AR'),
+        'Gasto de Meta 30d / calificados',true)
+      :stat('Costo por calificado','\u2014',
+        d.gasto==null?'Falta conectar Meta':'Sin calificados todavia'))
+    +(cpl!=null?stat('Costo por lead','$'+Math.round(cpl).toLocaleString('es-AR'),'Gasto 30d / leads'):'')
+    +'</div>';
+
+  var peor={i:-1,caida:0,label:''};
+  var filas=QUIZ_PASOS.map(function(p,i){
+    var n=d.cont[p[0]]||0;
+    var prev=i===0?n:(d.cont[QUIZ_PASOS[i-1][0]]||0);
+    var caida=prev>0?((prev-n)/prev):0;
+    if(i>0&&prev>=10&&caida>peor.caida) peor={i:i,caida:caida,label:p[1]};
+    var fuga=(i===0)?'\u2014':(prev===0?'sin datos'
+      :(caida<0?('+'+Math.abs(caida*100).toFixed(0)+'%'):('\u2212'+(caida*100).toFixed(0)+'%')));
+    var col=(i>0&&caida>=.5)?'var(--redx)':'var(--text3)';
+    return '<div style="display:grid;grid-template-columns:1fr 70px 70px 70px;gap:12px;'
+      +'align-items:center;padding:11px 14px;border-top:1px solid var(--border)">'
+      +'<div><div style="font-size:13px;color:var(--text)">'+p[1]+'</div>'
+        +'<div style="background:var(--bg3);height:4px;border-radius:99px;margin-top:6px">'
+        +'<span style="display:block;height:4px;border-radius:99px;background:var(--accent);width:'
+        +(v>0?Math.min(100,Math.round(n/v*100)):0)+'%"></span></div></div>'
+      +'<div style="font-size:14px;font-weight:600;text-align:right">'+nf(n)+'</div>'
+      +'<div style="font-size:12px;color:var(--text3);text-align:right">'+pct(n,v,0)+'</div>'
+      +'<div style="font-size:12px;font-weight:600;text-align:right;color:'+col+'">'+fuga+'</div>'
+    +'</div>';
+  }).join('');
+
+  var nota='';
+  if(v===0) nota='<div style="font-size:12px;color:var(--amberx);line-height:1.6;margin-top:12px">'
+    +'<b>Todavia sin trafico.</b> Si la pagina esta publicada hace horas y sigue en cero, '
+    +'revisá que el SISTEMA_ID del quiz y el de aca sean el mismo.</div>';
+  else if(v<50) nota='<div style="font-size:12px;color:var(--amberx);line-height:1.6;margin-top:12px">'
+    +'<b>Todavia no se puede leer.</b> Con '+nf(v)+' visitas las diferencias son ruido. '
+    +'Esperá al menos 50 antes de tocar una pregunta.</div>';
+  else if(peor.i>0) nota='<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-top:12px">'
+    +'<b style="color:var(--text2)">La fuga mas grande esta en "'+esc(peor.label)+'"</b>, con una caida del '
+    +(peor.caida*100).toFixed(0)+'%. Entre 30% y 40% entre pantallas es normal; arriba del 50%, algo pasa ahi.</div>';
+
+  return head+cards
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em;margin-bottom:8px">Donde se cae la gente</div>'
+    +'<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">'
+    +'<div style="display:grid;grid-template-columns:1fr 70px 70px 70px;gap:12px;padding:9px 14px;'
+      +'background:var(--bg2);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">'
+      +'<span>Etapa</span><span style="text-align:right">Personas</span>'
+      +'<span style="text-align:right">Del total</span><span style="text-align:right">Fuga</span></div>'
+    +filas+'</div>'+nota;
 }
 function briefModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
