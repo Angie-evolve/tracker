@@ -22798,9 +22798,17 @@ function quizMarcaModal(clientId){
     +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
         +'Marca y contenido</div>'
-      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:4px">'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:10px">'
         +'Sacalo del sitio institucional del cliente, no del quiz anterior. El lead vio ese '
         +'sitio antes de llegar: si el quiz no se le parece, la promesa se debilita.</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+        +'<button id="qm-leer" class="btn btn-sm" onclick="quizLeerSitio('+c.id+')">'
+        +((c.quiz&&c.quiz.sitio)?'Volver a leer':'Leer el sitio del cliente')+'</button>'
+        +((c.quiz&&c.quiz.sitio)?('<button class="btn btn-sm" onclick="quizSitioModal('+c.id+')">'
+          +'Ver lo que encontro</button>'):'')
+      +'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">'
+        +'Completa solo los campos que esten vacios: no pisa lo que ya cargaste.</div>'
 
       +'<div style="'+rot+'">Titulo de la pagina</div>'
       +'<input id="qm-titulo" style="'+est+'" placeholder="Cliente &mdash; Diagnostico" '
@@ -22859,6 +22867,148 @@ function quizMarcaModal(clientId){
     +'</div></div>';
   var col=document.getElementById('qm-acento');
   if(col) col.oninput=function(){ document.getElementById('qm-acentoTxt').value=this.value; };
+}
+// Lee el sitio del cliente y trae lo que se puede sacar de ahi sin inventar:
+// colores, tipografias, logo y prueba social. La estrategia no: eso sale de las
+// llamadas, no de la web.
+async function quizLeerSitio(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var e=document.getElementById('qm-err');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  if(!apiKey){ decir('Falta la clave de Anthropic en Configuracion de agencia.','var(--redx)'); return; }
+  // Los links que ya tiene el cliente cargados en Material, mas su nombre.
+  var links=[];
+  (c.material||[]).forEach(function(m){ if(m&&m.url) links.push(m.url); });
+  if(c.web) links.push(c.web);
+  var btn=document.getElementById('qm-leer');
+  if(btn){ btn.disabled=true; btn.textContent='Leyendo...'; }
+  decir('Entrando al sitio de '+esc(c.name||'')+'. Tarda medio minuto.');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:3000,
+        tools:[{type:'web_search_20250305',name:'web_search',max_uses:6}],
+        messages:[{role:'user',content:
+          'Entra al sitio de la empresa "'+(c.name||'')+'"'
+          +(c.industry?(', del rubro '+c.industry):'')+'.'
+          +(links.length?(' Links conocidos: '+links.slice(0,6).join(', ')+'.'):'')
+          +'\n\nNecesito replicar su identidad visual en una pagina nueva. Sacá del sitio:\n'
+          +'1. El color de acento: el de los botones principales y los links. En hexadecimal.\n'
+          +'2. Si el sitio es de fondo claro u oscuro.\n'
+          +'3. Las tipografias de titulo y de cuerpo, si se pueden identificar.\n'
+          +'4. La URL del logo, si la encontras.\n'
+          +'5. PRUEBA SOCIAL: numeros que publiquen (clientes, anios, operaciones), '
+          +'nombres de clientes suyos, testimonios cortos. Con las palabras de ellos.\n'
+          +'6. Como se describen en una linea, con sus propias palabras.\n'
+          +'7. Los rubros o segmentos a los que dicen vender.\n\n'
+          +'Reglas: no inventes nada. Si un color no lo podes determinar con certeza, '
+          +'dejalo vacio en vez de estimarlo. No opines sobre estrategia ni propongas mejoras.\n\n'
+          +'Devolve SOLO un JSON, sin markdown:\n'
+          +'{"acento":"#RRGGBB o vacio","fondo":"claro|oscuro|","tipoTitulo":"","tipoCuerpo":"",'
+          +'"logo":"url o vacio","descripcion":"","rubros":["",""],'
+          +'"pruebaSocial":[{"n":"el numero","l":"que mide"}],"clientes":[""],'
+          +'"testimonios":[{"texto":"","quien":""}],"fuente":"la url de donde salio"}'}]})
+    });
+    var d=await r.json();
+    if(d.error){ decir('La IA respondio: '+esc(d.error.message||''),'var(--redx)');
+      if(btn){ btn.disabled=false; btn.textContent='Leer el sitio del cliente'; } return; }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+    var o=null;
+    if(a>=0){ try{ o=JSON.parse(txt.slice(a,z+1)); }catch(pe){ o=_jsonRescatar(txt.slice(a)); } }
+    if(!o){ decir('No pude leer la respuesta. Mira la consola con F12.','var(--redx)');
+      console.log('Leer sitio:', d);
+      if(btn){ btn.disabled=false; btn.textContent='Leer el sitio del cliente'; } return; }
+    // Se completa lo que este vacio y no se pisa lo que ya cargaste a mano.
+    var set=function(id,val){
+      var el=document.getElementById(id);
+      if(el && val && !String(el.value||'').trim()) el.value=val;
+    };
+    var puestos=[];
+    if(/^#[0-9a-fA-F]{6}$/.test(o.acento||'')){
+      var ac=document.getElementById('qm-acentoTxt');
+      if(ac && (!ac.value || ac.value==='#6D3AF2')){
+        ac.value=o.acento; document.getElementById('qm-acento').value=o.acento;
+        puestos.push('color');
+      }
+    }
+    if(o.fondo==='oscuro'||o.fondo==='claro'){
+      var f=document.getElementById('qm-fondo');
+      if(f){ f.value=o.fondo; puestos.push('fondo'); }
+    }
+    if((o.rubros||[]).length){ set('qm-rubros', o.rubros.join(', ')); puestos.push('rubros'); }
+    if(o.descripcion){ set('qm-bajada', o.descripcion); puestos.push('bajada'); }
+    // La prueba social no entra en ningun campo: se guarda aparte, porque es
+    // material para escribir el informe y los anuncios, no para el formulario.
+    c.quiz=c.quiz||{};
+    c.quiz.sitio={ at:new Date().toISOString(), datos:o };
+    save();
+    var ps=(o.pruebaSocial||[]).length, cl=(o.clientes||[]).length, te=(o.testimonios||[]).length;
+    var hallado=[];
+    if(ps) hallado.push(ps+' numero'+(ps===1?'':'s'));
+    if(cl) hallado.push(cl+' cliente'+(cl===1?'':'s'));
+    if(te) hallado.push(te+' testimonio'+(te===1?'':'s'));
+    decir((puestos.length?('Complete '+puestos.join(', ')+'. '):'No pude determinar los colores. ')
+      +(hallado.length?('Ademas guarde '+hallado.join(', ')+' de prueba social.')
+        :'No encontre prueba social publicada.')
+      +(o.fuente?(' <span style="color:var(--text3)">Fuente: '+esc(o.fuente)+'</span>'):''),
+      puestos.length?'var(--accent)':'var(--amberx)');
+    if(btn){ btn.disabled=false; btn.textContent='Volver a leer'; }
+  }catch(err){
+    decir('Error: '+esc(err.message),'var(--redx)');
+    if(btn){ btn.disabled=false; btn.textContent='Leer el sitio del cliente'; }
+  }
+}
+function quizSitioModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var st=c&&c.quiz&&c.quiz.sitio;
+  if(!st){ toast('Todavia no lei el sitio de este cliente.'); return; }
+  var o=st.datos||{};
+  var lista=function(t,a,fn){
+    if(!a||!a.length) return '';
+    return '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin:14px 0 6px">'+t+'</div>'
+      +a.map(fn).join('');
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:4px">'
+        +'Lo que dice el sitio de '+esc(c.name||'')+'</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:6px">'
+        +'Leido el '+esc(new Date(st.at).toLocaleDateString('es-AR'))
+        +(o.fuente?(' &middot; '+esc(o.fuente)):'')+'</div>'
+      +(o.descripcion?('<div style="font-size:13px;color:var(--text);line-height:1.6;'
+        +'margin-top:10px">'+esc(o.descripcion)+'</div>'):'')
+      +lista('Numeros que publican', o.pruebaSocial, function(x){
+        return '<div style="display:flex;gap:10px;padding:5px 0;font-size:12.5px">'
+          +'<span style="color:var(--accent);font-weight:600;min-width:70px">'+esc(x.n)+'</span>'
+          +'<span style="color:var(--text2)">'+esc(x.l)+'</span></div>'; })
+      +lista('Clientes que nombran', o.clientes, function(x){
+        return '<div style="font-size:12.5px;color:var(--text2);padding:3px 0">&middot; '+esc(x)+'</div>'; })
+      +lista('Testimonios', o.testimonios, function(x){
+        return '<div style="border-left:2px solid var(--border2);padding:2px 0 2px 12px;'
+          +'margin:8px 0;font-size:12.5px;color:var(--text2);line-height:1.6">'+esc(x.texto)
+          +(x.quien?('<div style="font-size:11px;color:var(--text3);margin-top:4px">'
+            +esc(x.quien)+'</div>'):'')+'</div>'; })
+      +((o.tipoTitulo||o.tipoCuerpo)?('<div style="font-size:11.5px;color:var(--text3);'
+        +'margin-top:14px">Tipografias: '+esc([o.tipoTitulo,o.tipoCuerpo].filter(Boolean).join(' / '))
+        +'</div>'):'')
+      +(o.logo?('<div style="font-size:11.5px;margin-top:8px"><a href="'+esc(o.logo)
+        +'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">'
+        +'Ver el logo</a></div>'):'')
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:16px;'
+        +'padding-top:12px;border-top:1px solid var(--border)">'
+        +'Esto no entra solo en el quiz: es material para escribir el informe y los anuncios. '
+        +'Verificalo antes de usarlo, sobre todo los numeros.</div>'
+      +'<div style="display:flex;justify-content:flex-end;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
 }
 function quizMarcaGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
