@@ -22862,6 +22862,8 @@ function quizMarcaModal(clientId){
       +'<div style="'+rot+'">Promesa por defecto</div>'
       +'<textarea id="qm-headline" style="'+est+';height:70px;resize:vertical" '
         +'placeholder="Descubri que areas de tu empresa...">'+esc(m.headline||'')+'</textarea>'
+      +'<div style="margin-top:7px"><button class="btn btn-sm" '
+        +'onclick="quizPromesaModal('+c.id+')">Escribirla desde las llamadas</button></div>'
       +ayuda('La que se ve si el test A/B no carga. Podes usar &lt;em&gt; para resaltar.')
 
       +'<div style="'+rot+'">Bajada</div>'
@@ -23211,6 +23213,179 @@ function _kitExtraer(textos){
   });
   if(!out.acento && out.colores.length) out.acento=out.colores[0];
   return out;
+}
+// ---- La promesa sale de las llamadas ------------------------------------
+// El sitio da la marca; la promesa no esta ahi. Sale de lo que el cliente dijo
+// en las llamadas y de lo que ya trabajaste: la oferta, el dataset, el analisis
+// de mercado. Aca se junta todo eso y se proponen opciones.
+var _PROM_ADJ=[];
+function quizPromesaModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  _PROM_ADJ=[];
+  var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:580px;max-height:86vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Escribir la promesa</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
+        +'Con lo que el cliente dijo en las llamadas y lo que ya trabajaste. '
+        +'La promesa define la estructura del quiz, asi que conviene que salga de ahi '
+        +'y no del sitio.</div>'
+      +(lls.length
+        ?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin-bottom:6px">Llamadas</div>'
+          +'<div style="max-height:170px;overflow-y:auto;margin-bottom:12px">'
+          +lls.map(function(x,i){
+            return '<label style="display:flex;align-items:center;gap:10px;padding:6px 0;'
+              +'border-bottom:1px solid var(--border);cursor:pointer">'
+              +'<input type="checkbox" class="prm-ll" value="'+i+'"'+(i<2?' checked':'')+'>'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);'
+                +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                +esc(x.title||x.tipo||'Llamada')+'</span>'
+              +'<span style="font-size:11px;color:var(--text3)">'+esc(x.date||'')+'</span>'
+            +'</label>';
+          }).join('')+'</div>')
+        :('<div style="font-size:12px;color:var(--amberx);line-height:1.6;margin-bottom:12px">'
+          +'Este cliente no tiene llamadas con transcripcion. Podes subir igual la oferta '
+          +'o el dataset abajo.</div>'))
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:6px">Material adicional</div>'
+      +'<button class="btn btn-sm" onclick="quizPromAdjuntar()">Subir oferta, dataset, '
+        +'analisis de mercado</button>'
+      +'<div id="prm-adj" style="font-size:11.5px;color:var(--text3);margin-top:6px"></div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5">'
+        +'Archivos de texto: .md, .txt, .json. Tambien sirve pegar el HTML de un dataset.</div>'
+      +'<div id="prm-est" style="font-size:11.5px;margin-top:14px;min-height:16px;color:var(--text3)"></div>'
+      +'<div id="prm-out"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="quizMarcaModal('+c.id+')">Volver</button>'
+        +'<button id="prm-ok" class="btn btn-sm btn-primary" '
+          +'onclick="quizPromesaGenerar('+c.id+')">Proponer</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function quizPromAdjuntar(){
+  var inp=document.createElement('input');
+  inp.type='file'; inp.multiple=true; inp.accept='.md,.txt,.json,.html,.htm,.csv';
+  inp.onchange=async function(){
+    var fs=[].slice.call(inp.files||[]);
+    for(var i=0;i<fs.length;i++){
+      var t=await fs[i].text();
+      // Del HTML solo el texto: las etiquetas gastan lugar y no dicen nada.
+      if(/\.html?$/i.test(fs[i].name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
+        .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+      _PROM_ADJ.push({nombre:fs[i].name, texto:t.slice(0,30000)});
+    }
+    var e=document.getElementById('prm-adj');
+    if(e) e.textContent=_PROM_ADJ.length
+      ? ('Adjunto: '+_PROM_ADJ.map(function(x){return x.nombre;}).join(', '))
+      : '';
+  };
+  inp.click();
+}
+async function quizPromesaGenerar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var e=document.getElementById('prm-est');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  if(!apiKey){ decir('Falta la clave de Anthropic.','var(--redx)'); return; }
+  var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var idx=[].slice.call(document.querySelectorAll('.prm-ll:checked')).map(function(x){ return +x.value; });
+  if(!idx.length && !_PROM_ADJ.length){
+    decir('Elegi al menos una llamada o subi un archivo.','var(--amberx)'); return;
+  }
+  var tope=idx.length>=3?18000:30000;
+  var mat=idx.map(function(i){
+    return {tipo:'llamada', titulo:lls[i].title||'Llamada', fecha:lls[i].date||'',
+            texto:String(lls[i].transcript||'').slice(0,tope)};
+  }).concat(_PROM_ADJ.map(function(a){ return {tipo:'documento', titulo:a.nombre, texto:a.texto}; }));
+  var btn=document.getElementById('prm-ok');
+  if(btn){ btn.disabled=true; btn.textContent='Pensando...'; }
+  decir('Leyendo '+mat.length+' fuente'+(mat.length===1?'':'s')+'. Tarda medio minuto.');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2500,messages:[{role:'user',content:
+        'Trabajamos para "'+(c.name||'')+'"'+(c.industry?(', rubro '+c.industry):'')+'. '
+        +'Vamos a publicar un quiz de diagnostico: el lead responde doce preguntas y recibe '
+        +'un informe con cuanto le cuesta su problema hoy.\n\n'
+        +'Escribi la PROMESA de la primera pantalla: que descubre el lead al terminar.\n\n'
+        +'Reglas:\n'
+        +'- Usa las palabras del cliente y de su mercado, las que aparecen en el material. '
+        +'No inventes un vocabulario nuevo.\n'
+        +'- Concreta y verificable. "Mejora tu gestion" no sirve; "descubri cuantas horas '
+        +'por semana se van en tareas que ya se pueden automatizar" si.\n'
+        +'- Una sola frase, hasta 22 palabras. Podes marcar 2 o 3 palabras con <em> para '
+        +'resaltarlas.\n'
+        +'- Tres opciones distintas entre si, no tres formas de decir lo mismo: una desde '
+        +'el dolor, una desde el resultado, una desde el numero concreto.\n'
+        +'- Para cada una, de donde la sacaste: la frase del material que la sostiene.\n'
+        +'- Si el material no alcanza para sostener una promesa concreta, decilo en "aviso" '
+        +'en vez de inventar.\n\n'
+        +'Devolve SOLO este JSON, sin markdown:\n'
+        +'{"promesas":[{"texto":"","angulo":"dolor|resultado|numero","porque":"",'
+        +'"cita":"la frase del material"}],"bajada":"dos lineas para debajo del titulo",'
+        +'"rubros":["",""],"aviso":""}\n\nMATERIAL:\n'+JSON.stringify(mat)}]})
+    });
+    var d=await r.json();
+    if(d.error){ decir('La IA respondio: '+esc(d.error.message||''),'var(--redx)');
+      if(btn){ btn.disabled=false; btn.textContent='Proponer'; } return; }
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('{');
+    var o=null;
+    if(a>=0){ try{ o=JSON.parse(txt.slice(a,txt.lastIndexOf('}')+1)); }
+      catch(pe){ o=_jsonRescatar(txt.slice(a)); } }
+    if(!o||!(o.promesas||[]).length){ decir('No pude leer la respuesta.','var(--redx)');
+      console.log('Promesa:', d);
+      if(btn){ btn.disabled=false; btn.textContent='Proponer'; } return; }
+    window._PROM_RES=o;
+    decir(o.aviso?esc(o.aviso):'', o.aviso?'var(--amberx)':'var(--text3)');
+    var ang={dolor:'var(--redx)', resultado:'var(--accent)', numero:'var(--amberx)'};
+    document.getElementById('prm-out').innerHTML=
+      '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin:14px 0 6px">Elegi una</div>'
+      +(o.promesas||[]).map(function(p,i){
+        return '<div onclick="quizPromesaElegir('+clientId+','+i+')" '
+          +'style="border:1px solid var(--border2);border-radius:var(--radius);padding:12px 14px;'
+          +'margin-bottom:8px;cursor:pointer" '
+          +'onmouseover="this.style.borderColor=\'var(--accent)\'" '
+          +'onmouseout="this.style.borderColor=\'var(--border2)\'">'
+          +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:'
+            +(ang[p.angulo]||'var(--text3)')+';margin-bottom:5px">'+esc(p.angulo||'')+'</div>'
+          +'<div style="font-size:14px;color:var(--strong);line-height:1.4">'+p.texto+'</div>'
+          +(p.porque?('<div style="font-size:11.5px;color:var(--text3);margin-top:6px;'
+            +'line-height:1.5">'+esc(p.porque)+'</div>'):'')
+          +(p.cita?('<div style="font-size:11px;color:var(--text3);margin-top:6px;'
+            +'border-left:2px solid var(--border2);padding-left:9px;line-height:1.5">'
+            +esc(p.cita)+'</div>'):'')
+        +'</div>';
+      }).join('');
+    if(btn){ btn.disabled=false; btn.textContent='Proponer otras'; }
+  }catch(err){
+    decir('Error: '+esc(err.message),'var(--redx)');
+    if(btn){ btn.disabled=false; btn.textContent='Proponer'; }
+  }
+}
+function quizPromesaElegir(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var o=window._PROM_RES;
+  if(!c||!o) return;
+  var p=(o.promesas||[])[i]; if(!p) return;
+  c.quiz=c.quiz||{}; c.quiz.marca=c.quiz.marca||{};
+  c.quiz.marca.headline=p.texto;
+  if(o.bajada && !c.quiz.marca.bajada) c.quiz.marca.bajada=o.bajada;
+  if((o.rubros||[]).length && !c.quiz.marca.rubros) c.quiz.marca.rubros=o.rubros.join(', ');
+  save();
+  quizMarcaModal(clientId);
+  toast('Promesa cargada. Podes editarla antes de guardar.');
 }
 function quizMarcaGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
