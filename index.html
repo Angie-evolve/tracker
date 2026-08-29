@@ -22845,23 +22845,32 @@ function quizUsosHtml(c){
       +'letter-spacing:.06em;margin:16px 0 4px">Que se uso en el diseno</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:8px">'
       +'Tildar lo que ya esta puesto en el archivo. A la derecha dice si el material existe.</div>'
-    +QUIZ_USOS.map(function(x){
-      var hay=false; try{ hay=!!x.hay(c); }catch(e){}
-      return '<label style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;'
-        +'border-bottom:1px solid var(--border);cursor:pointer">'
-        +'<input type="checkbox" class="qm-uso" data-k="'+x.k+'"'+(u[x.k]?' checked':'')
-          +' style="margin-top:2px">'
-        +'<span style="flex:1;min-width:0">'
-          +'<span style="display:block;font-size:12.5px;color:var(--text)">'+esc(x.l)+'</span>'
-          +'<span style="display:block;font-size:11px;color:var(--text3);margin-top:2px;'
-            +'line-height:1.45">'+esc(x.ayuda)+'</span>'
-        +'</span>'
-        // "Hay material" y "esta usado" son cosas distintas: tener el logo
-        // guardado no significa que este en la pagina.
-        +'<span style="font-size:10.5px;flex:none;color:'
-          +(hay?'var(--accent)':'var(--text3)')+'">'+(hay?'hay':'falta')+'</span>'
-      +'</label>';
-    }).join('')
+    +(function(){
+      var tp=quizTpl(c);
+      var slots=tp?_tplSlots(tp):null;
+      return QUIZ_USOS.map(function(x){
+        var hay=false; try{ hay=!!x.hay(c); }catch(e){}
+        // Tres estados y no dos: puede que tengas el material y que el diseno
+        // elegido no tenga donde ponerlo. Tildarlo ahi seria mentira.
+        var soporta=(!slots || slots[x.k]===undefined) ? true : slots[x.k];
+        return '<label style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;'
+          +'border-bottom:1px solid var(--border);cursor:pointer'+(soporta?'':';opacity:.55')+'">'
+          +'<input type="checkbox" class="qm-uso" data-k="'+x.k+'"'+(u[x.k]?' checked':'')
+            +' style="margin-top:2px">'
+          +'<span style="flex:1;min-width:0">'
+            +'<span style="display:block;font-size:12.5px;color:var(--text)">'+esc(x.l)+'</span>'
+            +'<span style="display:block;font-size:11px;color:var(--text3);margin-top:2px;'
+              +'line-height:1.45">'
+              +(soporta?esc(x.ayuda)
+                :'El diseno elegido no tiene donde ponerlo. Hay que agregarselo a mano.')
+            +'</span>'
+          +'</span>'
+          +'<span style="font-size:10.5px;flex:none;color:'
+            +(!soporta?'var(--amberx)':(hay?'var(--accent)':'var(--text3)'))+'">'
+            +(!soporta?'no entra':(hay?'hay':'falta'))+'</span>'
+        +'</label>';
+      }).join('');
+    })()
     +'<div style="'+'font-size:11px;color:var(--text3);text-transform:uppercase;'
       +'letter-spacing:.06em;margin:14px 0 4px">Foto y redes</div>'
     +'<input id="qm-foto" style="width:100%;box-sizing:border-box;padding:9px 12px;'
@@ -23809,7 +23818,8 @@ function _quizPasoTpl(c){
     +'</div>'
     // La vista previa al lado del selector: sin esto hay que abrir el modal
     // para saber cual es "Oscuro minimal".
-    +'<div style="max-width:230px;margin-top:10px">'+_tplPreview(act.html||'', 120)+'</div>';
+    +'<div style="max-width:230px;margin-top:10px">'+_tplPreview(act.html||'', 120)+'</div>'
+    +_tplSlotsHtml(act.html||'');
 }
 function quizConfigHtml(c){
   var cfg=_quizCfg(c), q=c.quiz, g=c.ghl||{};
@@ -23860,8 +23870,10 @@ function quizConfigHtml(c){
         ?(function(){
             var u=quizMarca(c).usos||{};
             var n=QUIZ_USOS.filter(function(x){ return u[x.k]; }).length;
+            var tp=quizTpl(c), slots=tp?_tplSlots(tp):null;
             var falta=QUIZ_USOS.filter(function(x){
               if(u[x.k]) return false;
+              if(slots && slots[x.k]===false) return false;   // no entra en este diseno
               try{ return !!x.hay(c); }catch(e){ return false; }
             });
             return '<span style="display:inline-block;width:10px;height:10px;border-radius:3px;'
@@ -24142,6 +24154,43 @@ function quizTplDe(c){
 // La vista previa es la plantilla misma, en un iframe sin permiso de ejecutar
 // scripts. Se ve la primera pantalla tal cual, y de paso no puede llamar a GHL
 // ni contar una visita falsa mientras la mirás.
+// Que puede sostener cada diseno. Se detecta por convencion —un id q-logo,
+// q-prueba, etc.— y con algunas pistas para las plantillas que no la siguen.
+// Sin esto, tildar "logo" en un cliente no significa nada: puede que el diseno
+// no tenga donde ponerlo.
+var QUIZ_SLOTS=[
+  {k:'logo',  l:'Logo',
+   det:function(h){ return /id=["']q-logo["']/.test(h)
+     || /<img[^>]+(class|id)=["'][^"']*logo/i.test(h); }},
+  {k:'foto',  l:'Foto',
+   det:function(h){ return /id=["']q-foto["']/.test(h) || /<img\s/i.test(h); }},
+  {k:'prueba',l:'Prueba social',
+   det:function(h){ return /id=["']q-prueba["']/.test(h)
+     || /class=["'][^"']*(prueba|social|stats?|metricas)/i.test(h); }},
+  {k:'testimonios', l:'Testimonios',
+   det:function(h){ return /id=["']q-testimonios["']/.test(h)
+     || /class=["'][^"']*testimon/i.test(h) || /<blockquote/i.test(h); }},
+  {k:'redes', l:'Redes',
+   det:function(h){ return /id=["']q-redes["']/.test(h)
+     || /(instagram|linkedin)\.com/i.test(h); }},
+  {k:'colores', l:'Colores', det:function(h){ return /--violet\s*:/.test(h); }},
+  {k:'tipos', l:'Tipografias', det:function(h){ return /fonts\.googleapis/.test(h); }}
+];
+function _tplSlots(html){
+  var o={};
+  QUIZ_SLOTS.forEach(function(x){ try{ o[x.k]=!!x.det(String(html||'')); }catch(e){ o[x.k]=false; } });
+  return o;
+}
+function _tplSlotsHtml(html){
+  var o=_tplSlots(html);
+  return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px">'
+    +QUIZ_SLOTS.map(function(x){
+      return '<span style="font-size:9.5px;padding:1px 6px;border-radius:99px;'
+        +'border:1px solid '+(o[x.k]?'rgba(78,207,160,.35)':'var(--border)')+';'
+        +'color:'+(o[x.k]?'var(--accent)':'var(--text3)')+'">'
+        +(o[x.k]?'':'sin ')+esc(x.l.toLowerCase())+'</span>';
+    }).join('')+'</div>';
+}
 function _tplPreview(html, alto){
   var solo=String(html).replace(/<script[\s\S]*?<\/script>/gi,'');
   return '<div style="position:relative;height:'+alto+'px;overflow:hidden;'
@@ -24182,6 +24231,7 @@ function quizTplModal(clientId){
               +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
                 +Math.round(t.html.length/1024)+' KB'
                 +(usa?' &middot; <span style="color:var(--accent)">en uso</span>':'')+'</div>'
+              +_tplSlotsHtml(t.html)
               +'<div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">'
                 +(c&&!usa?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
                   +'onclick="quizTplUsar('+(c?c.id:0)+','+t.id+',1)">Usar</button>'):'')
