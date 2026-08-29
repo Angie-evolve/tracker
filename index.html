@@ -22370,6 +22370,45 @@ function quizHtml(c){
 // clientes es el bloque CONFIG. Reemplazarlo a mano es donde nace el error mas
 // caro del SOP: un id del cliente anterior que sobrevive no falla, escribe en
 // la cuenta equivocada.
+// Corta desde "const NOMBRE" hasta el ; que cierra, respetando llaves y comillas.
+function _declRango(txt, nombre){
+  var re=new RegExp('(^|\\n)\\s*const\\s+'+nombre+'\\s*[=:]');
+  var m=re.exec(txt);
+  if(!m) return null;
+  var ini=m.index+(m[1]?m[1].length:0);
+  var i=m.index+m[0].length, llave=0, dentro=null, escap=false;
+  while(i<txt.length){
+    var ch=txt[i];
+    if(escap){ escap=false; i++; continue; }
+    if(dentro){
+      if(ch==='\\') escap=true;
+      else if(ch===dentro) dentro=null;
+    }else if(ch==='"'||ch==="'"||ch==='`'){ dentro=ch; }
+    else if(ch==='{'||ch==='[') llave++;
+    else if(ch==='}'||ch===']') llave--;
+    else if(ch===';'&&llave===0){ i++; break; }
+    i++;
+  }
+  return {ini:ini, fin:i};
+}
+// Reemplaza en la plantilla solo las declaraciones que el bloque nuevo trae.
+// Las que el instalador no entrega (VALOR_HORA, PROMESA_DEFAULT y demas)
+// quedan como estan: si se reemplazara el bloque entero, el quiz saldria sin
+// ellas y falla recien al calcular el informe, con el lead ya adentro.
+function _quizFusionar(tpl, nuevo){
+  var nombres=(nuevo.match(/(^|\n)\s*const\s+(\w+)/g)||[])
+    .map(function(x){ return x.replace(/[\s\S]*const\s+/,''); });
+  var out=tpl, cambiadas=[], agregadas=[];
+  nombres.forEach(function(n){
+    var rn=_declRango(nuevo,n); if(!rn) return;
+    var txtNuevo=nuevo.slice(rn.ini,rn.fin).replace(/^\s*\n/,'');
+    var rt=_declRango(out,n);
+    if(rt){ out=out.slice(0,rt.ini)+txtNuevo+out.slice(rt.fin); cambiadas.push(n); }
+    else{ agregadas.push(n); }
+  });
+  return {texto:out, cambiadas:cambiadas, agregadas:agregadas, nombres:nombres};
+}
+
 function quizTpl(){ return DB.quizTpl||null; }
 var QUIZ_MARCA_INI='// ═══════════════ CONFIG ═══════════════';
 var QUIZ_MARCA_FIN='// ═══════════════ ESTADO ═══════════════';
@@ -22460,8 +22499,17 @@ function quizGenerar(clientId){
     avisos.push('El SISTEMA_ID del bloque no coincide con el contacto de sistema del test de promesas.');
 
   var i=tpl.indexOf(QUIZ_MARCA_INI), f=tpl.indexOf(QUIZ_MARCA_FIN);
-  var html=tpl.slice(0,i)+QUIZ_MARCA_INI+'\n'
-    +q.raw.replace(QUIZ_MARCA_INI,'').trim()+'\n\n'+tpl.slice(f);
+  var fus=_quizFusionar(tpl.slice(i,f), q.raw);
+  var html=tpl.slice(0,i)+fus.texto+tpl.slice(f);
+  if(fus.agregadas.length) avisos.push('El bloque trae '+fus.agregadas.join(', ')
+    +', que la plantilla no tiene. Revisá que sean de la misma version.');
+  // Lo que la plantilla define y el bloque no toca queda como estaba. Si algo
+  // asi desapareciera, el quiz falla recien al calcular el informe, con el
+  // lead ya adentro.
+  ['VALOR_HORA','AUTOMATIZABLE','RECUPERO_VENTAS','PROMESA_DEFAULT'].forEach(function(n){
+    if(tpl.indexOf('const '+n)>=0 && html.indexOf('const '+n)<0)
+      avisos.push('Se perdio '+n+' al reemplazar. No publiques asi.');
+  });
 
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
@@ -22469,8 +22517,10 @@ function quizGenerar(clientId){
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
         +'Quiz de '+esc(c.name||'este cliente')+'</div>'
       +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:14px">'
-        +'La plantilla con el bloque CONFIG de este cliente ya puesto. '
-        +Math.round(html.length/1024)+' KB. Pegalo en el step del embudo y publicá.</div>'
+        +'Se reemplazaron '+fus.cambiadas.length+' declaraciones: '
+        +esc(fus.cambiadas.slice(0,6).join(', '))+(fus.cambiadas.length>6?'...':'')
+        +'. El resto de la plantilla queda igual. '
+        +Math.round(html.length/1024)+' KB.</div>'
       +(avisos.length
         ?('<div style="background:rgba(240,168,48,.08);border:1px solid rgba(240,168,48,.3);'
           +'border-radius:var(--radius);padding:12px 14px;margin-bottom:14px">'
