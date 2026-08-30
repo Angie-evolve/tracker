@@ -24430,8 +24430,12 @@ function quizTplReqsModal(tplId, clientId){
           +'</div>'
           +(x.ayuda?('<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">'
             +esc(x.ayuda)+'</div>'):'')
-          +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px">Reemplaza en el HTML: '
-            +'<span class="mono">'+esc(x.buscar||'(nada)')+'</span></div>'
+          +(x.buscar
+            ?('<div style="font-size:10.5px;color:var(--text3);margin-top:6px">Reemplaza en el HTML: '
+              +'<span class="mono">'+esc(x.buscar)+'</span></div>')
+            :('<div style="font-size:10.5px;color:var(--redx);margin-top:6px;line-height:1.5">'
+              +'Sin archivo a reemplazar: cargarlo en un cliente no va a hacer nada. '
+              +'Borralo y volve a crearlo eligiendo el archivo.</div>'))
         +'</div>';
       }).join(''):'<div style="font-size:12.5px;color:var(--text3);padding:6px 0">'
         +'Este diseno no tiene requisitos: se puede usar tal cual.</div>')
@@ -24469,7 +24473,10 @@ function quizTplReqAgregar(tplId, clientId){
   var e=document.getElementById('qr-err');
   var l=v('qr-l');
   if(!l){ if(e) e.textContent='Poné que es.'; return; }
-  tplReqs(t).push({ k:'r'+Date.now(), l:l, ayuda:v('qr-a'), buscar:v('qr-b') });
+  var buscar=v('qr-b');
+  if(!buscar){ if(e) e.textContent='Elegi que archivo reemplaza. Sin eso el requisito queda '
+    +'como recordatorio y no cambia nada al generar.'; return; }
+  tplReqs(t).push({ k:'r'+Date.now(), l:l, ayuda:v('qr-a'), buscar:buscar });
   save(); quizTplReqsModal(tplId, clientId);
   toast('Requisito agregado.');
 }
@@ -24648,16 +24655,26 @@ function quizGenerar(clientId){
   // fondo de LogicalMinds en la pagina de otro.
   var tObj=quizTplDe(c), reqs=tObj?tplReqs(tObj):[];
   var val=(q.reqs)||{};
-  var sinCubrir=[];
+  var sinCubrir=[], cambiados=[];
   reqs.forEach(function(x){
     var v=String(val[x.k]||'').trim();
     if(!v){ sinCubrir.push(x.l); return; }
-    if(!x.buscar) return;
-    if(html.indexOf(x.buscar)<0){
-      avisos.push('"'+x.l+'": no encontre '+x.buscar+' en la plantilla. Cambio el diseno?');
+    // Un requisito sin "que reemplaza" no puede hacer nada. Antes se salteaba
+    // en silencio: cargabas el archivo y no pasaba nada.
+    if(!x.buscar){
+      avisos.push('"'+x.l+'": cargaste el archivo pero el requisito no dice cual reemplazar. '
+        +'Editalo en la biblioteca y elegi el archivo de la plantilla.');
       return;
     }
-    html=html.split(x.buscar).join(v);
+    var n=html.split(x.buscar).length-1;
+    if(n){ html=html.split(x.buscar).join(v); cambiados.push(x.l+' ('+n+')'); return; }
+    // Segundo intento por nombre de archivo: si el requisito guardo la URL
+    // entera y la plantilla la escribe distinto, el nombre igual coincide.
+    var solo=String(x.buscar).split('/').pop().split('?')[0];
+    var n2=(solo && solo!==x.buscar) ? (html.split(solo).length-1) : 0;
+    if(n2){ html=html.split(solo).join(v); cambiados.push(x.l+' ('+n2+', por nombre)'); return; }
+    avisos.push('"'+x.l+'": no encontre '+x.buscar+' en el diseno elegido. '
+      +'Puede que el requisito sea de otra plantilla o que el archivo haya cambiado de nombre.');
   });
   if(sinCubrir.length) avisos.push('Sin reemplazar: '+sinCubrir.join(', ')
     +'. El archivo sale con el material del cliente anterior y no va a dar ningun error.');
@@ -24700,7 +24717,10 @@ function quizGenerar(clientId){
         +'Se reemplazaron '+fus.cambiadas.length+' declaraciones: '
         +esc(fus.cambiadas.slice(0,6).join(', '))+(fus.cambiadas.length>6?'...':'')
         +'. El resto de la plantilla queda igual. '
-        +Math.round(html.length/1024)+' KB.</div>'
+        +Math.round(html.length/1024)+' KB.'
+        +(cambiados.length?('<br><span style="color:var(--accent)">Archivos cambiados: '
+          +esc(cambiados.join(', '))+'</span>'):'')
+        +'</div>'
       +(avisos.length
         ?('<div style="background:rgba(240,168,48,.08);border:1px solid rgba(240,168,48,.3);'
           +'border-radius:var(--radius);padding:12px 14px;margin-bottom:14px">'
