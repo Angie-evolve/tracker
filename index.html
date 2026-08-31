@@ -7122,9 +7122,20 @@ function integracionesAppHtml(){
       detail:sheets?'Clave de API cargada':'Sin clave de API',
       action:'openSyncModal()', actionLabel:'Abrir importador'}),
 
-    card({name:'Anthropic', st:anth?'ok':'no',
-      desc:'Resumenes y analisis automaticos. La clave se guarda en este navegador: conviene usar una con permisos acotados.',
-      detail:anth?('...'+String(anth).slice(-6)):'Sin clave',
+    card({name:'Anthropic', st:iaSinApi()?'warn':(anth?'ok':'no'),
+      desc:'Resumenes y analisis automaticos. La clave se guarda en este navegador: conviene usar una con permisos acotados.'
+        +'<div style="display:flex;align-items:flex-start;gap:9px;margin-top:10px;padding-top:10px;'
+        +'border-top:1px solid var(--border)">'
+        +'<input type="checkbox" class="sw" '+(iaSinApi()?'checked':'')+' style="margin-top:1px" '
+        +'onchange="iaSinApiSet(this.checked)">'
+        +'<span><span style="color:var(--text2)">Modo sin API</span>'
+        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
+        // Sin esto habia que esperar a que fallara para poder seguir. Con el
+        // modo prendido, el desvio es la via normal y no una consecuencia.
+        +'Cada analisis te da el prompt para pegar en claude.ai y pediste la respuesta de vuelta. '
+        +'Sirve cuando no hay saldo: usa tu suscripcion en vez de la API.</span></span></div>',
+      detail:iaSinApi()?'Todo a mano, sin gastar API'
+        :(anth?('...'+String(anth).slice(-6)):'Sin clave'),
       action:'pedirClaveAnthropic()', actionLabel:anth?'Cambiar clave':'Cargar clave'}),
 
     (function(){
@@ -21108,6 +21119,129 @@ function glosarioHtml(c){
       +esc(t)+'</textarea>'
   +'</div>';
 }
+
+// ---- Puente: cualquier llamada a la IA se puede hacer a mano --------------
+// Hay 31 lugares en la app que le hablan a la API. Ponerle un boton a cada uno
+// era frágil y se iba a desincronizar solo. En vez de eso se envuelve el fetch:
+// si la API no responde -o si vos elegis el modo manual- se abre el prompt para
+// copiar, se pega la respuesta, y se le devuelve al codigo que llamo una
+// respuesta con la misma forma que la de la API. Para el resto de la app no
+// cambia nada: ni se entera de por donde vino.
+function iaSinApi(){ try{ return localStorage.getItem('evold-ia-manual')==='1'; }catch(e){ return false; } }
+function iaSinApiSet(v){
+  try{ localStorage.setItem('evold-ia-manual', v?'1':'0'); }catch(e){}
+  toast(v ? 'Modo sin API: cada analisis te va a dar el prompt para pegar afuera.'
+          : 'Modo normal: los analisis vuelven a usar la API.');
+  if(typeof renderTab==='function') renderTab();
+}
+// Del cuerpo de la peticion se saca el texto que hay que pegar afuera. Se
+// incluye el pedido de formato: sin eso, el chat contesta en prosa y despues
+// no se puede volver a meter.
+function _iaPromptDe(opts){
+  try{
+    var b=JSON.parse((opts&&opts.body)||'{}');
+    var partes=(b.messages||[]).map(function(m){
+      var ct=m.content;
+      if(typeof ct==='string') return ct;
+      return (ct||[]).map(function(x){ return x.text||''; }).join('\n');
+    }).filter(Boolean);
+    var t=partes.join('\n\n');
+    if((b.tools||[]).some(function(x){ return /web_search|web_fetch/.test(x.type||''); }))
+      t='[Para esto hace falta navegar: prendé la busqueda web en el chat.]\n\n'+t;
+    return t;
+  }catch(e){ return ''; }
+}
+// La respuesta falsa. Misma forma que la de la API, asi el parser de cada
+// funcion la lee sin cambiar una linea.
+function _iaRespuesta(texto){
+  var d={ content:[{type:'text', text:String(texto||'')}], stop_reason:'end_turn',
+          usage:{input_tokens:0, output_tokens:0}, _aMano:true };
+  return { ok:true, status:200, _aMano:true,
+    json:function(){ return Promise.resolve(d); },
+    text:function(){ return Promise.resolve(JSON.stringify(d)); },
+    clone:function(){ return _iaRespuesta(texto); } };
+}
+// Abre el modal y espera. Devuelve una promesa que se resuelve cuando pegas la
+// respuesta, o que rechaza si cancelas: cancelar tiene que llegar al codigo que
+// llamo como un error normal, no dejarlo colgado para siempre.
+function _iaPedirAMano(prompt, motivo){
+  return new Promise(function(res, rej){
+    _IA_MANUAL={titulo:'Este analisis', prompt:prompt, nota:'', aplicar:null};
+    _IA_PUENTE={ok:res, no:rej, prompt:prompt};
+    document.getElementById('modal-root').innerHTML=
+      '<div class="modal-overlay">'
+      +'<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">'
+        +'<div class="modal-title">Hacelo afuera</div>'
+        +'<div class="modal-sub">'
+          +(motivo?('La API no respondio: '+esc(motivo)+'. ')
+                  :'Estas en modo sin API. ')
+          +'Copia el prompt, pegalo en claude.ai y trae la respuesta. Se guarda igual que si '
+          +'lo hubiera hecho la app.</div>'
+        +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px">'
+          +'<span style="font-size:11px;color:var(--text3);flex:1">1. El prompt &middot; '
+            +Math.round(String(prompt||'').length/1000)+'k caracteres</span>'
+          +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
+            +'onclick="iaManualCopiar()">Copiar</button>'
+        +'</div>'
+        +'<textarea id="iam-prompt" readonly rows="4" style="width:100%;font-size:10.5px;'
+          +'line-height:1.5;font-family:ui-monospace,Menlo,monospace;resize:vertical;'
+          +'color:var(--text3)">'+esc(prompt||'')+'</textarea>'
+        +'<div style="font-size:11px;color:var(--text3);margin:14px 0 6px">'
+          +'2. Pega aca la respuesta</div>'
+        +'<textarea id="iam-resp" rows="7" placeholder="Pega lo que te devolvio, tal cual." '
+          +'style="width:100%;font-size:11.5px;line-height:1.55;resize:vertical"></textarea>'
+        +'<div class="modal-footer">'
+          +'<button class="btn" onclick="iaPuenteCancelar()">Cancelar</button>'
+          +'<button class="btn btn-primary" onclick="iaPuenteSeguir()">Continuar</button>'
+        +'</div>'
+      +'</div></div>';
+    setTimeout(function(){ var t=document.getElementById('iam-resp'); if(t) t.focus(); },60);
+  });
+}
+var _IA_PUENTE=null;
+function iaPuenteSeguir(){
+  var p=_IA_PUENTE; if(!p) return;
+  var t=String((document.getElementById('iam-resp')||{}).value||'').trim();
+  if(!t){ toast('Pega la respuesta primero.','amber'); return; }
+  _IA_PUENTE=null; closeModal();
+  p.ok(_iaRespuesta(t));
+}
+function iaPuenteCancelar(){
+  var p=_IA_PUENTE; if(!p) return;
+  _IA_PUENTE=null; closeModal();
+  p.no(new Error('cancelaste el analisis'));
+}
+(function(){
+  if(typeof window==='undefined'||!window.fetch) return;
+  var orig=window.fetch.bind(window);
+  // Solo se detiene lo que va a la API de mensajes. El resto del trafico
+  // (Supabase, GHL, Fathom, proxies) pasa derecho.
+  var esIA=function(u){ return String(u||'').indexOf('api.anthropic.com/v1/messages')>=0; };
+  // Errores que no se arreglan reintentando: son los que valen el desvio a mano.
+  var seArregla=/credit balance|billing|quota|insufficient|invalid x-api-key|authentication|not_found_error|permission|overloaded|rate.?limit/i;
+  window.fetch=function(url, opts){
+    var u=(url&&url.url)?url.url:url;
+    if(!esIA(u)) return orig(url, opts);
+    var prompt=_iaPromptDe(opts);
+    if(iaSinApi()) return _iaPedirAMano(prompt);
+    return orig(url, opts).then(function(r){
+      if(r.ok) return r;
+      // El catch va SOLO sobre la lectura del cuerpo. Envolviendo tambien el
+      // desvio a mano se tragaba el "cancelar": la promesa se resolvia con la
+      // respuesta fallada y quien llamo nunca se enteraba de que cancelaste.
+      return r.clone().json().then(
+        function(d){ return (d&&d.error&&d.error.message)||('HTTP '+r.status); },
+        function(){ return null; }
+      ).then(function(m){
+        if(m && seArregla.test(m)) return _iaPedirAMano(prompt, m);
+        return r;   // otro error: que lo maneje quien llamo, como siempre
+      });
+    }, function(err){
+      // Ni siquiera salio la peticion: sin internet, CORS, la pestaña offline.
+      return _iaPedirAMano(prompt, (err&&err.message)||'no hubo conexion');
+    });
+  };
+})();
 
 // ---- Lo que se acordo de palabra ----------------------------------------
 // La facturacion se carga a mano, y el dato para cargarla esta en la llamada de
