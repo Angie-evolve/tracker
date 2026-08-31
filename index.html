@@ -761,6 +761,21 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
   font-weight:500;text-transform:uppercase;letter-spacing:.06em;line-height:1.5;white-space:nowrap;
   background:none;font-family:inherit}
 .sop-fase[disabled]{cursor:default}
+/* Pasos que frenan. Misma forma que la fase para que se lean como una fila de
+   etiquetas y no como dos controles distintos. */
+.sop-bloq{flex:none;border:1px solid transparent;border-radius:99px;padding:2px 8px;font-size:9.5px;
+  font-weight:500;text-transform:uppercase;letter-spacing:.06em;line-height:1.5;white-space:nowrap;
+  background:none;font-family:inherit}
+.sop-bloq[disabled]{cursor:default}
+.sop-bloq:not([disabled]){cursor:pointer}
+.sop-bloq.b-no{background:none;color:var(--text3);border-color:var(--border)}
+.sop-bloq.b-nosotros{background:rgba(78,207,160,.13);color:var(--accent);border-color:rgba(78,207,160,.3)}
+.sop-bloq.b-cliente{background:rgba(240,168,48,.13);color:var(--amberx);border-color:rgba(240,168,48,.32)}
+/* Lo que viene despues del freno se apaga, no se deshabilita: a veces hay que
+   adelantar algo igual, y bloquear el click seria pelearse con la realidad. */
+.sop-paso.tapado{opacity:.4}
+.sop-paso.tapado:hover{opacity:.75}
+.sop-paso.freno > .sop-caja{border-color:var(--amberx)}
 .sop-fase:not([disabled]){cursor:pointer}
 .sop-fase.f-previa{background:rgba(186,117,23,.15);color:var(--amberx);border-color:rgba(240,168,48,.3)}
 .sop-fase.f-durante{background:var(--bg3);color:var(--text2);border-color:var(--border2)}
@@ -22368,6 +22383,72 @@ function sopAvanceTarea(t){
   });
   return {s:s, tot:tot, n:n, pct:tot?Math.round(n/tot*100):0};
 }
+// ---- Pasos que frenan ----------------------------------------------------
+// Un SOP no es una lista de deseos: hay pasos que si no estan hechos, lo que
+// sigue no se puede hacer. Y la mitad de esos dependen del cliente, no de
+// nosotros, que es la diferencia entre "vamos atrasados" y "estamos esperando".
+var SOP_QUIEN=[
+  {k:'nosotros', l:'Nosotros', c:'var(--accent)'},
+  {k:'cliente',  l:'El cliente', c:'var(--amberx)'}
+];
+function _sopQuien(k){ return SOP_QUIEN.filter(function(x){ return x.k===k; })[0]||SOP_QUIEN[0]; }
+// El primer paso que frena y todavia no esta hecho. De ahi para abajo, todo lo
+// que sigue esta esperando por el.
+function _sopFreno(s){
+  var out=null;
+  (s.bloques||[]).forEach(function(b,bi){
+    (b.pasos||[]).forEach(function(p,pi){
+      if(out) return;
+      if(!p.bloq) return;
+      if(_sopHechos()[_sopIdPaso(bi,p)]) return;
+      out={bi:bi, pi:pi, p:p, quien:_sopQuien(p.de)};
+    });
+  });
+  return out;
+}
+// Cuantos pasos quedan tapados detras del freno. Sirve para decir el costo de
+// no destrabarlo, que es lo que hace que alguien lo destrabe.
+function _sopTapados(s, fr){
+  if(!fr) return 0;
+  var n=0, pasando=false;
+  (s.bloques||[]).forEach(function(b,bi){
+    (b.pasos||[]).forEach(function(p,pi){
+      if(bi===fr.bi&&pi===fr.pi){ pasando=true; return; }
+      if(pasando) n++;
+    });
+  });
+  return n;
+}
+function _sopFrenoHtml(s){
+  var fr=_sopFreno(s);
+  if(!fr) return '';
+  var n=_sopTapados(s, fr);
+  var esCliente=(fr.quien.k==='cliente');
+  return '<div style="display:flex;gap:11px;align-items:flex-start;margin:0 0 16px;'
+      +'padding:11px 14px;border:1px solid '+fr.quien.c+';border-radius:var(--radius);'
+      +'background:var(--bg2)">'
+    +'<span style="color:'+fr.quien.c+';font-size:13px;line-height:1.3;flex:none">&#9673;</span>'
+    +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:12.5px;color:var(--strong)">'
+        +(esCliente?'Esperando al cliente':'Frenado aca')+': '+esc(fr.p.t||'')+'</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:3px">'
+        +(n?(n+' paso'+(n===1?'':'s')+' mas no se '+(n===1?'puede':'pueden')+' hacer hasta que '
+             +'esto este.'):'Es lo ultimo que falta.')
+        +(esCliente?' Depende del cliente: hay que pedirselo.':'')
+      +'</div>'
+    +'</div>'
+  +'</div>';
+}
+function sopBloq(id, bi, pi){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  // Tres estados en un solo boton: no frena -> frena y es nuestro -> frena y es
+  // del cliente -> no frena. Un desplegable para esto seria mas clicks.
+  if(!p.bloq){ p.bloq=true; p.de='nosotros'; }
+  else if(p.de!=='cliente'){ p.de='cliente'; }
+  else { p.bloq=false; delete p.de; }
+  save(); _sopPintar(id);
+}
 function _sopCuenta(s){
   var tot=0, n=0;
   (s.bloques||[]).forEach(function(b,bi){
@@ -27720,10 +27801,14 @@ function abrirTareaDelSop(){
 }
 function _sopHtml(id){
   var s=_sop(id); if(!s) return '';
+  // Se calcula una vez para todo el dibujado: cada paso necesita saber si esta
+  // antes o despues del freno.
+  var freno=_sopFreno(s);
   return '<div class="sop-centro sop-cols">'
     +_sopIdxHtml(id)
     +'<div class="sop-lee '+(SOP_EDIT?'sop-editando':'')+'">'
     +'<div class="sop-prev-inline">'+_sopPrevHtml(id)+'</div>'
+    +(SOP_EDIT?'':_sopFrenoHtml(s))
     +(s.bloques||[]).map(function(b,bi){
       var hs=(b.pasos||[]).filter(function(p){return _sopHechos()[_sopIdPaso(bi,p)];}).length;
       var llen=b.pasos.length?Math.round(hs/b.pasos.length*100):0;
@@ -27745,13 +27830,21 @@ function _sopHtml(id){
         +b.pasos.map(function(p,pi){
           var kp=_sopIdPaso(bi,p);
           var ok=!!_sopHechos()[kp];
+          // Tapado: viene despues del primer paso que frena y sigue sin hacerse.
+          // No se deshabilita, se apaga: a veces hay que adelantar algo igual, y
+          // bloquear el click de verdad seria pelearse con la realidad.
+          var tapado=(!SOP_EDIT && freno && !ok
+            && (bi>freno.bi || (bi===freno.bi && pi>freno.pi)));
+          var esFreno=(freno && bi===freno.bi && pi===freno.pi);
+          var q=p.bloq?_sopQuien(p.de):null;
           // Los topes son los del SOP entero, no los del bloque: dentro del
           // bloque la flecha ya no se apaga, cruza.
           var tope0=(bi===0 && pi===0);
           var tope1=(bi===s.bloques.length-1 && pi===b.pasos.length-1);
           var cruzaSube=(pi===0 && bi>0), cruzaBaja=(pi===b.pasos.length-1 && bi<s.bloques.length-1);
           return '<div class="sop-paso'+(ok?' ok':'')+(pi===act?' act':'')
-              +(kp===_SOP_RECIEN?' recien':'')+'">'
+              +(kp===_SOP_RECIEN?' recien':'')+(tapado?' tapado':'')
+              +(esFreno?' freno':'')+'">'
             +'<button class="sop-nodo" aria-pressed="'+ok+'" aria-label="'+esc(p.t)+'" '
               +'onclick="sopTildar('+id+','+bi+','+pi+')"></button>'
             +'<div class="sop-caja">'
@@ -27765,6 +27858,14 @@ function _sopHtml(id){
                     +' onclick="sopFase('+id+','+bi+','+pi+')"'
                     +' title="'+(SOP_EDIT?'Cambiar cuando se hace':'')+'">'
                     +(p.fase==='previa'?'Previa':(p.fase==='durante'?'En la llamada':'Cuando?'))
+                    +'</button>'):'')
+                +((p.bloq||SOP_EDIT)
+                  ?('<button class="sop-bloq'+(p.bloq?(' b-'+p.de):' b-no')+'"'
+                    +(SOP_EDIT?'':' disabled')
+                    +' onclick="sopBloq('+id+','+bi+','+pi+')"'
+                    +' title="'+(SOP_EDIT?'Sin esto no se puede seguir. Toca para cambiar de quien depende'
+                      :(p.bloq?('Sin esto no se puede seguir. Depende de '+q.l.toLowerCase()):''))+'">'
+                    +(p.bloq?('Frena \u00b7 '+esc(q.l)):'No frena')
                     +'</button>'):'')
                 +'<div class="sop-tools">'
                   +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',-1)"'+(tope0?' disabled':'')
