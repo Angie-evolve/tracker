@@ -21045,6 +21045,151 @@ function glosarioHtml(c){
   +'</div>';
 }
 
+// ---- Paso 0: que combinacion conviene ------------------------------------
+// Las tres tiradas de pastillas venian con un default fijo (simple + formulario
+// + oscuro) igual para todos, y elegir bien pide saber cosas que estan en las
+// llamadas: si el ticket es alto, si la decision la toman entre varios, si el
+// negocio se ve. Este paso lee ese material y propone, con el motivo.
+function lpRecoModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var r=(c.landing||{}).reco;
+  if(!r){ lpRecomendar(clientId); return; }
+  var fila=function(rot, val, lista, porque){
+    var o=lista.filter(function(x){ return x.k===val; })[0];
+    return '<div style="border-bottom:1px solid var(--border);padding:11px 0">'
+      +'<div style="display:flex;align-items:baseline;gap:10px">'
+        +'<span style="font-size:11px;color:var(--text3);width:74px;flex:none">'+rot+'</span>'
+        +'<span style="font-size:13.5px;color:var(--strong);font-weight:500">'
+          +esc(o?o.l:val)+'</span>'
+      +'</div>'
+      +(porque?('<div style="font-size:11.5px;color:var(--text2);line-height:1.6;'
+        +'margin:5px 0 0 84px">'+esc(porque)+'</div>'):'')
+    +'</div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
+      +'<div class="modal-title">Combinacion recomendada</div>'
+      +'<div class="modal-sub">'+esc(_lpLimpiar(r.resumen||''))+'</div>'
+      +'<div style="margin-top:14px">'
+        +fila('Mecanica', r.mecanica, LP_MECANICAS, r.porqueMecanica)
+        +fila('Piel', r.piel, LP_PIELES, r.porquePiel)
+        +fila('Tema', r.tema, LP_TEMAS, r.porqueTema)
+      +'</div>'
+      // Lo que no se pudo saber importa tanto como la recomendacion: dice si
+      // hay que preguntarselo al cliente antes de arrancar.
+      +((r.falta||[]).length
+        ?('<div style="margin-top:14px;padding:11px 13px;background:var(--bg3);'
+          +'border:1px solid var(--border);border-left:2px solid var(--amberx);'
+          +'border-radius:0 var(--radius) var(--radius) 0">'
+          +'<div style="font-size:11px;color:var(--amberx);margin-bottom:6px">'
+          +'Esto no lo pude sacar del material</div>'
+          +r.falta.map(function(x){
+            return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '
+              +esc(_lpLimpiar(x))+'</div>'; }).join('')
+        +'</div>'):'')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="lpRecomendar('+c.id+')">Volver a pensarlo</button>'
+        +'<button class="btn btn-primary" onclick="lpAplicarReco('+c.id+')">Usar esta</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function lpAplicarReco(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var r=c&&(c.landing||{}).reco;
+  if(!r) return;
+  var cfg=_lpCfg(c);
+  var ok=function(v,lista){ return lista.some(function(x){ return x.k===v; }); };
+  if(ok(r.mecanica,LP_MECANICAS)) cfg.mecanica=r.mecanica;
+  if(ok(r.piel,LP_PIELES))        cfg.piel=r.piel;
+  if(ok(r.tema,LP_TEMAS))         cfg.tema=r.tema;
+  cfg.recoAplicadaAt=new Date().toISOString();
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast('Combinacion aplicada. Podes cambiar cualquiera a mano.');
+}
+async function lpRecomendar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return; }
+  var e=document.getElementById('lp-reco-estado');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var b=document.getElementById('lp-reco-btn');
+  if(b){ b.disabled=true; b.textContent='Pensando...'; }
+  closeModal();
+  decir('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo el material del cliente...</span></span>');
+  var ctx=_lpContextoInterno(c);
+  // El dato de si el negocio se ve no se le pregunta a la IA: ya lo sabe el
+  // parser mirando Material, y es mas confiable que una inferencia.
+  var hayVisual=_lpHollywoodViable(c);
+  var opc=function(lista){ return lista.map(function(o){
+    return '- '+o.k+' ('+o.l+'): '+(o.d||''); }).join('\n'); };
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2000,messages:[{role:'user',content:
+        'Sos estratega de una agencia. Hay que armar una landing de conversion para el cliente '
+        +(c.name||'')+(c.industry?(', que vende '+c.industry):'')+'. Elegi la combinacion de '
+        +'mecanica, piel y tema a partir del material de abajo.\n\n'
+        +'MECANICA (como se captura el lead):\n'+opc(LP_MECANICAS)+'\n\n'
+        +'PIEL (como se ve la pagina):\n'+opc(LP_PIELES)+'\n\n'
+        +'TEMA: oscuro o claro.\n\n'
+        +'COMO DECIDIR:\n'
+        +'- Ticket alto o decision entre varias personas: institucional, porque hace falta '
+        +'prueba social y precios a la vista. Ticket bajo y decision de una persona: simple.\n'
+        +'- Formulario cuando importa el volumen y hay quien llame. Calendario cuando el '
+        +'equipo comercial prefiere agenda llena a lista larga. Quiz cuando llegan muchos '
+        +'leads que no califican y hay que filtrar antes de pedir el dato.\n'
+        +'- Hollywood SOLO si el negocio se ve. En este cliente, el material visual '
+        +(hayVisual?'SI esta':'NO esta')+' cargado, asi que '
+        +(hayVisual?'es una opcion valida.':'NO lo elijas: elegi entre institucional y simple.')+'\n'
+        +'- Tema: oscuro para software, tecnologia y publico joven; claro para salud, '
+        +'servicios profesionales, educacion y publico mayor. Si el cliente tiene una marca '
+        +'definida, seguila.\n\n'
+        +'REGLAS:\n'
+        +'- Cada "porque" arranca diciendo de donde sale el dato, y son 2 oraciones como mucho. '
+        +'Si algo lo estas suponiendo, decilo con esa palabra.\n'
+        +'- "falta" son las preguntas que habria que hacerle al cliente porque el material no '
+        +'las responde y cambiarian la eleccion. Maximo 3. Si no falta nada, dejalo en [].\n'
+        +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
+        +'Devolve SOLO este JSON, sin markdown:\n'
+        +'{"resumen":"una oracion con la lectura del cliente",'
+        +'"mecanica":"formulario|calendario|quiz","porqueMecanica":"",'
+        +'"piel":"institucional|simple|hollywood","porquePiel":"",'
+        +'"tema":"oscuro|claro","porqueTema":"","falta":[""]}'
+        +'\n\nMATERIAL:\n'+(ctx.texto||'(no hay material cargado)')}]})
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||'error de la API');
+    var txt=(d.content||[]).filter(function(x){return x.type==='text';})
+      .map(function(x){return x.text;}).join('');
+    var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+    var o=null;
+    if(a>=0){ try{ o=JSON.parse(txt.slice(a,z+1)); }catch(pe){ o=_jsonRescatar(txt); } }
+    if(!o) throw new Error('la respuesta no vino en el formato esperado');
+    // Hollywood sin material visual no se acepta aunque la IA lo elija: el
+    // aviso ya existia y quedaria contradiciendose con la recomendacion.
+    if(o.piel==='hollywood' && !hayVisual){
+      o.piel='simple';
+      o.porquePiel='Sin fotos ni videos del cliente en Material, Hollywood sale con stock generico.';
+    }
+    _lpCfg(c).reco=o;
+    _lpCfg(c).recoAt=new Date().toISOString();
+    save();
+    decir('');
+    lpRecoModal(clientId);
+  }catch(err){
+    console.error('Landing / recomendacion:', err);
+    decir('No pude recomendarte: '+esc(err.message),'var(--redx)');
+    if(b){ b.disabled=false; b.textContent='Recomendar'; }
+  }
+}
+
 // ---- Generador de landings ----------------------------------------------
 // No genera HTML. Produce el objeto COPY que llena una plantilla estable.
 // Las plantillas se mejoran por fuera; si las generara la app, cada mejora
@@ -21323,7 +21468,7 @@ function landingHtml(c){
   var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
   var p1='<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">1</span>'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
       +'<div style="font-size:12.5px;color:var(--text);flex:1">Investigar la web del cliente</div>'
       +(inv?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.investigadoAt)+'</span>'):'')
       +'<button class="btn btn-sm'+(inv?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
@@ -21374,7 +21519,7 @@ function landingHtml(c){
   // ── Paso 2 ──────────────────────────────────────────────────
   var p2='<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">3</span>'
       +'<div style="font-size:12.5px;color:var(--text);flex:1">Escribir el copy</div>'
       +(cp?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.copyAt)+'</span>'):'')
       +(cp?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
@@ -21409,7 +21554,38 @@ function landingHtml(c){
   }
   p2+='</div>';
 
+  // El bloque de recomendacion va ARRIBA de las pastillas, no abajo: elegir la
+  // combinacion es lo primero que se hace, y tenerlo despues dejaba el paso
+  // como algo opcional que nadie iba a mirar.
+  var r=cfg.reco;
+  var aplicada = r && cfg.mecanica===r.mecanica && cfg.piel===r.piel && cfg.tema===r.tema;
+  var reco='<div style="border:1px solid '+(r&&!aplicada?'rgba(240,168,48,0.3)':'var(--border)')+';'
+      +'border-radius:var(--radius-lg);padding:13px 15px;margin-bottom:18px;background:var(--bg2)">'
+    +'<div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3);'
+        +'flex:none">1</span>'
+      +'<div style="flex:1;min-width:180px">'
+        +'<div style="font-size:12.5px;color:var(--text)">Que combinacion conviene</div>'
+        +'<div style="font-size:11px;color:var(--text3);line-height:1.55;margin-top:3px">'
+          +(r
+            ? (aplicada
+               ? ('Aplicada. ' + esc(_lpLimpiar(String(r.resumen||'')).slice(0,110)))
+               : 'Hay una recomendacion sin aplicar.')
+            : 'Lee las llamadas, los documentos y el material, y propone las tres con el motivo.')
+        +'</div>'
+      +'</div>'
+      +(r?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px;flex:none" '
+        +'onclick="lpRecoModal('+c.id+')">Ver</button>'):'')
+      +'<button id="lp-reco-btn" class="btn btn-sm'+(r?'':' btn-primary')
+        +'" style="font-size:11px;padding:3px 9px;flex:none" '
+        +'onclick="lpRecomendar('+c.id+')">'+(r?'Volver a pensarlo':'Recomendar')+'</button>'
+    +'</div>'
+    +'<div id="lp-reco-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
+      +'margin-top:8px;min-height:0"></div>'
+  +'</div>';
+
   return head
+    +reco
     +opciones('Mecanica', LP_MECANICAS, 'mecanica')
     +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)})
     +opciones('Tema', LP_TEMAS, 'tema')
