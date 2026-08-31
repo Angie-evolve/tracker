@@ -21100,6 +21100,79 @@ function glosarioHtml(c){
   +'</div>';
 }
 
+// ---- Plan B: hacerlo a mano ----------------------------------------------
+// Cuando la API no responde (sin credito, sin clave, cortada), el trabajo no
+// tiene por que frenarse: se copia el mismo prompt, se pega en claude.ai o en
+// el chat que sea, y la respuesta vuelve aca. El resultado queda guardado igual
+// que si lo hubiera hecho la app.
+var _IA_MANUAL=null;
+function iaManualBoton(titulo, prompt, aplicar, nota){
+  _IA_MANUAL={titulo:titulo, prompt:prompt, aplicar:aplicar, nota:nota||''};
+  return ' <button class="btn btn-sm" style="font-size:11px;padding:2px 9px;margin-left:8px" '
+    +'onclick="iaManualModal()">Hacerlo a mano</button>';
+}
+function iaManualModal(){
+  var m=_IA_MANUAL;
+  if(!m){ toast('No hay nada pendiente para hacer a mano.'); return; }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">'+esc(m.titulo)+' a mano</div>'
+      +'<div class="modal-sub">Copia el prompt, pegalo en claude.ai o en el chat que uses, '
+        +'y trae la respuesta de vuelta aca. Queda guardada igual que si la hubiera hecho la app.'
+        +(m.nota?(' '+esc(m.nota)):'')+'</div>'
+      +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px">'
+        +'<span style="font-size:11px;color:var(--text3);flex:1">1. El prompt &middot; '
+          +Math.round(String(m.prompt||'').length/1000)+'k caracteres</span>'
+        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
+          +'onclick="iaManualCopiar()">Copiar</button>'
+      +'</div>'
+      // Se muestra chico y con scroll: es para verificar que esta, no para leerlo.
+      +'<textarea id="iam-prompt" readonly rows="5" style="width:100%;font-size:10.5px;'
+        +'line-height:1.5;font-family:ui-monospace,Menlo,monospace;resize:vertical;'
+        +'color:var(--text3)">'+esc(m.prompt||'')+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);margin:14px 0 6px">'
+        +'2. Pega aca la respuesta</div>'
+      +'<textarea id="iam-resp" rows="7" placeholder=\'Pega el JSON que te devolvio. Si vino con '
+        +'texto alrededor o entre backticks, pegalo igual: lo limpio yo.\' '
+        +'style="width:100%;font-size:11.5px;line-height:1.55;resize:vertical"></textarea>'
+      +'<div id="iam-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="iaManualGuardar()">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function iaManualCopiar(){
+  var m=_IA_MANUAL; if(!m) return;
+  var ok=function(){ toast('Prompt copiado. Pegalo en claude.ai.'); };
+  if(navigator.clipboard) navigator.clipboard.writeText(m.prompt).then(ok, function(){
+    var t=document.getElementById('iam-prompt');
+    if(t){ t.select(); document.execCommand('copy'); ok(); }
+  });
+}
+function iaManualGuardar(){
+  var m=_IA_MANUAL; if(!m) return;
+  var e=document.getElementById('iam-err');
+  var decir=function(t){ if(e) e.textContent=t; };
+  var txt=String((document.getElementById('iam-resp')||{}).value||'').trim();
+  if(!txt){ decir('Pega la respuesta primero.'); return; }
+  txt=txt.replace(/```json/gi,'```').replace(/```/g,'').trim();
+  var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+  var o=null;
+  if(a>=0){ try{ o=JSON.parse(txt.slice(a,z+1)); }catch(pe){ o=_jsonRescatar(txt); } }
+  if(!o){ decir('No encontre un JSON valido ahi. Copia la respuesta completa, desde la '
+    +'primera llave hasta la ultima.'); return; }
+  try{
+    m.aplicar(o);
+  }catch(err){
+    console.error('IA a mano:', err);
+    decir('El JSON esta bien pero no pude aplicarlo: '+err.message); return;
+  }
+  closeModal();
+  toast(m.titulo+': guardado.');
+}
+
 // ---- Paso 0: que combinacion conviene ------------------------------------
 // Las tres tiradas de pastillas venian con un default fijo (simple + formulario
 // + oscuro) igual para todos, y elegir bien pide saber cosas que estan en las
@@ -21134,6 +21207,8 @@ async function lpRecomendar(clientId){
   // El dato de si el negocio se ve no se le pregunta a la IA: ya lo sabe el
   // parser mirando Material, y es mas confiable que una inferencia.
   var hayVisual=_lpHollywoodViable(c);
+  // Se guarda el prompt armado para poder ofrecerlo a mano si la API falla.
+  var _pedidoReco='';
   var opc=function(lista){ return lista.map(function(o){
     return '- '+o.k+' ('+o.l+'): '+(o.d||''); }).join('\n'); };
   try{
@@ -21142,7 +21217,7 @@ async function lpRecomendar(clientId){
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
-        'Sos estratega de una agencia. Hay que armar una landing de conversion para el cliente '
+        _pedidoReco='Sos estratega de una agencia. Hay que armar una landing de conversion para el cliente '
         +(c.name||'')+(c.industry?(', que vende '+c.industry):'')+'. Elegi la combinacion de '
         +'mecanica, piel y tema a partir del material de abajo.\n\n'
         +'MECANICA (como se captura el lead):\n'+opc(LP_MECANICAS)+'\n\n'
@@ -21216,7 +21291,16 @@ async function lpRecomendar(clientId){
     toast('Listo: quedaron elegidas. Podes cambiar cualquiera a mano.');
   }catch(err){
     console.error('Landing / recomendacion:', err);
-    decir('No pude recomendarte: '+esc(err.message),'var(--redx)');
+    decir('No pude recomendarte: '+esc(err.message)
+      +iaManualBoton('La combinacion', _pedidoReco, function(o){
+        if(!o.mecanica||!o.piel||!o.tema) throw new Error('faltan mecanica, piel o tema');
+        if(o.piel==='hollywood' && !hayVisual){
+          o.piel='simple';
+          o.porquePiel='Sin fotos ni videos del cliente en Material, Hollywood sale con stock generico.';
+        }
+        _lpAplicarReco(c, o); save();
+        if(typeof renderTab==='function') renderTab();
+      }),'var(--redx)');
     if(b){ b.disabled=false; b.textContent='Recomendar'; }
   }
 }
@@ -21398,6 +21482,7 @@ async function investigarLanding(clientId){
   var t0=Date.now();
   _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
     +'<span class="carga-spin"></span><span>Buscando en el sitio y las redes...</span></span>','var(--text2)');
+  var _pedidoInv='';
   try{
     // Las URLs van sueltas y completas: web_fetch solo puede abrir links que ya
     // aparecieron en la conversacion, asi que si no estan aca no las lee.
@@ -21421,7 +21506,7 @@ async function investigarLanding(clientId){
       tools:[{type:'web_search_20250305', name:'web_search', max_uses:5},
              {type:'web_fetch_20250910', name:'web_fetch', max_uses:8,
               citations:{enabled:true}}],
-      messages:[{role:'user',content:
+      messages:[{role:'user',content: _pedidoInv=
         'Investiga a la empresa "'+(c.name||'')+'" en la web.\n\n'
         +'COMO TRABAJAR, y esto es lo importante:\n'
         +'- ABRI las paginas con web_fetch y leelas enteras. No armes la respuesta con los '
@@ -21470,7 +21555,14 @@ async function investigarLanding(clientId){
     toast('Investigado en '+Math.round((Date.now()-t0)/1000)+'s');
   }catch(e){
     console.error('Investigar landing:', e);
-    _lpEstado('No pude investigar: '+esc(e.message),'var(--redx)');
+    _lpEstado('No pude investigar: '+esc(e.message)
+      +iaManualBoton('La investigacion', _pedidoInv, function(o){
+        cfg.investigacion=o;
+        cfg.investigadoAt=new Date().toISOString();
+        save();
+        if(typeof renderTab==='function') renderTab();
+      }, 'Este necesita que el chat pueda navegar: en claude.ai prendé la busqueda web.')
+      ,'var(--redx)');
   }
 }
 
@@ -21489,10 +21581,11 @@ async function escribirCopyLanding(clientId){
   var t0=Date.now();
   _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
     +'<span class="carga-spin"></span><span>Escribiendo el copy...</span></span>','var(--text2)');
+  var _pedidoCopy='';
   try{
     var o=await _lpApi(apiKey,{
       model:'claude-sonnet-5', max_tokens:3000,
-      messages:[{role:'user',content:
+      messages:[{role:'user',content: _pedidoCopy=
         'Sos director creativo. Escribi el copy de una landing de conversion para "'+(c.name||'')+'".\n\n'
         +'PIEL: '+cfg.piel+' — '+(piel.d||'')+'\n'
         +'MECANICA: '+cfg.mecanica+'\n\n'
@@ -21522,7 +21615,13 @@ async function escribirCopyLanding(clientId){
     toast('Copy listo en '+Math.round((Date.now()-t0)/1000)+'s');
   }catch(e){
     console.error('Escribir copy:', e);
-    _lpEstado('No pude escribirlo: '+esc(e.message),'var(--redx)');
+    _lpEstado('No pude escribirlo: '+esc(e.message)
+      +iaManualBoton('El copy', _pedidoCopy, function(o){
+        cfg.copy=o;
+        cfg.copyAt=new Date().toISOString();
+        save();
+        if(typeof renderTab==='function') renderTab();
+      }),'var(--redx)');
   }
 }
 
