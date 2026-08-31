@@ -7258,6 +7258,19 @@ function integracionesAppHtml(){
         action:'abrirSopsModal()', actionLabel:l.length?'Abrir':'Crear el primero'});
     })(),
     (function(){
+      var l=formularios();
+      var resp=(DB.clients||[]).filter(function(c){
+        return c.formResp && Object.keys(c.formResp).some(function(k){ return c.formResp[k].at; });
+      }).length;
+      return card({name:'Formularios', st:l.length?'ok':'no',
+        desc:'Lo que le preguntamos a cada cliente. Se arman una vez, se sacan de las llamadas '
+          +'que ya tuvimos, y se responden por cliente en la pestaña Contexto.',
+        detail:l.length?(l.length+' formulario'+(l.length===1?'':'s')
+          +(resp?(' \u00b7 '+resp+' cliente'+(resp===1?'':'s')+' con respuestas')
+                :' \u00b7 sin responder')):'Sin formularios',
+        action:'abrirFormsModal()', actionLabel:l.length?'Abrir':'Crear el primero'});
+    })(),
+    (function(){
       // Almacenamiento. El aviso de espacio existia pero solo saltaba cuando ya
       // no entraba nada; para entonces ya perdiste lo ultimo que hiciste.
       var d=_diagEspacio();
@@ -17515,6 +17528,8 @@ function renderTab(){
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${docsHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
+          ${formsClienteHtml(c)}
+          <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${preguntasHtml(c)}
         </div>
 
@@ -21878,6 +21893,17 @@ function _lpContextoInterno(c){
   (c.respuestas||[]).slice(0,6).forEach(function(r){
     out.push('PREGUNTA: '+r.q+'\nRESPUESTA (de las llamadas): '+r.r);
   });
+  // Lo respondido en los formularios: son respuestas directas del cliente, mas
+  // confiables que inferirlas de una transcripcion. Van antes que las llamadas.
+  formularios().forEach(function(f){
+    var r=(c.formResp||{})[f.id];
+    if(!r||!r.at) return;
+    var lineas=(f.campos||[]).map(function(cp,i){
+      var v=String((r.v||{})[_formCampoK(i,cp)]||'').trim();
+      return v?('- '+(cp.l||'')+': '+v):'';
+    }).filter(Boolean);
+    if(lineas.length) out.push('FORMULARIO \u2014 '+(f.titulo||'')+':\n'+lineas.join('\n'));
+  });
   var links=(c.material||[]).map(function(m){ return '- '+m.label+': '+m.url; });
   _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
@@ -22328,6 +22354,367 @@ function landingHtml(c){
     +avisoHw
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +p1+p2;
+}
+
+// ---- Formularios ---------------------------------------------------------
+// Lo mismo que un SOP pero para preguntar en vez de hacer. Las preguntas que
+// venimos repitiendo en cada llamada dejan de vivir en la cabeza de quien la
+// toma: se bajan a un formulario, se responden una vez por cliente y quedan
+// disponibles para el resto. La plantilla vive en la agencia, las respuestas
+// cuelgan del cliente.
+var FORM_TIPOS=[
+  {k:'texto',  l:'Texto corto'},
+  {k:'largo',  l:'Texto largo'},
+  {k:'numero', l:'Numero'},
+  {k:'opcion', l:'Una opcion'},
+  {k:'si_no',  l:'Si / No'}
+];
+function formularios(){
+  if(!Array.isArray(DB.forms)) DB.forms=[];
+  return DB.forms;
+}
+function _form(id){ return formularios().filter(function(x){ return x.id===id; })[0]; }
+// La clave sale del texto de la pregunta, como en los SOP: si se reordenan las
+// preguntas, las respuestas siguen pegadas a la suya.
+function _formCampoK(i, c){
+  return String((c&&c.l)||('campo'+i)).toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,40)
+    ||('campo'+i);
+}
+function formResp(c, formId){
+  if(!c.formResp||typeof c.formResp!=='object') c.formResp={};
+  if(!c.formResp[formId]) c.formResp[formId]={v:{}, at:''};
+  if(!c.formResp[formId].v) c.formResp[formId].v={};
+  return c.formResp[formId];
+}
+function _formLleno(f, r){
+  var v=(r&&r.v)||{}, tot=0, n=0, faltanReq=[];
+  (f.campos||[]).forEach(function(cp,i){
+    tot++;
+    var val=String(v[_formCampoK(i,cp)]==null?'':v[_formCampoK(i,cp)]).trim();
+    if(val) n++;
+    else if(cp.req) faltanReq.push(cp.l||('Pregunta '+(i+1)));
+  });
+  return {tot:tot, n:n, pct:tot?Math.round(n/tot*100):0, faltanReq:faltanReq};
+}
+function formNuevo(){
+  var f={ id:Date.now(), titulo:'Formulario sin nombre', creadoAt:new Date().toISOString(),
+          campos:[{l:'', tipo:'texto', ayuda:'', req:false}] };
+  formularios().unshift(f);
+  save();
+  abrirForm(f.id);
+}
+function abrirFormsModal(){
+  var l=formularios();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:86vh;overflow-y:auto">'
+      +'<div class="modal-title">Formularios</div>'
+      +'<div class="modal-sub">Lo que le preguntamos a cada cliente, en un solo lugar. Se arman '
+        +'una vez y se responden por cliente; despues las respuestas entran en los analisis y '
+        +'en el copy.</div>'
+      +(l.length
+        ? l.map(function(f){
+            var usados=(DB.clients||[]).filter(function(c){
+              var r=c.formResp&&c.formResp[f.id]; return r&&r.at; }).length;
+            return '<div style="display:flex;align-items:center;gap:10px;padding:11px 0;'
+                +'border-bottom:1px solid var(--border)">'
+              +'<div style="flex:1;min-width:0">'
+                +'<div style="font-size:13px;color:var(--text)">'+esc(f.titulo||'')+'</div>'
+                +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+                  +(f.campos||[]).length+' pregunta'+((f.campos||[]).length===1?'':'s')
+                  +(usados?(' \u00b7 respondido por '+usados+' cliente'+(usados===1?'':'s'))
+                          :' \u00b7 sin responder')+'</div>'
+              +'</div>'
+              +'<button class="btn btn-sm" onclick="abrirForm('+f.id+')">Abrir</button>'
+              +'<button onclick="formBorrar('+f.id+')" aria-label="Borrar" '
+                +'style="border:0;background:none;color:var(--text3);cursor:pointer;'
+                +'font-size:15px">&times;</button>'
+            +'</div>';
+          }).join('')
+        : '<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+          +'Todavia no hay ninguno.</div>')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-primary" onclick="formNuevo()">Nuevo formulario</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function formBorrar(id){
+  var f=_form(id); if(!f) return;
+  var usados=(DB.clients||[]).filter(function(c){
+    var r=c.formResp&&c.formResp[id]; return r&&r.at; }).length;
+  // Borrar la plantilla no borra lo respondido, pero deja las respuestas sin la
+  // pregunta que las explica. Hay que decirlo antes, no despues.
+  if(usados && !confirm('Lo respondieron '+usados+' cliente'+(usados===1?'':'s')
+    +'. Si lo borras, esas respuestas quedan sin las preguntas. Seguro?')) return;
+  DB.forms=formularios().filter(function(x){ return x.id!==id; });
+  save(); abrirFormsModal();
+}
+var _FORM_INP='width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);'
+  +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+  +'font-family:var(--font);outline:none';
+// Un solo modal para las dos cosas: sin cliente se edita la plantilla, con
+// cliente se responde. Separarlos duplicaba el render de cada tipo de campo.
+function abrirForm(id, clientId){
+  var f=_form(id); if(!f) return;
+  var c=clientId?DB.clients.find(function(x){return x.id===clientId;}):null;
+  var r=c?formResp(c, id):null;
+  var est=_formLleno(f, r);
+  var inp=_FORM_INP;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">'
+      +(c?('<div class="modal-title">'+esc(f.titulo||'')+'</div>')
+         :('<input value="'+esc(f.titulo||'')+'" onchange="formTitulo('+id+',this.value)" '
+           +'placeholder="Como se llama el formulario" '
+           +'style="'+inp+';font-size:15px;font-weight:600;color:var(--strong)">'))
+      +'<div class="modal-sub">'
+        +(c?(esc(c.name||'')+' \u00b7 '+est.n+' de '+est.tot+' respondidas')
+           :'Estas editando la plantilla. Para responderlo, abrilo desde un cliente.')+'</div>'
+      +(c?'':('<div style="display:flex;justify-content:flex-end;margin-top:10px">'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="formDesdeLlamadas('+id+')">Sacarlo de las llamadas</button></div>'))
+      +'<div id="form-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
+        +'margin-top:8px"></div>'
+      +'<div style="margin-top:12px">'
+      +((f.campos||[]).length
+        ? f.campos.map(function(cp,i){
+            var k=_formCampoK(i,cp);
+            var val=r?String((r.v||{})[k]||''):'';
+            if(c){
+              var falta=(cp.req && !val.trim());
+              return '<div style="padding:11px 0;border-bottom:1px solid var(--border)">'
+                +'<div style="font-size:12.5px;color:var(--text)">'+esc(cp.l||'')
+                  +(cp.req?'<span style="color:var(--amberx)"> *</span>':'')+'</div>'
+                +(cp.ayuda?('<div style="font-size:11px;color:var(--text3);line-height:1.5;'
+                  +'margin:3px 0 6px">'+esc(cp.ayuda)+'</div>'):'<div style="height:6px"></div>')
+                +_formCampoInput(cp, k, val, id, clientId)
+                +(falta?('<div style="font-size:10.5px;color:var(--amberx);margin-top:4px">'
+                  +'Sin esto queda incompleto.</div>'):'')
+              +'</div>';
+            }
+            return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+                +'padding:11px 13px;margin-bottom:8px">'
+              +'<div style="display:flex;gap:6px;align-items:center">'
+                +'<input value="'+esc(cp.l||'')+'" placeholder="La pregunta" '
+                  +'onchange="formCampo('+id+','+i+',\'l\',this.value)" style="'+inp+';flex:1">'
+                +'<select onchange="formCampo('+id+','+i+',\'tipo\',this.value)" '
+                  +'style="'+inp+';width:118px;flex:none;font-size:11.5px">'
+                  +FORM_TIPOS.map(function(t){
+                    return '<option value="'+t.k+'"'+((cp.tipo||'texto')===t.k?' selected':'')
+                      +'>'+esc(t.l)+'</option>'; }).join('')
+                +'</select>'
+                +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'
+                  +(i===0?' disabled':'')+' onclick="formCampoMover('+id+','+i+',-1)">&#8593;</button>'
+                +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'
+                  +(i===(f.campos.length-1)?' disabled':'')
+                  +' onclick="formCampoMover('+id+','+i+',1)">&#8595;</button>'
+                +'<button onclick="formCampoBorrar('+id+','+i+')" '
+                  +'style="border:0;background:none;color:var(--text3);cursor:pointer;'
+                  +'font-size:15px;flex:none">&times;</button>'
+              +'</div>'
+              +'<input value="'+esc(cp.ayuda||'')+'" placeholder="Por que se pregunta" '
+                +'onchange="formCampo('+id+','+i+',\'ayuda\',this.value)" '
+                +'style="'+inp+';margin-top:7px;font-size:11.5px">'
+              +((cp.tipo==='opcion')
+                ?('<input value="'+esc((cp.opciones||[]).join(', '))+'" '
+                  +'placeholder="Opciones separadas por coma" '
+                  +'onchange="formCampo('+id+','+i+',\'opciones\',this.value)" '
+                  +'style="'+inp+';margin-top:7px;font-size:11.5px">'):'')
+              +'<label style="display:flex;gap:8px;align-items:center;margin-top:8px;'
+                +'cursor:pointer">'
+                +'<input type="checkbox"'+(cp.req?' checked':'')+' '
+                  +'onchange="formCampo('+id+','+i+',\'req\',this.checked)">'
+                +'<span style="font-size:11.5px;color:var(--text3)">Sin esto queda incompleto'
+                +'</span></label>'
+            +'</div>';
+          }).join('')
+        : '<div style="font-size:12.5px;color:var(--text3);padding:8px 0">'
+          +(c?'Este formulario no tiene preguntas todavia.':'Sumá la primera pregunta.')+'</div>')
+      +'</div>'
+      +(c?'':('<button class="btn btn-sm" style="margin-top:6px" '
+        +'onclick="formCampoAdd('+id+')">+ Pregunta</button>'))
+      +((c&&est.faltanReq.length)
+        ?('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;margin-top:12px">'
+          +'Falta: '+est.faltanReq.map(esc).join(', ')+'.</div>'):'')
+      +'<div class="modal-footer">'
+        +(c?('<button class="btn" onclick="formCopiar('+id+','+clientId+')">Copiar</button>'):'')
+        +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function _formCampoInput(cp, k, val, id, clientId){
+  var oc='onchange="formResponder('+id+','+clientId+',\''+k+'\',this.value)"';
+  var inp=_FORM_INP;
+  if(cp.tipo==='largo')
+    return '<textarea rows="3" '+oc+' style="'+inp+';resize:vertical;line-height:1.55">'
+      +esc(val)+'</textarea>';
+  if(cp.tipo==='numero')
+    return '<input type="number" value="'+esc(val)+'" '+oc+' style="'+inp+'">';
+  if(cp.tipo==='si_no'||cp.tipo==='opcion'){
+    var ops=(cp.tipo==='si_no')?['Si','No']:(cp.opciones||[]);
+    return '<select '+oc+' style="'+inp+'">'
+      +[''].concat(ops).map(function(o){
+        return '<option value="'+esc(o)+'"'+(val===o?' selected':'')+'>'
+          +(o||'Sin responder')+'</option>'; }).join('')+'</select>';
+  }
+  return '<input value="'+esc(val)+'" '+oc+' style="'+inp+'">';
+}
+function formTitulo(id, v){
+  var f=_form(id); if(!f) return;
+  f.titulo=String(v||'').trim()||'Formulario sin nombre'; save();
+}
+function formCampo(id, i, campo, v){
+  var f=_form(id); if(!f) return;
+  var cp=(f.campos||[])[i]; if(!cp) return;
+  if(campo==='opciones')
+    cp.opciones=String(v||'').split(',').map(function(x){return x.trim();}).filter(Boolean);
+  else if(campo==='req') cp.req=!!v;
+  else cp[campo]=String(v||'').trim();
+  save();
+  // Cambiar el tipo o el texto cambia lo que se dibuja: hay que repintar.
+  if(campo==='tipo'||campo==='l') abrirForm(id);
+}
+function formCampoAdd(id){
+  var f=_form(id); if(!f) return;
+  f.campos=f.campos||[];
+  f.campos.push({l:'', tipo:'texto', ayuda:'', req:false});
+  save(); abrirForm(id);
+}
+function formCampoBorrar(id, i){
+  var f=_form(id); if(!f) return;
+  f.campos.splice(i,1); save(); abrirForm(id);
+}
+function formCampoMover(id, i, d){
+  var f=_form(id); if(!f) return;
+  var j=i+d;
+  if(j<0||j>=f.campos.length) return;
+  var x=f.campos[i]; f.campos[i]=f.campos[j]; f.campos[j]=x;
+  save(); abrirForm(id);
+}
+function formResponder(id, clientId, k, v){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var r=formResp(c, id);
+  r.v[k]=String(v==null?'':v);
+  r.at=new Date().toISOString();
+  save();
+}
+// El bloque en la pestaña Contexto del cliente: los formularios de la agencia
+// con su avance. Se responden aca porque es donde vive el resto del material
+// que despues alimenta los analisis.
+function formsClienteHtml(c){
+  var l=formularios();
+  var cab='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'margin-bottom:10px">'
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em">Formularios</div>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'onclick="abrirFormsModal()">'+(l.length?'Administrar':'Crear uno')+'</button>'
+  +'</div>';
+  if(!l.length)
+    return cab+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Las preguntas que le repetis a cada cliente, en un lugar. Se pueden sacar solas de las '
+      +'llamadas que ya tuviste.</div>';
+  return cab
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Lo respondido entra despues en las preguntas, en la promesa del quiz y en el copy.</div>'
+    +l.map(function(f){
+      var r=formResp(c, f.id);
+      var e=_formLleno(f, r);
+      var col=e.pct===100?'var(--accent)':(e.n?'var(--amberx)':'var(--text3)');
+      return '<div style="display:flex;align-items:center;gap:11px;padding:9px 0;'
+          +'border-bottom:1px solid var(--border)">'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="font-size:12.5px;color:var(--text);overflow:hidden;'
+            +'text-overflow:ellipsis;white-space:nowrap">'+esc(f.titulo||'')+'</div>'
+          +'<div style="font-size:11px;color:'+col+';margin-top:2px">'
+            +e.n+' de '+e.tot+' respondidas'
+            +(e.faltanReq.length?(' \u00b7 falta '+esc(e.faltanReq[0])
+              +(e.faltanReq.length>1?(' y '+(e.faltanReq.length-1)+' mas'):'')):'')+'</div>'
+        +'</div>'
+        +'<button class="btn btn-sm'+(e.n?'':' btn-primary')+'" style="flex:none" '
+          +'onclick="abrirForm('+f.id+','+c.id+')">'+(e.n?'Seguir':'Responder')+'</button>'
+      +'</div>';
+    }).join('');
+}
+// Lee las llamadas y baja a formulario lo que venimos preguntando. Es el uso
+// que lo justifica: las preguntas ya existen, estan dispersas en seis
+// grabaciones y nadie las escribio nunca en un solo lugar.
+async function formDesdeLlamadas(id){
+  var f=_form(id); if(!f) return;
+  var e=document.getElementById('form-estado');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaSinApi()){ decir('Falta la clave de Anthropic en Integraciones.','var(--amberx)'); return; }
+  // Se juntan las llamadas de TODOS los clientes: lo que se repite en varios es
+  // lo que merece estar en el formulario. Con uno solo saldria su caso puntual.
+  var trozos=[], n=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(cl){
+      var t=cl.transcript||cl.summary;
+      if(!t || n>=14) return;
+      n++;
+      trozos.push('--- '+(cl.title||'Llamada')+' ('+(c.name||'')+') ---\n'+String(t).slice(0,14000));
+    });
+  });
+  if(!trozos.length){ decir('No hay llamadas con transcripcion en ningun cliente.','var(--amberx)'); return; }
+  decir('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+n+' llamadas...</span></span>');
+  var pedido='Sos analista de una agencia. Abajo hay transcripciones de llamadas con distintos '
+    +'clientes.\n\n'
+    +'Sacá las PREGUNTAS que les hacemos nosotros a ellos, y armá un formulario para no tener '
+    +'que volver a preguntarlas en vivo.\n\n'
+    +'REGLAS:\n'
+    +'- Solo lo que preguntamos de verdad, no lo que convendria preguntar. Si aparece en una '
+    +'sola llamada y parece de ese caso puntual, dejalo afuera: el formulario es lo que se '
+    +'repite.\n'
+    +'- Escribi la pregunta como se la harias a un cliente nuevo por escrito, no como salio '
+    +'hablada. Corta y sin rodeos.\n'
+    +'- Nada de datos que ya tenemos en otro lado: nombre, mail, telefono, industria.\n'
+    +'- "ayuda" dice para que sirve la respuesta, en una linea. Sin eso, quien la responde no '
+    +'sabe cuanto detalle dar.\n'
+    +'- "req" en true solo si sin esa respuesta no se puede arrancar a trabajar. Como mucho 4.\n'
+    +'- Ordenalas como se preguntarian: primero lo facil y de contexto, despues lo que cuesta.\n'
+    +'- Entre 8 y 15 preguntas.\n'
+    +'- Rioplatense.\n\n'
+    +'tipo es uno de: texto, largo, numero, opcion, si_no. Si es "opcion", poné las opciones.\n\n'
+    +'Devolve SOLO este JSON, sin markdown:\n'
+    +'{"titulo":"","campos":[{"l":"","tipo":"texto","ayuda":"","req":false,"opciones":[]}]}\n\n'
+    +'LLAMADAS:\n'+trozos.join('\n\n');
+  try{
+    var r=await _vtaApi(apiKey||'sin-clave',{model:'claude-sonnet-5',max_tokens:8000,
+      messages:[{role:'user',content:pedido}]});
+    var o=r.o;
+    if(!o||!(o.campos||[]).length) throw new Error('no devolvio preguntas');
+    // Se suman a lo que ya hay, no se pisa: podes tener preguntas propias que la
+    // IA no vio y perderlas seria peor que tener duplicados.
+    var habia=(f.campos||[]).filter(function(x){ return String(x.l||'').trim(); });
+    f.campos=habia.concat(o.campos.map(function(x){
+      return {l:String(x.l||'').trim(), tipo:(FORM_TIPOS.some(function(t){return t.k===x.tipo;})
+        ?x.tipo:'texto'), ayuda:String(x.ayuda||'').trim(), req:!!x.req,
+        opciones:Array.isArray(x.opciones)?x.opciones:[]};
+    }).filter(function(x){ return x.l; }));
+    if(o.titulo && /sin nombre/i.test(f.titulo||'')) f.titulo=String(o.titulo).trim();
+    save(); abrirForm(id);
+    toast(o.campos.length+' preguntas sumadas'+(habia.length?(' a las '+habia.length+' que ya tenias'):'')+'.');
+  }catch(err){
+    console.error('Formulario desde llamadas:', err);
+    decir('No pude armarlo: '+esc(err.message),'var(--redx)');
+  }
+}
+// Las respuestas en texto plano, para pegarlas en un mail o donde haga falta.
+function formCopiar(id, clientId){
+  var f=_form(id), c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!f||!c) return;
+  var r=formResp(c, id);
+  var t=(f.titulo||'')+' \u2014 '+(c.name||'')+'\n\n'
+    +(f.campos||[]).map(function(cp,i){
+      var v=String((r.v||{})[_formCampoK(i,cp)]||'').trim();
+      return (cp.l||'')+'\n'+(v||'(sin responder)');
+    }).join('\n\n');
+  navigator.clipboard.writeText(t).then(function(){ toast('Respuestas copiadas.'); },
+    function(){ toast('No pude copiar.','amber'); });
 }
 
 // ---- SOPs ---------------------------------------------------------------
@@ -29035,6 +29422,20 @@ function _llamadasParaIA(c){
     }
     total+=cuerpo.length;
     items.push({titulo:titulo, texto:cuerpo, doc:false});
+  });
+  // Lo respondido en formularios entra primero: es corto y es lo mas confiable
+  // que hay, porque lo escribio el cliente en vez de deducirse de una charla.
+  formularios().forEach(function(f){
+    var r=(c.formResp||{})[f.id];
+    if(!r||!r.at) return;
+    var lineas=(f.campos||[]).map(function(cp,i){
+      var v=String((r.v||{})[_formCampoK(i,cp)]||'').trim();
+      return v?('- '+(cp.l||'')+': '+v):'';
+    }).filter(Boolean);
+    if(!lineas.length) return;
+    var cuerpo=lineas.join('\n');
+    total+=cuerpo.length;
+    items.push({titulo:'FORMULARIO: '+(f.titulo||''), texto:cuerpo, doc:true});
   });
   // Los documentos van despues de las llamadas pero cuentan contra el mismo
   // tope: si no entran, se avisa igual que una llamada omitida.
