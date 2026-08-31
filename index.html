@@ -22473,7 +22473,7 @@ function abrirForm(id, clientId){
            :'Estas editando la plantilla. Para responderlo, abrilo desde un cliente.')+'</div>'
       +(c?'':('<div style="display:flex;justify-content:flex-end;margin-top:10px">'
         +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-        +'onclick="formDesdeLlamadas('+id+')">Sacarlo de las llamadas</button></div>'))
+        +'onclick="formLlamadasModal('+id+')">Sacarlo de las llamadas</button></div>'))
       +'<div id="form-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
         +'margin-top:8px"></div>'
       +'<div style="margin-top:12px">'
@@ -22641,26 +22641,94 @@ function formsClienteHtml(c){
 // Lee las llamadas y baja a formulario lo que venimos preguntando. Es el uso
 // que lo justifica: las preguntas ya existen, estan dispersas en seis
 // grabaciones y nadie las escribio nunca en un solo lugar.
-async function formDesdeLlamadas(id){
-  var f=_form(id); if(!f) return;
-  var e=document.getElementById('form-estado');
-  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
-  var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey && !iaSinApi()){ decir('Falta la clave de Anthropic en Integraciones.','var(--amberx)'); return; }
-  // Se juntan las llamadas de TODOS los clientes: lo que se repite en varios es
-  // lo que merece estar en el formulario. Con uno solo saldria su caso puntual.
-  var trozos=[], n=0;
+// Todas las llamadas con material, de todos los clientes, mas nuevas primero.
+// El formulario sale de lo que se repite entre clientes, asi que la lista tiene
+// que cruzarlos: por eso no se filtra por uno.
+function _formLlamadas(){
+  var out=[];
   (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
     (c.fathomCalls||[]).forEach(function(cl){
-      var t=cl.transcript||cl.summary;
-      if(!t || n>=14) return;
-      n++;
-      trozos.push('--- '+(cl.title||'Llamada')+' ('+(c.name||'')+') ---\n'+String(t).slice(0,14000));
+      if(!(cl.transcript||cl.summary)) return;
+      out.push({c:c, cl:cl, chars:String(cl.transcript||cl.summary||'').length});
     });
   });
-  if(!trozos.length){ decir('No hay llamadas con transcripcion en ningun cliente.','var(--amberx)'); return; }
+  return out.sort(function(a,b){ return String(b.cl.date||'').localeCompare(String(a.cl.date||'')); });
+}
+// Elegir cuales antes de leer. Antes agarraba las primeras 14 que encontraba,
+// que ademas de arbitrario podia gastar el analisis en llamadas de soporte o de
+// seguimiento, donde no preguntamos nada nuevo.
+function formLlamadasModal(id){
+  var f=_form(id); if(!f) return;
+  var l=_formLlamadas();
+  if(!l.length){ toast('No hay llamadas con transcripcion en ningun cliente.','amber'); return; }
+  var porCliente={};
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">De que llamadas sacarlo</div>'
+      +'<div class="modal-sub">Elegí las que tengan preguntas nuestras: diagnostico, '
+        +'onboarding, relevamiento. Las de seguimiento o soporte suelen no aportar preguntas '
+        +'nuevas y hacen mas ruido que otra cosa.</div>'
+      +'<div onchange="formLlContar()" style="margin-top:12px">'
+      +l.map(function(x,i){
+        // Vienen tildadas las dos mas nuevas de cada cliente: es el reparto que
+        // mejor cruza clientes sin que haya que tildar de a una.
+        porCliente[x.c.id]=(porCliente[x.c.id]||0)+1;
+        var pre=(porCliente[x.c.id]<=2);
+        return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+            +'border-bottom:1px solid var(--border);cursor:pointer">'
+          +'<input type="checkbox" class="fll" value="'+i+'"'+(pre?' checked':'')+'>'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+            +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.cl.title||'Llamada')+'</span>'
+          +'<span style="font-size:11px;color:var(--text3);white-space:nowrap">'
+            +esc(x.c.name||'')+'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap;width:46px;'
+            +'text-align:right">'+Math.round(x.chars/1000)+'k</span>'
+        +'</label>';
+      }).join('')
+      +'</div>'
+      +'<div id="fll-n" style="font-size:11.5px;color:var(--text3);margin-top:10px;'
+        +'line-height:1.5;min-height:16px"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="abrirForm('+id+')">Volver</button>'
+        +'<button id="fll-ok" class="btn btn-primary" '
+          +'onclick="formDesdeLlamadas('+id+')">Leerlas</button>'
+      +'</div>'
+    +'</div></div>';
+  formLlContar();
+}
+function formLlContar(){
+  var n=document.querySelectorAll('.fll:checked').length;
+  var e=document.getElementById('fll-n');
+  if(!e) return;
+  // Aca mas es mejor hasta cierto punto: el patron sale de cruzar clientes.
+  // El limite es el tamaño del prompt, no el criterio.
+  e.textContent = n
+    ? (n+' llamada'+(n===1?'':'s')+'.'+(n>14?' Son muchas: puede quedar cortado. '
+        +'Con 6 a 10 de clientes distintos alcanza.':''))
+    : 'Elegi al menos una.';
+  e.style.color = n>14 ? 'var(--amberx)' : 'var(--text3)';
+}
+async function formDesdeLlamadas(id){
+  var f=_form(id); if(!f) return;
+  var idx=[].slice.call(document.querySelectorAll('.fll:checked')).map(function(x){ return +x.value; });
+  if(!idx.length){ toast('Elegi al menos una llamada.','amber'); return; }
+  var l=_formLlamadas();
+  var elegidas=idx.map(function(i){ return l[i]; }).filter(Boolean);
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaSinApi()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
+  abrirForm(id);
+  var e=document.getElementById('form-estado');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var tope=elegidas.length>10?9000:(elegidas.length>6?14000:22000);
+  var trozos=elegidas.map(function(x){
+    return '--- '+(x.cl.title||'Llamada')+' ('+(x.c.name||'')+') ---\n'
+      +String(x.cl.transcript||x.cl.summary||'').slice(0,tope);
+  });
+  var n=elegidas.length;
   decir('<span style="display:inline-flex;align-items:center;gap:8px">'
-    +'<span class="carga-spin"></span><span>Leyendo '+n+' llamadas...</span></span>');
+    +'<span class="carga-spin"></span><span>Leyendo '+n+' llamada'+(n===1?'':'s')+'...</span></span>');
   var pedido='Sos analista de una agencia. Abajo hay transcripciones de llamadas con distintos '
     +'clientes.\n\n'
     +'Sacá las PREGUNTAS que les hacemos nosotros a ellos, y armá un formulario para no tener '
