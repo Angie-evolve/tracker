@@ -19382,6 +19382,11 @@ function successSubNav(c){
       // preparar la llamada siguiente.
       +(c.lastReport?('<button class="btn btn-sm" onclick="showCallReport('+c.id+')">'
         +'Ver ultimo'+(c.lastReport.generatedAt?(' \u00b7 '+esc(c.lastReport.generatedAt)):'')+'</button>'):'')
+      // Aparece solo si hay llamadas de venta cargadas: sin ese material el
+      // boton no puede hacer nada y seria una promesa vacia.
+      +(_vtaLlamadas(c).length?('<button class="btn btn-sm" onclick="ventasModal('+c.id+')" '
+        +'title="Lee las llamadas del cliente con sus leads y saca el paso a paso corregido">'
+        +'Proceso comercial &middot; '+_vtaLlamadas(c).length+'</button>'):'')
       +'<button class="btn btn-sm btn-primary" onclick="briefModal('+c.id+')" '
       +'title="Elegi las llamadas y arma un brief en HTML para preparar la proxima">'
       +'Brief de llamadas</button>'):'')
@@ -21784,6 +21789,346 @@ function sopAplicarPropuestas(id){
   save(); closeModal(); _sopPintar(id);
   toast(idx.length+' paso'+(idx.length===1?'':'s')+' agregado'+(idx.length===1?'':'s')
     +'. Quedo como '+s.version+'.');
+}
+
+// ---- Analisis del proceso comercial --------------------------------------
+// Aparte del brief a proposito. El brief prepara la proxima reunion NUESTRA con
+// el cliente; esto lee las llamadas del cliente vendiendole a SUS leads y sale
+// con el paso a paso corregido. Mezclarlos en un prompt arruinaba los dos: doce
+// transcripciones de venta tapaban las tres llamadas de onboarding.
+//
+// Va en dos pasadas porque doce transcripciones no entran juntas en un prompt.
+// Primera: cada llamada por separado, que ademas se analiza mejor: leer una
+// llamada entera da un diagnostico mas fino que leer doce recortadas. Segunda:
+// se sintetizan esos analisis en el patron y el framework.
+function _vtaLlamadas(c){
+  return docs(c).filter(function(d){ return _docUso(d)==='comercial'; });
+}
+function ventasModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!localStorage.getItem('evold-anthropic-key')){
+    toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return;
+  }
+  var l=_vtaLlamadas(c);
+  if(!l.length){
+    toast('No hay llamadas de venta cargadas. Subilas en Documentos con "Subir llamadas de venta".','amber');
+    return;
+  }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Proceso comercial de '+esc(c.name||'este cliente')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
+        +'Lee una por una las llamadas del cliente con sus leads y sale con el paso a paso '
+        +'corregido: donde se caen los deals, que objeciones se repiten, que decir en cada '
+        +'etapa y la voz del mercado.</div>'
+      +'<div onchange="ventasContar()" style="max-height:280px;overflow-y:auto">'
+      +l.map(function(d,i){
+        return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+          +'border-bottom:1px solid var(--border);cursor:pointer">'
+          +'<input type="checkbox" class="vta" value="'+i+'" checked>'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+            +'text-overflow:ellipsis;white-space:nowrap">'+esc(d.titulo||'Llamada')+'</span>'
+          +'<span style="font-size:11px;color:var(--text3)">'
+            +_docKb(String(d.texto||'').length)+'</span>'
+        +'</label>';
+      }).join('')+'</div>'
+      +'<div id="vta-n" style="font-size:11.5px;color:var(--text3);margin-top:10px;'
+        +'line-height:1.5;min-height:16px"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button id="vta-ok" class="btn btn-sm btn-primary" '
+          +'onclick="ventasGenerar('+c.id+')">Analizar</button>'
+      +'</div>'
+    +'</div></div>';
+  ventasContar();
+}
+function ventasContar(){
+  var n=document.querySelectorAll('.vta:checked').length;
+  var e=document.getElementById('vta-n');
+  if(!e) return;
+  // Aca mas es mejor, al reves que en el brief: el patron sale de la repeticion.
+  // Lo unico que crece es el tiempo, porque cada llamada es una consulta propia.
+  e.textContent = n
+    ? (n+' llamada'+(n===1?'':'s')+'. Tarda como '+Math.max(1,Math.round(n*0.35))
+       +' minuto'+(Math.round(n*0.35)>1?'s':'')+': se leen de a una y despues se cruzan.')
+    : 'Elegi al menos una.';
+  e.style.color='var(--text3)';
+}
+async function _vtaApi(apiKey, body){
+  var r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':apiKey,
+      'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify(body)
+  });
+  var d=await r.json();
+  if(d.error) throw new Error(d.error.message||d.error.type||'error de la API');
+  var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+    .map(function(b){return b.text;}).join('');
+  var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
+  if(a<0) throw new Error(d.stop_reason==='max_tokens'
+    ? 'se quedo sin tokens' : ('sin JSON, stop_reason '+(d.stop_reason||'?')));
+  try{ return JSON.parse(txt.slice(a,z+1)); }
+  catch(pe){ throw new Error('la respuesta llego cortada'
+    +(d.stop_reason==='max_tokens'?' por falta de tokens':'')); }
+}
+async function ventasGenerar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var l=_vtaLlamadas(c);
+  var idx=[].slice.call(document.querySelectorAll('.vta:checked')).map(function(e){ return +e.value; });
+  if(!idx.length){ toast('Elegi al menos una llamada'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var e=document.getElementById('vta-n');
+  var ok=document.getElementById('vta-ok');
+  var decir=function(t,col){ if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; } };
+  if(ok){ ok.disabled=true; ok.textContent='Analizando...'; }
+  var elegidas=idx.map(function(i){ return l[i]; }).filter(Boolean);
+  var t0=Date.now();
+
+  // ── Pasada 1: una llamada por vez ──────────────────────────────
+  var esq1='{"lead":"","resultado":"cerro|se cayo|sigue abierto|no se sabe",'
+    +'"apertura":{"comoAbrio":"","lectura":""},'
+    +'"diagnostico":{"pregunto":[""],"noPregunto":[""],"lectura":""},'
+    +'"pitch":{"comoLoConto":"","hablóDeMas":"si|no","lectura":""},'
+    +'"objeciones":[{"objecion":"","citaDelProspecto":"","comoRespondio":"","funciono":"si|no|a medias"}],'
+    +'"cierre":{"quePidio":"","queAcordaron":"","lectura":""},'
+    +'"quiebre":{"momento":"","cita":"","porque":""},'
+    +'"vozMercado":[{"frase":"","tema":""}],'
+    +'"aciertos":[""],"errores":[""]}';
+  var analisis=[], fallaron=[];
+  for(var j=0;j<elegidas.length;j++){
+    var d=elegidas[j];
+    decir('Leyendo '+(j+1)+' de '+elegidas.length+': '+(d.titulo||'llamada')+'...');
+    try{
+      var o=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:2000, messages:[{role:'user',content:
+        'Sos consultor de procesos comerciales. Abajo esta la transcripcion de UNA llamada de '
+        +'venta de "'+(c.name||'')+'"'+(c.industry?(', que vende '+c.industry):'')+' con un '
+        +'prospecto suyo.\n\n'
+        +'Analiza como vendio, no si el producto es bueno.\n\n'
+        +'REGLAS:\n'
+        +'- Las citas son textuales. Si no hay cita textual para algo, dejalo vacio.\n'
+        +'- "vozMercado" son frases del PROSPECTO, no del vendedor: como nombra su problema, '
+        +'con que palabras. Es el material con el que despues se escriben los anuncios.\n'
+        +'- "quiebre" es el momento donde la llamada se dio vuelta, para bien o para mal.\n'
+        +'- No inventes. Si la llamada no llego al cierre, decilo en vez de suponer.\n'
+        +'- Rioplatense, directo.\n\n'
+        +'Devolve SOLO este JSON:\n'+esq1
+        +'\n\nLLAMADA: '+(d.titulo||'')+'\n'+String(d.texto||'').slice(0,90000)}]});
+      o._t=d.titulo||('Llamada '+(j+1));
+      analisis.push(o);
+    }catch(err){
+      console.error('Proceso comercial, llamada '+(d.titulo||j),err);
+      fallaron.push((d.titulo||'Llamada '+(j+1))+': '+err.message);
+    }
+  }
+  if(!analisis.length){
+    decir('No pude leer ninguna: '+fallaron.join(' \u00b7 '),'var(--redx)');
+    if(ok){ ok.disabled=false; ok.textContent='Analizar'; }
+    return;
+  }
+
+  // ── Pasada 2: el patron ────────────────────────────────────────
+  decir('Cruzando '+analisis.length+' llamadas para sacar el patron...');
+  var esq2='{"titulo":"","subtitulo":"","resumen":"",'
+    +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
+    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|"}],'
+    +'"patron":{"texto":"","puntos":[""]},'
+    +'"etapas":[{"etapa":"","haceHoy":"","problema":"","deberiaHacer":"",'
+      +'"evidencia":[{"cita":"","lead":""}]}],'
+    +'"objeciones":[{"objecion":"","frecuencia":"","comoResponde":"","comoDeberia":"","cita":""}],'
+    +'"fugas":[{"donde":"","cuantas":"","porque":"","arreglo":""}],'
+    +'"vozMercado":{"texto":"","frases":[{"texto":"","lead":"","tema":""}],"palabras":[""]},'
+    +'"aciertos":[""],'
+    +'"framework":[{"paso":"","objetivo":"","queHacer":[""],"comoSeSabe":"","noHacer":""}],'
+    +'"frases":[{"situacion":"","diceHoy":"","decir":""}],'
+    +'"primero":[{"cambio":"","porque":"","impacto":"Alto|Medio|Bajo"}]}';
+  try{
+    var o2=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:16000, messages:[{role:'user',content:
+      'Sos consultor de procesos comerciales. Abajo estan los analisis de '+analisis.length
+      +' llamadas de venta de "'+(c.name||'')+'", una por una. Cruzalos y arma el diagnostico '
+      +'del proceso comercial con el paso a paso corregido.\n\n'
+      +'REGLAS:\n'
+      +'- Lo que importa es el PATRON: lo que pasa en una llamada es anecdota, lo que se repite '
+      +'en varias es el proceso. Deci en cuantas de las '+analisis.length+' aparece cada cosa.\n'
+      +'- "etapas" recorre el proceso en orden: primer contacto, apertura, diagnostico, pitch, '
+      +'objeciones, cierre, seguimiento. Una entrada por etapa, con lo que hace hoy y lo que '
+      +'deberia hacer. La evidencia son citas textuales de los analisis.\n'
+      +'- "fugas" es donde se pierden los deals, con el numero de llamadas en que pasa.\n'
+      +'- "framework" es el paso a paso listo para aplicar, del primer contacto al cierre. '
+      +'Cada paso con su objetivo, que hacer, como saber que salio bien y que NO hacer.\n'
+      +'- "frases" es reemplazo concreto: lo que dice hoy contra lo que conviene decir.\n'
+      +'- "vozMercado" son las palabras del prospecto, no del vendedor. Sirven para escribir '
+      +'anuncios: agrupa las que se repiten.\n'
+      +'- "aciertos" existe y no es relleno: lo que ya funciona no hay que tocarlo.\n'
+      +'- "primero" son los 3 o 4 cambios que mueven la aguja primero, ordenados por impacto.\n'
+      +'- No inventes numeros. Si algo aparece en una sola llamada, decilo asi.\n'
+      +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
+      +'Devolve SOLO este JSON, sin markdown:\n'+esq2
+      +'\n\nANALISIS POR LLAMADA:\n'+JSON.stringify(analisis)}]});
+    var html=_ventasHtml(o2, c, analisis);
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+    a.download='proceso-comercial-'+String(c.name||'cliente').toLowerCase()
+      .replace(/[^a-z0-9]+/g,'-')+'-'+new Date().toISOString().split('T')[0]+'.html';
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); },1500);
+    closeModal();
+    toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s con '+analisis.length+' llamadas'
+      +(fallaron.length?(' \u00b7 '+fallaron.length+' fallaron'):''));
+  }catch(err){
+    console.error('Proceso comercial, sintesis:', err);
+    decir('Lei las llamadas pero no pude cruzarlas: '+err.message,'var(--redx)');
+    if(ok){ ok.disabled=false; ok.textContent='Analizar'; }
+  }
+}
+function _ventasHtml(d, c, analisis){
+  var E=esc;
+  var lista=function(a){
+    if(!a||!a.length) return '';
+    return '<ul class="clean">'+a.filter(Boolean).map(function(x){
+      return '<li>'+E(x)+'</li>'; }).join('')+'</ul>';
+  };
+  var cita=function(t,quien){
+    if(!t) return '';
+    return '<blockquote>'+E(t)+(quien?('<cite>'+E(quien)+'</cite>'):'')+'</blockquote>';
+  };
+  var card=function(t,cuerpo,acc){
+    if(!cuerpo) return '';
+    return '<div class="card'+(acc?(' acc '+acc):' acc')+'">'
+      +(t?('<h3>'+E(t)+'</h3>'):'')+cuerpo+'</div>';
+  };
+  var sec=function(t,cuerpo){ return cuerpo?('<h2>'+E(t)+'</h2>'+cuerpo):''; };
+
+  // --- El patron y los numeros
+  var p0=((d.numeros&&d.numeros.length)
+      ?('<div class="grid g3">'+d.numeros.map(function(n){
+          return '<div class="stat"><span class="n '+(n.color||'')+'">'+E(n.valor)+'</span>'
+            +'<span class="l">'+E(n.rotulo)+'</span></div>';
+        }).join('')+'</div>'):'')
+    +sec('El patron', card(null, ((d.patron&&d.patron.texto)?('<p>'+E(d.patron.texto)+'</p>'):'')
+        +lista(d.patron&&d.patron.puntos)))
+    +sec('Donde se pierden', (d.fugas||[]).map(function(f){
+        return card(f.donde, '<p>'+E(f.porque)+'</p>'
+          +(f.cuantas?('<p class="tag">'+E(f.cuantas)+'</p>'):'')
+          +(f.arreglo?('<p class="fix"><b>Arreglo:</b> '+E(f.arreglo)+'</p>'):''), 'red');
+      }).join(''))
+    +sec('Lo que ya funciona', lista(d.aciertos));
+
+  // --- Etapa por etapa
+  var p1=(d.etapas||[]).map(function(x){
+      return card(x.etapa,
+        (x.haceHoy?('<p><b class="lb">Hoy</b> '+E(x.haceHoy)+'</p>'):'')
+        +(x.problema?('<p><b class="lb warn">Problema</b> '+E(x.problema)+'</p>'):'')
+        +(x.deberiaHacer?('<p><b class="lb ok">Deberia</b> '+E(x.deberiaHacer)+'</p>'):'')
+        +(x.evidencia||[]).map(function(ev){ return cita(ev.cita, ev.lead); }).join(''));
+    }).join('');
+
+  // --- Objeciones
+  var p2=(d.objeciones||[]).map(function(x){
+      return card(x.objecion,
+        (x.frecuencia?('<p class="tag">'+E(x.frecuencia)+'</p>'):'')
+        +cita(x.cita,'')
+        +(x.comoResponde?('<p><b class="lb">Responde</b> '+E(x.comoResponde)+'</p>'):'')
+        +(x.comoDeberia?('<p><b class="lb ok">Conviene</b> '+E(x.comoDeberia)+'</p>'):''), 'amber');
+    }).join('');
+
+  // --- El framework
+  var p3=(d.framework||[]).map(function(x,i){
+      return card((i+1)+'. '+String(x.paso||''),
+        (x.objetivo?('<p><b class="lb">Objetivo</b> '+E(x.objetivo)+'</p>'):'')
+        +lista(x.queHacer)
+        +(x.comoSeSabe?('<p><b class="lb ok">Salio bien si</b> '+E(x.comoSeSabe)+'</p>'):'')
+        +(x.noHacer?('<p><b class="lb warn">No hacer</b> '+E(x.noHacer)+'</p>'):''), 'teal');
+    }).join('')
+    +sec('Que decir', (d.frases||[]).map(function(f){
+        return '<div class="swap">'+(f.situacion?('<div class="sit">'+E(f.situacion)+'</div>'):'')
+          +(f.diceHoy?('<div class="hoy"><span>Hoy</span>'+E(f.diceHoy)+'</div>'):'')
+          +(f.decir?('<div class="mej"><span>Mejor</span>'+E(f.decir)+'</div>'):'')+'</div>';
+      }).join(''));
+
+  // --- Voz del mercado: se copia y se pega en los prompts de copy
+  var vm=d.vozMercado||{};
+  var p4=card(null, (vm.texto?('<p>'+E(vm.texto)+'</p>'):'')
+      +((vm.palabras&&vm.palabras.length)
+        ?('<div class="chips">'+vm.palabras.map(function(w){
+            return '<span class="chip">'+E(w)+'</span>'; }).join('')+'</div>'):''))
+    +(vm.frases||[]).map(function(f){
+        return cita(f.texto, [f.lead,f.tema].filter(Boolean).join(' \u00b7 '));
+      }).join('');
+
+  // --- Por donde empezar
+  var p5=(d.primero||[]).map(function(x,i){
+      return card((i+1)+'. '+String(x.cambio||''),
+        (x.porque?('<p>'+E(x.porque)+'</p>'):'')
+        +(x.impacto?('<p class="tag">Impacto '+E(x.impacto)+'</p>'):''),
+        x.impacto==='Alto'?'lime':'');
+    }).join('');
+
+  var tabs=[['Diagnostico',p0],['Etapa por etapa',p1],['Objeciones',p2],
+            ['Framework',p3],['Voz del mercado',p4],['Por donde empezar',p5]]
+    .filter(function(t){ return t[1] && String(t[1]).trim(); });
+
+  return '<!DOCTYPE html><html lang="es-AR"><head><meta charset="UTF-8">'
+    +'<meta name="viewport" content="width=device-width,initial-scale=1">'
+    +'<title>Proceso comercial \u2014 '+E(c.name||'Cliente')+'</title>'
+    +'<link rel="preconnect" href="https://fonts.googleapis.com">'
+    +'<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    +'<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600'
+    +'&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">'
+    +'<style>'+_briefCSS()+_ventasCSS()+'</style></head><body>'
+    +'<div class="wrap"><header>'
+      +'<div class="kicker">Proceso comercial \u00b7 '+analisis.length+' llamadas de venta</div>'
+      +'<h1>'+E(d.titulo||c.name||'Cliente')
+        +(d.subtitulo?(' <span>\u2014 '+E(d.subtitulo)+'</span>'):'')+'</h1>'
+      +(d.resumen?('<p class="sub">'+E(d.resumen)+'</p>'):'')
+      +((d.pills&&d.pills.length)?('<div class="meta-row">'+d.pills.map(function(p){
+          return '<span class="pill'+(p.tipo==='hot'?' hot':(p.tipo==='warn'?' warn':''))+'">'
+            +E(p.texto)+'</span>';
+        }).join('')+'</div>'):'')
+      +'<div class="links">'+analisis.map(function(a){
+          return '<span class="lnk"><span class="lk">'
+            +E(a.resultado==='cerro'?'Cerro':(a.resultado==='se cayo'?'Perdida':'Abierta'))
+            +'</span>'+E(a._t||a.lead||'')+'</span>';
+        }).join('')+'</div>'
+    +'</header></div>'
+    +'<nav><div class="tabs">'+tabs.map(function(t,i){
+        return '<button class="tab'+(i===0?' active':'')+'" data-p="p'+i+'">'+E(t[0])+'</button>';
+      }).join('')+'</div></nav>'
+    +'<div class="wrap">'+tabs.map(function(t,i){
+        return '<section class="panel'+(i===0?' active':'')+'" id="p'+i+'">'+t[1]+'</section>';
+      }).join('')+'</div>'
+    +'<script>'
+    +'document.querySelectorAll(".tab").forEach(function(t){t.addEventListener("click",function(){'
+    +'document.querySelectorAll(".tab").forEach(function(x){x.classList.remove("active")});'
+    +'document.querySelectorAll(".panel").forEach(function(x){x.classList.remove("active")});'
+    +'t.classList.add("active");document.getElementById(t.dataset.p).classList.add("active");'
+    +'window.scrollTo({top:0,behavior:"smooth"});});});'
+    +'<\/script></body></html>';
+}
+function _ventasCSS(){
+  return '.lb{font-family:"Geist Mono",monospace;font-size:9.5px;letter-spacing:.09em;'
+   +'text-transform:uppercase;color:var(--text-muted);margin-right:8px}'
+   +'.lb.warn{color:var(--red)}.lb.ok{color:var(--lime)}'
+   +'.tag{font-family:"Geist Mono",monospace;font-size:11px;color:var(--text-muted);margin-top:6px}'
+   +'.fix{margin-top:8px;color:var(--text-secondary)}'
+   // El contraste de lo que dice hoy contra lo que conviene decir es el
+   // entregable que mas se usa: va con formato propio para encontrarlo rapido.
+   +'.swap{border:1px solid var(--border);border-radius:8px;margin:10px 0;overflow:hidden}'
+   +'.swap .sit{background:var(--surface-2);padding:9px 14px;font-size:12.5px;'
+   +'color:var(--text-secondary)}'
+   +'.swap .hoy,.swap .mej{padding:12px 14px;font-size:14.5px;line-height:1.5}'
+   +'.swap .hoy{color:var(--text-secondary);border-bottom:1px solid var(--border)}'
+   +'.swap .mej{color:var(--text-primary)}'
+   +'.swap span{display:block;font-family:"Geist Mono",monospace;font-size:9.5px;'
+   +'letter-spacing:.09em;text-transform:uppercase;margin-bottom:5px}'
+   +'.swap .hoy span{color:var(--red)}.swap .mej span{color:var(--lime)}'
+   +'.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}'
+   +'.chip{font-family:"Geist Mono",monospace;font-size:11.5px;padding:4px 10px;'
+   +'border:1px solid var(--border);border-radius:99px;color:var(--text-secondary)}';
 }
 
 // ---- Brief de llamadas ---------------------------------------------------
@@ -25068,7 +25413,10 @@ function briefModal(clientId){
   }
   var ll=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
     .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
-  var dd=docs(c);
+  // Las llamadas de venta del cliente con sus leads no van aca: son doce y
+  // taparian a las tres de onboarding, que es lo que el brief necesita leer.
+  // Tienen su propio analisis, en "Proceso comercial".
+  var dd=docsCopy(c);
   if(!ll.length && !dd.length){
     toast('Este cliente no tiene llamadas con transcripcion ni documentos cargados.','amber'); return;
   }
@@ -25103,17 +25451,20 @@ function briefModal(clientId){
           +'letter-spacing:.06em;margin:14px 0 5px">Documentos</div>'
           +'<div onchange="briefContar()" style="max-height:180px;overflow-y:auto">'
           +dd.map(function(d,i){
-            var com=(_docUso(d)==='comercial');
             return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
               +'border-bottom:1px solid var(--border);cursor:pointer">'
               +'<input type="checkbox" class="brf-doc" value="'+i+'">'
               +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
                 +'text-overflow:ellipsis;white-space:nowrap">'+esc(d.titulo||'Sin titulo')+'</span>'
-              +(com?'<span style="font-size:10px;color:var(--amberx);flex:none">comercial</span>':'')
               +'<span style="font-size:11px;color:var(--text3)">'
                 +_docKb(String(d.texto||'').length)+'</span>'
             +'</label>';
           }).join('')+'</div>')
+        :'')
+      +(_vtaLlamadas(c).length
+        ?('<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:10px">'
+          +'Las '+_vtaLlamadas(c).length+' llamadas de venta del cliente con sus leads no estan '
+          +'aca: tienen su propio analisis en <b style="color:var(--text2)">Proceso comercial</b>.</div>')
         :'')
       +'<div id="brf-n" style="font-size:11.5px;color:var(--text3);margin-top:10px"></div>'
       +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
@@ -25163,7 +25514,7 @@ async function briefGenerar(clientId){
     return { tipo:'llamada', titulo:x.title||x.tipo||'Llamada', fecha:x.date||'',
              url:x.url||x.link||'', texto:String(x.transcript||'').slice(0,tope) };
   });
-  var dd=docs(c);
+  var dd=docsCopy(c);
   var documentos=idoc.map(function(i){
     var d=dd[i]||{};
     return { tipo:(_docUso(d)==='comercial' ? 'llamada de venta del cliente con un lead suyo'
