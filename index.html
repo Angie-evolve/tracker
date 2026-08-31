@@ -21315,12 +21315,13 @@ function _lpContextoInterno(c){
 }
 var _LP_MAXDOC=60000;
 
-async function _lpApi(apiKey, body){
+async function _lpApi(apiKey, body, beta){
+  var h={'Content-Type':'application/json','x-api-key':apiKey,
+    'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};
+  // web_fetch todavia es beta y pide su propio header.
+  if(beta) h['anthropic-beta']=beta;
   var r=await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','x-api-key':apiKey,
-      'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify(body)
+    method:'POST', headers:h, body:JSON.stringify(body)
   });
   var d=await r.json();
   console.log('Landing, respuesta:', d);
@@ -21354,28 +21355,59 @@ async function investigarLanding(clientId){
   _lpEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
     +'<span class="carga-spin"></span><span>Buscando en el sitio y las redes...</span></span>','var(--text2)');
   try{
+    // Las URLs van sueltas y completas: web_fetch solo puede abrir links que ya
+    // aparecieron en la conversacion, asi que si no estan aca no las lee.
+    var urls=[];
+    (c.material||[]).forEach(function(m){ if(m.url) urls.push(m.url); });
+    _matHeredado(c).forEach(function(m){ if(m.u) urls.push(m.u); });
+    if(c.website) urls.unshift(c.website);
+    urls=urls.filter(function(u,i){ return /^https?:\/\//i.test(u) && urls.indexOf(u)===i; });
     var o=await _lpApi(apiKey,{
-      model:'claude-sonnet-5', max_tokens:5000,
-      tools:[{type:'web_search_20250305', name:'web_search', max_uses:6}],
+      model:'claude-sonnet-5', max_tokens:8000,
+      // web_search encuentra, web_fetch LEE. Con busqueda sola el modelo arma
+      // la respuesta con los fragmentos del buscador y rellena lo que falta:
+      // asi aparecio una funcionalidad que la web no tiene y se dio por
+      // inexistente una franja de logos que si estaba.
+      tools:[{type:'web_search_20250305', name:'web_search', max_uses:5},
+             {type:'web_fetch_20250910', name:'web_fetch', max_uses:8,
+              citations:{enabled:true}}],
       messages:[{role:'user',content:
-        'Investiga a la empresa "'+(c.name||'')+'" en la web. Entra a su sitio y a sus redes '
-        +'usando los links de abajo y su nombre.\n\n'
-        +'Busca especificamente, en este orden de prioridad:\n'
-        +'1. PRUEBA SOCIAL: cantidad de clientes, metricas de uso, nombres de clientes suyos, '
-        +'logos de clientes, testimonios. Suele estar en franjas tipo "confiado por" o en el pie.\n'
-        +'2. Precios publicados y que incluye cada plan.\n'
+        'Investiga a la empresa "'+(c.name||'')+'" en la web.\n\n'
+        +'COMO TRABAJAR, y esto es lo importante:\n'
+        +'- ABRI las paginas con web_fetch y leelas enteras. No armes la respuesta con los '
+        +'fragmentos que devuelve el buscador: son recortes y llevan a inventar.\n'
+        +'- Empeza por el sitio del cliente. Recorre tambien /precios, /pricing y el FAQ si '
+        +'existen como pagina aparte.\n'
+        +'- Cada dato tiene que salir de una pagina que abriste, y "fuente" lleva la URL exacta '
+        +'de esa pagina.\n'
+        +'- Las palabras entre comillas tienen que estar TEXTUALES en la pagina. Si no podes '
+        +'copiarlas tal cual, no uses comillas.\n'
+        +'- Si una pagina no abre, ponela en "noPude" y seguí. No la reconstruyas de memoria '
+        +'ni del buscador.\n\n'
+        +'QUE BUSCAR, en este orden:\n'
+        +'1. PRUEBA SOCIAL: cantidad de clientes, metricas de uso, nombres o logos de clientes, '
+        +'testimonios. Suele estar en franjas tipo "confiado por", en el hero o en el pie, y '
+        +'muchas veces los logos son texto: leelos. Antes de devolver "pruebaSocial" vacio, '
+        +'volve a recorrer la pagina entera: decir que no hay cuando si hay cambia la landing '
+        +'que se arma despues.\n'
+        +'2. Precios publicados y que incluye cada plan. TODOS los planes, no solo los del '
+        +'producto principal.\n'
         +'3. Sus diferenciales, con las palabras exactas que ellos usan.\n'
         +'4. Objeciones que respondan en su FAQ.\n\n'
         +'Devolve SOLO un JSON, sin markdown, empezando con { :\n'
-        +'{"hallazgos":[{"dato":"","fuente":"","confianza":"alta|media|baja"}],'
+        +'{"hallazgos":[{"dato":"","fuente":"url exacta","confianza":"alta|media|baja"}],'
         +'"pruebaSocial":[{"n":"el numero","l":"que mide"}],'
         +'"clientes":["nombres de clientes suyos si los publica"],'
         +'"diferenciales":["con sus palabras"],'
         +'"faq":[{"q":"","a":""}],'
-        +'"contradicciones":["cosas de la web que no coinciden con las llamadas"]}\n\n'
+        +'"noPude":["paginas que no pudiste abrir"],'
+        +'"contradicciones":["cosas de la web que no coinciden con las llamadas. Solo si '
+        +'leiste las dos partes: la pagina y el material. Si la diferencia puede ser un error '
+        +'de transcripcion de la llamada, decilo asi."]}\n\n'
         +'Si algo no lo encontras, array vacio. Nunca inventes numeros ni nombres.\n\n'
+        +(urls.length?('PAGINAS PARA ABRIR:\n'+urls.join('\n')+'\n\n'):'')
         +'CONTEXTO DE LAS LLAMADAS:\n'+ctx.texto}]
-    });
+    }, 'web-fetch-2025-09-10');
     cfg.investigacion=o;
     cfg.investigadoAt=new Date().toISOString();
     save();
@@ -21543,12 +21575,26 @@ function landingHtml(c){
             return '<div><div style="font-size:1.15rem;font-weight:600;color:var(--text)">'+esc(_lpLimpiar(x.n))+'</div>'
               +'<div style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(x.l))+'</div></div>';
           }).join('')+'</div>')
-        :'<div style="font-size:11.5px;color:var(--amberx);line-height:1.5">Ninguna. '
-         +'Sin numeros ni nombres de clientes, la piel Institucional queda vacia: conviene Simple.</div>')
+        // Antes decia "Ninguna" y sacaba la conclusion en la misma linea. Si la
+        // lectura fallo, esa conclusion es falsa y decide la piel igual. Ahora
+        // el veredicto solo sale si ademas no hay clientes y se leyo todo.
+        :((cl.length||((inv.noPude||[]).length))
+          ?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5">Sin metricas.</div>'
+          :('<div style="font-size:11.5px;color:var(--amberx);line-height:1.5">Ninguna. '
+            +'Sin numeros ni nombres de clientes, la piel Institucional queda vacia: '
+            +'conviene Simple. <span style="color:var(--text3)">Si sabes que la web tiene '
+            +'logos o testimonios, volve a buscar antes de decidir.</span></div>')))
       +(cl.length?('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'
         +cl.map(function(x){return '<span style="font-size:11px;border:1px solid var(--border);'
           +'border-radius:var(--radius);padding:3px 8px;color:var(--text2)">'+esc(_lpLimpiar(x))+'</span>';}).join('')
         +'</div>'):'')
+      // Lo que no se pudo abrir se dice. "No hay prueba social" y "no pude leer
+      // la pagina de precios" son cosas distintas y se veian iguales.
+      +((inv.noPude||[]).length
+        ?('<div style="font-size:11px;color:var(--amberx);line-height:1.5;margin-top:9px;'
+          +'padding-top:9px;border-top:1px solid var(--border)">No pude abrir: '
+          +inv.noPude.map(function(x){ return esc(_lpLimpiar(x)); }).join(' &middot; ')
+          +'. Lo que falte de ahi no esta en este informe.</div>'):'')
     +'</div>'
     +(inv.hallazgos||[]).map(function(h){
         return '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">'
