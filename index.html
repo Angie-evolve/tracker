@@ -21888,12 +21888,13 @@ function _briefCSS(){
 // Arma el HTML a partir del JSON que devuelve la IA. Si una seccion no vino,
 // no se dibuja: un brief con titulos vacios se lee como que falto informacion
 // cuando en realidad no habia nada que decir de eso.
-function _briefHtml(d, c, llamadas){
+function _briefHtml(d, c, fuentes){
   var E=esc;
   var q=function(x){
     if(!x||!x.texto) return '';
     var cita=[x.quien,x.llamada,x.momento].filter(Boolean).join(' \u00b7 ');
-    var ll=(llamadas||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
+    // Los documentos no tienen url ni minuto: la cita queda igual, sin link.
+    var ll=(fuentes||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
     var link='';
     if(ll&&ll.url&&x.momento){
       var p=String(x.momento).split(':');
@@ -22036,10 +22037,14 @@ function _briefHtml(d, c, llamadas){
           return '<span class="pill'+(p.tipo==='hot'?' hot':(p.tipo==='warn'?' warn':''))+'">'
             +E(p.texto)+'</span>';
         }).join('')+'</div>'):'')
-      +((llamadas&&llamadas.length)?('<div class="links">'+llamadas.map(function(l,i){
-          return l.url?('<a class="lnk" href="'+E(l.url)+'" target="_blank" rel="noopener">'
+      +((fuentes&&fuentes.length)?('<div class="links">'+fuentes.map(function(l,i){
+          // Con link las llamadas, sin link los documentos: igual conviene que
+          // figuren, para saber sobre que material se armo este brief.
+          if(l.url) return '<a class="lnk" href="'+E(l.url)+'" target="_blank" rel="noopener">'
             +'<span class="lk">Call '+(i+1)+'</span>'+E(l.titulo)
-            +(l.fecha?(' \u00b7 '+E(l.fecha)):'')+'</a>'):'';
+            +(l.fecha?(' \u00b7 '+E(l.fecha)):'')+'</a>';
+          return '<span class="lnk"><span class="lk">'
+            +(l.tipo&&l.tipo.indexOf('venta')>=0?'Venta':'Doc')+'</span>'+E(l.titulo)+'</span>';
         }).join('')+'</div>'):'')
     +'</header></div>'
     +'<nav><div class="tabs">'+tabs.map(function(t,i){
@@ -25063,16 +25068,22 @@ function briefModal(clientId){
   }
   var ll=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
     .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var dd=docs(c);
+  if(!ll.length && !dd.length){
+    toast('Este cliente no tiene llamadas con transcripcion ni documentos cargados.','amber'); return;
+  }
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:560px">'
+    +'<div class="modal" style="max-width:560px;max-height:86vh;overflow-y:auto">'
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
         +'Brief de '+esc(c.name||'este cliente')+'</div>'
       +'<div style="font-size:12.5px;color:var(--text3);line-height:1.65;margin-bottom:12px">'
-        +'Lee las llamadas que elijas y arma un HTML para preparar la proxima: lo que dijo, '
+        +'Lee el material que elijas y arma un HTML para preparar la proxima: lo que dijo, '
         +'lo que evito, avatares a validar, preguntas y lo que ya se le prometio.</div>'
       +(ll.length
-        ?('<div onchange="briefContar()" style="max-height:280px;overflow-y:auto">'
+        ?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin-bottom:5px">Llamadas</div>'
+          +'<div onchange="briefContar()" style="max-height:220px;overflow-y:auto">'
           +ll.map(function(x,i){
             return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
               +'border-bottom:1px solid var(--border);cursor:pointer">'
@@ -25081,26 +25092,55 @@ function briefModal(clientId){
                 +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.title||x.tipo||'Llamada')+'</span>'
               +'<span style="font-size:11px;color:var(--text3)">'+esc(x.date||'')+'</span>'
             +'</label>';
-          }).join('')+'</div>'
-          +'<div id="brf-n" style="font-size:11.5px;color:var(--text3);margin-top:10px"></div>')
+          }).join('')+'</div>')
         :('<div style="font-size:12.5px;color:var(--amberx);line-height:1.6;padding:10px 0">'
           +'Este cliente no tiene llamadas con transcripcion cargada.</div>'))
+      // Los documentos entran destildados: el brief prepara la proxima reunion,
+      // asi que el material de base suma contexto pero no siempre hace falta, y
+      // un PDF de 35 paginas tildado por defecto diluye el analisis.
+      +(dd.length
+        ?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin:14px 0 5px">Documentos</div>'
+          +'<div onchange="briefContar()" style="max-height:180px;overflow-y:auto">'
+          +dd.map(function(d,i){
+            var com=(_docUso(d)==='comercial');
+            return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+              +'border-bottom:1px solid var(--border);cursor:pointer">'
+              +'<input type="checkbox" class="brf-doc" value="'+i+'">'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+                +'text-overflow:ellipsis;white-space:nowrap">'+esc(d.titulo||'Sin titulo')+'</span>'
+              +(com?'<span style="font-size:10px;color:var(--amberx);flex:none">comercial</span>':'')
+              +'<span style="font-size:11px;color:var(--text3)">'
+                +_docKb(String(d.texto||'').length)+'</span>'
+            +'</label>';
+          }).join('')+'</div>')
+        :'')
+      +'<div id="brf-n" style="font-size:11.5px;color:var(--text3);margin-top:10px"></div>'
       +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-        +(ll.length?('<button id="brf-ok" class="btn btn-sm btn-primary" '
-          +'onclick="briefGenerar('+c.id+')">Armar el brief</button>'):'')
+        +'<button id="brf-ok" class="btn btn-sm btn-primary" '
+          +'onclick="briefGenerar('+c.id+')">Armar el brief</button>'
       +'</div>'
     +'</div></div>';
   briefContar();
 }
 function briefContar(){
   var n=document.querySelectorAll('.brf:checked').length;
+  var nd=document.querySelectorAll('.brf-doc:checked').length;
   var e=document.getElementById('brf-n');
   if(!e) return;
-  // Con muchas llamadas la respuesta se diluye y ademas se corta por largo.
-  e.textContent = n>4 ? (n+' llamadas es mucho: el brief sale generico. Con dos o tres alcanza.')
-    : (n?(n+' seleccionada'+(n===1?'':'s')+'.'):'Elegi al menos una.');
-  e.style.color = n>4 ? 'var(--amberx)' : 'var(--text3)';
+  if(!n && !nd){ e.textContent='Elegi al menos una llamada o un documento.';
+    e.style.color='var(--text3)'; return; }
+  var partes=[];
+  if(n) partes.push(n+' llamada'+(n===1?'':'s'));
+  if(nd) partes.push(nd+' documento'+(nd===1?'':'s'));
+  // Con mucho material la respuesta se diluye y ademas el brief se corta por
+  // largo. El limite util es el total de fuentes, no solo las llamadas.
+  var t=n+nd;
+  e.textContent = t>4
+    ? (partes.join(' y ')+' es mucho: el brief sale generico. Con tres o cuatro fuentes alcanza.')
+    : (partes.join(' y ')+'.');
+  e.style.color = t>4 ? 'var(--amberx)' : 'var(--text3)';
 }
 async function briefGenerar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -25108,22 +25148,34 @@ async function briefGenerar(clientId){
   var ll=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
     .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
   var idx=[].slice.call(document.querySelectorAll('.brf:checked')).map(function(e){ return +e.value; });
-  if(!idx.length){ toast('Elegi al menos una llamada'); return; }
+  var idoc=[].slice.call(document.querySelectorAll('.brf-doc:checked')).map(function(e){ return +e.value; });
+  if(!idx.length && !idoc.length){ toast('Elegi al menos una llamada o un documento'); return; }
   var e=document.getElementById('brf-n');
   var ok=document.getElementById('brf-ok');
   var decir=function(t,col){ if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; } };
   if(ok){ ok.disabled=true; ok.textContent='Analizando...'; }
+  // El tope se reparte entre todas las fuentes, no solo las llamadas: sumar un
+  // PDF largo sin bajar el resto hacia que el brief se cortara a la mitad.
+  var nf=idx.length+idoc.length;
+  var tope = (nf>=4) ? 16000 : (nf===3 ? 22000 : (nf===2 ? 34000 : 50000));
   var llamadas=idx.map(function(i){
     var x=ll[i];
-    // Menos texto por llamada cuando son varias: el brief entero tiene que
-    // entrar en la respuesta, y con tres transcripciones largas se corta.
-    var tope = (idx.length>=3) ? 22000 : (idx.length===2 ? 34000 : 50000);
-    return { titulo:x.title||x.tipo||'Llamada', fecha:x.date||'', url:x.url||x.link||'',
-             texto:String(x.transcript||'').slice(0,tope) };
+    return { tipo:'llamada', titulo:x.title||x.tipo||'Llamada', fecha:x.date||'',
+             url:x.url||x.link||'', texto:String(x.transcript||'').slice(0,tope) };
   });
-  decir('Leyendo '+llamadas.length+' llamada'+(llamadas.length===1?'':'s')+'. Tarda un minuto.');
-  var chars=llamadas.reduce(function(a,x){ return a+x.texto.length; },0);
-  console.log('Brief \u00b7 '+llamadas.length+' llamadas, '+Math.round(chars/1000)+'k caracteres de transcripcion');
+  var dd=docs(c);
+  var documentos=idoc.map(function(i){
+    var d=dd[i]||{};
+    return { tipo:(_docUso(d)==='comercial' ? 'llamada de venta del cliente con un lead suyo'
+                                            : 'documento del cliente'),
+             titulo:d.titulo||'Documento', fecha:'', url:'',
+             texto:String(d.texto||'').slice(0,tope) };
+  });
+  var fuentes=llamadas.concat(documentos);
+  decir('Leyendo '+nf+' fuente'+(nf===1?'':'s')+'. Tarda un minuto.');
+  var chars=fuentes.reduce(function(a,x){ return a+x.texto.length; },0);
+  console.log('Brief \u00b7 '+llamadas.length+' llamadas y '+documentos.length+' documentos, '
+    +Math.round(chars/1000)+'k caracteres');
   var esquema='{"kicker":"","titulo":"","subtitulo":"","resumen":"",'
     +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
     +'"producto":{"titulo":"","texto":"","citas":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]},'
@@ -25147,12 +25199,22 @@ async function briefGenerar(clientId){
       headers:{'Content-Type':'application/json','x-api-key':localStorage.getItem('evold-anthropic-key'),
                'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({model:'claude-sonnet-5',max_tokens:16000,messages:[{role:'user',content:
-        'Sos parte de una agencia de marketing. Te paso transcripciones de llamadas con un cliente '
-        +'y necesito un brief interno para preparar la proxima reunion.\n\n'
+        'Sos parte de una agencia de marketing. Te paso material de un cliente y necesito un '
+        +'brief interno para preparar la proxima reunion.\n\n'
+        +'CADA FUENTE TRAE UN CAMPO "tipo". Leelo antes de citar:\n'
+        +'- "llamada": una reunion NUESTRA con el cliente. Trae momentos mm:ss para citar.\n'
+        +'- "documento del cliente": material que el cliente nos mando (brief, transcripcion '
+        +'de un Loom, PDF). No tiene minutos: se cita por el nombre del documento.\n'
+        +'- "llamada de venta del cliente con un lead suyo": el cliente vendiendole a SU '
+        +'prospecto, no a nosotros. Lo que dice el prospecto es voz del mercado; lo que dice '
+        +'el cliente muestra como vende. Al citarla, aclara siempre quien hablo.\n'
+        +'No mezcles las tres cosas: un dolor que dijo un prospecto del cliente no es lo mismo '
+        +'que un dolor que nos dijo el cliente.\n\n'
         +'COMO TRABAJAR:\n'
         +'- Distingui lo que el cliente DIJO de lo que se INFIERE. No presentes una inferencia como un hecho.\n'
         +'- Marca explicitamente lo que FALTA: los huecos son la parte mas util del brief.\n'
-        +'- Las citas tienen que ser textuales y con el momento (mm:ss) donde aparecen.\n'
+        +'- Las citas tienen que ser textuales, con el momento (mm:ss) si la fuente lo tiene. '
+        +'Si es un documento, dejá "momento" vacio y poné el nombre en "llamada".\n'
         +'- Si el cliente se contradijo, decilo. Si dijo dos cosas incompatibles, ponelas juntas.\n'
         +'- Las preguntas van agrupadas y ordenadas: primero las que bloquean el trabajo.\n'
         +'- Los avatares son HIPOTESIS a validar, no conclusiones. Deci en que se basa cada uno.\n'
@@ -25161,7 +25223,7 @@ async function briefGenerar(clientId){
         +'- Escribi en rioplatense, directo, sin adjetivos de mas.\n\n'
         +'Devolve SOLO este JSON, sin markdown ni explicacion:\n'+esquema
         +'\n\nCLIENTE: '+(c.name||'')+(c.industry?(' \u00b7 '+c.industry):'')
-        +'\n\nLLAMADAS:\n'+JSON.stringify(llamadas)}]})
+        +'\n\nMATERIAL:\n'+JSON.stringify(fuentes)}]})
     });
     var d=await r.json();
     // La respuesta cruda va a la consola siempre: cuando algo falla, "no pude
@@ -25190,7 +25252,7 @@ async function briefGenerar(clientId){
         fin(); return;
       }
     }
-    var html=_briefHtml(datos, c, llamadas);
+    var html=_briefHtml(datos, c, fuentes);
     var el=document.createElement('a');
     el.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
     el.download='brief-'+String(c.name||'cliente').toLowerCase().replace(/[^a-z0-9]+/g,'-')
