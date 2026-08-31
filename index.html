@@ -21132,7 +21132,7 @@ async function lpRecomendar(clientId){
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2000,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
         'Sos estratega de una agencia. Hay que armar una landing de conversion para el cliente '
         +(c.name||'')+(c.industry?(', que vende '+c.industry):'')+'. Elegi la combinacion de '
         +'mecanica, piel y tema a partir del material de abajo.\n\n'
@@ -21157,21 +21157,44 @@ async function lpRecomendar(clientId){
         +'- "falta" son las preguntas que habria que hacerle al cliente porque el material no '
         +'las responde y cambiarian la eleccion. Maximo 3. Si no falta nada, dejalo en [].\n'
         +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
-        +'Devolve SOLO este JSON, sin markdown:\n'
+        +'\nMATERIAL:\n'+(ctx.texto||'(no hay material cargado)')
+        // El esquema va al final, despues del material: arriba de un bloque
+        // largo queda enterrado y el modelo arranca escribiendo prosa.
+        +'\n\nDevolve SOLO este JSON, sin markdown ni preambulo:\n'
         +'{"resumen":"una oracion con la lectura del cliente",'
         +'"mecanica":"formulario|calendario|quiz","porqueMecanica":"",'
         +'"piel":"institucional|simple|hollywood","porquePiel":"",'
-        +'"tema":"oscuro|claro","porqueTema":"","falta":[""]}'
-        +'\n\nMATERIAL:\n'+(ctx.texto||'(no hay material cargado)')}]})
+        +'"tema":"oscuro|claro","porqueTema":"","falta":[""]}'},
+        // Se le deja la llave abierta para que continue desde ahi. Es lo que
+        // hace imposible el preambulo, que es de donde salio el error.
+        {role:'assistant',content:'{'}]})
     });
     var d=await r.json();
-    if(d.error) throw new Error(d.error.message||'error de la API');
+    // La respuesta cruda va siempre a la consola. Un mensaje generico no deja
+    // saber si fallo el modelo, el largo o el formato, y sin eso no se puede
+    // arreglar nada: es lo que paso la primera vez que corrio esto.
+    console.log('Landing / recomendacion \u00b7 respuesta:', d);
+    if(d.error) throw new Error(d.error.message||d.error.type||'error de la API');
     var txt=(d.content||[]).filter(function(x){return x.type==='text';})
       .map(function(x){return x.text;}).join('');
+    if(!txt) throw new Error(d.stop_reason==='max_tokens'
+      ? 'se quedo sin tokens antes de escribir nada'
+      : ('no devolvio texto (stop_reason: '+(d.stop_reason||'?')+')'));
+    // Si viene envuelto en ```json, se saca antes de buscar la llave.
+    txt=txt.replace(/```json/gi,'```').replace(/```/g,'').trim();
+    // La llave inicial la pusimos nosotros: la respuesta arranca despues.
+    if(txt[0]!=='{') txt='{'+txt;
     var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
     var o=null;
     if(a>=0){ try{ o=JSON.parse(txt.slice(a,z+1)); }catch(pe){ o=_jsonRescatar(txt); } }
-    if(!o) throw new Error('la respuesta no vino en el formato esperado');
+    if(!o) throw new Error(d.stop_reason==='max_tokens'
+      ? 'la respuesta se corto por el limite de tokens'
+      : ('no encontre JSON. Empieza asi: '+txt.slice(0,70)));
+    // Un JSON rescatado puede venir sin las tres elecciones. Sin eso no hay
+    // recomendacion: es preferible decirlo que mostrar una a medias.
+    if(!o.mecanica || !o.piel || !o.tema)
+      throw new Error('la respuesta llego incompleta: falto '
+        +[!o.mecanica&&'mecanica',!o.piel&&'piel',!o.tema&&'tema'].filter(Boolean).join(', '));
     // Hollywood sin material visual no se acepta aunque la IA lo elija: el
     // aviso ya existia y quedaria contradiciendose con la recomendacion.
     if(o.piel==='hollywood' && !hayVisual){
@@ -21182,6 +21205,7 @@ async function lpRecomendar(clientId){
     _lpCfg(c).recoAt=new Date().toISOString();
     save();
     decir('');
+    if(b){ b.disabled=false; b.textContent='Volver a pensarlo'; }
     lpRecoModal(clientId);
   }catch(err){
     console.error('Landing / recomendacion:', err);
