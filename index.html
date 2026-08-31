@@ -1181,6 +1181,82 @@ async function sbFetch(ruta, opts){
   return d;
 }
 
+// ── Configuracion de equipo ─────────────────────────────────────────────
+// Los proxies y las credenciales compartidas vivian solo en localStorage, o
+// sea en el navegador de quien los cargo. Un colaborador entraba al mismo
+// cliente, veia "Primero conecta GHL" y parecia un bug del cliente cuando en
+// realidad le faltaba una config que nadie le habia pasado. Ahora viajan por
+// la tabla config de Supabase, igual que el resto de DB.
+//
+// Queda afuera a proposito lo personal: la clave de Anthropic (se factura por
+// persona), la sesion, el tema, los filtros y el numero de WhatsApp propio.
+var CFG_EQUIPO=[
+  'evold-ghl-proxy-url','evold-ghl-proxy-secret',
+  'evold-fathom-proxy','evold-tickets-proxy','evold-tracker-url',
+  'evold-cal-proxy-url','evold-cal-proxy-secret','evold-cal-id','evold-cal-nombre',
+  'evold-conv-url','evold-conv-secret','evold-conv-token','evold-conv-loc',
+  'evold-alarmas-nums','evold-citas-cfg',
+  'evold-aviso-aprob','evold-aviso-aprob-mail','evold-aviso-luzverde','evold-aviso-tarea',
+  'evold-report-email','evold-report-sched'
+];
+// El setter original, antes de envolverlo. Se usa para escribir sin disparar
+// otra subida cuando lo que se esta haciendo es justamente bajar.
+var _lsSet=localStorage.setItem.bind(localStorage);
+function _cfgEquipo(){
+  if(!DB.equipo||typeof DB.equipo!=='object') DB.equipo={};
+  return DB.equipo;
+}
+// Se envuelve setItem en vez de tocar los sesenta lugares que guardan estas
+// claves: cualquier pantalla que configure un proxy queda sincronizada sin
+// modificarla, y no hay forma de agregar una pantalla nueva y olvidarse.
+(function(){
+  var origRm=localStorage.removeItem.bind(localStorage);
+  localStorage.setItem=function(k,v){
+    _lsSet(k,v);
+    if(CFG_EQUIPO.indexOf(k)<0) return;
+    try{
+      if(_cfgEquipo()[k]===String(v)) return;   // sin cambio: no se sube de nuevo
+      _cfgEquipo()[k]=String(v);
+      if(typeof save==='function') save();
+    }catch(e){}
+  };
+  localStorage.removeItem=function(k){
+    origRm(k);
+    if(CFG_EQUIPO.indexOf(k)<0) return;
+    try{
+      if(!(k in _cfgEquipo())) return;
+      delete _cfgEquipo()[k];
+      if(typeof save==='function') save();
+    }catch(e){}
+  };
+})();
+// Se corre despues de bajar de Supabase. La regla es simple: lo que ya esta en
+// la nube gana, y lo que falta alla se completa con lo local. Asi el primero
+// que abra despues del cambio publica lo que tenia, y los demas lo reciben.
+function cfgEquipoSync(){
+  var e, bajadas=0, subidas=0;
+  try{ e=_cfgEquipo(); }catch(err){ return {bajadas:0,subidas:0}; }
+  CFG_EQUIPO.forEach(function(k){
+    var enNube=(e[k]===undefined||e[k]===null)?'':String(e[k]);
+    var local=localStorage.getItem(k)||'';
+    if(enNube){ if(enNube!==local){ _lsSet(k, enNube); bajadas++; } }
+    else if(local){ e[k]=local; subidas++; }
+  });
+  if(subidas && typeof save==='function') save();
+  return {bajadas:bajadas, subidas:subidas};
+}
+
+// El cartel que aclara que esto no es personal. Sin el, el que lo carga no
+// sabe que le esta resolviendo el problema al resto del equipo tambien.
+function _cfgEquipoNota(){
+  return '<div style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;'
+    +'padding:9px 12px;background:var(--bg3);border:1px solid var(--border);'
+    +'border-radius:var(--radius);font-size:11.5px;color:var(--text3);line-height:1.55">'
+    +'<span style="color:var(--accent);flex:none">&#9679;</span>'
+    +'<span>Esto lo comparte todo el equipo. Lo cargas una vez y le llega a todos '
+    +'la proxima vez que abran el tracker.</span></div>';
+}
+
 // ── Bajar todo de Supabase ──────────────────────────────────────────────
 async function sbBajar(){
   var filas=await sbFetch('clientes?select=id,datos,actualizado&order=id');
@@ -4395,9 +4471,9 @@ function alarmasClienteHtml(c){
 // Estados manuales/automaticos de un ticket (ademas de hecha/vencida)
 // Escanea respuestas de Ashy via el Apps Script de tickets y marca estados sugeridos
 function scanTicketReplies(){
-  if(typeof TICKETS_PROXY==='undefined'||!TICKETS_PROXY){ if(typeof toast==='function') toast('Falta el script de tickets'); return; }
+  if(typeof ticketsProxyUrl!=='function'||!ticketsProxyUrl()){ if(typeof toast==='function') toast('Falta el script de tickets'); return; }
   if(typeof toast==='function') toast('Revisando respuestas de Ashy...');
-  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=scan_replies')
+  fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=scan_replies')
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||!d.ok){ if(typeof toast==='function') toast('No se pudo revisar ('+((d&&d.error)||'actualiza el addon del script')+')','red'); return; }
@@ -28688,6 +28764,7 @@ function openGhlProxyModal(){
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">'
     +'<div class="modal-title">Conexion con GHL</div>'
     +'<div class="modal-sub">El dashboard no puede llamar a GHL directo (CORS). Usa un Google Apps Script como puente, igual que en los quiz funnels. Pega la URL del Web App y un secreto compartido.</div>'
+    +_cfgEquipoNota()
     +'<div style="margin-top:14px"><label style="font-size:11px;color:var(--text3)">URL del Apps Script (Web App)</label>'
     +'<input id="ghl-proxy-url" type="text" value="'+esc(p.url)+'" placeholder="https://script.google.com/macros/s/.../exec" style="width:100%;margin-top:4px;padding:9px 11px;font-size:13px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--strong);font-family:var(--font);outline:none"></div>'
     +'<div style="margin-top:12px"><label style="font-size:11px;color:var(--text3)">Secreto compartido</label>'
@@ -35359,7 +35436,7 @@ function confirmDelegateGroup(){
   });
   localStorage.setItem('evold-last-ticket',d.ticket);
   save();
-  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_draft'
+  fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=create_draft'
     +'&to='+encodeURIComponent('ashy@evolvemindhub.com')
     +'&subject='+encodeURIComponent(subjectVal)
     +'&body='+encodeURIComponent(bodyVal)
@@ -35368,7 +35445,7 @@ function confirmDelegateGroup(){
     .then(function(res){ if(res&&res.ok){ if(typeof toast==='function') toast(_sendDirect&&res.sent?'Mail enviado a Ashy':'Borrador creado en Gmail'); } else { if(typeof toast==='function') toast('No se pudo crear el borrador automatico','amber'); } })
     .catch(function(){ if(typeof toast==='function') toast('No se pudo crear el borrador automatico','amber'); });
   try{
-    fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=log_task&ticket='+encodeURIComponent(d.ticket)
+    fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=log_task&ticket='+encodeURIComponent(d.ticket)
       +'&task='+encodeURIComponent(d.text||'')
       +'&client='+encodeURIComponent(d.clientIds.map(function(id){var c=DB.clients.find(function(x){return x.id===id;});return c?c.name:'';}).filter(Boolean).join(', '))
       +'&deadline='+encodeURIComponent(d.due||'')
@@ -35417,10 +35494,17 @@ function nextTicketFromApp(){
 // con el boton "Config script" del tablero de Tickets. Si no se configuro, cae al
 // valor de siempre. El deploy tiene que ser "Cualquier persona" o el navegador lo
 // bloquea por CORS.
-var TICKETS_PROXY=localStorage.getItem('evold-tickets-proxy')
-  || 'https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+// Se lee en cada uso, no una vez al cargar el script: la config del equipo baja
+// de Supabase despues de que este archivo se parsea, y una constante congelada
+// se quedaba con el valor viejo toda la sesion.
+var TICKETS_PROXY_DEFAULT='https://script.google.com/a/macros/evolvemindhub.com/s/AKfycbyWFO5HcvmFyYvKXtBMKTrKfAmuyt9CtRcWgGJclsyQjWNVOSml621Pso_OiPJSCJ2_Pg/exec';
+function ticketsProxyUrl(){
+  return (localStorage.getItem('evold-tickets-proxy')||'').trim() || TICKETS_PROXY_DEFAULT;
+}
 // Fathom puede vivir en su propio proyecto. Si no se configura, usa el de Tickets.
-function fathomProxyUrl(){ return localStorage.getItem('evold-fathom-proxy') || TICKETS_PROXY; }
+function fathomProxyUrl(){
+  return (localStorage.getItem('evold-fathom-proxy')||'').trim() || ticketsProxyUrl();
+}
 function openTicketsProxyModal(){
   var cur=localStorage.getItem('evold-fathom-proxy')||localStorage.getItem('evold-tickets-proxy')||'';
   var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
@@ -35434,6 +35518,8 @@ function openTicketsProxyModal(){
     +(esRestringido?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL es de acceso restringido (/a/macros/). Redeploya como "Cualquier persona".</div>':'')
     +(cur&&falta?'<div style="background:rgba(240,168,48,0.08);border:1px solid rgba(240,168,48,0.3);border-radius:8px;padding:10px 13px;font-size:11.5px;color:var(--amberx);margin-bottom:12px">La URL no termina en /exec: parece incompleta. Volve a copiarla con el boton Copy.</div>':'')
     +'<input id="tp-url" value="'+esc(cur)+'" placeholder="https://script.google.com/macros/s/.../exec" style="'+inp+';width:100%;box-sizing:border-box;margin-bottom:10px">'
+    +_cfgEquipoNota()
+    +'<div style="height:10px"></div>'
     +'<button class="btn btn-sm" onclick="probarTicketsProxy()">Probar conexion</button>'
     +'<span id="tp-result" style="font-size:11.5px;margin-left:10px"></span>'
     +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
@@ -35524,7 +35610,7 @@ async function delegateTask(clientId, taskId){
   var nextTicket=nextTicketFromApp();
   try{
     var ticketData=await Promise.race([
-      fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=last_ticket').then(function(r){return r.json();}),
+      fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=last_ticket').then(function(r){return r.json();}),
       new Promise(function(res){setTimeout(function(){res(null);},3000);})
     ]);
     if(ticketData&&ticketData.ok&&ticketData.nextTicket&&ticketData.nextTicket>nextTicket){
@@ -35537,7 +35623,7 @@ async function delegateTask(clientId, taskId){
   try{
     var _kw=String(t.text||'').split(/\s+/).filter(function(w){return w.length>=5;}).slice(0,4).join(' ');
     var _dq=await Promise.race([
-      fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=drive_search&client='+encodeURIComponent(c.name)+'&q='+encodeURIComponent(_kw)).then(function(r){return r.json();}),
+      fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=drive_search&client='+encodeURIComponent(c.name)+'&q='+encodeURIComponent(_kw)).then(function(r){return r.json();}),
       new Promise(function(res){setTimeout(function(){res(null);},7000);})
     ]);
     if(_dq&&_dq.ok&&_dq.files&&_dq.files.length) driveMaterials=_dq.files.slice(0,5);
@@ -35655,7 +35741,7 @@ function confirmDelegate(clientId, taskId){
 
   // Write to Sheet via sheets proxy
   if(t&&c){
-    var logUrl=TICKETS_PROXY
+    var logUrl=ticketsProxyUrl()
       +'?secret=evolve-tracker'
       +'&action=log_task'
       +'&ticket='+encodeURIComponent(usedTicket||'')
@@ -35683,7 +35769,7 @@ function confirmDelegate(clientId, taskId){
     localStorage.setItem('evold-delegate-send',v);
     return v==='1';
   })();
-  fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_draft'
+  fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=create_draft'
       +'&to='+encodeURIComponent('ashy@evolvemindhub.com')
       +'&subject='+encodeURIComponent(subjectVal)
       +'&body='+encodeURIComponent(bodyVal)
@@ -35703,7 +35789,7 @@ function confirmDelegate(clientId, taskId){
 
   // Crear el evento en el calendario "Tasks" (10 min, invita a Ashy)
   if(t&&t.due){
-    fetch(TICKETS_PROXY+'?secret=evolve-tracker&action=create_event'
+    fetch(ticketsProxyUrl()+'?secret=evolve-tracker&action=create_event'
         +'&date='+encodeURIComponent(t.due)
         +'&title='+encodeURIComponent('[#TICKET-'+(usedTicket||'')+'] Deadline: '+(t.text||'').slice(0,80))
         +'&desc='+encodeURIComponent('Deadline para: '+(t.text||'')+'\n\nTicket: #'+(usedTicket||'')+'\nCliente: '+(c?c.name:'')+'\nAsignado a: Ashy'))
@@ -36176,6 +36262,14 @@ async function arrancarConSesion(){
   try{ verIniciar(); }catch(e){}
   try{
     var hubo=await sbBajar();
+    // Antes que nada: si el proxy de GHL o de Fathom viene de la nube, tiene
+    // que estar puesto antes de que cualquier pantalla lo lea. Si se corriera
+    // despues, el primer render mostraria "falta conectar" igual.
+    try{
+      var _ce=cfgEquipoSync();
+      if(_ce.bajadas && typeof toast==='function')
+        toast('Config del equipo al dia: '+_ce.bajadas+' dato'+(_ce.bajadas===1?'':'s')+' recibido'+(_ce.bajadas===1?'':'s')+'.');
+    }catch(e){ console.warn('[cfg equipo]', e); }
     // Despues de bajar: si no, se pisa la lista que ya estaba en la nube
     registrarEnEquipo();
     _limpiarSyncsColgados();
