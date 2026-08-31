@@ -21857,6 +21857,63 @@ function ventasContar(){
     : 'Elegi al menos una.';
   e.style.color='var(--text3)';
 }
+// Una respuesta cortada por tokens sigue teniendo casi todo el analisis
+// adentro: tirarla entera perdia una llamada que ya se pago. Se busca el corte
+// mas tardio que se pueda cerrar y parsear.
+function _vtaCerrar(pre){
+  var pila=[], enStr=false, esc=false;
+  for(var i=0;i<pre.length;i++){
+    var ch=pre[i];
+    if(enStr){
+      if(esc){ esc=false; continue; }
+      if(ch==='\\'){ esc=true; continue; }
+      if(ch==='"') enStr=false;
+      continue;
+    }
+    if(ch==='"'){ enStr=true; continue; }
+    if(ch==='{') pila.push('}');
+    else if(ch==='[') pila.push(']');
+    else if(ch==='}'||ch===']') pila.pop();
+  }
+  // Cortado adentro de un string: cerrarlo seria inventar contenido.
+  if(enStr) return null;
+  var out=pre;
+  for(var k=pila.length-1;k>=0;k--) out+=pila[k];
+  return out;
+}
+function _jsonRescatar(txt){
+  var s=String(txt||'');
+  var a=s.indexOf('{');
+  if(a<0) return null;
+  s=s.slice(a);
+  // Todos los puntos donde un valor termina: son los unicos cortes limpios.
+  var cortes=[], enStr=false, esc=false;
+  for(var i=0;i<s.length;i++){
+    var ch=s[i], sig=s[i+1]||'';
+    if(enStr){
+      if(esc){ esc=false; continue; }
+      if(ch==='\\'){ esc=true; continue; }
+      if(ch==='"'){ enStr=false; cortes.push(i+1); }
+      continue;
+    }
+    if(ch==='"'){ enStr=true; continue; }
+    if(ch==='}'||ch===']'){ cortes.push(i+1); continue; }
+    if(/[0-9]/.test(ch) && !/[0-9.eE+\-]/.test(sig)) cortes.push(i+1);
+    if(/[elu]/.test(ch) && !/[a-z]/i.test(sig)) cortes.push(i+1);
+  }
+  // Del corte mas tardio hacia atras: el primero que parsee es el que mas
+  // contenido conserva. Una clave sin valor no parsea y se sigue retrocediendo.
+  for(var k=cortes.length-1, n=0; k>=0 && n<80; k--, n++){
+    var pre=s.slice(0,cortes[k]).replace(/[,:\s]+$/,'');
+    var cerr=_vtaCerrar(pre);
+    if(cerr===null) continue;
+    try{
+      var o=JSON.parse(cerr);
+      if(o && typeof o==='object') return o;
+    }catch(e){}
+  }
+  return null;
+}
 async function _vtaApi(apiKey, body){
   var r=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
@@ -21868,12 +21925,19 @@ async function _vtaApi(apiKey, body){
   if(d.error) throw new Error(d.error.message||d.error.type||'error de la API');
   var txt=(d.content||[]).filter(function(b){return b.type==='text';})
     .map(function(b){return b.text;}).join('');
+  var cortado=(d.stop_reason==='max_tokens');
   var a=txt.indexOf('{'), z=txt.lastIndexOf('}');
-  if(a<0) throw new Error(d.stop_reason==='max_tokens'
-    ? 'se quedo sin tokens' : ('sin JSON, stop_reason '+(d.stop_reason||'?')));
-  try{ return JSON.parse(txt.slice(a,z+1)); }
-  catch(pe){ throw new Error('la respuesta llego cortada'
-    +(d.stop_reason==='max_tokens'?' por falta de tokens':'')); }
+  if(a>=0){
+    try{ return {o:JSON.parse(txt.slice(a,z+1)), cortado:false}; }catch(pe){}
+    var salv=_jsonRescatar(txt);
+    if(salv) return {o:salv, cortado:true};
+  }
+  // Sin JSON usable. El motivo importa para saber si reintentar sirve.
+  var e=new Error(cortado
+    ? 'la respuesta se corto por el limite de tokens'
+    : ('no devolvio JSON, stop_reason '+(d.stop_reason||'?')));
+  e.cortado=cortado;
+  throw e;
 }
 async function ventasGenerar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -21890,43 +21954,70 @@ async function ventasGenerar(clientId){
   var t0=Date.now();
 
   // ── Pasada 1: una llamada por vez ──────────────────────────────
+  // El esquema es corto y con topes escritos. La version larga hacia que el
+  // modelo llenara todo hasta pasarse del limite, incluso con una nota de 720
+  // caracteres: fallaban las trece por la salida, no por la entrada.
   var esq1='{"lead":"","resultado":"cerro|se cayo|sigue abierto|no se sabe",'
-    +'"apertura":{"comoAbrio":"","lectura":""},'
-    +'"diagnostico":{"pregunto":[""],"noPregunto":[""],"lectura":""},'
-    +'"pitch":{"comoLoConto":"","hablóDeMas":"si|no","lectura":""},'
-    +'"objeciones":[{"objecion":"","citaDelProspecto":"","comoRespondio":"","funciono":"si|no|a medias"}],'
-    +'"cierre":{"quePidio":"","queAcordaron":"","lectura":""},'
-    +'"quiebre":{"momento":"","cita":"","porque":""},'
+    +'"comoVendio":{"apertura":"","diagnostico":"","pitch":"","cierre":""},'
+    +'"objeciones":[{"objecion":"","cita":"","comoRespondio":"","funciono":"si|no|a medias"}],'
+    +'"quiebre":{"momento":"","cita":""},'
     +'"vozMercado":[{"frase":"","tema":""}],'
-    +'"aciertos":[""],"errores":[""]}';
-  var analisis=[], fallaron=[];
+    +'"errores":[""],"aciertos":[""]}';
+  var topes='LIMITES, respetalos o la respuesta se corta:\n'
+    +'- Cada campo de texto, maximo 25 palabras.\n'
+    +'- "objeciones": maximo 3, las que mas pesaron.\n'
+    +'- "vozMercado": maximo 4 frases del prospecto.\n'
+    +'- "errores" y "aciertos": maximo 3 cada uno, una linea cada item.\n'
+    +'- Si un campo no aplica, dejalo en "" o en []. No lo rellenes.\n';
+  var pedido1=function(d){
+    return 'Sos consultor de procesos comerciales. Abajo esta UNA llamada de venta de "'
+      +(c.name||'')+'"'+(c.industry?(', que vende '+c.industry):'')+' con un prospecto suyo.\n\n'
+      +'Analiza COMO vendio, no si el producto es bueno.\n\n'
+      +topes
+      +'- Las citas son textuales y cortas. Si no hay cita, dejala en "".\n'
+      +'- "vozMercado" son frases del PROSPECTO, no del vendedor: como nombra su problema. '
+      +'Es el material con el que despues se escriben los anuncios.\n'
+      +'- "quiebre" es el momento donde la llamada se dio vuelta, para bien o para mal.\n'
+      +'- Si el material son notas y no una transcripcion, trabaja con lo que hay y dejá '
+      +'vacio lo que no se pueda saber. No inventes.\n'
+      +'- Rioplatense, directo.\n\n'
+      +'Devolve SOLO este JSON, sin markdown ni preambulo:\n'+esq1
+      +'\n\nLLAMADA: '+(d.titulo||'')+'\n'+String(d.texto||'').slice(0,90000);
+  };
+  var analisis=[], fallaron=[], parciales=0;
   for(var j=0;j<elegidas.length;j++){
     var d=elegidas[j];
     decir('Leyendo '+(j+1)+' de '+elegidas.length+': '+(d.titulo||'llamada')+'...');
+    var r1=null;
     try{
-      var o=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:2000, messages:[{role:'user',content:
-        'Sos consultor de procesos comerciales. Abajo esta la transcripcion de UNA llamada de '
-        +'venta de "'+(c.name||'')+'"'+(c.industry?(', que vende '+c.industry):'')+' con un '
-        +'prospecto suyo.\n\n'
-        +'Analiza como vendio, no si el producto es bueno.\n\n'
-        +'REGLAS:\n'
-        +'- Las citas son textuales. Si no hay cita textual para algo, dejalo vacio.\n'
-        +'- "vozMercado" son frases del PROSPECTO, no del vendedor: como nombra su problema, '
-        +'con que palabras. Es el material con el que despues se escriben los anuncios.\n'
-        +'- "quiebre" es el momento donde la llamada se dio vuelta, para bien o para mal.\n'
-        +'- No inventes. Si la llamada no llego al cierre, decilo en vez de suponer.\n'
-        +'- Rioplatense, directo.\n\n'
-        +'Devolve SOLO este JSON:\n'+esq1
-        +'\n\nLLAMADA: '+(d.titulo||'')+'\n'+String(d.texto||'').slice(0,90000)}]});
-      o._t=d.titulo||('Llamada '+(j+1));
-      analisis.push(o);
+      r1=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:8000,
+        messages:[{role:'user',content:pedido1(d)}]});
     }catch(err){
-      console.error('Proceso comercial, llamada '+(d.titulo||j),err);
-      fallaron.push((d.titulo||'Llamada '+(j+1))+': '+err.message);
+      // Un solo reintento, mas corto: si se paso de largo, pedirle lo mismo con
+      // menos campos suele alcanzar. Reintentar identico solo repite el error.
+      if(err.cortado){
+        decir('Reintentando '+(d.titulo||'llamada')+' mas corto...');
+        try{
+          r1=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:8000,
+            messages:[{role:'user',content:pedido1(d)
+              +'\n\nIMPORTANTE: la respuesta anterior se corto. Se mucho mas breve: '
+              +'una sola objecion, dos frases de vozMercado, dos errores, un acierto.'}]});
+        }catch(e2){ err=e2; }
+      }
+      if(!r1){
+        console.error('Proceso comercial, llamada '+(d.titulo||j),err);
+        fallaron.push((d.titulo||'Llamada '+(j+1))+': '+err.message);
+      }
+    }
+    if(r1){
+      r1.o._t=d.titulo||('Llamada '+(j+1));
+      if(r1.cortado) parciales++;
+      analisis.push(r1.o);
     }
   }
   if(!analisis.length){
-    decir('No pude leer ninguna: '+fallaron.join(' \u00b7 '),'var(--redx)');
+    decir('No pude leer ninguna. '+fallaron.slice(0,3).join(' \u00b7 ')
+      +(fallaron.length>3?(' y '+(fallaron.length-3)+' mas'):''),'var(--redx)');
     if(ok){ ok.disabled=false; ok.textContent='Analizar'; }
     return;
   }
@@ -21947,7 +22038,7 @@ async function ventasGenerar(clientId){
     +'"frases":[{"situacion":"","diceHoy":"","decir":""}],'
     +'"primero":[{"cambio":"","porque":"","impacto":"Alto|Medio|Bajo"}]}';
   try{
-    var o2=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:16000, messages:[{role:'user',content:
+    var r2=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:24000, messages:[{role:'user',content:
       'Sos consultor de procesos comerciales. Abajo estan los analisis de '+analisis.length
       +' llamadas de venta de "'+(c.name||'')+'", una por una. Cruzalos y arma el diagnostico '
       +'del proceso comercial con el paso a paso corregido.\n\n'
@@ -21969,7 +22060,7 @@ async function ventasGenerar(clientId){
       +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
       +'Devolve SOLO este JSON, sin markdown:\n'+esq2
       +'\n\nANALISIS POR LLAMADA:\n'+JSON.stringify(analisis)}]});
-    var html=_ventasHtml(o2, c, analisis);
+    var html=_ventasHtml(r2.o, c, analisis);
     var a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
     a.download='proceso-comercial-'+String(c.name||'cliente').toLowerCase()
@@ -21977,8 +22068,12 @@ async function ventasGenerar(clientId){
     a.click();
     setTimeout(function(){ URL.revokeObjectURL(a.href); },1500);
     closeModal();
+    var nota=[];
+    if(parciales) nota.push(parciales+' parcial'+(parciales===1?'':'es'));
+    if(fallaron.length) nota.push(fallaron.length+' sin leer');
+    if(r2.cortado) nota.push('la sintesis quedo incompleta');
     toast('Listo en '+Math.round((Date.now()-t0)/1000)+'s con '+analisis.length+' llamadas'
-      +(fallaron.length?(' \u00b7 '+fallaron.length+' fallaron'):''));
+      +(nota.length?(' \u00b7 '+nota.join(', ')):''));
   }catch(err){
     console.error('Proceso comercial, sintesis:', err);
     decir('Lei las llamadas pero no pude cruzarlas: '+err.message,'var(--redx)');
@@ -27220,6 +27315,7 @@ function _docKb(n){ return n>=1000 ? (Math.round(n/1000)+'k') : (n+''); }
 function docsHtml(c){
   var l=docs(c);
   var total=_docChars(c);
+  var vta=_vtaLlamadas(c).length;
   return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
       +'margin-bottom:10px">'
     +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
@@ -27231,6 +27327,21 @@ function docsHtml(c){
     +'Lo que el cliente manda fuera de las llamadas: transcripciones de Loom, textos por '
     +'WhatsApp, un brief. Entra en las preguntas, en la promesa del quiz y en el copy de la '
     +'landing, igual que una llamada.</div>'
+  // El analisis se dispara desde donde estan los documentos. Vivia solo arriba,
+  // en la fila del brief, a un scroll de distancia de la lista que analiza.
+  +(vta?('<div style="display:flex;align-items:center;gap:11px;background:var(--bg2);'
+      +'border:1px solid var(--border);border-radius:var(--radius-md);padding:11px 13px;'
+      +'margin-bottom:12px">'
+    +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:12.5px;color:var(--text)">'+vta+' llamada'+(vta===1?'':'s')
+        +' de venta cargada'+(vta===1?'':'s')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
+        +'Se leen de a una y sale el paso a paso corregido: donde se caen los deals, que '
+        +'objeciones se repiten y que decir en cada etapa.</div>'
+    +'</div>'
+    +'<button class="btn btn-sm btn-primary" style="flex:none" '
+      +'onclick="ventasModal('+c.id+')">Analizar el proceso</button>'
+  +'</div>'):'')
   +'<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
     +'<button class="btn btn-sm btn-primary" onclick="docPegarModal('+c.id+')">Pegar texto</button>'
     +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'todo\')">Subir archivos</button>'
