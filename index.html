@@ -21283,6 +21283,28 @@ function _lpEstado(html, color){
 }
 
 // Lo que la app ya sabe del cliente, sin buscar nada afuera.
+// La misma metrica volvia dos veces: una como cifra ("100+") y otra como frase
+// del hero ("Mas de 100 clubes confian en PlayWith"). Son el mismo dato y en la
+// fila de numeros se leen como si el cliente tuviera el doble.
+function _lpDedup(ps){
+  var vistos={}, out=[];
+  (ps||[]).forEach(function(x){
+    if(!x) return;
+    var n=_lpLimpiar(String(x.n||''));
+    if(!n) return;
+    // Un "numero" de mas de 14 caracteres no es una cifra, es una frase: ya
+    // esta contada en otra entrada o va en hallazgos, no en la fila de metricas.
+    if(n.length>14) return;
+    // Se compara por los digitos, que es lo que hace unica a la metrica.
+    // "100+" y "Mas de 100" colapsan al mismo 100.
+    var d=(n+' '+_lpLimpiar(String(x.l||''))).replace(/[^0-9]/g,'');
+    var clave=d||n.toLowerCase();
+    if(vistos[clave]) return;
+    vistos[clave]=1;
+    out.push(x);
+  });
+  return out;
+}
 function _lpContextoInterno(c){
   var out=[];
   var k=null;
@@ -21331,8 +21353,11 @@ function _lpContextoInterno(c){
           llamadas:llDentro, llamadasFuera:llFuera};
 }
 var _LP_MAXDOC=60000;
-var _LP_MAXLLAM=25000;    // por llamada
-var _LP_MAXLLTOT=90000;   // entre todas
+// Sonnet aguanta mucho mas que esto. Los topes viejos dejaban una llamada
+// afuera con solo cuatro cargadas, y justo las transcripciones son el material
+// que mas sirve para escribir: se sube el techo en vez de recortarlas.
+var _LP_MAXLLAM=40000;     // por llamada
+var _LP_MAXLLTOT=240000;   // entre todas
 
 async function _lpApi(apiKey, body, beta){
   var h={'Content-Type':'application/json','x-api-key':apiKey,
@@ -21414,6 +21439,9 @@ async function investigarLanding(clientId){
         +'QUE BUSCAR, en este orden:\n'
         +'1. PRUEBA SOCIAL: cantidad de clientes, metricas de uso, nombres o logos de clientes, '
         +'testimonios. Suele estar en franjas tipo "confiado por", en el hero o en el pie, y '
+        +'En "pruebaSocial" va cada metrica UNA sola vez y "n" es solo la cifra: si la misma '
+        +'aparece como numero y como frase del hero, es una sola. La frase entera va en '
+        +'"hallazgos", no aca. '
         +'muchas veces los logos son texto: leelos. Antes de devolver "pruebaSocial" vacio, '
         +'volve a recorrer la pagina entera: decir que no hay cuando si hay cambia la landing '
         +'que se arma despues.\n'
@@ -21423,7 +21451,7 @@ async function investigarLanding(clientId){
         +'4. Objeciones que respondan en su FAQ.\n\n'
         +'Devolve SOLO un JSON, sin markdown, empezando con { :\n'
         +'{"hallazgos":[{"dato":"","fuente":"url exacta","confianza":"alta|media|baja"}],'
-        +'"pruebaSocial":[{"n":"el numero","l":"que mide"}],'
+        +'"pruebaSocial":[{"n":"SOLO la cifra, hasta 10 caracteres: 100+, 2M, 99.9%","l":"que mide"}],'
         +'"clientes":["nombres de clientes suyos si los publica"],'
         +'"diferenciales":["con sus palabras"],'
         +'"faq":[{"q":"","a":""}],'
@@ -21601,7 +21629,7 @@ function landingHtml(c){
       +'padding:10px 12px;margin-bottom:10px">'
       +'<div style="font-size:10px;color:var(--text3);margin-bottom:7px">Prueba social encontrada</div>'
       +(ps.length
-        ?('<div style="display:flex;gap:22px;flex-wrap:wrap">'+ps.map(function(x){
+        ?('<div style="display:flex;gap:22px;flex-wrap:wrap">'+_lpDedup(ps).map(function(x){
             return '<div><div style="font-size:1.15rem;font-weight:600;color:var(--text)">'+esc(_lpLimpiar(x.n))+'</div>'
               +'<div style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(x.l))+'</div></div>';
           }).join('')+'</div>')
