@@ -21957,12 +21957,14 @@ async function ventasGenerar(clientId){
   // El esquema es corto y con topes escritos. La version larga hacia que el
   // modelo llenara todo hasta pasarse del limite, incluso con una nota de 720
   // caracteres: fallaban las trece por la salida, no por la entrada.
-  var esq1='{"lead":"","resultado":"cerro|se cayo|sigue abierto|no se sabe",'
-    +'"comoVendio":{"apertura":"","diagnostico":"","pitch":"","cierre":""},'
-    +'"objeciones":[{"objecion":"","cita":"","comoRespondio":"","funciono":"si|no|a medias"}],'
-    +'"quiebre":{"momento":"","cita":""},'
-    +'"vozMercado":[{"frase":"","tema":""}],'
-    +'"errores":[""],"aciertos":[""]}';
+  // Cada dato viaja con su minuto desde la primera pasada. Si no se captura
+  // aca, la sintesis no lo puede inventar: solo ve los JSON, no la llamada.
+  var esq1='{"lead":"","resultado":"cerro|se cayo|sigue abierto|no se sabe","tieneMinutos":true,'
+    +'"comoVendio":{"apertura":"","diagnostico":"","pitch":"","cierre":"","m":"mm:ss"},'
+    +'"objeciones":[{"objecion":"","cita":"","m":"mm:ss","comoRespondio":"","funciono":"si|no|a medias"}],'
+    +'"quiebre":{"momento":"","cita":"","m":"mm:ss"},'
+    +'"vozMercado":[{"frase":"","tema":"","m":"mm:ss"}],'
+    +'"errores":[{"que":"","m":"mm:ss"}],"aciertos":[{"que":"","m":"mm:ss"}]}';
   var topes='LIMITES, respetalos o la respuesta se corta:\n'
     +'- Cada campo de texto, maximo 25 palabras.\n'
     +'- "objeciones": maximo 3, las que mas pesaron.\n'
@@ -21975,6 +21977,9 @@ async function ventasGenerar(clientId){
       +'Analiza COMO vendio, no si el producto es bueno.\n\n'
       +topes
       +'- Las citas son textuales y cortas. Si no hay cita, dejala en "".\n'
+      +'- "m" es el minuto mm:ss donde aparece cada cosa. Si la transcripcion trae marcas '
+      +'de tiempo, usalas. Si no las trae, poné "tieneMinutos": false y dejá todos los "m" '
+      +'vacios; no los inventes.\n'
       +'- "vozMercado" son frases del PROSPECTO, no del vendedor: como nombra su problema. '
       +'Es el material con el que despues se escriben los anuncios.\n'
       +'- "quiebre" es el momento donde la llamada se dio vuelta, para bien o para mal.\n'
@@ -22024,19 +22029,23 @@ async function ventasGenerar(clientId){
 
   // ── Pasada 2: el patron ────────────────────────────────────────
   decir('Cruzando '+analisis.length+' llamadas para sacar el patron...');
+  // "f" arrastra la trazabilidad de la pasada 1 hasta el HTML: sin esto el
+  // diagnostico se lee bien pero no se puede defender frente al cliente.
   var esq2='{"titulo":"","subtitulo":"","resumen":"",'
     +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
-    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|"}],'
-    +'"patron":{"texto":"","puntos":[""]},'
+    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|","f":[{"ll":"","m":""}]}],'
+    +'"patron":{"texto":"","puntos":[""],"f":[{"ll":"","m":""}]},'
     +'"etapas":[{"etapa":"","haceHoy":"","problema":"","deberiaHacer":"",'
-      +'"evidencia":[{"cita":"","lead":""}]}],'
-    +'"objeciones":[{"objecion":"","frecuencia":"","comoResponde":"","comoDeberia":"","cita":""}],'
-    +'"fugas":[{"donde":"","cuantas":"","porque":"","arreglo":""}],'
-    +'"vozMercado":{"texto":"","frases":[{"texto":"","lead":"","tema":""}],"palabras":[""]},'
-    +'"aciertos":[""],'
-    +'"framework":[{"paso":"","objetivo":"","queHacer":[""],"comoSeSabe":"","noHacer":""}],'
-    +'"frases":[{"situacion":"","diceHoy":"","decir":""}],'
-    +'"primero":[{"cambio":"","porque":"","impacto":"Alto|Medio|Bajo"}]}';
+      +'"evidencia":[{"cita":"","lead":"","m":""}]}],'
+    +'"objeciones":[{"objecion":"","frecuencia":"","comoResponde":"","comoDeberia":"","cita":"",'
+      +'"f":[{"ll":"","m":""}]}],'
+    +'"fugas":[{"donde":"","cuantas":"","porque":"","arreglo":"","f":[{"ll":"","m":""}]}],'
+    +'"vozMercado":{"texto":"","frases":[{"texto":"","lead":"","tema":"","m":""}],"palabras":[""]},'
+    +'"aciertos":[{"que":"","f":[{"ll":"","m":""}]}],'
+    +'"framework":[{"paso":"","objetivo":"","queHacer":[""],"comoSeSabe":"","noHacer":"",'
+      +'"f":[{"ll":"","m":""}]}],'
+    +'"frases":[{"situacion":"","diceHoy":"","decir":"","f":[{"ll":"","m":""}]}],'
+    +'"primero":[{"cambio":"","porque":"","impacto":"Alto|Medio|Bajo","f":[{"ll":"","m":""}]}]}';
   try{
     var r2=await _vtaApi(apiKey,{ model:'claude-sonnet-5', max_tokens:24000, messages:[{role:'user',content:
       'Sos consultor de procesos comerciales. Abajo estan los analisis de '+analisis.length
@@ -22057,6 +22066,11 @@ async function ventasGenerar(clientId){
       +'- "aciertos" existe y no es relleno: lo que ya funciona no hay que tocarlo.\n'
       +'- "primero" son los 3 o 4 cambios que mueven la aguja primero, ordenados por impacto.\n'
       +'- No inventes numeros. Si algo aparece en una sola llamada, decilo asi.\n'
+      +'- TRAZABILIDAD: cada afirmacion lleva su "f" con las llamadas de donde sale. "ll" es '
+      +'el campo "_t" del analisis (el titulo de la llamada) y "m" el minuto que ese analisis '
+      +'traia. Si el analisis no traia minuto, dejá "m" vacio pero completa "ll". Poné hasta '
+      +'3 fuentes por afirmacion, las mas representativas. Si no podes decir de donde sale '
+      +'algo, no lo escribas.\n'
       +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
       +'Devolve SOLO este JSON, sin markdown:\n'+esq2
       +'\n\nANALISIS POR LLAMADA:\n'+JSON.stringify(analisis)}]});
@@ -22084,12 +22098,26 @@ function _ventasHtml(d, c, analisis){
   var E=esc;
   var lista=function(a){
     if(!a||!a.length) return '';
+    // Los items pueden venir como texto suelto o como {que, f}: se acepta
+    // cualquiera de los dos para no perder nada si la IA mezcla formatos.
     return '<ul class="clean">'+a.filter(Boolean).map(function(x){
-      return '<li>'+E(x)+'</li>'; }).join('')+'</ul>';
+      if(typeof x==='string') return '<li>'+E(x)+'</li>';
+      return '<li>'+E(x.que||x.texto||'')+fte(x.f)+'</li>';
+    }).join('')+'</ul>';
   };
   var cita=function(t,quien){
     if(!t) return '';
     return '<blockquote>'+E(t)+(quien?('<cite>'+E(quien)+'</cite>'):'')+'</blockquote>';
+  };
+  // De donde sale cada afirmacion. Los documentos no tienen url, asi que no hay
+  // link: el chip dice la llamada y el minuto para ir a buscarlo a mano.
+  var fte=function(f){
+    if(!f) return '';
+    var a=Array.isArray(f)?f:[f];
+    var chips=a.filter(function(x){ return x && (x.ll||x.m); }).map(function(x){
+      return '<span class="fte">'+E([x.ll,x.m].filter(Boolean).join(' \u00b7 '))+'</span>';
+    });
+    return chips.length?('<div class="ftes">'+chips.join('')+'</div>'):'';
   };
   var card=function(t,cuerpo,acc){
     if(!cuerpo) return '';
@@ -22102,14 +22130,15 @@ function _ventasHtml(d, c, analisis){
   var p0=((d.numeros&&d.numeros.length)
       ?('<div class="grid g3">'+d.numeros.map(function(n){
           return '<div class="stat"><span class="n '+(n.color||'')+'">'+E(n.valor)+'</span>'
-            +'<span class="l">'+E(n.rotulo)+'</span></div>';
+            +'<span class="l">'+E(n.rotulo)+'</span>'+fte(n.f)+'</div>';
         }).join('')+'</div>'):'')
     +sec('El patron', card(null, ((d.patron&&d.patron.texto)?('<p>'+E(d.patron.texto)+'</p>'):'')
-        +lista(d.patron&&d.patron.puntos)))
+        +lista(d.patron&&d.patron.puntos)+fte(d.patron&&d.patron.f)))
     +sec('Donde se pierden', (d.fugas||[]).map(function(f){
         return card(f.donde, '<p>'+E(f.porque)+'</p>'
           +(f.cuantas?('<p class="tag">'+E(f.cuantas)+'</p>'):'')
-          +(f.arreglo?('<p class="fix"><b>Arreglo:</b> '+E(f.arreglo)+'</p>'):''), 'red');
+          +(f.arreglo?('<p class="fix"><b>Arreglo:</b> '+E(f.arreglo)+'</p>'):'')
+          +fte(f.f), 'red');
       }).join(''))
     +sec('Lo que ya funciona', lista(d.aciertos));
 
@@ -22119,7 +22148,9 @@ function _ventasHtml(d, c, analisis){
         (x.haceHoy?('<p><b class="lb">Hoy</b> '+E(x.haceHoy)+'</p>'):'')
         +(x.problema?('<p><b class="lb warn">Problema</b> '+E(x.problema)+'</p>'):'')
         +(x.deberiaHacer?('<p><b class="lb ok">Deberia</b> '+E(x.deberiaHacer)+'</p>'):'')
-        +(x.evidencia||[]).map(function(ev){ return cita(ev.cita, ev.lead); }).join(''));
+        +(x.evidencia||[]).map(function(ev){
+            return cita(ev.cita, [ev.lead,ev.m].filter(Boolean).join(' \u00b7 '));
+          }).join(''));
     }).join('');
 
   // --- Objeciones
@@ -22128,7 +22159,8 @@ function _ventasHtml(d, c, analisis){
         (x.frecuencia?('<p class="tag">'+E(x.frecuencia)+'</p>'):'')
         +cita(x.cita,'')
         +(x.comoResponde?('<p><b class="lb">Responde</b> '+E(x.comoResponde)+'</p>'):'')
-        +(x.comoDeberia?('<p><b class="lb ok">Conviene</b> '+E(x.comoDeberia)+'</p>'):''), 'amber');
+        +(x.comoDeberia?('<p><b class="lb ok">Conviene</b> '+E(x.comoDeberia)+'</p>'):'')
+        +fte(x.f), 'amber');
     }).join('');
 
   // --- El framework
@@ -22137,12 +22169,14 @@ function _ventasHtml(d, c, analisis){
         (x.objetivo?('<p><b class="lb">Objetivo</b> '+E(x.objetivo)+'</p>'):'')
         +lista(x.queHacer)
         +(x.comoSeSabe?('<p><b class="lb ok">Salio bien si</b> '+E(x.comoSeSabe)+'</p>'):'')
-        +(x.noHacer?('<p><b class="lb warn">No hacer</b> '+E(x.noHacer)+'</p>'):''), 'teal');
+        +(x.noHacer?('<p><b class="lb warn">No hacer</b> '+E(x.noHacer)+'</p>'):'')
+        +fte(x.f), 'teal');
     }).join('')
     +sec('Que decir', (d.frases||[]).map(function(f){
         return '<div class="swap">'+(f.situacion?('<div class="sit">'+E(f.situacion)+'</div>'):'')
           +(f.diceHoy?('<div class="hoy"><span>Hoy</span>'+E(f.diceHoy)+'</div>'):'')
-          +(f.decir?('<div class="mej"><span>Mejor</span>'+E(f.decir)+'</div>'):'')+'</div>';
+          +(f.decir?('<div class="mej"><span>Mejor</span>'+E(f.decir)+'</div>'):'')
+          +(f.f?('<div class="sit">'+fte(f.f)+'</div>'):'')+'</div>';
       }).join(''));
 
   // --- Voz del mercado: se copia y se pega en los prompts de copy
@@ -22152,14 +22186,15 @@ function _ventasHtml(d, c, analisis){
         ?('<div class="chips">'+vm.palabras.map(function(w){
             return '<span class="chip">'+E(w)+'</span>'; }).join('')+'</div>'):''))
     +(vm.frases||[]).map(function(f){
-        return cita(f.texto, [f.lead,f.tema].filter(Boolean).join(' \u00b7 '));
+        return cita(f.texto, [f.lead,f.m,f.tema].filter(Boolean).join(' \u00b7 '));
       }).join('');
 
   // --- Por donde empezar
   var p5=(d.primero||[]).map(function(x,i){
       return card((i+1)+'. '+String(x.cambio||''),
         (x.porque?('<p>'+E(x.porque)+'</p>'):'')
-        +(x.impacto?('<p class="tag">Impacto '+E(x.impacto)+'</p>'):''),
+        +(x.impacto?('<p class="tag">Impacto '+E(x.impacto)+'</p>'):'')
+        +fte(x.f),
         x.impacto==='Alto'?'lime':'');
     }).join('');
 
@@ -22231,7 +22266,15 @@ function _ventasCSS(){
 // con la estructura del brief de OBD: lo que dijo, lo que no dijo, avatares a
 // validar, preguntas para la proxima y compromisos ya asumidos.
 function _briefCSS(){
-  return ':root{--bg:#0a0a0a;--surface:#111;--surface-2:#1a1a1a;'
+  // La marca de origen va chica y apagada: se consulta cuando aparece una duda,
+  // no compite con lo que se esta leyendo.
+  return '.ftes{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}'
+   +'.fte{font-family:"Geist Mono",monospace;font-size:9.5px;letter-spacing:.02em;'
+   +'padding:2px 7px;border:1px solid var(--border);border-radius:99px;'
+   +'color:var(--text-muted);text-decoration:none;white-space:nowrap;display:inline-block}'
+   +'a.fte:hover{color:var(--text-primary);border-color:var(--border-hover)}'
+   +'td .ftes,li .ftes{margin-top:5px}.stat .ftes{margin-top:9px}'
+   +':root{--bg:#0a0a0a;--surface:#111;--surface-2:#1a1a1a;'
    +'--border:rgba(255,255,255,.08);--border-hover:rgba(255,255,255,.15);'
    +'--text-primary:#f0f0f0;--text-secondary:#888;--text-muted:#555;'
    +'--lime:#c8f542;--teal:#4af0c4;--amber:#f0904a;--red:#f0564a;'
@@ -22330,17 +22373,34 @@ function _briefCSS(){
 // cuando en realidad no habia nada que decir de eso.
 function _briefHtml(d, c, fuentes){
   var E=esc;
+  // Link directo al minuto de la grabacion. Se comparte entre las citas y los
+  // chips de fuente para que apunten al mismo lado.
+  var linkA=function(titulo, momento){
+    var ll=(fuentes||[]).filter(function(y){ return y.titulo===titulo; })[0];
+    if(!ll||!ll.url||!momento) return '';
+    var p=String(momento).split(':');
+    var seg=(p.length===2)?(parseInt(p[0],10)*60+parseInt(p[1],10)):0;
+    if(!seg) return '';
+    return ll.url+(ll.url.indexOf('?')>=0?'&':'?')+'timestamp='+seg;
+  };
+  // La marca de donde sale cada afirmacion. Va chica y al pie, para que se
+  // pueda consultar sin competir con el contenido.
+  var fte=function(f){
+    if(!f) return '';
+    var a=Array.isArray(f)?f:[f];
+    var chips=a.filter(function(x){ return x && (x.ll||x.m); }).map(function(x){
+      var t=[x.ll,x.m].filter(Boolean).join(' \u00b7 ');
+      var l=linkA(x.ll, x.m);
+      return l?('<a class="fte" href="'+E(l)+'" target="_blank" rel="noopener">'+E(t)+'</a>')
+             :('<span class="fte">'+E(t)+'</span>');
+    });
+    return chips.length?('<div class="ftes">'+chips.join('')+'</div>'):'';
+  };
   var q=function(x){
     if(!x||!x.texto) return '';
     var cita=[x.quien,x.llamada,x.momento].filter(Boolean).join(' \u00b7 ');
     // Los documentos no tienen url ni minuto: la cita queda igual, sin link.
-    var ll=(fuentes||[]).filter(function(y){ return y.titulo===x.llamada; })[0];
-    var link='';
-    if(ll&&ll.url&&x.momento){
-      var p=String(x.momento).split(':');
-      var seg=(p.length===2)?(parseInt(p[0],10)*60+parseInt(p[1],10)):0;
-      if(seg) link=ll.url+(ll.url.indexOf('?')>=0?'&':'?')+'timestamp='+seg;
-    }
+    var link=linkA(x.llamada, x.momento);
     return '<blockquote>'+E(x.texto)
       +(cita?('<cite>'+(link?('<a href="'+E(link)+'" target="_blank" rel="noopener">'+E(cita)+'</a>')
         :E(cita))+'</cite>'):'')
@@ -22360,19 +22420,22 @@ function _briefHtml(d, c, fuentes){
   // --- p1: el cliente
   var p1=sec('Qué es y de dónde viene',
       card(d.producto&&d.producto.titulo, ((d.producto&&d.producto.texto)?('<p>'+E(d.producto.texto)+'</p>'):'')
-        +((d.producto&&d.producto.citas||[]).map(q).join('')) ))
+        +((d.producto&&d.producto.citas||[]).map(q).join(''))
+        +fte(d.producto&&d.producto.f) ))
     +sec('Números de la operación',
       (d.numeros&&d.numeros.length)
         ?('<div class="grid g3">'+d.numeros.map(function(n){
             return '<div class="stat"><span class="n '+(n.color||'')+'">'+E(n.valor)+'</span>'
-              +'<span class="l">'+E(n.rotulo)+'</span></div>';
+              +'<span class="l">'+E(n.rotulo)+'</span>'+fte(n.f)+'</div>';
           }).join('')+'</div>'):'')
     +sec('Situación', card(null, ((d.situacion&&d.situacion.texto)?('<p>'+E(d.situacion.texto)+'</p>'):'')
         +lista(d.situacion&&d.situacion.puntos)
-        +((d.situacion&&d.situacion.citas||[]).map(q).join('')), 'amber'))
+        +((d.situacion&&d.situacion.citas||[]).map(q).join(''))
+        +fte(d.situacion&&d.situacion.f), 'amber'))
     +sec('Temperatura', card(d.temperatura&&d.temperatura.titulo,
         ((d.temperatura&&d.temperatura.texto)?('<p>'+E(d.temperatura.texto)+'</p>'):'')
-        +lista(d.temperatura&&d.temperatura.senales), 'red'));
+        +lista(d.temperatura&&d.temperatura.senales)
+        +fte(d.temperatura&&d.temperatura.f), 'red'));
 
   // --- p2: donde esta parado
   var p2=sec('Qué intentó y cómo le fue',
@@ -22380,7 +22443,8 @@ function _briefHtml(d, c, fuentes){
       ?('<table><thead><tr><th style="width:26%">Intento</th><th style="width:38%">Qué pasó</th>'
         +'<th>Lectura</th></tr></thead><tbody>'
         +d.intentos.map(function(x){
-          return '<tr><td>'+E(x.intento)+'</td><td>'+E(x.resultado)+'</td><td>'+E(x.lectura||'')+'</td></tr>';
+          return '<tr><td>'+E(x.intento)+'</td><td>'+E(x.resultado)+'</td>'
+            +'<td>'+E(x.lectura||'')+fte(x.f)+'</td></tr>';
         }).join('')+'</tbody></table>'):'')
     +sec('Su lectura del problema', card(null,
         ((d.lecturaPropia&&d.lecturaPropia.citas||[]).map(q).join(''))
@@ -22396,7 +22460,7 @@ function _briefHtml(d, c, fuentes){
       +'<div class="divider"></div>'
       +(d.contradiccion.texto?('<p>'+E(d.contradiccion.texto)+'</p>'):'')
       +(d.contradiccion.queHacer?('<p><strong>Qué hacer con esto:</strong> '
-        +E(d.contradiccion.queHacer)+'</p>'):'')+'</div>'):'')
+        +E(d.contradiccion.queHacer)+'</p>'):'')+fte(d.contradiccion.f)+'</div>'):'')
     +sec('Activos ocultos', lista(d.activos))
     +sec('Lo que evitó o no tiene', lista(d.faltantes))
     +sec('Riesgos',
@@ -22406,7 +22470,7 @@ function _briefHtml(d, c, fuentes){
         +d.riesgos.map(function(x){
           var col=(x.nivel==='Alto')?'var(--red)':((x.nivel==='Medio')?'var(--amber)':'var(--text-muted)');
           return '<tr><td>'+E(x.riesgo)+'</td><td style="color:'+col+'">'+E(x.nivel||'')+'</td>'
-            +'<td>'+E(x.mitigacion||'')+'</td></tr>';
+            +'<td>'+E(x.mitigacion||'')+fte(x.f)+'</td></tr>';
         }).join('')+'</tbody></table>'):'');
 
   // --- p4: avatares
@@ -22421,6 +22485,7 @@ function _briefHtml(d, c, fuentes){
           +(a.dolor?('<p><strong>Dolor urgente:</strong> '+E(a.dolor)+'</p>'):'')
           +(a.objecion?('<p><strong>Objeción:</strong> '+E(a.objecion)+'</p>'):'')
           +(a.nota?('<p class="note">'+E(a.nota)+'</p>'):'')
+          +fte(a.f)
         +'</div>';
       }).join('')+'</div>'):'';
 
@@ -22435,6 +22500,7 @@ function _briefHtml(d, c, fuentes){
             return '<div class="q" data-q><div class="box"></div><div>'
               +'<div class="qt">'+E(x.pregunta)+'</div>'
               +(x.porque?('<div class="qw">'+E(x.porque)+'</div>'):'')
+              +fte(x.f)
             +'</div></div>';
           }).join('')
         +'</div>';
@@ -22445,7 +22511,7 @@ function _briefHtml(d, c, fuentes){
       (d.compromisos&&d.compromisos.length)
       ?('<table><thead><tr><th style="width:32%">Concepto</th><th>Acordado</th></tr></thead><tbody>'
         +d.compromisos.map(function(x){
-          return '<tr><td>'+E(x.concepto)+'</td><td>'+E(x.acordado)+'</td></tr>';
+          return '<tr><td>'+E(x.concepto)+'</td><td>'+E(x.acordado)+fte(x.f)+'</td></tr>';
         }).join('')+'</tbody></table>'):'')
     +sec('Entregables', (d.entregables&&(d.entregables.si||d.entregables.no))
       ?('<div class="grid g2">'
@@ -25622,21 +25688,27 @@ async function briefGenerar(clientId){
   var chars=fuentes.reduce(function(a,x){ return a+x.texto.length; },0);
   console.log('Brief \u00b7 '+llamadas.length+' llamadas y '+documentos.length+' documentos, '
     +Math.round(chars/1000)+'k caracteres');
+  // "f" es la trazabilidad: de que fuente y de que minuto sale cada afirmacion.
+  // Va en todo lo que afirma algo, no solo en las citas, porque la duda tipica
+  // en la reunion es "esto de donde salio" sobre una linea del analisis.
   var esquema='{"kicker":"","titulo":"","subtitulo":"","resumen":"",'
     +'"pills":[{"texto":"","tipo":"hot|warn|"}],'
-    +'"producto":{"titulo":"","texto":"","citas":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]},'
-    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|"}],'
-    +'"situacion":{"texto":"","puntos":[""],"citas":[]},'
-    +'"temperatura":{"titulo":"","texto":"","senales":[""]},'
-    +'"intentos":[{"intento":"","resultado":"","lectura":""}],'
+    +'"producto":{"titulo":"","texto":"","f":[{"ll":"","m":"mm:ss"}],'
+      +'"citas":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]},'
+    +'"numeros":[{"valor":"","rotulo":"","color":"lime|red|teal|amber|","f":[{"ll":"","m":"mm:ss"}]}],'
+    +'"situacion":{"texto":"","puntos":[""],"f":[{"ll":"","m":"mm:ss"}],"citas":[]},'
+    +'"temperatura":{"titulo":"","texto":"","senales":[""],"f":[{"ll":"","m":"mm:ss"}]},'
+    +'"intentos":[{"intento":"","resultado":"","lectura":"","f":[{"ll":"","m":"mm:ss"}]}],'
     +'"lecturaPropia":{"texto":"","citas":[]},'
     +'"mercado":{"texto":"","citas":[],"falta":""},'
-    +'"contradiccion":{"titular":"","texto":"","queHacer":""},'
+    +'"contradiccion":{"titular":"","texto":"","queHacer":"","f":[{"ll":"","m":"mm:ss"}]},'
     +'"activos":[""],"faltantes":[""],'
-    +'"riesgos":[{"riesgo":"","nivel":"Alto|Medio|Bajo","mitigacion":""}],'
-    +'"avataresNota":"","avatares":[{"nombre":"","base":"","puntoA":"","dolor":"","objecion":"","nota":""}],'
-    +'"preguntas":[{"grupo":"","tipo":"critico|operativo|comercial","items":[{"pregunta":"","porque":""}]}],'
-    +'"compromisos":[{"concepto":"","acordado":""}],'
+    +'"riesgos":[{"riesgo":"","nivel":"Alto|Medio|Bajo","mitigacion":"","f":[{"ll":"","m":"mm:ss"}]}],'
+    +'"avataresNota":"","avatares":[{"nombre":"","base":"","puntoA":"","dolor":"","objecion":"","nota":"",'
+      +'"f":[{"ll":"","m":"mm:ss"}]}],'
+    +'"preguntas":[{"grupo":"","tipo":"critico|operativo|comercial",'
+      +'"items":[{"pregunta":"","porque":"","f":[{"ll":"","m":"mm:ss"}]}]}],'
+    +'"compromisos":[{"concepto":"","acordado":"","f":[{"ll":"","m":"mm:ss"}]}],'
     +'"entregables":{"si":[""],"no":[""]},'
     +'"frasesClave":[{"texto":"","quien":"","llamada":"","momento":"mm:ss"}]}';
   try{
@@ -25661,6 +25733,14 @@ async function briefGenerar(clientId){
         +'- Marca explicitamente lo que FALTA: los huecos son la parte mas util del brief.\n'
         +'- Las citas tienen que ser textuales, con el momento (mm:ss) si la fuente lo tiene. '
         +'Si es un documento, dejá "momento" vacio y poné el nombre en "llamada".\n'
+        // Sin esto el brief se lee bien pero no se puede defender: en la reunion
+        // aparece "esto de donde salio" y hay que rebuscar en la transcripcion.
+        +'- TRAZABILIDAD: cada afirmacion lleva su campo "f", que dice de donde sale. '
+        +'"ll" es el titulo exacto de la fuente, tal como figura en MATERIAL. '
+        +'"m" es el minuto mm:ss donde aparece en la transcripcion; si la fuente es un '
+        +'documento o no encontras el minuto, dejá "m" vacio pero completa igual "ll". '
+        +'Si algo sale de dos fuentes, poné las dos. Si no podes decir de donde sale una '
+        +'afirmacion, no la escribas: es una invencion.\n'
         +'- Si el cliente se contradijo, decilo. Si dijo dos cosas incompatibles, ponelas juntas.\n'
         +'- Las preguntas van agrupadas y ordenadas: primero las que bloquean el trabajo.\n'
         +'- Los avatares son HIPOTESIS a validar, no conclusiones. Deci en que se basa cada uno.\n'
