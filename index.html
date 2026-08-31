@@ -21300,6 +21300,22 @@ function _lpContextoInterno(c){
   var links=(c.material||[]).map(function(m){ return '- '+m.label+': '+m.url; });
   _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
+  // Las llamadas no entraban. Estaban en el cliente pero este contexto solo
+  // pasaba links, asi que el paso 1 suponia cosas que se habian hablado en la
+  // reunion, y el paso 2 intentaba abrir los links de Fathom para leerlas
+  // (imposible: solo devuelven metadata). Van las mas nuevas primero.
+  var lls=(c.fathomCalls||[])
+    .filter(function(x){ return x.transcript||x.summary; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var usadasLl=0, llFuera=0, llDentro=0;
+  lls.forEach(function(x){
+    var t=String(x.transcript||x.summary||'');
+    if(!t) return;
+    if(t.length>_LP_MAXLLAM) t=t.slice(0,_LP_MAXLLAM);
+    if(usadasLl+t.length>_LP_MAXLLTOT){ llFuera++; return; }
+    usadasLl+=t.length; llDentro++;
+    out.push('LLAMADA — '+(x.title||'sin titulo')+(x.date?(' ('+x.date+')'):'')+':\n'+t);
+  });
   // Los documentos entran enteros hasta un tope propio: son la voz del cliente
   // sin pasar por un resumen, que es justo lo que sirve para escribir copy.
   var doc=docsCopy(c), usados=0, sobra=0;
@@ -21311,9 +21327,12 @@ function _lpContextoInterno(c){
     out.push('DOCUMENTO DEL CLIENTE — '+(d.titulo||'sin titulo')+':\n'+t);
   });
   return {texto:out.join('\n\n'), links:links.length, respuestas:(c.respuestas||[]).length,
-          docs:doc.length-sobra, docsFuera:sobra};
+          docs:doc.length-sobra, docsFuera:sobra,
+          llamadas:llDentro, llamadasFuera:llFuera};
 }
 var _LP_MAXDOC=60000;
+var _LP_MAXLLAM=25000;    // por llamada
+var _LP_MAXLLTOT=90000;   // entre todas
 
 async function _lpApi(apiKey, body, beta){
   var h={'Content-Type':'application/json','x-api-key':apiKey,
@@ -21361,7 +21380,13 @@ async function investigarLanding(clientId){
     (c.material||[]).forEach(function(m){ if(m.url) urls.push(m.url); });
     _matHeredado(c).forEach(function(m){ if(m.u) urls.push(m.u); });
     if(c.website) urls.unshift(c.website);
-    urls=urls.filter(function(u,i){ return /^https?:\/\//i.test(u) && urls.indexOf(u)===i; });
+    // Estos nunca se pueden leer y cada intento gasta una lectura: Fathom solo
+    // devuelve metadata, Drive pide login, y WhatsApp e Instagram bloquean. Las
+    // llamadas ya entran por texto en el contexto, no hace falta ir a buscarlas.
+    var _noSirve=/fathom\.video|drive\.google\.com|docs\.google\.com|api\.whatsapp\.com|wa\.me|instagram\.com|facebook\.com|linkedin\.com/i;
+    urls=urls.filter(function(u,i){
+      return /^https?:\/\//i.test(u) && urls.indexOf(u)===i && !_noSirve.test(u);
+    });
     var o=await _lpApi(apiKey,{
       model:'claude-sonnet-5', max_tokens:8000,
       // web_search encuentra, web_fetch LEE. Con busqueda sola el modelo arma
@@ -21383,7 +21408,9 @@ async function investigarLanding(clientId){
         +'- Las palabras entre comillas tienen que estar TEXTUALES en la pagina. Si no podes '
         +'copiarlas tal cual, no uses comillas.\n'
         +'- Si una pagina no abre, ponela en "noPude" y seguí. No la reconstruyas de memoria '
-        +'ni del buscador.\n\n'
+        +'ni del buscador.\n'
+        +'- Las llamadas con el cliente ya te las paso en texto mas abajo. No las busques en '
+        +'la web ni intentes abrirlas: usa el texto que tenes.\n\n'
         +'QUE BUSCAR, en este orden:\n'
         +'1. PRUEBA SOCIAL: cantidad de clientes, metricas de uso, nombres o logos de clientes, '
         +'testimonios. Suele estar en franjas tipo "confiado por", en el hero o en el pie, y '
@@ -21553,6 +21580,9 @@ function landingHtml(c){
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
       +ctx.links+' links de Material'
+      +(ctx.llamadas?(' &middot; '+ctx.llamadas+' llamada'+(ctx.llamadas===1?'':'s')):'')
+      +(ctx.llamadasFuera?('<span style="color:var(--amberx)"> ('+ctx.llamadasFuera
+        +' no entraron por tama\u00f1o)</span>'):'')
       +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
       +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
         +' no entraron por tama\u00f1o</span>'):'')
@@ -21659,7 +21689,8 @@ function landingHtml(c){
         +'<div style="font-size:11px;color:var(--text3);line-height:1.55;margin-top:3px">'
           +(r
             ? esc(_lpLimpiar(String(r.resumen||'')))
-            : 'Lee las llamadas, los documentos y el material, elige las tres y explica por que.')
+            : ('Lee '+(ctx.llamadas?(ctx.llamadas+' llamada'+(ctx.llamadas===1?'':'s')+', '):'')
+               +'los documentos y el material, elige las tres y explica por que.'))
         +'</div>'
       +'</div>'
       +'<button id="lp-reco-btn" class="btn btn-sm'+(r?'':' btn-primary')
