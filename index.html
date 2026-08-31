@@ -23417,6 +23417,46 @@ function _cargarMammoth(){
     document.head.appendChild(sc);
   });
 }
+// El navegador tampoco lee PDF como texto. pdf.js se baja sola la primera vez,
+// igual que mammoth. Solo saca el texto: un PDF escaneado, que es una imagen,
+// va a venir vacio y hay que avisarlo en vez de guardar un documento mudo.
+function _cargarPdfJs(){
+  if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  return new Promise(function(res,rej){
+    var sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload=function(){
+      if(!window.pdfjsLib) return rej(new Error('el lector de PDF no arranco'));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc=
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      res(window.pdfjsLib);
+    };
+    sc.onerror=function(){ rej(new Error('no se pudo bajar el lector de PDF')); };
+    document.head.appendChild(sc);
+  });
+}
+async function _pdfATexto(file, avisar){
+  var lib=await _cargarPdfJs();
+  var buf=await file.arrayBuffer();
+  var doc=await lib.getDocument({data:buf}).promise;
+  var partes=[];
+  for(var p=1;p<=doc.numPages;p++){
+    if(avisar) avisar('Leyendo '+file.name+', pagina '+p+' de '+doc.numPages+'...');
+    var pg=await doc.getPage(p);
+    var tc=await pg.getTextContent();
+    // Un salto de linea cuando cambia la altura: sin esto el PDF sale como un
+    // parrafo unico de miles de palabras y la IA pierde la estructura.
+    var y=null, linea=[], lineas=[];
+    tc.items.forEach(function(it){
+      var ny=it.transform&&it.transform[5];
+      if(y!==null && Math.abs(ny-y)>2){ lineas.push(linea.join('')); linea=[]; }
+      y=ny; linea.push(it.str);
+    });
+    if(linea.length) lineas.push(linea.join(''));
+    partes.push(lineas.join('\n'));
+  }
+  return partes.join('\n\n').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
+}
 function quizPromAdjuntar(){
   var inp=document.createElement('input');
   inp.type='file'; inp.multiple=true;
@@ -26786,7 +26826,7 @@ function docsHtml(c){
     +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'comercial\')" '
       +'title="Se cargan todas marcadas como proceso comercial">Subir llamadas de venta</button>'
     +'<span style="flex:1"></span>'
-    +'<span style="font-size:10.5px;color:var(--text3);align-self:center">txt, md, csv, json, html, vtt, srt</span>'
+    +'<span style="font-size:10.5px;color:var(--text3);align-self:center">pdf, docx, txt, md, csv, json, html, vtt, srt</span>'
   +'</div>'
   +(l.length
     ? l.map(function(d,i){
@@ -26910,23 +26950,37 @@ function docSubir(clientId, uso){
   if(!c) return;
   var inp=document.createElement('input');
   inp.type='file'; inp.multiple=true;
-  inp.accept='.txt,.md,.csv,.json,.html,.htm,.vtt,.srt,text/*';
+  inp.accept='.pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.vtt,.srt,text/*';
   inp.onchange=async function(){
     var fs=[].slice.call(inp.files||[]);
     var ok=0, mal=[];
+    var avisar=function(t){ toast(t); };
     for(var j=0;j<fs.length;j++){
-      var f=fs[j];
-      if(!/\.(txt|md|csv|json|html?|vtt|srt)$/i.test(f.name) && !/^text\//.test(f.type||'')){
-        mal.push(f.name+' (no es texto)'); continue;
-      }
+      var f=fs[j], t='';
       try{
-        var t=await f.text();
-        if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
-          .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+        if(/\.pdf$/i.test(f.name)){
+          t=await _pdfATexto(f, avisar);
+          // Un PDF escaneado no tiene capa de texto. Guardarlo vacio seria peor
+          // que no guardarlo: figura en la lista y no aporta nada al prompt.
+          if(!t) { mal.push(f.name+' (es un PDF escaneado, sin texto seleccionable)'); continue; }
+        }else if(/\.docx$/i.test(f.name)){
+          avisar('Abriendo '+f.name+'...');
+          var mm=await _cargarMammoth();
+          var r=await mm.extractRawText({arrayBuffer:await f.arrayBuffer()});
+          t=(r&&r.value)||'';
+        }else if(/\.doc$/i.test(f.name)){
+          mal.push(f.name+' (es .doc viejo: guardalo como .docx)'); continue;
+        }else if(/\.(txt|md|csv|json|html?|vtt|srt)$/i.test(f.name) || /^text\//.test(f.type||'')){
+          t=await f.text();
+          if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
+            .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+        }else{
+          mal.push(f.name+' (formato que no puedo leer)'); continue;
+        }
         t=String(t).trim();
         if(!t){ mal.push(f.name+' (vino vacio)'); continue; }
-        docs(c).unshift({ titulo:f.name, texto:t.slice(0,_DOC_MAX), uso:(uso||'todo'),
-                          at:new Date().toISOString() });
+        docs(c).unshift({ titulo:f.name.replace(/\.[^.]+$/,''), texto:t.slice(0,_DOC_MAX),
+                          uso:(uso||'todo'), at:new Date().toISOString() });
         ok++;
       }catch(err){ mal.push(f.name+' ('+err.message+')'); }
     }
@@ -26934,7 +26988,7 @@ function docSubir(clientId, uso){
     if(typeof renderTab==='function') renderTab();
     toast(ok
       ? (ok+' documento'+(ok===1?'':'s')+' cargado'+(ok===1?'':'s')+' como "'
-         +_docUsoL(uso||'todo')+'"'+(mal.length?(' \u00b7 no pude leer '+mal.length):''))
+         +_docUsoL(uso||'todo')+'"'+(mal.length?(' \u00b7 no pude leer: '+mal.join(', ')):''))
       : ('No pude leer: '+mal.join(', ')), ok?'':'amber');
   };
   inp.click();
