@@ -12249,12 +12249,124 @@ function rvCambiosPanelHtml(){
 }
 
 // Marca como aprobado lo que la revision dejo pendiente de decision.
+// No aprobar. El motivo es obligatorio a proposito: mandar algo de vuelta sin
+// decir que corregir deja a la otra persona adivinando, y la tarea vuelve igual.
+// El motivo queda como comentario en el hilo, que es donde se va a buscar.
+function rvRechazarTareaModal(clientId, taskId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var t=c&&(c.tasks||[]).find(function(x){ return x.id===taskId; });
+  if(!t) return;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px">'
+      +'<div class="modal-title">Devolver sin aprobar</div>'
+      +'<div class="modal-sub">'+esc(c.name)+' &middot; '
+        +esc(String(t.text||'').slice(0,110))+(t.ticket?(' '+esc(t.ticket)):'')+'</div>'
+      +'<textarea id="rch-txt" rows="4" placeholder="Que hay que corregir. Se le manda a '
+        +esc(t.responsible?personaNombre(t.responsible):'quien la hizo')+'." '
+        +'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+        +'font-family:inherit;resize:vertical;line-height:1.6"></textarea>'
+      +'<div id="rch-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="rvRechazarTarea('+clientId+','+taskId+')">'
+          +'Devolver</button>'
+      +'</div>'
+    +'</div></div>';
+  setTimeout(function(){ var e=document.getElementById('rch-txt'); if(e) e.focus(); },50);
+}
+function rvRechazarTarea(clientId, taskId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var t=c&&(c.tasks||[]).find(function(x){ return x.id===taskId; });
+  if(!t) return;
+  var e=document.getElementById('rch-err');
+  var m=String((document.getElementById('rch-txt')||{}).value||'').trim();
+  if(!m){ if(e) e.textContent='Escribi que hay que corregir. Sin eso vuelve igual.'; return; }
+  if(!Array.isArray(t.comentarios)) t.comentarios=[];
+  t.comentarios.push({ texto:'No aprobada: '+m, at:new Date().toISOString(),
+    por:(typeof SB==='object'&&SB.email)?SB.email:'' });
+  // Vuelve a "en proceso", no a abierta: el trabajo ya empezo, solo falta la
+  // correccion. Dejarla abierta perdia el historial de que estuvo en revision.
+  t.estado='proceso';
+  t.revisionAt='';
+  t.rechazadaAt=new Date().toISOString();
+  t.rechazos=(t.rechazos||0)+1;
+  save();
+  try{ avisarRechazo(c, t, m); }catch(err){}
+  closeModal();
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+  else if(typeof renderTab==='function') renderTab();
+  toast('Devuelta a '+(t.responsible?personaNombre(t.responsible):'quien la hizo')+' con el motivo.');
+}
+function avisarRechazo(c, t, motivo){
+  if(typeof lvOn!=='function' || !lvOn()) return;
+  var mail=(t&&t.responsible)||'';
+  if(!mail) return;
+  var num=telDe(mail);
+  if(!num) return;
+  if(typeof soyYo==='function' && soyYo(mail)) return;
+  var proxy=getGhlProxy();
+  if(!proxy.url) return;
+  var txt='Volvio sin aprobar en '+((c&&c.name)||'un cliente')+': '
+    +String((t&&t.text)||'').slice(0,150)
+    +((t&&t.ticket)?(' '+t.ticket):'')
+    +' - '+String(motivo||'').slice(0,300);
+  proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+    +'&action=alert_msg&numero='+encodeURIComponent(num)
+    +'&texto='+encodeURIComponent(txt)).catch(function(){});
+}
+// Una revision de informe no tiene responsable a quien devolversela: se marca
+// resuelta con el motivo, para que no siga apareciendo como pendiente y quede
+// registrado por que no se aprobo.
+function rvNoAprobarModal(clientId, revId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  var r=c&&rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r||!r.aprobacion) return;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px">'
+      +'<div class="modal-title">No aprobar</div>'
+      +'<div class="modal-sub">'+esc(c.name)+' &middot; '+esc(r.aprobacion.que||'')+'</div>'
+      +'<textarea id="rch-txt" rows="4" placeholder="Por que no. Queda registrado en la revision." '
+        +'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+        +'font-family:inherit;resize:vertical;line-height:1.6"></textarea>'
+      +'<div id="rch-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="rvNoAprobar('+clientId+',\''+esc(revId)+'\')">'
+          +'No aprobar</button>'
+      +'</div>'
+    +'</div></div>';
+  setTimeout(function(){ var e=document.getElementById('rch-txt'); if(e) e.focus(); },50);
+}
+function rvNoAprobar(clientId, revId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var r=rvLista(c).find(function(x){ return x.id===revId; });
+  if(!r||!r.aprobacion) return;
+  var e=document.getElementById('rch-err');
+  var m=String((document.getElementById('rch-txt')||{}).value||'').trim();
+  if(!m){ if(e) e.textContent='Escribi por que no. Sin motivo no sirve de registro.'; return; }
+  r.aprobacion.resuelto=true;
+  r.aprobacion.aprobado=false;
+  r.aprobacion.motivo=m;
+  r.aprobacion.resueltoAt=new Date().toISOString();
+  r.aprobacion.resueltoPor=(typeof SB==='object'&&SB.email)?SB.email:'';
+  save();
+  closeModal();
+  showTickets();
+  if(typeof toast==='function') toast('Marcada como no aprobada.');
+}
 function rvAprobar(clientId, revId){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
   if(!c) return;
   var r=rvLista(c).find(function(x){ return x.id===revId; });
   if(!r||!r.aprobacion) return;
   r.aprobacion.resuelto=true;
+  // Se guarda el si explicito: "resuelto" solo no distingue aprobado de rechazado.
+  r.aprobacion.aprobado=true;
   r.aprobacion.resueltoAt=new Date().toISOString();
   r.aprobacion.resueltoPor=(typeof SB==='object'&&SB.email)?SB.email:'';
   save();
@@ -12313,7 +12425,10 @@ function rvAprobacionesHtml(){
         +(x.t.responsible?(' &middot; la entrego '+esc(personaNombre(x.t.responsible))):'')
       +_espDesde(x.t.revisionAt, x.t.delegatedAt)+'</span></span>'
       +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--text3)" '
-        +'onclick="comModal('+x.c.id+','+x.t.id+')" title="Comentar sin aprobar">Comentar</button>'
+        +'onclick="comModal('+x.c.id+','+x.t.id+')" title="Comentar sin decidir">Comentar</button>'
+      +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--redx)" '
+        +'onclick="rvRechazarTareaModal('+x.c.id+','+x.t.id+')" '
+        +'title="Vuelve a en proceso con el motivo">No aprobar</button>'
       +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" '
         +'onclick="setTicketEstado('+x.c.id+','+x.t.id+',\'revisada\')">Aprobar</button>'
       +'</div>';
@@ -12322,6 +12437,8 @@ function rvAprobacionesHtml(){
     return '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid rgba(240,168,48,0.2)">'
       +'<span style="font-size:12.5px;color:var(--strong);width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.c.name)+'</span>'
       +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text2);line-height:1.55">'+esc(x.r.aprobacion.que)+_espDesde(x.r.aprobacion&&x.r.aprobacion.pedidoAt, x.r.creadoAt)+'</span>'
+      +'<button class="btn btn-sm" style="flex-shrink:0;color:var(--redx)" '
+        +'onclick="rvNoAprobarModal('+x.c.id+',\''+x.r.id+'\')">No aprobar</button>'
       +'<button class="btn btn-sm btn-primary" style="flex-shrink:0" onclick="rvAprobar('+x.c.id+',\''+x.r.id+'\')">Aprobar</button>'
       +'</div>';
   }).join('');
@@ -12387,7 +12504,14 @@ function rvFilaRespondida(c, r, chip){
               +det('Error en el informe', r.informe&&r.informe.cual)
               +'<div style="display:flex;gap:8px;margin-top:12px">'
                 +((r.aprobacion&&r.aprobacion.necesita&&!r.aprobacion.resuelto)
-                  ?'<button class="btn btn-sm btn-primary" onclick="rvAprobar('+c.id+',\''+r.id+'\')">Marcar como aprobado</button>':'')
+                  ?('<button class="btn btn-sm btn-primary" onclick="rvAprobar('+c.id+',\''+r.id+'\')">Marcar como aprobado</button>'
+                    +'<button class="btn btn-sm" style="color:var(--redx)" '
+                    +'onclick="rvNoAprobarModal('+c.id+',\''+r.id+'\')">No aprobar</button>'):'')
+                // Ya decidida: se muestra que se decidio. Sin esto, aprobada y
+                // rechazada se veian igual una vez resueltas.
+                +((r.aprobacion&&r.aprobacion.resuelto&&r.aprobacion.aprobado===false)
+                  ?('<span style="font-size:11.5px;color:var(--redx);align-self:center">'
+                    +'No aprobada'+(r.aprobacion.motivo?(': '+esc(r.aprobacion.motivo)):'')+'</span>'):'')
                 +'<button class="btn btn-sm" onclick="rvAbrir('+c.id+',\''+r.periodo+'\',\'tracker\')">Editar</button>'
                 +'<button class="btn btn-sm" style="color:var(--redx)" onclick="rvBorrar('+c.id+',\''+r.id+'\')">Eliminar</button>'
               +'</div></div>'
@@ -26213,8 +26337,74 @@ function sopExtra(id, bi, pi, tipo){
   save(); _sopPintar(id);
 }
 
-// Un dato que sale de Personas en vez de escribirse a mano: si Angie cambia
-// su mail de Meta, se corrige en un lugar y todos los SOP quedan al dia.
+// ---- Campos de integracion desde el SOP ----------------------------------
+// El SOP de sistemas se corre en vivo con el cliente y ahi aparecen el token y
+// el ID de cuenta. Antes se anotaban como dato suelto y despues alguien tenia
+// que ir a Integraciones y volver a pegarlos, con el paso intermedio de
+// perderlos. Un paso puede pedir el campo directo y guardarlo donde va.
+// Solo los campos que el tracker realmente lee. Ofrecer uno que no consume
+// nadie seria peor que no ofrecerlo: se carga el dato, se ve guardado y no
+// activa ninguna integracion.
+var SOP_CAMPOS=[
+  {k:'metaToken',     l:'Meta Ads \u00b7 Token de acceso', ph:'EAATs4n8...', mono:true,
+   ayuda:'Token de usuario del sistema con permiso ads_read.'},
+  {k:'metaAccountId', l:'Meta Ads \u00b7 ID de cuenta publicitaria', ph:'940497335594870',
+   ayuda:'Sin el prefijo act_. Se lo saco solo si lo pegas con el.',
+   limpia:function(v){ return v.replace(/^act_/,''); }},
+  {k:'ghlToken',      l:'GoHighLevel \u00b7 Token', ph:'pit-...', mono:true,
+   ayuda:'Token de la subcuenta, arranca con pit-.'},
+  {k:'ghlLocation',   l:'GoHighLevel \u00b7 Location ID', ph:'VLLbofKKvrSMFQv8aU9u', mono:true,
+   ayuda:'El ID de la subcuenta.'}
+];
+function _sopCampo(k){ return SOP_CAMPOS.filter(function(x){ return x.k===k; })[0]||null; }
+// Que hay que hacer despues de guardar cada campo. Guardar el token sin
+// sincronizar deja la integracion "conectada" pero sin datos, que es peor que
+// no conectarla: figura en verde y no trae nada.
+function _sopCampoListo(c, k){
+  if((k==='metaToken'||k==='metaAccountId')){
+    if(c.metaToken && c.metaAccountId){
+      if(typeof syncMetaAds==='function') syncMetaAds(c.id);
+      return 'Meta quedo conectado. Estoy sincronizando.';
+    }
+    return 'Guardado. Falta '+(c.metaToken?'el ID de cuenta':'el token')+' para que conecte.';
+  }
+  if((k==='ghlToken'||k==='ghlLocation')){
+    if(c.ghlToken && c.ghlLocation) return 'GoHighLevel quedo conectado.';
+    return 'Guardado. Falta '+(c.ghlToken?'el Location ID':'el token')+' para que conecte.';
+  }
+  return 'Guardado en '+(c.name||'el cliente')+'.';
+}
+function sopCampoElegir(id, bi, pi){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  var txt=SOP_CAMPOS.map(function(x,i){ return (i+1)+'. '+x.l; }).join('\n');
+  var n=prompt('Que dato del cliente pide este paso?\n\n'+txt+'\n\nEscribi el numero:');
+  var o=SOP_CAMPOS[parseInt(n,10)-1];
+  if(!o) return;
+  p.extras=p.extras||[];
+  // Solo la referencia al campo: el valor vive en el cliente, no en el SOP, que
+  // es una plantilla compartida entre clientes.
+  p.extras.push({t:'campo', k:o.k});
+  save(); _sopPintar(id);
+}
+function sopCampoGuardar(id, bi, pi, i){
+  var r=sopCtxTarea();
+  var e=document.getElementById('sopc-'+bi+'-'+pi+'-'+i);
+  var msg=document.getElementById('sopm-'+bi+'-'+pi+'-'+i);
+  var decir=function(t,col){ if(msg){ msg.textContent=t; msg.style.color=col||'var(--text3)'; } };
+  if(!r){ decir('Abri el SOP desde la tarea de un cliente para poder guardarlo.','var(--amberx)'); return; }
+  var s=_sop(id); if(!s) return;
+  var ex=((s.bloques[bi].pasos[pi]||{}).extras||[])[i];
+  var campo=ex&&_sopCampo(ex.k);
+  if(!campo) return;
+  var v=String((e||{}).value||'').trim();
+  if(!v){ decir('Pega el valor primero.','var(--amberx)'); return; }
+  if(campo.limpia) v=campo.limpia(v);
+  r.c[campo.k]=v;
+  save();
+  decir(_sopCampoListo(r.c, campo.k),'var(--accent)');
+  _sopPintar(id);
+}
 function sopDatoPersona(id, bi, pi){
   var l=personas().filter(function(x){ return x.fbMail||x.socioId; });
   if(!l.length){
@@ -26292,6 +26482,38 @@ function _sopExtrasHtml(id, bi, pi, p){
           +'onclick="_copiar(\''+esc(String(val).replace(/'/g,"\\'"))+'\')">Copiar</button>'
         +quitar+'</div>';
     }
+    // Un campo de integracion: se pega el valor y va derecho al cliente. Si el
+    // SOP se abrio suelto (sin tarea) no hay cliente y se dice, en vez de
+    // aceptar un valor que no se guarda en ningun lado.
+    if(e.t==='campo'){
+      var cp=_sopCampo(e.k);
+      if(!cp) return '';
+      var r=sopCtxTarea();
+      var ya=r?String(r.c[cp.k]||''):'';
+      var iid='sopc-'+bi+'-'+pi+'-'+i;
+      return '<div style="margin-top:8px;background:var(--bg3);border:1px solid '
+        +(ya?'rgba(29,158,117,0.3)':'var(--border)')+';border-radius:var(--radius);padding:9px 11px">'
+        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+          +'<span style="flex:1;font-size:10.5px;color:'+(ya?'var(--accent)':'var(--text3)')+'">'
+            +esc(cp.l)+(ya?' \u00b7 ya cargado':'')+'</span>'
+          +quitar
+        +'</div>'
+        +(cp.ayuda?('<div style="font-size:10.5px;color:var(--text3);line-height:1.5;'
+          +'margin-bottom:6px">'+esc(cp.ayuda)+'</div>'):'')
+        +'<div style="display:flex;gap:7px">'
+          +'<input id="'+iid+'" value="'+esc(ya)+'" placeholder="'+esc(cp.ph||'')+'" '
+            +'style="flex:1;min-width:0;box-sizing:border-box;padding:6px 9px;'
+            +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg2);'
+            +'color:var(--text);font-size:11.5px;outline:none'
+            +(cp.mono?';font-family:ui-monospace,Menlo,monospace':'')+'">'
+          +'<button class="btn btn-sm btn-primary" style="font-size:10px;padding:2px 10px;flex:none" '
+            +'onclick="sopCampoGuardar('+id+','+bi+','+pi+','+i+')">Guardar</button>'
+        +'</div>'
+        +'<div id="sopm-'+bi+'-'+pi+'-'+i+'" style="font-size:10.5px;color:var(--text3);'
+          +'margin-top:5px;min-height:14px;line-height:1.45">'
+          +(r?'':'Abri el SOP desde la tarea de un cliente para poder guardarlo.')+'</div>'
+      +'</div>';
+    }
     // Plantilla: editable en el lugar, porque el mensaje se ajusta seguido
     return '<div style="margin-top:8px;background:var(--bg3);border:1px solid var(--border);'
       +'border-radius:var(--radius);padding:9px 11px">'
@@ -26308,11 +26530,14 @@ function _sopExtrasHtml(id, bi, pi, p){
     +'</div>';
   }).join('');
   if(SOP_EDIT){
-    out+='<div style="display:flex;gap:5px;margin-top:9px">'
+    out+='<div style="display:flex;gap:5px;margin-top:9px;flex-wrap:wrap">'
       +['link','plantilla','dato'].map(function(t){
         return '<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
           +'onclick="sopExtra('+id+','+bi+','+pi+',\''+t+'\')">+ '+t+'</button>';
       }).join('')
+      +'<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
+        +'title="Pide un dato y lo guarda en la integracion del cliente" '
+        +'onclick="sopCampoElegir('+id+','+bi+','+pi+')">+ integracion</button>'
       +'<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
         +'onclick="sopDatoPersona('+id+','+bi+','+pi+')" '
         +'title="Toma el mail de Meta o el ID de socio de Personas">+ de una persona</button>'
