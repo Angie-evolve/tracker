@@ -17316,6 +17316,8 @@ function renderTab(){
             </div>
           </div>
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
+          ${docsHtml(c)}
+          <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${preguntasHtml(c)}
         </div>
 
@@ -20973,8 +20975,20 @@ function _lpContextoInterno(c){
   var links=(c.material||[]).map(function(m){ return '- '+m.label+': '+m.url; });
   _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
-  return {texto:out.join('\n\n'), links:links.length, respuestas:(c.respuestas||[]).length};
+  // Los documentos entran enteros hasta un tope propio: son la voz del cliente
+  // sin pasar por un resumen, que es justo lo que sirve para escribir copy.
+  var doc=docsCopy(c), usados=0, sobra=0;
+  doc.forEach(function(d){
+    var t=String(d.texto||'');
+    if(!t) return;
+    if(usados+t.length>_LP_MAXDOC){ sobra++; return; }
+    usados+=t.length;
+    out.push('DOCUMENTO DEL CLIENTE — '+(d.titulo||'sin titulo')+':\n'+t);
+  });
+  return {texto:out.join('\n\n'), links:links.length, respuestas:(c.respuestas||[]).length,
+          docs:doc.length-sobra, docsFuera:sobra};
 }
+var _LP_MAXDOC=60000;
 
 async function _lpApi(apiKey, body){
   var r=await fetch('https://api.anthropic.com/v1/messages',{
@@ -21167,7 +21181,11 @@ function landingHtml(c){
         +'onclick="investigarLanding('+c.id+')">'+(inv?'Volver a buscar':'Buscar')+'</button>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
-      +ctx.links+' links de Material &middot; busca prueba social, precios y diferenciales</div>';
+      +ctx.links+' links de Material'
+      +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
+      +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
+        +' no entraron por tama\u00f1o</span>'):'')
+      +' &middot; busca prueba social, precios y diferenciales</div>';
 
   if(inv){
     var ps=(inv.pruebaSocial||[]), cl=(inv.clientes||[]);
@@ -23345,8 +23363,32 @@ function quizPromesaModal(clientId){
             +'</label>';
           }).join('')+'</div>')
         :('<div style="font-size:12px;color:var(--amberx);line-height:1.6;margin-bottom:12px">'
-          +'Este cliente no tiene llamadas con transcripcion. Podes subir igual la oferta '
-          +'o el dataset abajo.</div>'))
+          +'Este cliente no tiene llamadas con transcripcion. Podes usar los documentos '
+          +'de Contexto o subir la oferta abajo.</div>'))
+      // Los documentos de Contexto vienen tildados: si estan cargados ahi es
+      // porque son de este cliente, y tener que volver a elegirlos cada vez era
+      // el motivo por el que terminaban quedando afuera.
+      +(docs(c).length
+        ?('<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin-bottom:6px">Documentos de Contexto</div>'
+          +'<div style="max-height:150px;overflow-y:auto;margin-bottom:12px">'
+          +docs(c).map(function(d,i){
+            // Los de proceso comercial vienen destildados: son llamadas del
+            // cliente con sus leads, utiles para diagnosticar como vende, no
+            // para escribir la promesa. Se pueden tildar igual si hacen falta.
+            var com=(_docUso(d)==='comercial');
+            return '<label style="display:flex;align-items:center;gap:10px;padding:6px 0;'
+              +'border-bottom:1px solid var(--border);cursor:pointer">'
+              +'<input type="checkbox" class="prm-doc" value="'+i+'"'+(com?'':' checked')+'>'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);'
+                +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                +esc(d.titulo||'Sin titulo')+'</span>'
+              +(com?('<span style="font-size:10px;color:var(--amberx);flex:none">comercial</span>'):'')
+              +'<span style="font-size:11px;color:var(--text3)">'
+                +_docKb(String(d.texto||'').length)+'</span>'
+            +'</label>';
+          }).join('')+'</div>')
+        :'')
       +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.06em;margin-bottom:6px">Material adicional</div>'
       +'<button class="btn btn-sm" onclick="quizPromAdjuntar()">Subir oferta, dataset, '
@@ -23426,14 +23468,18 @@ async function quizPromesaGenerar(clientId){
   var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
     .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
   var idx=[].slice.call(document.querySelectorAll('.prm-ll:checked')).map(function(x){ return +x.value; });
-  if(!idx.length && !_PROM_ADJ.length){
-    decir('Elegi al menos una llamada o subi un archivo.','var(--amberx)'); return;
+  var idoc=[].slice.call(document.querySelectorAll('.prm-doc:checked')).map(function(x){ return +x.value; });
+  if(!idx.length && !idoc.length && !_PROM_ADJ.length){
+    decir('Elegi al menos una llamada, un documento o subi un archivo.','var(--amberx)'); return;
   }
   var tope=idx.length>=4?12000:(idx.length===3?18000:30000);
   var mat=idx.map(function(i){
     return {tipo:'llamada', titulo:lls[i].title||'Llamada', fecha:lls[i].date||'',
             texto:String(lls[i].transcript||'').slice(0,tope)};
-  }).concat(_PROM_ADJ.map(function(a){ return {tipo:'documento', titulo:a.nombre, texto:a.texto}; }));
+  }).concat(idoc.map(function(i){
+    var d=docs(c)[i]||{};
+    return {tipo:'documento', titulo:d.titulo||'Documento', texto:String(d.texto||'').slice(0,tope)};
+  })).concat(_PROM_ADJ.map(function(a){ return {tipo:'documento', titulo:a.nombre, texto:a.texto}; }));
   var btn=document.getElementById('prm-ok');
   if(btn){ btn.disabled=true; btn.textContent='Pensando...'; }
   var chars=mat.reduce(function(a,x){ return a+x.texto.length; },0);
@@ -23455,8 +23501,9 @@ async function quizPromesaGenerar(clientId){
         +'No inventes un vocabulario nuevo.\n'
         +'- Concreta y verificable. "Mejora tu gestion" no sirve; "descubri cuantas horas '
         +'por semana se van en tareas que ya se pueden automatizar" si.\n'
-        +'- Una sola frase, hasta 22 palabras. Podes marcar 2 o 3 palabras con <em> para '
-        +'resaltarlas.\n'
+        +'- Una sola frase, hasta 22 palabras. Texto plano: nada de HTML ni markdown, '
+        +'ni <em>, ni asteriscos. La plantilla lo pinta como texto y las etiquetas '
+        +'salen literales en pantalla.\n'
         +'- Tres opciones distintas entre si, no tres formas de decir lo mismo: una desde '
         +'el dolor, una desde el resultado, una desde el numero concreto.\n'
         +'- Para cada una, de donde la sacaste: la frase del material que la sostiene.\n'
@@ -23524,8 +23571,10 @@ function quizPromesaElegir(clientId, i){
   if(!c||!o) return;
   var p=(o.promesas||[])[i]; if(!p) return;
   c.quiz=c.quiz||{}; c.quiz.marca=c.quiz.marca||{};
-  c.quiz.marca.headline=p.texto;
-  if(o.bajada && !c.quiz.marca.bajada) c.quiz.marca.bajada=o.bajada;
+  // La IA a veces devuelve <em> igual: se limpia aca y no al generar, para que
+  // el textarea muestre exactamente lo que va a salir publicado.
+  c.quiz.marca.headline=_quizTextoPlano(p.texto);
+  if(o.bajada && !c.quiz.marca.bajada) c.quiz.marca.bajada=_quizTextoPlano(o.bajada);
   if((o.rubros||[]).length && !c.quiz.marca.rubros) c.quiz.marca.rubros=o.rubros.join(', ');
   save();
   quizMarcaModal(clientId);
@@ -23627,8 +23676,11 @@ async function quizPreguntasGenerar(clientId){
   var m=quizMarca(c);
   if(!m.headline){ decir('Primero elegi la promesa: de ahi sale la estructura de las preguntas.',
     'var(--amberx)'); return; }
-  // El mismo material que se uso para la promesa, si sigue cargado.
+  // El mismo material que se uso para la promesa, si sigue cargado, mas los
+  // documentos de Contexto, que sobreviven al cierre del modal.
   var mat=_PROM_ADJ.slice();
+  docsCopy(c).forEach(function(d){ mat.push({nombre:'Documento: '+(d.titulo||'sin titulo'),
+    texto:String(d.texto||'').slice(0,18000)}); });
   var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript && String(x.transcript).length>400; })
     .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); }).slice(0,2);
   lls.forEach(function(x){ mat.push({nombre:x.title||'Llamada',
@@ -23732,13 +23784,30 @@ function quizMarcaGuardar(clientId){
     if(x.checked) usos[x.getAttribute('data-k')]=1;
   });
   var antes=quizMarca(c);
+  // Se limpia al guardar y no solo al generar: si el <em> queda guardado, el
+  // textarea lo muestra de vuelta y parece que el error esta en otro lado.
+  var hl=_quizTextoPlano(v('qm-headline')), baj=_quizTextoPlano(v('qm-bajada'));
+  var habiaMarkup=(hl!==v('qm-headline').trim() || baj!==v('qm-bajada').trim());
   c.quiz.marca={ usos:usos, fotoUrl:v('qm-foto'), redes:v('qm-redes'),
     titulo:v('qm-titulo'), acento:v('qm-acentoTxt')||'#6D3AF2',
-    fondo:v('qm-fondo'), headline:v('qm-headline'), bajada:v('qm-bajada'),
+    fondo:v('qm-fondo'), headline:hl, bajada:baj,
     rubros:v('qm-rubros'), valorHora:num(v('qm-hora'),15),
     automatizable:auto, recupero:rec };
   save(); closeModal(); dibujarQuiz(c);
-  toast('Marca guardada. Entra sola al generar.');
+  toast(habiaMarkup
+    ? 'Marca guardada. Le saque las etiquetas HTML a la promesa: la plantilla las pinta como texto.'
+    : 'Marca guardada. Entra sola al generar.');
+}
+// La promesa y la bajada terminan como texto en la plantilla. Cualquier etiqueta
+// que traigan sale literal en pantalla, asi que se van antes de guardar.
+function _quizTextoPlano(s){
+  return String(s===null||s===undefined?'':s)
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/?(?:em|i|b|strong|span|small|u|mark)\b[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 // Un color mas oscuro para el hover, sacado del acento: pedir dos colores para
 // algo que se calcula es una pregunta de mas.
@@ -23780,11 +23849,17 @@ function _quizAplicarMarca(html, c){
   }
   rep(/<title>[\s\S]*?<\/title>/, '<title>'+esc(m.titulo)+'</title>', 'titulo');
   if(m.headline){
-    rep(/(<h1 id="h-promesa">)[\s\S]*?(<\/h1>)/, '$1'+m.headline+'$2', 'promesa');
+    // La promesa entra en dos lados: el H1 del HTML y una constante de JS que la
+    // plantilla vuelve a pintar cuando carga. Ese segundo camino la escribe como
+    // texto, asi que un <em> sale literal en pantalla y el titular queda
+    // "DE <EM>CONTROL Y PREDICTIBILIDAD</EM>". Va sin etiquetas a los dos lados:
+    // que el titular se lea bien importa mas que la bastardilla.
+    var h=_quizTextoPlano(m.headline);
+    rep(/(<h1 id="h-promesa">)[\s\S]*?(<\/h1>)/, '$1'+esc(h)+'$2', 'promesa');
     html=html.replace(/const PROMESA_DEFAULT = '[\s\S]*?';/,
-      "const PROMESA_DEFAULT = '"+String(m.headline).replace(/'/g,"\\'")+"';");
+      "const PROMESA_DEFAULT = '"+h.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"';");
   }
-  rep(/(<p class="lead">)[\s\S]*?(<\/p>)/, '$1'+esc(m.bajada)+'$2', 'bajada');
+  rep(/(<p class="lead">)[\s\S]*?(<\/p>)/, '$1'+esc(_quizTextoPlano(m.bajada))+'$2', 'bajada');
   if(m.rubros){
     var chips=m.rubros.split(',').map(function(x){
       return '<span class="chip">'+esc(x.trim())+'</span>'; }).join('');
@@ -26664,6 +26739,206 @@ function preguntas(){
 // Para preguntar se prefiere la transcripcion aunque haya resumen: es la unica
 // que trae las marcas de minuto, y sin eso la respuesta no se puede ir a
 // chequear a la grabacion. El resumen queda como respaldo.
+// ---- Documentos del cliente ---------------------------------------------
+// Lo que el cliente manda por fuera de las llamadas: transcripciones de Looms,
+// textos por WhatsApp, un brief. Antes solo se podian pegar en el modal de la
+// promesa y se perdian al cerrarlo, asi que la landing y las preguntas
+// respondian con menos contexto del que habia. Ahora quedan guardados y entran
+// en todos los prompts junto con las llamadas.
+var _DOC_MAX=60000;
+// Un documento no sirve para lo mismo en todos lados. Las transcripciones de
+// llamadas de venta del cliente con SUS leads son oro para entender el mercado
+// y para diagnosticar como vende, pero son doce y llenan solas el presupuesto,
+// dejando afuera el material de producto que el copy necesita. Por eso cada uno
+// declara donde entra.
+var DOC_USOS=[
+  {k:'todo',      l:'Todo',              d:'Entra en el copy de la landing, en la promesa del quiz y en las preguntas.'},
+  {k:'copy',      l:'Oferta y copy',     d:'Producto, oferta, avatar. Landing, promesa y preguntas.'},
+  {k:'comercial', l:'Proceso comercial', d:'Llamadas de venta del cliente con sus leads. Solo en las preguntas, para diagnosticar el proceso.'}
+];
+function _docUso(d){ return (d&&d.uso)||'todo'; }
+function _docUsoL(k){ var u=DOC_USOS.filter(function(x){return x.k===k;})[0]; return u?u.l:'Todo'; }
+// Los que alimentan lo que se publica: landing, promesa del quiz, preguntas del
+// quiz. Un doc marcado como comercial queda afuera de estos.
+function docsCopy(c){ return docs(c).filter(function(d){ return _docUso(d)!=='comercial'; }); }
+function docs(c){ if(!Array.isArray(c.docs)) c.docs=[]; return c.docs; }
+function _docChars(c){ return docs(c).reduce(function(a,d){ return a+String(d.texto||'').length; },0); }
+function _docKb(n){ return n>=1000 ? (Math.round(n/1000)+'k') : (n+''); }
+function docsHtml(c){
+  var l=docs(c);
+  var total=_docChars(c);
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'margin-bottom:10px">'
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em">Documentos del cliente</div>'
+    +(l.length?('<span style="font-size:10.5px;color:var(--text3)">'+l.length+' &middot; '
+      +_docKb(total)+' caracteres</span>'):'')
+  +'</div>'
+  +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+    +'Lo que el cliente manda fuera de las llamadas: transcripciones de Loom, textos por '
+    +'WhatsApp, un brief. Entra en las preguntas, en la promesa del quiz y en el copy de la '
+    +'landing, igual que una llamada.</div>'
+  +'<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
+    +'<button class="btn btn-sm btn-primary" onclick="docPegarModal('+c.id+')">Pegar texto</button>'
+    +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'todo\')">Subir archivos</button>'
+    // Las llamadas de venta vienen de a doce: cargarlas de a una y despues
+    // marcarlas de a una era el camino garantizado a que quedaran sin marcar.
+    +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'comercial\')" '
+      +'title="Se cargan todas marcadas como proceso comercial">Subir llamadas de venta</button>'
+    +'<span style="flex:1"></span>'
+    +'<span style="font-size:10.5px;color:var(--text3);align-self:center">txt, md, csv, json, html, vtt, srt</span>'
+  +'</div>'
+  +(l.length
+    ? l.map(function(d,i){
+        var u=_docUso(d);
+        return '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
+          +'<div style="display:flex;align-items:center;gap:10px">'
+            +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+              +'text-overflow:ellipsis;white-space:nowrap">'+esc(d.titulo||'Sin titulo')+'</span>'
+            +'<select onchange="docUsoSet('+c.id+','+i+',this.value)" '
+              +'title="Donde entra este documento" '
+              +'style="flex:none;padding:2px 6px;font-size:10.5px;border-radius:6px;'
+              +'border:1px solid '+(u==='comercial'?'var(--amberx)':'var(--border2)')+';'
+              +'background:var(--bg3);color:'+(u==='comercial'?'var(--amberx)':'var(--text3)')+';'
+              +'font-family:var(--font);outline:none">'
+              +DOC_USOS.map(function(o){
+                return '<option value="'+o.k+'"'+(o.k===u?' selected':'')+'>'+esc(o.l)+'</option>';
+              }).join('')
+            +'</select>'
+            +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'
+              +_docKb(String(d.texto||'').length)+' &middot; '
+              +new Date(d.at).toLocaleDateString('es-AR')+'</span>'
+            +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+              +'onclick="docPegarModal('+c.id+','+i+')">Ver</button>'
+            +'<button onclick="docQuitar('+c.id+','+i+')" aria-label="Quitar" '
+              +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:14px;'
+              +'line-height:1;padding:0 2px">&times;</button>'
+          +'</div>'
+          // Las dos primeras lineas alcanzan para saber cual es sin abrirlo.
+          +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px;'
+            +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            +esc(String(d.texto||'').replace(/\s+/g,' ').slice(0,160))+'</div>'
+        +'</div>';
+      }).join('')
+    : '<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Todavia no hay ninguno.</div>')
+  +(l.length?('<div style="font-size:11px;color:var(--text3);line-height:1.55;margin-top:9px">'
+    +'El desplegable decide donde entra cada uno. '
+    +'<b style="color:var(--text2)">Proceso comercial</b> queda fuera de la landing y de la '
+    +'promesa: sirve para preguntarle como vende el cliente, no para escribir el copy.</div>'):'');
+}
+function docUsoSet(clientId, i, val){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var d=docs(c)[i];
+  if(!d) return;
+  d.uso=val;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+function docPegarModal(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var d=(i===undefined?null:docs(c)[i]);
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px">'
+      +'<div class="modal-title">'+(d?'Documento':'Pegar un documento')+'</div>'
+      +'<div class="modal-sub">Se guarda como texto y entra en los prompts junto con las '
+        +'llamadas. Para un Google Doc, abrilo y pega el contenido: el link solo no se puede '
+        +'leer desde el navegador.</div>'
+      +'<input id="doc-t" placeholder="Que es. Ej: Transcripciones de los 6 Looms" '
+        +'value="'+esc(d?(d.titulo||''):'')+'" '
+        +'style="width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;'
+        +'font-family:var(--font);outline:none;margin-bottom:8px">'
+      +'<textarea id="doc-x" rows="14" placeholder="Pega el texto aca" '
+        +'style="width:100%;box-sizing:border-box;resize:vertical;padding:9px 11px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-family:var(--font);font-size:12.5px;line-height:1.6;'
+        +'outline:none">'+esc(d?(d.texto||''):'')+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:12px 0 6px">Donde entra</div>'
+      +DOC_USOS.map(function(o){
+        return '<label style="display:flex;gap:9px;align-items:flex-start;padding:5px 0;'
+          +'cursor:pointer">'
+          +'<input type="radio" name="doc-uso" value="'+o.k+'" style="margin-top:3px"'
+            +(_docUso(d)===o.k?' checked':'')+'>'
+          +'<span style="flex:1"><span style="font-size:12.5px;color:var(--text)">'+esc(o.l)+'</span>'
+          +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.45">'
+          +esc(o.d)+'</span></span></label>';
+      }).join('')
+      +'<div id="doc-err" style="font-size:11.5px;margin-top:8px;min-height:16px;color:var(--redx)"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="docGuardar('+clientId+','
+          +(i===undefined?'-1':i)+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function docGuardar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('doc-err');
+  var t=String((document.getElementById('doc-t')||{}).value||'').trim();
+  var x=String((document.getElementById('doc-x')||{}).value||'').trim();
+  if(!x){ if(e) e.textContent='Pega el texto: sin contenido el documento no aporta nada.'; return; }
+  if(!t) t='Documento del '+new Date().toLocaleDateString('es-AR');
+  var cortado=(x.length>_DOC_MAX);
+  if(cortado) x=x.slice(0,_DOC_MAX);
+  var uso=(document.querySelector('input[name="doc-uso"]:checked')||{}).value||'todo';
+  var l=docs(c);
+  if(i>=0 && l[i]){ l[i].titulo=t; l[i].texto=x; l[i].uso=uso; }
+  else l.unshift({ titulo:t, texto:x, uso:uso, at:new Date().toISOString() });
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast(cortado
+    ? ('Guardado, recortado a '+_docKb(_DOC_MAX)+' caracteres. Si falta algo, subilo como un segundo documento.')
+    : 'Documento guardado. Ya entra en los prompts.');
+}
+function docQuitar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  docs(c).splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+// Solo formatos de texto: un PDF o un docx abiertos crudos entran como binario
+// y ensucian el prompt sin aportar nada legible.
+function docSubir(clientId, uso){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var inp=document.createElement('input');
+  inp.type='file'; inp.multiple=true;
+  inp.accept='.txt,.md,.csv,.json,.html,.htm,.vtt,.srt,text/*';
+  inp.onchange=async function(){
+    var fs=[].slice.call(inp.files||[]);
+    var ok=0, mal=[];
+    for(var j=0;j<fs.length;j++){
+      var f=fs[j];
+      if(!/\.(txt|md|csv|json|html?|vtt|srt)$/i.test(f.name) && !/^text\//.test(f.type||'')){
+        mal.push(f.name+' (no es texto)'); continue;
+      }
+      try{
+        var t=await f.text();
+        if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
+          .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+        t=String(t).trim();
+        if(!t){ mal.push(f.name+' (vino vacio)'); continue; }
+        docs(c).unshift({ titulo:f.name, texto:t.slice(0,_DOC_MAX), uso:(uso||'todo'),
+                          at:new Date().toISOString() });
+        ok++;
+      }catch(err){ mal.push(f.name+' ('+err.message+')'); }
+    }
+    if(ok) save();
+    if(typeof renderTab==='function') renderTab();
+    toast(ok
+      ? (ok+' documento'+(ok===1?'':'s')+' cargado'+(ok===1?'':'s')+' como "'
+         +_docUsoL(uso||'todo')+'"'+(mal.length?(' \u00b7 no pude leer '+mal.length):''))
+      : ('No pude leer: '+mal.join(', ')), ok?'':'amber');
+  };
+  inp.click();
+}
 function _llamadasParaIA(c){
   var total=0, omitidas=[], items=[];
   (c.fathomCalls||[]).forEach(function(cl){
@@ -26678,9 +26953,23 @@ function _llamadasParaIA(c){
       return;
     }
     total+=cuerpo.length;
-    items.push({titulo:titulo, texto:cuerpo});
+    items.push({titulo:titulo, texto:cuerpo, doc:false});
   });
-  return {items:items, omitidas:omitidas, chars:total};
+  // Los documentos van despues de las llamadas pero cuentan contra el mismo
+  // tope: si no entran, se avisa igual que una llamada omitida.
+  docs(c).forEach(function(d){
+    var com=(_docUso(d)==='comercial');
+    var titulo=(com?'LLAMADA DE VENTA DEL CLIENTE: ':'DOCUMENTO: ')+(d.titulo||'sin titulo');
+    var cuerpo=String(d.texto||'');
+    if(!cuerpo){ omitidas.push(titulo+': vacio'); return; }
+    if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
+    if(total+cuerpo.length>_ENTREG_MAXTOTAL){ omitidas.push(titulo+': no entro por tamaño'); return; }
+    total+=cuerpo.length;
+    items.push({titulo:titulo, texto:cuerpo, doc:true});
+  });
+  return {items:items, omitidas:omitidas, chars:total,
+          llamadas:items.filter(function(x){return !x.doc;}).length,
+          docs:items.filter(function(x){return x.doc;}).length};
 }
 
 function _pregEstado(html, color){
@@ -26707,15 +26996,18 @@ async function preguntarALlamadas(clientId, texto){
   }
   var t0=Date.now();
   _pregEstado('<span style="display:inline-flex;align-items:center;gap:8px">'
-    +'<span class="carga-spin"></span><span>Leyendo '+llamadas.length+' llamadas...</span></span>','var(--text2)');
+    +'<span class="carga-spin"></span><span>Leyendo '+mat.llamadas+' llamada'
+    +(mat.llamadas===1?'':'s')+(mat.docs?(' y '+mat.docs+' documento'+(mat.docs===1?'':'s')):'')
+    +'...</span></span>','var(--text2)');
   try{
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:
-        'Sos analista de una agencia. Abajo estan las llamadas con el cliente '+(c.name||'')+'. '
-        +'Contesta esta pregunta usando SOLO lo que se dijo en esas llamadas:\n\n'+q+'\n\n'
+        'Sos analista de una agencia. Abajo esta el material del cliente '+(c.name||'')+': '
+        +'transcripciones de llamadas y, si los hay, documentos que el cliente mando por fuera. '
+        +'Contesta esta pregunta usando SOLO ese material:\n\n'+q+'\n\n'
         +'Reglas:\n'
         +'- Castellano rioplatense, directo, sin preambulo.\n'
         // La cita es lo que hace usable la respuesta: sin saber de donde sale
@@ -26724,10 +27016,17 @@ async function preguntarALlamadas(clientId, texto){
         +'parentesis. La transcripcion trae marcas como "23:52 - Nombre": usa esa marca. '
         +'Ej: (Onboarding 12/08, 23:52). Si el fragmento no tiene marca de minuto cerca, '
         +'poné solo la llamada.\n'
-        +'- Si algo no se hablo, deci "no aparece en las llamadas". No lo deduzcas ni lo inventes.\n'
+        +'- Lo que salga de un bloque marcado DOCUMENTO se cita con el nombre del documento, '
+        +'sin minuto. Ej: (doc: Transcripciones de los Looms).\n'
+        +'- Los bloques marcados LLAMADA DE VENTA DEL CLIENTE son grabaciones del cliente '
+        +'vendiendo a SUS propios prospectos, no reuniones con nosotros. Sirven para dos cosas: '
+        +'lo que dice el prospecto es la voz del mercado (dolores, objeciones, palabras), y lo '
+        +'que dice el cliente muestra como vende. Al citarlas, deci de cual sale y quien lo dijo, '
+        +'el prospecto o el cliente.\n'
+        +'- Si algo no se hablo, deci "no aparece en el material". No lo deduzcas ni lo inventes.\n'
         +'- Si la respuesta son varias cosas, usa vinetas con "- ". Si es una sola, dos o tres oraciones.\n'
         +'- Maximo 200 palabras.'+_glosParaPrompt(c)+'\n\n'
-        +'LLAMADAS:\n'+llamadas.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
+        +'MATERIAL:\n'+llamadas.map(function(l){return '--- '+l.titulo+' ---\n'+l.texto;}).join('\n\n')}]})
     });
     var d=await r.json();
     if(d.error){
@@ -26799,10 +27098,12 @@ function preguntasHtml(c){
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
       +'onclick="abrirPreguntasModal()">Editar preguntas</button>'
   +'</div>';
-  if(!conMaterial){
+  // Un documento solo tambien alcanza: el cliente puede haber mandado todo por
+  // escrito antes de la primera llamada.
+  if(!conMaterial && !docs(c).length){
     return head+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
-      +'Sin transcripciones ni resumenes no hay de donde sacar las respuestas. '
-      +'Cargalos en las llamadas de arriba.</div>';
+      +'Sin transcripciones, resumenes ni documentos no hay de donde sacar las respuestas. '
+      +'Cargalos en las llamadas o en Documentos, aca arriba.</div>';
   }
   var qs=preguntas();
   // El desplegable muestra la etiqueta arriba y la pregunta entera abajo: la
@@ -26842,8 +27143,10 @@ function preguntasHtml(c){
   // hace confiable la respuesta: sin esto no se sabe si contesto con todo el
   // historial o con la mitad.
   var minTotal=(c.fathomCalls||[]).reduce(function(a,cl){ return a+_durMin(cl.duration); },0);
+  var nDocs=docs(c).length;
   var material=conMaterial+' llamada'+(conMaterial===1?'':'s')
-    +(minTotal?(' \u00b7 '+_horasTexto(minTotal)):'');
+    +(minTotal?(' \u00b7 '+_horasTexto(minTotal)):'')
+    +(nDocs?(' \u00b7 '+nDocs+' doc'+(nDocs===1?'':'s')):'');
   return head
     +'<div style="position:relative;margin-bottom:9px">'
       +'<div style="display:flex;align-items:center;gap:11px;background:var(--bg3);'
