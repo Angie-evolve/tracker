@@ -24474,6 +24474,152 @@ function quizPreguntasModal(clientId){
       +'<div id="qp-out">'+(pr?_quizPreguntasHtml(pr):'')+'</div>'
     +'</div></div>';
 }
+
+// ---- El plan del quiz ----------------------------------------------------
+// Que instrumento es, que promete entregar, cuantas preguntas tiene, donde cae
+// el gate y como se va a ver. Todo eso se definia recien al generar el HTML,
+// cuando cambiarlo ya costaba. Aca se ve antes de producir nada.
+var _QZ_FUNCIONES={
+  identidad:{l:'Identidad', d:'Facil, sin juicio. Arranca el compromiso.'},
+  situacion:{l:'Situacion', d:'Como trabaja hoy. Neutra.'},
+  dolor:{l:'Dolor', d:'Aca aparece el problema.'},
+  consecuencia:{l:'Consecuencia', d:'El dolor se vuelve numero.'},
+  recursos:{l:'Recursos', d:'Presupuesto, urgencia, autoridad.'},
+  cierre:{l:'Cierre', d:'Suave, antes del gate.'}
+};
+function _quizPlanHtml(pr){
+  var ins=pr.instrumento||{}, ent=pr.entregable||{}, g=pr.gate||{};
+  var pres=(pr.preguntas||[]);
+  var ramas=(pr.ramas||[]);
+  // Lo que ve UNA persona: las comunes mas una rama, no todas las ramas.
+  var porRama=ramas.length?Math.round(ramas.reduce(function(a,r){
+    return a+(r.preguntas||[]).length; },0)/ramas.length):0;
+  var visibles=pres.length+porRama+(pr.numericas||[]).length;
+
+  var ficha=function(rot, val, nota){
+    if(!val) return '';
+    return '<div style="border-bottom:1px solid var(--border);padding:10px 0">'
+      +'<div style="display:flex;gap:12px;align-items:baseline">'
+        +'<span style="font-size:11px;color:var(--text3);width:92px;flex:none">'+rot+'</span>'
+        +'<span style="font-size:13.5px;color:var(--strong);font-weight:500">'+esc(val)+'</span>'
+      +'</div>'
+      +(nota?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;'
+        +'margin:4px 0 0 104px;max-width:64ch">'+esc(nota)+'</div>'):'')
+    +'</div>';
+  };
+
+  // El recorrido: un punto por pantalla y el gate insertado donde corresponde.
+  var paso=function(txt, col, ancho){
+    return '<span style="font-size:10px;padding:3px 8px;border-radius:99px;white-space:nowrap;'
+      +'border:1px solid '+col+';color:'+col+(ancho?';font-weight:500':'')+'">'+esc(txt)+'</span>';
+  };
+  var gateChip=paso('Datos de contacto'+((g.campos||[]).length?(' \u00b7 '+g.campos.length
+    +' campo'+(g.campos.length===1?'':'s')):''), 'var(--amberx)', true);
+  var pasos=[];
+  if(g.momento==='antes') pasos.push(gateChip);
+  pres.forEach(function(q,i){
+    pasos.push(paso(String(i+1), 'var(--border2)'));
+    if(g.momento==='medio' && +g.despuesDePregunta===i+1) pasos.push(gateChip);
+  });
+  if(ramas.length) pasos.push(paso('rama \u00b7 '+porRama, 'var(--accent)'));
+  if((pr.numericas||[]).length) pasos.push(paso('calculo \u00b7 '+pr.numericas.length,'var(--text3)'));
+  if(g.momento!=='antes' && g.momento!=='medio') pasos.push(gateChip);
+  pasos.push(paso('Resultado', 'var(--accent)', true));
+
+  var alerta='';
+  // Los dos errores que el propio SOP dice que se repiten solos.
+  if(visibles<4) alerta+='<div style="font-size:11.5px;color:var(--redx);line-height:1.55;'
+    +'margin-top:9px">Con '+visibles+' preguntas no da sensacion de diagnostico: el resultado '
+    +'se percibe como inventado. El piso util son 5.</div>';
+  if(visibles>10) alerta+='<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;'
+    +'margin-top:9px">'+visibles+' preguntas es mucho. Pasadas las 10 se abandona a mitad de '
+    +'camino.</div>';
+  if((g.campos||[]).length>4) alerta+='<div style="font-size:11.5px;color:var(--amberx);'
+    +'line-height:1.55;margin-top:9px">'+g.campos.length+' campos en el gate. Cada campo de mas '
+    +'se paga en abandono: mira si alguno lo podes deducir despues.</div>';
+
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);'
+      +'padding:15px 17px;margin-top:14px;background:var(--bg2)">'
+    +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.07em;margin-bottom:4px">El plan</div>'
+    +ficha('Instrumento', ins.nombre, ins.porque)
+    +ficha('Entregable', ent.que,
+        ((ent.incluye||[]).length?('Incluye: '+ent.incluye.join(' \u00b7 ')):'')
+        +(ent.formato?((ent.incluye||[]).length?' \u2014 ':'')+'Se entrega en '+ent.formato:''))
+    +ficha('Preguntas', visibles+' por persona',
+        pres.length+' comunes'
+        +(ramas.length?(', '+porRama+' de rama (hay '+ramas.length+')'):'')
+        +((pr.numericas||[]).length?(', '+pr.numericas.length+' para el calculo'):''))
+    +ficha('Gate',
+        g.momento==='antes' ? 'Antes de las preguntas'
+        : (g.momento==='medio' ? ('Despues de la pregunta '+(g.despuesDePregunta||'?'))
+        : 'Al final, antes del resultado'),
+        ((g.campos||[]).length?('Pide: '+g.campos.join(', ')+'. '):'')+(g.porque||''))
+    +'<div style="font-size:11px;color:var(--text3);margin:14px 0 7px">El recorrido</div>'
+    +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'+pasos.join('')+'</div>'
+    +alerta
+  +'</div>'
+  +_quizRenderHtml(pr);
+}
+// Como se va a ver. Tres pantallas al lado, a escala: la primera pregunta, el
+// gate y el resultado. No es la plantilla real, es la forma: para discutir
+// cuanto texto entra y donde cae el corte antes de producirla.
+function _quizRenderHtml(pr){
+  var ins=pr.instrumento||{}, ent=pr.entregable||{}, g=pr.gate||{};
+  var q1=(pr.preguntas||[])[0];
+  var nivel=(pr.niveles||[])[(pr.niveles||[]).length-1]||{};
+  var tel=function(titulo, cuerpo){
+    return '<div style="flex:1;min-width:190px;max-width:250px">'
+      +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">'+titulo+'</div>'
+      +'<div style="border:1px solid var(--border2);border-radius:12px;background:var(--bg);'
+        +'padding:14px 13px;min-height:190px;display:flex;flex-direction:column">'+cuerpo+'</div>'
+    +'</div>';
+  };
+  var opt=function(t){
+    return '<div style="border:1px solid var(--border);border-radius:7px;padding:7px 9px;'
+      +'margin-top:5px;font-size:10.5px;color:var(--text2);line-height:1.4">'+esc(t)+'</div>';
+  };
+  var campo=function(t){
+    return '<div style="border:1px solid var(--border);border-radius:7px;padding:7px 9px;'
+      +'margin-top:5px;font-size:10.5px;color:var(--text3)">'+esc(t)+'</div>';
+  };
+  var p1=tel('1. Primera pregunta',
+    '<div style="font-size:9px;color:var(--text3);letter-spacing:.06em">PREGUNTA 1</div>'
+    +'<div style="font-size:12px;color:var(--strong);line-height:1.35;margin:7px 0 3px;'
+      +'font-weight:500">'+esc((q1&&q1.pregunta)||'(sin preguntas todavia)')+'</div>'
+    +((q1&&q1.opciones||[]).slice(0,3).map(function(o){ return opt(o.texto||''); }).join(''))
+    +(((q1&&q1.opciones)||[]).length>3
+      ?('<div style="font-size:10px;color:var(--text3);margin-top:5px">'
+        +'+'+(q1.opciones.length-3)+' opciones</div>'):''));
+  var p2=tel('2. Gate'+(g.momento==='antes'?' (va primero)':''),
+    '<div style="font-size:12px;color:var(--strong);line-height:1.35;font-weight:500">'
+      +esc(ent.que||'Tu resultado')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.45;margin-top:5px">'
+      +esc(g.porque||'Decinos a donde te lo mandamos.')+'</div>'
+    +((g.campos||['Nombre','Email']).map(campo).join(''))
+    +'<div style="margin-top:8px;background:var(--accent);color:var(--on-accent);'
+      +'border-radius:7px;padding:7px;text-align:center;font-size:10.5px;font-weight:500">'
+      +'Ver mi resultado</div>');
+  var p3=tel('3. Resultado',
+    '<div style="font-size:9px;color:var(--text3);letter-spacing:.06em">'
+      +esc(String(ins.nombre||'RESULTADO').toUpperCase())+'</div>'
+    +'<div style="font-size:15px;color:var(--accent);font-weight:600;margin:7px 0 2px">'
+      +esc(nivel.nombre||'Tu nivel')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-bottom:7px">'
+      +esc(nivel.rango?('Puntaje '+nivel.rango):'')+'</div>'
+    +((ent.incluye||['Tu diagnostico','Que corregir primero']).slice(0,3).map(function(x){
+      return '<div style="font-size:10.5px;color:var(--text2);line-height:1.5;'
+        +'padding:3px 0;border-top:1px solid var(--border)">'+esc(x)+'</div>'; }).join(''))
+    +'<div style="flex:1"></div>'
+    +'<div style="margin-top:8px;background:var(--accent);color:var(--on-accent);'
+      +'border-radius:7px;padding:7px;text-align:center;font-size:10.5px;font-weight:500">'
+      +'Agendar una llamada</div>');
+  var orden=(g.momento==='antes')?[p2,p1,p3]:[p1,p2,p3];
+  return '<div style="margin-top:14px">'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:9px">Como se va a ver</div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap">'+orden.join('')+'</div>'
+  +'</div>';
+}
 function _quizPreguntasHtml(pr){
   var badge=function(t,col){ return '<span style="font-size:9.5px;text-transform:uppercase;'
     +'letter-spacing:.06em;color:'+col+';border:1px solid '+col+';border-radius:99px;'
@@ -24489,6 +24635,13 @@ function _quizPreguntasHtml(pr){
           +'padding:11px 13px;margin-bottom:7px">'
           +'<div style="font-size:13px;color:var(--text);line-height:1.4">'+esc(q.pregunta||'')
             +badge(q.tipo||'', tipoCol[q.tipo]||'var(--text3)')+'</div>'
+          // La funcion dice si el orden se respeto: identidad, situacion,
+          // dolor, consecuencia, recursos, cierre. Sin verla, una de dolor
+          // colada en el puesto 1 espanta antes de que arranque.
+          +((q.funcion&&_QZ_FUNCIONES[q.funcion])
+            ?('<div style="font-size:10.5px;color:var(--text3);margin-top:3px">'
+              +esc(_QZ_FUNCIONES[q.funcion].l)+' &middot; '
+              +esc(_QZ_FUNCIONES[q.funcion].d)+'</div>'):'')
           +((q.opciones||[]).length?('<div style="margin-top:7px">'+q.opciones.map(function(o){
             var p=(o.puntos===undefined||o.puntos===null)?'':o.puntos;
             return '<div style="display:flex;gap:9px;align-items:baseline;padding:2px 0;'
@@ -24519,7 +24672,8 @@ function _quizPreguntasHtml(pr){
   var maxT=todas.concat([].concat.apply([],(pr.ramas||[]).map(function(r){return r.preguntas||[];})))
     .reduce(function(a,q){ return a+Math.max.apply(null,[0].concat((q.opciones||[])
       .map(function(o){ return +o.puntos||0; }))); },0);
-  return (pr.promesa?('<div style="font-size:12px;color:var(--text3);margin-top:12px">'
+  return _quizPlanHtml(pr)
+    +(pr.promesa?('<div style="font-size:12px;color:var(--text3);margin-top:12px">'
       +'Para la promesa: <span style="color:var(--text2)">'+esc(pr.promesa)+'</span></div>'):'')
     +bloque('Contexto y diagnostico', todas)
     +porRama
@@ -24577,10 +24731,36 @@ async function quizPreguntasGenerar(clientId){
         +'Los niveles se nombran con identidad, no con juicio: "Base ordenada" no castiga a '
         +'nadie. Apuntá a que entre 20% y 30% caiga en el nivel alto.\n\n'
         +'Usa el vocabulario del material, no inventes uno nuevo.\n\n'
+        // Sin esto el quiz salia siendo una lista de preguntas sueltas. El
+        // nombre, el entregable y el gate son lo que decide si el lead lo
+        // termina, y se definian recien al armar el HTML, cuando ya era tarde.
+        +'ADEMAS DE LAS PREGUNTAS, TRES COSAS:\n\n'
+        +'1. INSTRUMENTO: como se llama esto. Escaneo, diagnostico, auditoria, scorecard, '
+        +'calculadora, indice. Cada palabra promete un nivel distinto de rigor y de compromiso: '
+        +'en B2B de ticket alto las palabras tecnicas suben la calidad del lead y bajan el '
+        +'volumen. Elegi segun el cliente y deci por que.\n\n'
+        +'2. ENTREGABLE: que recibe la persona al terminar. Tiene que ser algo que sirva '
+        +'aunque nunca nos contrate, y tiene que estar dicho antes de la primera pregunta. '
+        +'Si el resultado no vale por si solo, el quiz no se termina.\n\n'
+        +'3. GATE: en que momento se piden los datos de contacto. Antes de las preguntas sube '
+        +'la captura y baja la calidad; despues baja la captura y sube la calidad. En ticket '
+        +'alto va despues. Deci en cual de las dos y, si va en el medio, despues de que numero '
+        +'de pregunta. Pedi la menor cantidad de campos posible: cada campo de mas se paga en '
+        +'abandono.\n\n'
+        +'Cada pregunta lleva ademas su "funcion" en el recorrido: identidad (facil, rubro o '
+        +'tamano), situacion (neutra, sin juicio), dolor, consecuencia (el dolor se vuelve '
+        +'numero), recursos (presupuesto, urgencia, autoridad) o cierre (suave, antes del gate). '
+        +'Ese es el orden y no se altera.\n\n'
         +'Devolve SOLO este JSON, sin markdown:\n'
-        +'{"promesa":"la que te pase","preguntas":[{"pregunta":"","tipo":"contexto|diagnostico|rama",'
+        +'{"promesa":"la que te pase",'
+        +'"instrumento":{"nombre":"","porque":""},'
+        +'"entregable":{"que":"","incluye":[""],"formato":"pantalla|pdf|mail"},'
+        +'"gate":{"momento":"antes|medio|despues","despuesDePregunta":0,'
+        +'"campos":[""],"porque":""},'
+        +'"preguntas":[{"pregunta":"","tipo":"contexto|diagnostico|rama",'
+        +'"funcion":"identidad|situacion|dolor|consecuencia|recursos|cierre",'
         +'"opciones":[{"texto":"","puntos":0}]}],'
-        +'"ramas":[{"nombre":"","preguntas":[{"pregunta":"","tipo":"condicional",'
+        +'"ramas":[{"nombre":"","preguntas":[{"pregunta":"","tipo":"condicional","funcion":"",'
         +'"opciones":[{"texto":"","puntos":0}]}]}],'
         +'"numericas":[{"pregunta":"","tipo":"numerica","valor":"que alimenta",'
         +'"opciones":[{"texto":"","valor":0}]}],'
