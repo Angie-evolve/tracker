@@ -20264,6 +20264,56 @@ function _p360Etapa(c){
           hechas:fijas.filter(function(x){ return x.estado==='hecho'; }).length};
 }
 function p360Filtro(v){ S.p360=v||''; showTickets(); }
+// El producto solo se guardaba en el alta. Los clientes cargados antes de que
+// ese selector existiera quedaron sin ninguno y no habia forma de asignarlo
+// despues, asi que desaparecian de las solapas de producto para siempre. Esto
+// los deja corregir desde el mismo panel donde se nota que faltan.
+function p360SetProd(clientId, prodId){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var p=prodId?_prodPorId(prodId):null;
+  if(p){
+    c.productoId=p.id;
+    c.producto=p.nombre;
+    // Se congela la version vigente, igual que en el alta: el alcance que le
+    // corresponde es el de hoy, no el que quede dentro de seis meses.
+    var v=_prodActual(p);
+    c.productoVersion=v?{id:v.id, n:(p.versiones||[]).length, fecha:v.fecha||''}:null;
+  }else{
+    c.productoId=''; c.producto=''; c.productoVersion=null;
+  }
+  save();
+  if(typeof toast==='function') toast(p?(c.name+' \u2192 '+p.nombre):('Producto quitado a '+c.name));
+  showTickets();
+}
+// Los clientes sin producto solo salen en "Todos". Se listan aparte, con el
+// selector al lado, porque el problema no es de vista: es un dato que falta.
+function _p360SinProdHtml(datos){
+  var sin=datos.filter(function(d){ return !d.prod; });
+  if(!sin.length) return '';
+  var ops=productos().filter(function(p){ return p.activo!==false; });
+  return '<div style="margin-top:14px;padding:11px 13px;border:1px solid var(--border);'
+      +'border-radius:var(--radius);background:var(--bg3)">'
+    +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin-bottom:4px">Sin producto asignado &middot; '+sin.length+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+      +'Aparecen en Todos pero en ninguna solapa de producto. Se cargaron antes de que el alta '
+      +'pidiera el producto. Elegiselo aca y quedan filtrables.</div>'
+    +sin.map(function(d){
+      return '<div style="display:flex;gap:10px;align-items:center;padding:3px 0">'
+        +'<a href="javascript:void(0)" onclick="irCliente('+d.c.id+')" '
+          +'style="flex:1;font-size:12px;color:var(--text2);text-decoration:none;overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(d.c.name||'')+'</a>'
+        +'<select style="flex:none;font-size:11.5px;padding:4px 8px" '
+          +'onchange="p360SetProd('+d.c.id+', this.value)">'
+          +'<option value="">Elegir producto</option>'
+          +ops.map(function(p){
+            return '<option value="'+esc(p.id)+'">'+esc(p.nombre)+'</option>'; }).join('')
+        +'</select>'
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
 function p360Html(){
   var cls=(DB.clients||[]).filter(function(c){ return !c.archived; });
   if(!cls.length) return _torreVacio('Panel 360','Todavia no hay clientes activos.');
@@ -20278,9 +20328,16 @@ function p360Html(){
   // El filtro cuenta sobre el total, no sobre lo ya filtrado: si no, los
   // numeros de las pastillas cambian al tocarlas y no se puede comparar.
   var porProd={};
-  datos.forEach(function(d){ if(d.prod) porProd[d.prod]=(porProd[d.prod]||0)+1; });
+  var nSin=0;
+  datos.forEach(function(d){
+    if(d.prod) porProd[d.prod]=(porProd[d.prod]||0)+1; else nSin++;
+  });
   var sel=S.p360||'';
-  var ver=sel?datos.filter(function(d){ return d.prod===sel; }):datos;
+  // '__sin' no es un producto: es el resto. Sin esta solapa los numeros de las
+  // pastillas no sumaban el total y no se veia que faltaban clientes.
+  var ver=sel?datos.filter(function(d){
+    return sel==='__sin' ? !d.prod : d.prod===sel; }):datos;
+  var selLabel=(sel==='__sin')?'sin producto':sel;
 
   var pill=function(k, l, n){
     var on=(sel===k);
@@ -20292,6 +20349,7 @@ function p360Html(){
     +pill('','Todos',datos.length)
     +(Object.keys(porProd).length?'<span class="p3sep"></span>':'')
     +Object.keys(porProd).sort().map(function(p){ return pill(p,p,porProd[p]); }).join('')
+    +(nSin?pill('__sin','Sin producto',nSin):'')
   +'</div>';
 
   // Una columna por etapa de la ruta, en orden. Se usan las etiquetas de
@@ -20332,7 +20390,7 @@ function p360Html(){
       +'<div style="font-size:13px;font-weight:500;color:var(--strong)">Panel 360</div>'
       +'<div style="font-size:11px;color:var(--text3)">'
         +ver.length+' cliente'+(ver.length===1?'':'s')
-        +(sel?(' en '+esc(sel)):'')
+        +(sel?(' en '+esc(selLabel)):'')
         +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado</div>'
     +'</div>'
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:14px">'
@@ -20361,7 +20419,8 @@ function p360Html(){
         +'el cliente no entra en ninguna columna.</div>'):'')
     +(vacias===cols.length
       ?('<div style="margin-top:14px;font-size:11.5px;color:var(--text3)">'
-        +'Ningun cliente'+(sel?(' de '+esc(sel)):'')+' cayo en una etapa.</div>'):'')
+        +'Ningun cliente'+(sel?(' de '+esc(selLabel)):'')+' cayo en una etapa.</div>'):'')
+    +_p360SinProdHtml(datos)
   +'</div>';
 }
 
