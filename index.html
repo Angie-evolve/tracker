@@ -1292,7 +1292,10 @@ var CFG_EQUIPO=[
   'evold-conv-url','evold-conv-secret','evold-conv-token','evold-conv-loc',
   'evold-alarmas-nums','evold-citas-cfg',
   'evold-aviso-aprob','evold-aviso-aprob-mail','evold-aviso-luzverde','evold-aviso-tarea',
-  'evold-report-email','evold-report-sched'
+  'evold-report-email','evold-report-sched',
+  // Si la agencia decide trabajar sin API, esa decision vale para todos: no
+  // tiene sentido que a uno le salte el modal y a otro le cobre la API.
+  'evold-ia-manual','evold-ia-puente'
 ];
 // El setter original, antes de envolverlo. Se usa para escribir sin disparar
 // otra subida cuando lo que se esta haciendo es justamente bajar.
@@ -7392,20 +7395,33 @@ function integracionesAppHtml(){
       detail:sheets?'Clave de API cargada':'Sin clave de API',
       action:'openSyncModal()', actionLabel:'Abrir importador'}),
 
-    card({name:'Anthropic', st:iaSinApi()?'warn':(anth?'ok':'no'),
+    card({name:'Anthropic', st:iaPuenteOn()?'ok':(iaSinApi()?'warn':(anth?'ok':'no')),
       desc:'Resumenes y analisis automaticos. La clave se guarda en este navegador: conviene usar una con permisos acotados.'
         +'<div style="display:flex;align-items:flex-start;gap:9px;margin-top:10px;padding-top:10px;'
         +'border-top:1px solid var(--border)">'
+        +'<input type="checkbox" class="sw" '+(iaPuenteOn()?'checked':'')+' style="margin-top:1px" '
+        +'onchange="iaPuenteSet(this.checked)">'
+        +'<span><span style="color:var(--text2)">Por el puente (suscripcion)</span>'
+        +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
+        +'Los analisis los resuelve un script que corre en una maquina del equipo con el plan '
+        +'Max, en vez de la API. Sin copiar y pegar. Tiene que estar corriendo.</span></span></div>'
+        +'<div style="display:flex;align-items:flex-start;gap:9px;margin-top:9px">'
         +'<input type="checkbox" class="sw" '+(iaSinApi()?'checked':'')+' style="margin-top:1px" '
-        +'onchange="iaSinApiSet(this.checked)">'
+        +(iaPuenteOn()?'disabled ':'')+'onchange="iaSinApiSet(this.checked)">'
         +'<span><span style="color:var(--text2)">Modo sin API</span>'
         +'<span style="display:block;font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
         // Sin esto habia que esperar a que fallara para poder seguir. Con el
         // modo prendido, el desvio es la via normal y no una consecuencia.
-        +'Cada analisis te da el prompt para pegar en claude.ai y pediste la respuesta de vuelta. '
-        +'Sirve cuando no hay saldo: usa tu suscripcion en vez de la API.</span></span></div>',
-      detail:iaSinApi()?'Todo a mano, sin gastar API'
-        :(anth?('...'+String(anth).slice(-6)):'Sin clave'),
+        // El texto anterior daba a entender que se conectaba solo con la
+        // suscripcion. No existe esa conexion: el copiar y pegar es a mano y
+        // conviene decirlo antes de que alguien lo prenda esperando magia.
+        +'Copias el prompt, lo pegas en claude.ai y traes la respuesta de vuelta, a mano. '
+        +'Sirve cuando no hay saldo de API: el analisis lo hace tu suscripcion. '
+        +'Con esto apagado igual te lo ofrece, pero recien cuando la API falla.'
+        +'</span></span></div>',
+      detail:iaPuenteOn()?'Por el puente, con la suscripcion'
+        :(iaSinApi()?'Todo a mano, sin gastar API'
+        :(anth?('...'+String(anth).slice(-6)):'Sin clave')),
       action:'pedirClaveAnthropic()', actionLabel:anth?'Cambiar clave':'Cargar clave'}),
 
     (function(){
@@ -21433,6 +21449,84 @@ function glosarioHtml(c){
 // respuesta con la misma forma que la de la API. Para el resto de la app no
 // cambia nada: ni se entera de por donde vino.
 function iaSinApi(){ try{ return localStorage.getItem('evold-ia-manual')==='1'; }catch(e){ return false; } }
+// El puente: en vez de llamar a la API, se deja el pedido en una cola de
+// Supabase y lo resuelve un script que corre en una maquina del equipo con la
+// suscripcion. Para el resto de la app es identico a una llamada normal.
+function iaPuenteOn(){ try{ return localStorage.getItem('evold-ia-puente')==='1'; }catch(e){ return false; } }
+function iaPuenteSet(v){
+  try{ localStorage.setItem('evold-ia-puente', v?'1':'0'); }catch(e){}
+  if(v){ try{ localStorage.setItem('evold-ia-manual','0'); }catch(e){} }
+  toast(v ? 'Los analisis van a pasar por el puente. Tiene que estar corriendo.'
+          : 'Puente apagado.');
+  if(typeof renderTab==='function') renderTab();
+}
+var _IA_JOB=null;
+// Deja el pedido y espera la respuesta. Devuelve lo mismo que devolveria la
+// API, asi que las 31 funciones que llaman no cambian una linea.
+function _iaPorPuente(prompt){
+  return new Promise(function(res, rej){
+    if(!SB.token){ rej(new Error('entra con tu cuenta para usar el puente')); return; }
+    var cancelado=false, jobId=null, t0=Date.now();
+    var estado=function(t, col){
+      var e=document.getElementById('iap-txt');
+      if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
+    };
+    _IA_JOB={ cancelar:function(){
+      cancelado=true; closeModal(); rej(new Error('cancelaste el analisis')); } };
+    document.getElementById('modal-root').innerHTML=
+      '<div class="modal-overlay">'
+      +'<div class="modal" style="max-width:440px">'
+        +'<div class="modal-title">Analizando</div>'
+        +'<div class="modal-sub">Lo esta resolviendo el puente con la suscripcion. '
+          +'Podes cerrar esto y seguir: cuando termine se guarda igual.</div>'
+        +'<div style="display:flex;align-items:center;gap:10px;margin-top:16px">'
+          +'<span class="carga-spin"></span>'
+          +'<span id="iap-txt" style="font-size:12.5px;color:var(--text3);flex:1">'
+            +'Dejando el pedido...</span>'
+        +'</div>'
+        +'<div class="modal-footer">'
+          +'<button class="btn" onclick="iaPuenteCancelarJob()">Cancelar</button>'
+        +'</div>'
+      +'</div></div>';
+    sbFetch('ia_jobs', {method:'POST', headers:{Prefer:'return=representation'},
+      body:JSON.stringify({prompt:prompt, pedido_por:(SB.email||'')})})
+      .then(function(r){
+        jobId=(r&&r[0]&&r[0].id);
+        if(!jobId) throw new Error('no pude dejar el pedido');
+        estado('Esperando al puente...');
+        mirar();
+      })
+      .catch(function(e){
+        closeModal();
+        // Si la tabla no existe todavia, el mensaje generico no ayudaria.
+        rej(new Error(/relation|does not exist|404/i.test(e.message||'')
+          ? 'falta crear la tabla ia_jobs en Supabase'
+          : ('no pude dejar el pedido: '+e.message)));
+      });
+    function mirar(){
+      if(cancelado) return;
+      var seg=Math.round((Date.now()-t0)/1000);
+      // A los 40 segundos sin que nadie lo tome, lo mas probable es que el
+      // puente no este corriendo. Decirlo evita esperar de gusto.
+      sbFetch('ia_jobs?id=eq.'+jobId+'&select=estado,respuesta,error')
+        .then(function(r){
+          if(cancelado) return;
+          var j=(r&&r[0])||{};
+          if(j.estado==='listo'){ closeModal(); res(_iaRespuesta(j.respuesta||'')); return; }
+          if(j.estado==='error'){ closeModal(); rej(new Error(j.error||'el puente fallo')); return; }
+          estado(j.estado==='procesando'
+            ? ('Trabajando... '+seg+'s')
+            : (seg>40
+              ? '<span style="color:var(--amberx)">Nadie lo tomo en '+seg+'s. '
+                +'Revisa que el puente este corriendo.</span>'
+              : 'Esperando al puente... '+seg+'s'));
+          setTimeout(mirar, 2500);
+        })
+        .catch(function(){ setTimeout(mirar, 4000); });
+    }
+  });
+}
+function iaPuenteCancelarJob(){ if(_IA_JOB) _IA_JOB.cancelar(); }
 function iaSinApiSet(v){
   try{ localStorage.setItem('evold-ia-manual', v?'1':'0'); }catch(e){}
   toast(v ? 'Modo sin API: cada analisis te va a dar el prompt para pegar afuera.'
@@ -21482,11 +21576,16 @@ function _iaPedirAMano(prompt, motivo){
                   :'Estas en modo sin API. ')
           +'Copia el prompt, pegalo en claude.ai y trae la respuesta. Se guarda igual que si '
           +'lo hubiera hecho la app.</div>'
-        +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px">'
-          +'<span style="font-size:11px;color:var(--text3);flex:1">1. El prompt &middot; '
-            +Math.round(String(prompt||'').length/1000)+'k caracteres</span>'
-          +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
-            +'onclick="iaManualCopiar()">Copiar</button>'
+        +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px;flex-wrap:wrap">'
+          +'<span style="font-size:11px;color:var(--text3);flex:1;min-width:130px">'
+            +'1. El prompt &middot; '+Math.round(String(prompt||'').length/1000)+'k caracteres</span>'
+          +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px;flex:none" '
+            +'onclick="iaManualCopiar()">Solo copiar</button>'
+          // Copia y abre la pestaña en un click: quedan dos pasos en vez de
+          // cuatro. El prompt no entra en la URL (son decenas de miles de
+          // caracteres), asi que se copia y se pega con Cmd+V del otro lado.
+          +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px;flex:none" '
+            +'onclick="iaManualAbrir()">Copiar y abrir claude.ai</button>'
         +'</div>'
         +'<textarea id="iam-prompt" readonly rows="4" style="width:100%;font-size:10.5px;'
           +'line-height:1.5;font-family:ui-monospace,Menlo,monospace;resize:vertical;'
@@ -21504,6 +21603,14 @@ function _iaPedirAMano(prompt, motivo){
   });
 }
 var _IA_PUENTE=null;
+// Copia y abre claude.ai en una pestaña nueva. Del otro lado solo queda pegar.
+function iaManualAbrir(){
+  iaManualCopiar();
+  // Se abre en el mismo click que el copiado: si se abriera despues de un
+  // await, el navegador lo trata como popup y lo bloquea.
+  var w=window.open('https://claude.ai/new','_blank');
+  if(!w) toast('El navegador bloqueo la pestaña. El prompt ya esta copiado: abri claude.ai a mano.','amber');
+}
 function iaPuenteSeguir(){
   var p=_IA_PUENTE; if(!p) return;
   var t=String((document.getElementById('iam-resp')||{}).value||'').trim();
@@ -21528,6 +21635,8 @@ function iaPuenteCancelar(){
     var u=(url&&url.url)?url.url:url;
     if(!esIA(u)) return orig(url, opts);
     var prompt=_iaPromptDe(opts);
+    // El puente primero: si esta prendido, ni se intenta la API.
+    if(iaPuenteOn()) return _iaPorPuente(prompt);
     if(iaSinApi()) return _iaPedirAMano(prompt);
     return orig(url, opts).then(function(r){
       if(r.ok) return r;
@@ -21848,7 +21957,8 @@ function lpPromptMaestro(clientId){
         +'diferencia una landing real de una inventada.</div>'
       +'<div class="modal-footer">'
         +'<button class="btn" onclick="closeModal()">Cerrar</button>'
-        +'<button class="btn btn-primary" onclick="iaManualCopiar()">Copiar el prompt</button>'
+        +'<button class="btn" onclick="iaManualCopiar()">Solo copiar</button>'
+        +'<button class="btn btn-primary" onclick="iaManualAbrir()">Copiar y abrir claude.ai</button>'
       +'</div>'
     +'</div></div>';
 }
@@ -21874,11 +21984,13 @@ function iaManualModal(){
       +'<div class="modal-sub">Copia el prompt, pegalo en claude.ai o en el chat que uses, '
         +'y trae la respuesta de vuelta aca. Queda guardada igual que si la hubiera hecho la app.'
         +(m.nota?(' '+esc(m.nota)):'')+'</div>'
-      +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px">'
-        +'<span style="font-size:11px;color:var(--text3);flex:1">1. El prompt &middot; '
-          +Math.round(String(m.prompt||'').length/1000)+'k caracteres</span>'
-        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px" '
-          +'onclick="iaManualCopiar()">Copiar</button>'
+      +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px;flex-wrap:wrap">'
+        +'<span style="font-size:11px;color:var(--text3);flex:1;min-width:130px">'
+          +'1. El prompt &middot; '+Math.round(String(m.prompt||'').length/1000)+'k caracteres</span>'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px;flex:none" '
+          +'onclick="iaManualCopiar()">Solo copiar</button>'
+        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:3px 9px;flex:none" '
+          +'onclick="iaManualAbrir()">Copiar y abrir claude.ai</button>'
       +'</div>'
       // Se muestra chico y con scroll: es para verificar que esta, no para leerlo.
       +'<textarea id="iam-prompt" readonly rows="5" style="width:100%;font-size:10.5px;'
