@@ -21692,10 +21692,20 @@ function _iaPorPuente(prompt){
       var e=document.getElementById('iap-txt');
       if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
     };
+    // Contenedor propio, NO modal-root: el que llama suele tener su modal abierto
+    // ahi (el brief, el quiz, los guiones) y pisarlo le borraba los elementos
+    // donde despues escribe el resultado o el error. Fallaba en silencio.
+    var caja=document.getElementById('ia-puente-root');
+    if(!caja){
+      caja=document.createElement('div');
+      caja.id='ia-puente-root';
+      document.body.appendChild(caja);
+    }
+    var cerrar=function(){ var x=document.getElementById('ia-puente-root'); if(x) x.innerHTML=''; };
     _IA_JOB={ cancelar:function(){
-      cancelado=true; closeModal(); rej(new Error('cancelaste el analisis')); } };
-    document.getElementById('modal-root').innerHTML=
-      '<div class="modal-overlay">'
+      cancelado=true; cerrar(); rej(new Error('cancelaste el analisis')); } };
+    caja.innerHTML=
+      '<div class="modal-overlay" style="'+_iaPuenteEstiloOverlay()+'">'
       +'<div class="modal" style="max-width:440px">'
         +'<div class="modal-title">Analizando</div>'
         +'<div class="modal-sub">Lo esta resolviendo el puente con la suscripcion. '
@@ -21718,7 +21728,7 @@ function _iaPorPuente(prompt){
         mirar();
       })
       .catch(function(e){
-        closeModal();
+        cerrar();
         // Si la tabla no existe todavia, el mensaje generico no ayudaria.
         rej(new Error(/relation|does not exist|404/i.test(e.message||'')
           ? 'falta crear la tabla ia_jobs en Supabase'
@@ -21733,8 +21743,8 @@ function _iaPorPuente(prompt){
         .then(function(r){
           if(cancelado) return;
           var j=(r&&r[0])||{};
-          if(j.estado==='listo'){ closeModal(); res(_iaRespuesta(j.respuesta||'')); return; }
-          if(j.estado==='error'){ closeModal(); rej(new Error(j.error||'el puente fallo')); return; }
+          if(j.estado==='listo'){ cerrar(); res(_iaRespuesta(j.respuesta||'')); return; }
+          if(j.estado==='error'){ cerrar(); rej(new Error(j.error||'el puente fallo')); return; }
           estado(j.estado==='procesando'
             ? ('Trabajando... '+seg+'s')
             : (seg>40
@@ -21748,6 +21758,12 @@ function _iaPorPuente(prompt){
   });
 }
 function iaPuenteCancelarJob(){ if(_IA_JOB) _IA_JOB.cancelar(); }
+// El overlay del puente va por encima de cualquier modal abierto: se apila,
+// no reemplaza.
+function _iaPuenteEstiloOverlay(){
+  return 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.55);'
+    +'display:flex;align-items:center;justify-content:center;padding:20px';
+}
 function iaSinApiSet(v){
   try{ localStorage.setItem('evold-ia-manual', v?'1':'0'); }catch(e){}
   toast(v ? 'Modo sin API: cada analisis te va a dar el prompt para pegar afuera.'
@@ -21787,9 +21803,17 @@ function _iaRespuesta(texto){
 function _iaPedirAMano(prompt, motivo){
   return new Promise(function(res, rej){
     _IA_MANUAL={titulo:'Este analisis', prompt:prompt, nota:'', aplicar:null};
+    // Igual que el puente: contenedor aparte para no borrar el modal de quien
+    // llamo, que es donde se muestran despues el resultado y los errores.
+    var caja=document.getElementById('ia-puente-root');
+    if(!caja){
+      caja=document.createElement('div');
+      caja.id='ia-puente-root';
+      document.body.appendChild(caja);
+    }
     _IA_PUENTE={ok:res, no:rej, prompt:prompt};
-    document.getElementById('modal-root').innerHTML=
-      '<div class="modal-overlay">'
+    caja.innerHTML=
+      '<div class="modal-overlay" style="'+_iaPuenteEstiloOverlay()+'">'
       +'<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">'
         +'<div class="modal-title">Hacelo afuera</div>'
         +'<div class="modal-sub">'
@@ -21832,16 +21856,19 @@ function iaManualAbrir(){
   var w=window.open('https://claude.ai/new','_blank');
   if(!w) toast('El navegador bloqueo la pestaña. El prompt ya esta copiado: abri claude.ai a mano.','amber');
 }
+function _iaPuenteCerrar(){
+  var x=document.getElementById('ia-puente-root'); if(x) x.innerHTML='';
+}
 function iaPuenteSeguir(){
   var p=_IA_PUENTE; if(!p) return;
   var t=String((document.getElementById('iam-resp')||{}).value||'').trim();
   if(!t){ toast('Pega la respuesta primero.','amber'); return; }
-  _IA_PUENTE=null; closeModal();
+  _IA_PUENTE=null; _iaPuenteCerrar();
   p.ok(_iaRespuesta(t));
 }
 function iaPuenteCancelar(){
   var p=_IA_PUENTE; if(!p) return;
-  _IA_PUENTE=null; closeModal();
+  _IA_PUENTE=null; _iaPuenteCerrar();
   p.no(new Error('cancelaste el analisis'));
 }
 (function(){
