@@ -5729,6 +5729,240 @@ async function convEnviarMsg(){
 // solo action items, arma la llamada completa (titulo, fecha, resumen, riesgos),
 // la asigna al cliente por las palabras clave del mapeo y llena fathomCalls + hitos.
 // 100% automatico: sin pegar JSON, sin boton por cliente.
+// ---- Llamadas que llegan solas desde Fathom -------------------------------
+// La sincronizacion vieja lee los mails de recap de UNA casilla de Gmail, asi
+// que solo entran las llamadas de quien tenga ese buzon. Esto es al reves:
+// cada persona pone un webhook en su propio Fathom, las llamadas caen en
+// Supabase apenas terminan, y aca solo se bajan y se asignan al cliente.
+// Ademas queda registrado quien la grabo, que antes se perdia.
+async function fathomWebhookSync(silent){
+  if(!SB.token){ if(!silent) toast('Entra con tu cuenta para sincronizar.','amber'); return {added:0}; }
+  var filas;
+  try{
+    filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=recibida_at.desc&limit=60');
+  }catch(e){
+    // Si la tabla no existe todavia, no es un error: es que falta el paso 1.
+    if(/relation|does not exist|404/i.test(e.message||'')){
+      if(!silent) toast('Falta crear la tabla llamadas_fathom en Supabase.','amber');
+      return {added:0};
+    }
+    if(!silent) toast('No pude leer las llamadas: '+e.message,'red');
+    return {added:0};
+  }
+  if(!filas||!filas.length){ if(!silent) toast('Sin llamadas nuevas.'); return {added:0}; }
+
+  var added=0, sinCliente=[], tocados={}, marcar=[];
+  filas.forEach(function(f){
+    var c=null;
+    // Si alguien ya la asigno a mano desde el tracker, se respeta.
+    if(f.cliente_id) c=DB.clients.find(function(x){ return String(x.id)===String(f.cliente_id); });
+    if(!c) c=_fathomMatchClient(f.titulo||'');
+    if(!c){ sinCliente.push(f); return; }
+    c.fathomCalls=c.fathomCalls||[];
+    var id='fw-'+f.recording_id;
+    if(c.fathomCalls.some(function(x){ return x.id===id; })){ marcar.push(f.recording_id); return; }
+    var items=(f.action_items||[]).map(function(it){
+      return (it&&(it.description||it.texto||it.text))||String(it||''); }).filter(Boolean);
+    c.fathomCalls.unshift({
+      id:id, title:f.titulo||'Llamada',
+      date:f.fecha?new Date(f.fecha).toLocaleDateString('es-AR'):new Date().toLocaleDateString('es-AR'),
+      duration:f.duracion||'', sentiment:'satisfecho',
+      summary:f.resumen||'', transcript:f.transcripcion||'',
+      actionItems:items, riskFlags:[], url:f.url||'',
+      // Lo que la sincronizacion por Gmail no podia saber.
+      grabo:f.grabo_mail||'', grabaNombre:f.grabo_nombre||'',
+      _cid:c.id
+    });
+    tocados[c.id]=true; marcar.push(f.recording_id); added++;
+  });
+
+  if(added){
+    Object.keys(tocados).forEach(function(cid){
+      var c=DB.clients.find(function(x){ return String(x.id)===String(cid); });
+      if(!c) return;
+      (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
+      _fathomSortMilestones(c);
+    });
+    save();
+    if(S.view==='client') renderClient(); else if(S.view==='overview') showOverview();
+  }
+  // Se marcan procesadas recien despues de guardar: si el navegador se cierra
+  // en el medio, la proxima vez vuelven a bajar en vez de perderse.
+  if(marcar.length){
+    try{
+      await sbFetch('llamadas_fathom?recording_id=in.('+marcar.map(function(x){
+        return '"'+String(x).replace(/"/g,'')+'"'; }).join(',')+')',
+        {method:'PATCH', body:JSON.stringify({procesada:true})});
+    }catch(e){ console.warn('no pude marcarlas procesadas:', e.message); }
+  }
+  // Las que no matchearon quedan sin procesar a proposito: se listan para
+  // asignarlas a mano, y hasta que eso pase siguen apareciendo.
+  if(!silent){
+    if(added) toast(added+' llamada'+(added===1?'':'s')+' nueva'+(added===1?'':'s')
+      +(sinCliente.length?(' \u00b7 '+sinCliente.length+' sin cliente'):''));
+    else if(sinCliente.length) toast(sinCliente.length+' llamada'+(sinCliente.length===1?'':'s')
+      +' sin cliente: asignalas en Integraciones.','amber');
+    else toast('Sin llamadas nuevas.');
+  }
+  return {added:added, sinCliente:sinCliente.length};
+}
+// La pantalla que explica como conectarlo, con la URL ya armada para copiar.
+function fathomHookModal(){
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  var full=url?(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec||'')):'';
+  var inp='width:100%;box-sizing:border-box;margin-top:5px';
+  var paso=function(n, t, cuerpo){
+    return '<div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3);'
+        +'flex:none;padding-top:2px">'+n+'</span>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:12.5px;color:var(--text)">'+t+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:4px">'
+          +cuerpo+'</div>'
+      +'</div>'
+    +'</div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">Fathom por webhook</div>'
+      +'<div class="modal-sub">Las llamadas caen solas apenas terminan, de todo el equipo. '
+        +'Se configura una vez.</div>'
+      +paso(1,'Crear la tabla en Supabase',
+        'SQL Editor \u2192 New query \u2192 pegar el archivo <b>1-supabase-tabla.sql</b> \u2192 Run.')
+      +paso(2,'Desplegar la funcion',
+        'Edge Functions \u2192 Deploy a new function \u2192 Via Editor. Nombre: <b>fathom</b>. '
+        +'Pegar <b>2-edge-function.ts</b>. <b style="color:var(--amberx)">Desmarcar "Verify JWT"</b>: '
+        +'Fathom no manda ese token y si queda prendido rebota todo.')
+      +paso(3,'Guardar el secreto',
+        'En la funcion \u2192 Secrets \u2192 nueva: nombre <b>FATHOM_SECRETO</b>, valor una palabra '
+        +'inventada. Pegala tambien aca abajo.')
+      +paso(4,'Pegar la URL de la funcion',
+        'La da Supabase al desplegar. Termina en <span class="mono">/functions/v1/fathom</span>.')
+      +'<div style="margin-top:14px">'
+        +'<div style="font-size:11px;color:var(--text3)">URL de la funcion</div>'
+        +'<input id="fh-url" value="'+esc(url)+'" style="'+inp+'" '
+          +'placeholder="https://xxxx.supabase.co/functions/v1/fathom">'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:9px">El secreto</div>'
+        +'<input id="fh-sec" value="'+esc(sec)+'" style="'+inp+'" placeholder="una palabra tuya">'
+        +'<div style="display:flex;justify-content:flex-end;margin-top:8px">'
+          +'<button class="btn btn-sm btn-primary" onclick="fathomHookGuardar()">Guardar</button>'
+        +'</div>'
+      +'</div>'
+      +(full
+        ?('<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">'
+          +'<div style="font-size:12.5px;color:var(--text);margin-bottom:4px">'
+            +'5. Cada uno pega esto en su Fathom</div>'
+          +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:8px">'
+            +'Fathom \u2192 Settings \u2192 API \u2192 Add Webhook. En "Triggered for" elegir '
+            +'<b>my recordings</b>, y tildar que incluya transcripcion, resumen y action items. '
+            +'Lo hace cada persona en su cuenta: ahi esta la gracia.</div>'
+          +'<textarea readonly rows="3" onclick="this.select()" style="width:100%;'
+            +'font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical">'
+            +esc(full)+'</textarea>'
+          +'<div style="display:flex;justify-content:flex-end;margin-top:7px">'
+            +'<button class="btn btn-sm" onclick="fathomHookCopiar()">Copiar la URL</button>'
+          +'</div>'
+        +'</div>')
+        :'')
+      +'<div class="modal-footer">'
+        +(url?('<button class="btn" onclick="fathomSinClienteModal()">Sin cliente</button>'
+          +'<button class="btn" onclick="fathomWebhookSync()">Traer ahora</button>'):'')
+        +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function fathomHookGuardar(){
+  var u=String((document.getElementById('fh-url')||{}).value||'').trim();
+  var s=String((document.getElementById('fh-sec')||{}).value||'').trim();
+  if(u && !/^https:\/\/.+\/functions\/v1\//.test(u)){
+    toast('Esa no parece la URL de una funcion. Termina en /functions/v1/fathom','amber'); return;
+  }
+  localStorage.setItem('evold-fathom-hook', u);
+  localStorage.setItem('evold-fathom-hook-sec', s);
+  fathomHookModal();
+  toast(u?'Guardado. Ahora pegá la URL en el Fathom de cada uno.':'Borrado.');
+}
+function fathomHookCopiar(){
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  var full=url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec||'');
+  navigator.clipboard.writeText(full).then(function(){ toast('URL copiada.'); },
+    function(){ toast('No pude copiar. Seleccionala a mano.','amber'); });
+}
+// Las que llegaron pero no matchean con ningun cliente. Se asignan a mano y a
+// la vez se aprende la palabra clave, para que la proxima entre sola.
+async function fathomSinClienteModal(){
+  var filas=[];
+  try{ filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=recibida_at.desc&limit=40')||[]; }
+  catch(e){ toast('No pude leerlas: '+e.message,'red'); return; }
+  var pend=filas.filter(function(f){ return !_fathomMatchClient(f.titulo||''); });
+  var cls=(DB.clients||[]).filter(function(c){ return !c.archived; })
+    .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:86vh;overflow-y:auto">'
+      +'<div class="modal-title">Llamadas sin cliente</div>'
+      +'<div class="modal-sub">Llegaron por el webhook pero el titulo no coincide con ningun '
+        +'cliente. Al asignarlas se guarda la palabra clave, asi las proximas de ese cliente '
+        +'entran solas.</div>'
+      +(pend.length
+        ? pend.map(function(f){
+            return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;'
+                +'border-bottom:1px solid var(--border)">'
+              +'<div style="flex:1;min-width:0">'
+                +'<div style="font-size:12.5px;color:var(--text);overflow:hidden;'
+                  +'text-overflow:ellipsis;white-space:nowrap">'+esc(f.titulo||'Sin titulo')+'</div>'
+                +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+                  +esc(f.grabo_nombre||f.grabo_mail||'')
+                  +(f.fecha?(' \u00b7 '+new Date(f.fecha).toLocaleDateString('es-AR')):'')+'</div>'
+              +'</div>'
+              +'<select onchange="fathomAsignar(\''+esc(f.recording_id)+'\',this.value)" '
+                +'style="width:170px;flex:none;font-size:11.5px">'
+                +'<option value="">Asignar a...</option>'
+                +cls.map(function(c){
+                  return '<option value="'+c.id+'">'+esc(c.name||'')+'</option>'; }).join('')
+              +'</select>'
+            +'</div>';
+          }).join('')
+        : '<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+          +'No hay ninguna esperando.</div>')
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+async function fathomAsignar(recId, clientId){
+  if(!clientId) return;
+  var c=DB.clients.find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  var filas=[];
+  try{ filas=await sbFetch('llamadas_fathom?recording_id=eq.'+encodeURIComponent(recId))||[]; }
+  catch(e){ toast('No pude leerla: '+e.message,'red'); return; }
+  var f=filas[0];
+  if(!f) return;
+  // Se aprende del titulo: la palabra que no es del cliente ni generica suele
+  // ser su nombre escrito distinto. Con eso la proxima entra sola.
+  var t=String(f.titulo||'');
+  var partes=t.split(/[-–—|:]/).map(function(x){ return x.trim(); }).filter(Boolean);
+  var kw=partes.filter(function(x){
+    return x.length>3 && !/^(diagnostico|venta|onboarding|reunion|llamada|meeting|call|strategy|seguimiento)/i.test(x);
+  })[0];
+  if(kw){
+    c.fathomKeywords=c.fathomKeywords||[];
+    if(!c.fathomKeywords.some(function(k){ return _n(k)===_n(kw); })) c.fathomKeywords.push(kw);
+  }
+  try{
+    await sbFetch('llamadas_fathom?recording_id=eq.'+encodeURIComponent(recId),
+      {method:'PATCH', body:JSON.stringify({cliente_id:String(clientId)})});
+  }catch(e){ toast('No pude asignarla: '+e.message,'red'); return; }
+  save();
+  await fathomWebhookSync(true);
+  fathomSinClienteModal();
+  toast('Asignada a '+(c.name||'')+(kw?(' \u00b7 aprendi "'+kw+'"'):'')+'.');
+}
+
 function _fathomMatchClient(meeting){
   var mn=_n(meeting);
   if(!mn) return null;
@@ -5856,6 +6090,13 @@ async function syncFathomFromGmail(silent){
 }
 // Auto-sync en segundo plano al abrir la app (maximo una vez cada 10 min).
 function autoSyncFathom(){
+  // El webhook corre siempre que este configurado, aunque no haya proxy de
+  // Gmail: son dos caminos independientes y el nuevo no depende del viejo.
+  if((localStorage.getItem('evold-fathom-hook')||'').trim()){
+    fathomWebhookSync(true).then(function(r){
+      try{ localStorage.setItem('evold-fathom-hook-pend', String((r&&r.sinCliente)||0)); }catch(e){}
+    }).catch(function(e){ console.warn('[fathom webhook]', e); });
+  }
   if(!fathomProxyUrl()) return;
   var last=+(localStorage.getItem('evold-fathom-sync-at')||0);
   if(Date.now()-last < 10*60*1000) return;
@@ -7122,10 +7363,21 @@ function integracionesAppHtml(){
       detail:proxyUrl?idProxy(proxyUrl):'Sin URL de Web App',
       action:'openGhlProxyModal()', actionLabel:(proxyUrl&&proxySec)?'Editar conexion':'Conectar'}),
 
-    card({name:'Fathom', st:fathom?'ok':'no',
-      desc:'Transcripciones y resumenes de llamadas. Alimenta la bitacora semanal y las tareas extraidas de reuniones.',
+    card({name:'Fathom por mail', st:fathom?'ok':'no',
+      desc:'Lee los recaps que llegan a UNA casilla de Gmail. Solo entran las llamadas de esa '
+        +'persona: las del resto del equipo no las ve. Conviene reemplazarlo por el webhook.',
       detail:fathom?idProxy(fathom):'Sin configurar',
       action:'openTicketsProxyModal()', actionLabel:fathom?'Editar conexion':'Conectar'}),
+
+    (function(){
+      var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+      var n=+(localStorage.getItem('evold-fathom-hook-pend')||0);
+      return card({name:'Fathom por webhook', st:url?(n?'warn':'ok'):'no',
+        desc:'Cada uno pone un webhook en su propio Fathom y las llamadas caen solas apenas '
+          +'terminan, con el nombre de quien las grabo. Sin Gmail y sin sincronizar a mano.',
+        detail:url?('Conectado'+(n?(' \u00b7 '+n+' sin cliente'):'')):'Sin configurar',
+        action:'fathomHookModal()', actionLabel:url?'Ver instrucciones':'Conectar'});
+    })(),
 
     card({name:'Tickets por mail', st:tickets?'ok':'no',
       desc:'Recibe las tareas delegadas por mail con numero de ticket y las trae al Mirador.',
