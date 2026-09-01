@@ -3008,11 +3008,16 @@ function personaGuardar(mailOriginal, mail, nombre, tel, fbMail, socioId){
     (DB.clients||[]).forEach(function(c){ if(c.owner&&c.owner.toLowerCase()===kOrig) c.owner=mail; });
   }
   if(!DB.equipo.some(function(e){ return String(e).toLowerCase()===k; })) DB.equipo.push(mail);
+  // El estado de Fathom no se edita en el formulario, pero vive en el mismo
+  // objeto: sin rescatarlo antes de reemplazarlo, editar el telefono de alguien
+  // le borraria la conexion y no habria forma de darse cuenta.
+  var _prev=DB.personas.filter(function(p){ return String(p.email||'').toLowerCase()===k; })[0]||{};
   DB.personas=DB.personas.filter(function(p){ return String(p.email||'').toLowerCase()!==k; });
   var telLimpio=String(tel||'').trim();
   DB.personas.push({ email:mail, nombre:String(nombre||'').trim(), tel:telLimpio,
                      fbMail:String(fbMail||'').trim()||undefined,
-                     socioId:String(socioId||'').trim()||undefined });
+                     socioId:String(socioId||'').trim()||undefined,
+                     fathomAt:_prev.fathomAt, fathomMail:_prev.fathomMail });
   // Espejo en el almacen viejo: hay codigo que todavia lo lee directo.
   DB.telefonos=DB.telefonos||{};
   if(telLimpio) DB.telefonos[k]=telLimpio; else delete DB.telefonos[k];
@@ -3059,6 +3064,36 @@ function personasModal(){
           +(p.fbMail?('Meta: '+esc(p.fbMail)):'')
           +(p.fbMail&&p.socioId?' &middot; ':'')
           +(p.socioId?('socio '+esc(p.socioId)):'')+'</div>'):'')
+        +'<div style="font-size:10.5px;margin-top:2px">'
+          +(p.fathomAt
+            ?('<span style="color:var(--accent)">Fathom conectado</span>'
+              +'<span style="color:var(--text3)"> &middot; desde el '
+              +esc(new Date(p.fathomAt).toLocaleDateString('es-AR'))
+              +(p.fathomMail&&p.fathomMail.toLowerCase()!==p.email.toLowerCase()
+                ?('</span><span style="color:var(--amberx)"> &middot; la key era de '+esc(p.fathomMail))
+                :'')
+              +'</span>')
+            :'<a href="javascript:void(0)" onclick="personaFathomAbrir(\''+esc(p.email)+'\')" '
+              +'style="color:var(--text2);text-decoration:none;border-bottom:1px dotted var(--border2)">'
+              +'Conectar su Fathom</a>')
+        +'</div>'
+        +(S._personaFathom&&S._personaFathom.toLowerCase()===p.email.toLowerCase()
+          ?('<div style="margin-top:7px;display:flex;gap:6px;align-items:center">'
+            +'<input id="pf-key" placeholder="API key de Fathom de '+esc(p.nombre||p.email)+'" '
+              +'style="flex:1;min-width:0;padding:6px 9px;border-radius:var(--radius);'
+              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+              +'font-family:ui-monospace,Menlo,monospace;font-size:10.5px">'
+            +'<button class="btn btn-sm btn-primary" style="flex:none" '
+              +'onclick="personaFathomConectar(\''+esc(p.email)+'\')">Conectar</button>'
+            +'<button class="btn btn-sm" style="flex:none" '
+              +'onclick="S._personaFathom=null;personasModal()">X</button>'
+          +'</div>'
+          +'<div id="pf-estado" style="font-size:10.5px;color:var(--text3);margin-top:5px"></div>'
+          +'<div style="font-size:10.5px;color:var(--text3);margin-top:5px;line-height:1.5">'
+            +'La genera esta persona en <b>su</b> cuenta: Fathom &rarr; Settings &rarr; '
+            +'API Access &rarr; Add &rarr; Generate Api Key. Se muestra una sola vez. '
+            +'Aca no se guarda: viaja hasta Fathom y se descarta.</div>')
+          :'')
           +'</div>'
           +(function(){
               var puede=!Array.isArray(DB.rentAcceso)||DB.rentAcceso.some(function(m){
@@ -3103,6 +3138,59 @@ function personasModal(){
       +'</div>'
       +'<div class="modal-footer"><button class="btn btn-sm" onclick="S._personaEdit=null;closeModal()">Listo</button></div>'
     +'</div></div>';
+}
+// ---- Conectar el Fathom de una persona desde su ficha ------------------
+// La API key es de quien la genera, y el webhook que se crea cubre solo SUS
+// grabaciones. Por eso se pide una por persona y no una sola para todos.
+function personaFathomAbrir(mail){
+  S._personaFathom=mail;
+  personasModal();
+  var i=document.getElementById('pf-key');
+  if(i&&i.focus) i.focus();
+}
+async function personaFathomConectar(mail){
+  var est=document.getElementById('pf-estado');
+  var inp=document.getElementById('pf-key');
+  var key=String((inp||{}).value||'').trim();
+  var _di=function(t,c){ if(est){ est.textContent=t; est.style.color=c||'var(--text3)'; } };
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec){
+    _di('Falta configurar el webhook en Integraciones \u2192 Fathom por webhook.','var(--amberx)');
+    return;
+  }
+  if(!key){ _di('Pega la API key primero.','var(--amberx)'); if(inp&&inp.focus) inp.focus(); return; }
+  _di('Conectando con Fathom...');
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=alta',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({api_key:key})});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok){
+      _di((d&&d.error)||('No pude conectarlo (HTTP '+r.status+')'),'var(--redx)');
+      return;
+    }
+    // Se guarda de quien era la key segun Fathom. Si no coincide con el mail de
+    // la ficha, se avisa en la lista: es el error facil de cometer, pegar la
+    // propia key en la fila de otro y creer que quedaron los dos conectados.
+    var p=(DB.personas||[]).filter(function(x){
+      return String(x.email||'').toLowerCase()===String(mail).toLowerCase(); })[0];
+    if(p){
+      p.fathomAt=new Date().toISOString();
+      p.fathomMail=d.duenio||'';
+      save();
+    }
+    S._personaFathom=null;
+    personasModal();
+    var aviso=(d.duenio && String(d.duenio).toLowerCase()!==String(mail).toLowerCase())
+      ? ' Ojo: esa key es de '+d.duenio+', no de '+mail+'.' : '';
+    if(typeof toast==='function'){
+      toast((d.estado==='ya_estaba'?'Ya estaba conectado.':'Fathom conectado.')+aviso,
+            aviso?'amber':undefined);
+    }
+  }catch(e){
+    _di('No pude hablar con la funcion: '+e.message,'var(--redx)');
+  }
 }
 function personasEditar(mail){
   S._personaEdit=personaDe(mail)||{email:mail,nombre:'',tel:''};
@@ -5904,16 +5992,29 @@ function fathomHookModal(){
       +(full
         ?('<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">'
           +'<div style="font-size:12.5px;color:var(--text);margin-bottom:4px">'
-            +'5. Cada uno pega esto en su Fathom</div>'
-          +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:8px">'
-            +'Fathom \u2192 Settings \u2192 API \u2192 Add Webhook. En "Triggered for" elegir '
-            +'<b>my recordings</b>, y tildar que incluya transcripcion, resumen y action items. '
-            +'Lo hace cada persona en su cuenta: ahi esta la gracia.</div>'
-          +'<textarea readonly rows="3" onclick="this.select()" style="width:100%;'
-            +'font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical">'
-            +esc(full)+'</textarea>'
-          +'<div style="display:flex;justify-content:flex-end;margin-top:7px">'
-            +'<button class="btn btn-sm" onclick="fathomHookCopiar()">Copiar la URL</button>'
+            +'5. Cada uno conecta su Fathom desde aca</div>'
+          +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+            +'Fathom saco la pantalla de webhooks de su interfaz: ahora solo se crean por API. '
+            +'Asi que en vez de pegar la URL a mano, cada persona genera su API key en '
+            +'<b>Fathom \u2192 Settings \u2192 API Access \u2192 Add \u2192 Generate Api Key</b>, la pega aca '
+            +'y toca el boton. La key no se guarda: viaja hasta Fathom y se descarta.</div>'
+          +'<input id="fh-apikey" placeholder="Pega tu API key de Fathom" '
+            +'style="width:100%;box-sizing:border-box;font-family:ui-monospace,Menlo,monospace;'
+            +'font-size:11px">'
+          +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px">'
+            +'<button class="btn btn-sm btn-primary" onclick="fathomAltaWebhook()">'
+              +'Conectar mi Fathom</button>'
+            +'<span id="fh-alta-estado" style="font-size:11.5px;color:var(--text3)"></span>'
+          +'</div>'
+          +'<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+            +'<div style="font-size:11px;color:var(--text3);margin-bottom:6px">'
+              +'Si preferis hacerlo a mano o por terminal, esta es la URL de destino:</div>'
+            +'<textarea readonly rows="2" onclick="this.select()" style="width:100%;'
+              +'font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical">'
+              +esc(full)+'</textarea>'
+            +'<div style="display:flex;justify-content:flex-end;margin-top:7px">'
+              +'<button class="btn btn-sm" onclick="fathomHookCopiar()">Copiar la URL</button>'
+            +'</div>'
           +'</div>'
         +'</div>')
         :'')
@@ -5937,6 +6038,38 @@ function fathomHookGuardar(){
   if(typeof renderTab==='function') renderTab();
   fathomHookModal();
   toast(u?'Guardado. Ahora pegá la URL en el Fathom de cada uno.':'Borrado.');
+}
+// Da de alta el webhook en la cuenta de Fathom de quien esta mirando la
+// pantalla. El navegador no puede llamar a api.fathom.ai (CORS), asi que se lo
+// pide a la edge function, que ya tiene el secreto y sabe su propia URL.
+// La API key no se guarda en ningun lado: se manda y se olvida.
+async function fathomAltaWebhook(){
+  var est=document.getElementById('fh-alta-estado');
+  var inp=document.getElementById('fh-apikey');
+  var key=String((inp||{}).value||'').trim();
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  var _di=function(t,c){ if(est){ est.textContent=t; est.style.color=c||'var(--text3)'; } };
+  if(!url||!sec){ _di('Falta guardar la URL y el secreto aca arriba.','var(--amberx)'); return; }
+  if(!key){ _di('Pega tu API key primero.','var(--amberx)'); if(inp&&inp.focus) inp.focus(); return; }
+  _di('Conectando con Fathom...');
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=alta',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({api_key:key})});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok){
+      _di((d&&d.error)||('No pude conectarlo (HTTP '+r.status+')'),'var(--redx)');
+      return;
+    }
+    if(inp) inp.value='';   // no dejarla a la vista despues de usarla
+    _di(d.estado==='ya_estaba'
+      ? 'Ya estaba conectado. No hice nada.'
+      : 'Listo. Tus proximas llamadas van a caer solas.','var(--accent)');
+    if(typeof renderTab==='function') renderTab();
+  }catch(e){
+    _di('No pude hablar con la funcion: '+e.message,'var(--redx)');
+  }
 }
 function fathomHookCopiar(){
   var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
