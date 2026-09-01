@@ -21467,6 +21467,39 @@ function _mkHexDelTexto(txt){
     return !(max>242&&min>242) && !(max<28) && (max-min)>=18;
   }).slice(0,6);
 }
+// JSZip devuelve los blobs sin tipo. Sin el MIME correcto el data URL sale como
+// application/octet-stream y el navegador no dibuja la imagen: se ve el icono
+// de rota. Y createObjectURL tampoco la carga, asi que ni los colores salen.
+function _mkMime(nombre){
+  var e=String(nombre||'').toLowerCase().split('.').pop();
+  return e==='svg' ? 'image/svg+xml'
+    : e==='png' ? 'image/png'
+    : (e==='jpg'||e==='jpeg') ? 'image/jpeg'
+    : e==='webp' ? 'image/webp'
+    : 'application/octet-stream';
+}
+// Miniatura para el selector. Elegir el logo por nombre de archivo es adivinar
+// cuando el kit trae diez isologos; viendolos se resuelve de una.
+function _mkMini(blob, lado){
+  lado=lado||56;
+  return new Promise(function(res){
+    var url=URL.createObjectURL(blob);
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var cv=document.createElement('canvas');
+        var esc=Math.min(lado/(img.width||1), lado/(img.height||1));
+        cv.width=Math.max(1,Math.round((img.width||lado)*esc));
+        cv.height=Math.max(1,Math.round((img.height||lado)*esc));
+        cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+        URL.revokeObjectURL(url);
+        res(cv.toDataURL('image/png'));
+      }catch(e){ URL.revokeObjectURL(url); res(''); }
+    };
+    img.onerror=function(){ URL.revokeObjectURL(url); res(''); };
+    img.src=url;
+  });
+}
 function _mkLeerComoDataUrl(blob){
   return new Promise(function(res){
     var fr=new FileReader();
@@ -21520,7 +21553,9 @@ async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
           && /\.(png|jpe?g|webp|svg)$/i.test(n);
       });
       for(var i=0;i<nombres.length && imgs.length<MARCA_MAX_IMGS;i++){
-        imgs.push({nombre:nombres[i], blob:await zip.files[nombres[i]].async('blob')});
+        var ab=await zip.files[nombres[i]].async('arraybuffer');
+        imgs.push({nombre:nombres[i],
+                   blob:new Blob([ab], {type:_mkMime(nombres[i])})});
       }
       // El texto del zip es lo que reemplaza a la web cuando el cliente no
       // tiene sitio: el manual de marca suele traer el tono, la propuesta y a
@@ -21591,10 +21626,15 @@ async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
     c.marca.colores=paleta;
     c.marca.de=nombre||'';
     c.marca.at=new Date().toISOString();
-    // La lista de imagenes se guarda para poder cambiar el logo despues sin
-    // volver a adivinar: se muestran todas y elegis. Solo los nombres, no los
-    // archivos: guardar doce imagenes en la ficha reventaria el almacenamiento.
-    c.marca.imagenes=imgs.map(function(x){ return x.nombre; });
+    // La lista de imagenes se guarda con una miniatura de 56px para poder
+    // cambiar el logo viendolo, no leyendo rutas. Son unos 4 KB cada una: no
+    // guardo las imagenes enteras porque doce reventarian el almacenamiento.
+    _mkEstado('Armando las miniaturas...');
+    var minis=[];
+    for(var q=0;q<imgs.length;q++){
+      minis.push({n:imgs[q].nombre, t:await _mkMini(imgs[q].blob, 56)});
+    }
+    c.marca.imagenes=minis;
     c.marca.matId=matId||c.marca.matId||null;
     if(_txtZip) c.marca.texto=_txtZip;
     // El logo va como data URL: la landing queda autocontenida y no depende de
@@ -21629,6 +21669,12 @@ function _marcaHtml(c){
   var cand=(c.material||[]).filter(function(m){
     return m.path && /\.(zip|png|jpe?g|webp|svg)$/i.test(m.archivo||m.label||'');
   });
+  // El analisis anterior guardaba solo los nombres. Se normaliza para que la
+  // ficha no se rompa entre una version y la otra: sin miniatura, se muestra
+  // el nombre del archivo.
+  var imgs=(mk.imagenes||[]).map(function(x){
+    return (typeof x==='string') ? {n:x, t:''} : x;
+  }).filter(function(x){ return x && x.n; });
   var sel=cand.length
     ? ('<select id="mk-fuente" style="font-size:11.5px;padding:4px 8px;border-radius:var(--radius);'
         +'border:1px solid var(--border2);background:var(--bg3);color:var(--text)">'
@@ -21673,20 +21719,28 @@ function _marcaHtml(c){
           +'De '+esc(mk.de||'')+(mk.logoNombre?(' \u00b7 logo: '+esc(mk.logoNombre)):'')
           +' \u00b7 <a href="javascript:void(0)" onclick="marcaBorrar('+c.id+')" '
           +'style="color:var(--text3)">borrar todo</a></div>'
-        // Elegir el logo a mano. El automatico acierta casi siempre, pero un kit
-        // suele traer diez variantes y solo vos sabes cual va en el header.
-        +((mk.imagenes||[]).length>1 && mk.matId
-          ? ('<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
-            +'<span style="font-size:10.5px;color:var(--text3)">Logo:</span>'
-            +'<select id="mk-logo" style="font-size:11px;padding:4px 8px;border-radius:var(--radius);'
-              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
-              +'max-width:340px">'
-            +(mk.imagenes||[]).map(function(n){
-              return '<option value="'+esc(n)+'"'+(n===mk.logoNombre?' selected':'')+'>'
-                +esc(n)+'</option>'; }).join('')
-            +'</select>'
-            +'<button class="btn btn-sm" onclick="marcaLeerDeMaterial('+c.id+', '+mk.matId+', '
-              +'document.getElementById(\'mk-logo\').value)">Usar este</button>'
+        // Elegir el logo viendolo. El automatico acierta casi siempre, pero un
+        // kit trae diez variantes y cual va en el header lo sabes vos.
+        +(imgs.length>1 && mk.matId
+          ? ('<div style="font-size:10.5px;color:var(--text3);margin-bottom:6px">'
+              +'Otro logo del archivo:</div>'
+            +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
+            +imgs.map(function(im){
+              var elegido=(im.n===mk.logoNombre);
+              return '<a href="javascript:void(0)" title="'+esc(im.n)+'" '
+                +'onclick="marcaLeerDeMaterial('+c.id+', '+mk.matId+', \''
+                  +esc(im.n).replace(/'/g,"\\'")+'\')" '
+                +'style="flex:none;width:52px;height:52px;border-radius:var(--radius);'
+                +'border:1px solid '+(elegido?'var(--accent)':'var(--border2)')+';'
+                // Damero: sin esto un logo blanco sobre fondo oscuro parece vacio.
+                +'background:repeating-conic-gradient(#2a2a2a 0% 25%, #1c1c1c 0% 50%) 50%/10px 10px;'
+                +'display:flex;align-items:center;justify-content:center;overflow:hidden">'
+                +(im.t?('<img src="'+esc(im.t)+'" alt="" '
+                        +'style="max-width:44px;max-height:44px;object-fit:contain">')
+                      :('<span style="font-size:8px;color:var(--text3);text-align:center;'
+                        +'padding:2px;word-break:break-all">'+esc(_mkBase(im.n)).slice(0,18)+'</span>'))
+              +'</a>';
+            }).join('')
           +'</div>')
           : ''))
       : '<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
