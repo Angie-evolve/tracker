@@ -2882,7 +2882,7 @@ async function aprobProbar(){
   var mail=aprobQuien();
   if(!mail){ decir('Falta elegir a quien avisar.','var(--amberx)'); return; }
   var num=telDe(mail);
-  if(!num){ decir(esc(personaNombre(mail))+' no tiene telefono cargado en Personas.','var(--amberx)'); return; }
+  if(!num){ decir(esc(personaNombre(mail))+' no tiene telefono cargado en Usuarios.','var(--amberx)'); return; }
   if(typeof soyYo==='function' && soyYo(mail)){
     decir('Sos vos: los avisos no se mandan a uno mismo. Elegi a otra persona para probar.','var(--amberx)'); return;
   }
@@ -2984,6 +2984,16 @@ function personas(){
   (DB.personas||[]).forEach(function(p){
     if(p&&p.email) det[String(p.email).toLowerCase()]=p;
   });
+  // Quien recibe alarmas NO se guarda en la persona: se deriva de la lista de
+  // DB.defaultAlarms.email, que es la que ya edita el modal de alarmas con sus
+  // chips. Con dos almacenamientos, cambiar en una pantalla dejaba mintiendo a
+  // la otra. Aca hay una sola fuente y las dos vistas coinciden siempre.
+  var _enAlarmas={};
+  try{
+    String((getDefaultAlarms()||{}).email||'').split(/[,;\s]+/).forEach(function(m){
+      if(m) _enAlarmas[m.trim().toLowerCase()]=true;
+    });
+  }catch(e){}
   return equipo().map(function(mail){
     var d=det[String(mail).toLowerCase()]||{};
     // Datos que hacen falta para operar y no viven en ningun lado: el mail
@@ -2994,7 +3004,9 @@ function personas(){
              // pero la lista lo descarta al rearmar los objetos, y la ficha
              // sigue diciendo "Conectar" para siempre.
              fathomAt:d.fathomAt||'', fathomMail:d.fathomMail||'',
-             fathomHookId:d.fathomHookId||'' };
+             fathomHookId:d.fathomHookId||'',
+             notifAlarmas:!!_enAlarmas[String(mail).toLowerCase()],
+             notifEod:!!d.notifEod };
   });
 }
 function personaDe(mail){
@@ -3031,7 +3043,8 @@ function personaGuardar(mailOriginal, mail, nombre, tel, fbMail, socioId){
                      fbMail:String(fbMail||'').trim()||undefined,
                      socioId:String(socioId||'').trim()||undefined,
                      fathomAt:_prev.fathomAt, fathomMail:_prev.fathomMail,
-                     fathomHookId:_prev.fathomHookId });
+                     fathomHookId:_prev.fathomHookId,
+                     notifEod:_prev.notifEod });
   // Espejo en el almacen viejo: hay codigo que todavia lo lee directo.
   DB.telefonos=DB.telefonos||{};
   if(telLimpio) DB.telefonos[k]=telLimpio; else delete DB.telefonos[k];
@@ -3078,6 +3091,20 @@ function personasModal(){
           +(p.fbMail?('Meta: '+esc(p.fbMail)):'')
           +(p.fbMail&&p.socioId?' &middot; ':'')
           +(p.socioId?('socio '+esc(p.socioId)):'')+'</div>'):'')
+        +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:5px">'
+          +'<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;cursor:pointer;color:'
+            +(p.notifAlarmas?'var(--accent)':'var(--text3)')+'" '
+            +'title="Recibe por mail las alarmas cuando una metrica se sale de rango">'
+            +'<input type="checkbox" class="sw"'+(p.notifAlarmas?' checked':'')
+            +' onchange="setNotifAlarma(\''+esc(p.email)+'\',this.checked)">alarmas</label>'
+          +'<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;cursor:pointer;color:'
+            +(p.notifEod?(p.tel?'var(--accent)':'var(--amberx)'):'var(--text3)')+'" '
+            +'title="Recibe el resumen de fin de dia por WhatsApp. Va a uno solo: '
+            +'el Apps Script acepta un unico numero.">'
+            +'<input type="checkbox" class="sw"'+(p.notifEod?' checked':'')
+            +' onchange="setNotifEod(\''+esc(p.email)+'\',this.checked)">fin de dia'
+            +(p.notifEod&&!p.tel?' (sin telefono)':'')+'</label>'
+        +'</div>'
         +'<div style="font-size:10.5px;margin-top:2px">'
           +(p.fathomAt
             ?('<span style="color:var(--accent)">Fathom conectado</span>'
@@ -3128,14 +3155,14 @@ function personasModal(){
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:780px;width:94%;max-height:82vh;overflow:auto">'
-      +'<div class="modal-title">Personas</div>'
+      +'<div class="modal-title">Usuarios</div>'
       +'<div class="modal-sub">Nombre, mail y telefono de cada uno. Se cargan una vez aca y despues '
         +'se eligen en el informe, en los avisos y en el reparto de clientes.<br>'
         +'<b>plata</b>: ve los abonos, el LTV y la pestana Rentabilidad.</div>'
       +filas
       +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-top:14px">'
         +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">'
-          +(ed?'Editar':'Agregar persona')+'</div>'
+          +(ed?'Editar':'Agregar usuario')+'</div>'
         +'<div style="display:flex;flex-direction:column;gap:8px">'
           +'<input id="pe-nombre" placeholder="Nombre" value="'+esc((ed&&ed.nombre)||'')+'" style="'+inp+'">'
           +'<input id="pe-mail" type="email" placeholder="mail@ejemplo.com" value="'+esc((ed&&ed.email)||'')+'" style="'+inp+'">'
@@ -3156,6 +3183,50 @@ function personasModal(){
 // ---- Conectar el Fathom de una persona desde su ficha ------------------
 // La API key es de quien la genera, y el webhook que se crea cubre solo SUS
 // grabaciones. Por eso se pide una por persona y no una sola para todos.
+// ---- Que recibe cada usuario -------------------------------------------
+// Los toggles son la UI, pero el almacenamiento sigue siendo el de siempre:
+// DB.defaultAlarms.email. Asi todo lo que ya manda alarmas (alarmEmailFor, el
+// envio, la pestana de cada cliente) sigue funcionando sin tocarlo.
+function _personaEntrada(mail){
+  DB.personas=Array.isArray(DB.personas)?DB.personas:[];
+  var k=String(mail||'').toLowerCase();
+  var p=DB.personas.filter(function(x){
+    return String(x.email||'').toLowerCase()===k; })[0];
+  if(!p){ p={email:mail, nombre:'', tel:''}; DB.personas.push(p); }
+  return p;
+}
+// Prender o apagar las alarmas de alguien es agregar o sacar su mail de la
+// lista global. No se guarda nada en la persona: ver personas() para el porque.
+function setNotifAlarma(mail, on){
+  var k=String(mail||'').toLowerCase();
+  var d=getDefaultAlarms();
+  var lista=String(d.email||'').split(/[,;\s]+/).map(function(x){ return x.trim(); })
+    .filter(function(x){ return x && x.toLowerCase()!==k; });
+  if(on) lista.push(mail);
+  d.email=normalizarEmails(lista.join(','));
+  save();
+  personasModal();
+}
+// El fin de dia es de a uno: el Apps Script recibe un solo numero. Prender uno
+// apaga al resto en vez de dejar dos prendidos y que solo llegue a uno sin que
+// nadie entienda por que.
+function setNotifEod(mail, on){
+  var k=String(mail||'').toLowerCase();
+  (DB.personas||[]).forEach(function(p){
+    if(String(p.email||'').toLowerCase()!==k) p.notifEod=false;
+  });
+  var p=_personaEntrada(mail);
+  p.notifEod=!!on;
+  save();
+  personasModal();
+  if(on && !p.tel){
+    toast(( p.nombre||mail)+' no tiene telefono cargado: el fin de dia no puede salir.','amber');
+  }
+}
+// A quien le toca hoy el resumen de fin de dia, segun los toggles.
+function eodDestinatario(){
+  return personas().filter(function(p){ return p.notifEod; })[0]||null;
+}
 function personaFathomAbrir(mail){
   S._personaFathom=mail;
   personasModal();
@@ -6787,7 +6858,7 @@ function abrirRepartoClientes(){
           +'</select>'
           +(personas().filter(function(p){ return p.tel; }).length
             ? '<button class="btn btn-sm" style="font-size:10px;padding:2px 9px" onclick="event.preventDefault();event.stopPropagation();aprobProbar()">Probar</button>'
-            : '<span style="font-size:10.5px;color:var(--amberx)">Nadie tiene telefono cargado en Personas.</span>')
+            : '<span style="font-size:10.5px;color:var(--amberx)">Nadie tiene telefono cargado en Usuarios.</span>')
           +'</div>'
           +'<div id="aprob-aviso" style="font-size:10.5px;margin-top:6px;color:var(--text3)"></div>'
         : '')
@@ -6822,7 +6893,7 @@ function abrirRepartoClientes(){
         +'</div>';
       }).join('')
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:7px">'
-        +'Los telefonos se cargan en <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Personas</a>.</div>'
+        +'Los telefonos se cargan en <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Usuarios</a>.</div>'
       +'</div>'):'')
     +'<div style="display:flex;justify-content:flex-end;margin-top:16px">'
       +'<button class="btn btn-sm" onclick="closeModal();if(typeof abrirConfigAgencia===\'function\')abrirConfigAgencia()">Cerrar</button></div>'
@@ -7533,8 +7604,6 @@ function nuevaVersionProducto(id){
 function integracionesAppHtml(){
   var g=function(k){ try{ return localStorage.getItem(k)||''; }catch(e){ return ''; } };
   var proxyUrl=g('evold-ghl-proxy-url'), proxySec=g('evold-ghl-proxy-secret');
-  var fathom=g('evold-fathom-proxy'), tickets=g('evold-tickets-proxy');
-  var sheets=g('evold-api-key');
   var anth=g('evold-anthropic-key');
   var a=cfgAg();
   var agOk=!!(a.proxyUrl&&a.secret&&a.token&&a.companyId);
@@ -7572,11 +7641,12 @@ function integracionesAppHtml(){
       detail:proxyUrl?idProxy(proxyUrl):'Sin URL de Web App',
       action:'openGhlProxyModal()', actionLabel:(proxyUrl&&proxySec)?'Editar conexion':'Conectar'}),
 
-    card({name:'Fathom por mail', st:fathom?'ok':'no',
-      desc:'Lee los recaps que llegan a UNA casilla de Gmail. Solo entran las llamadas de esa '
-        +'persona: las del resto del equipo no las ve. Conviene reemplazarlo por el webhook.',
-      detail:fathom?idProxy(fathom):'Sin configurar',
-      action:'openTicketsProxyModal()', actionLabel:fathom?'Editar conexion':'Conectar'}),
+    // Se sacaron las tarjetas "Fathom por mail" y "Tickets por mail". La primera
+    // quedo obsoleta con el webhook. La segunda era la unica pantalla para editar
+    // la URL del Apps Script de tickets: el codigo sigue usandola via
+    // ticketsProxyUrl(), que cae al valor por defecto de TICKETS_PROXY_DEFAULT.
+    // Si algun dia cambia ese deploy, hay que tocarlo ahi o volver a exponer la
+    // tarjeta; openTicketsProxyModal() sigue existiendo.
 
     (function(){
       var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
@@ -7587,16 +7657,6 @@ function integracionesAppHtml(){
         detail:url?('Conectado'+(n?(' \u00b7 '+n+' sin cliente'):'')):'Sin configurar',
         action:'fathomHookModal()', actionLabel:url?'Ver instrucciones':'Conectar'});
     })(),
-
-    card({name:'Tickets por mail', st:tickets?'ok':'no',
-      desc:'Recibe las tareas delegadas por mail con numero de ticket y las trae al Mirador.',
-      detail:tickets?idProxy(tickets):'Sin configurar',
-      action:'openTicketsProxyModal()', actionLabel:tickets?'Editar conexion':'Conectar'}),
-
-    card({name:'Google Sheets', st:sheets?'ok':'no',
-      desc:'Importar bloques historicos desde una planilla. Se usa una sola vez al dar de alta un cliente que ya venia midiendo.',
-      detail:sheets?'Clave de API cargada':'Sin clave de API',
-      action:'openSyncModal()', actionLabel:'Abrir importador'}),
 
     card({name:'Anthropic', st:iaPuenteOn()?'ok':(iaSinApi()?'warn':(anth?'ok':'no')),
       desc:'Resumenes y analisis automaticos. La clave se guarda en este navegador: conviene usar una con permisos acotados.'
@@ -7673,6 +7733,14 @@ function integracionesAppHtml(){
                 :'sin configurar'));
       _lineas.push('<b style="color:var(--text2);font-weight:500">Fin de dia</b> &middot; '
         +(_eod?(_eod.activo?('todos los dias a las '+((_eod.hora<10?'0':'')+_eod.hora)+':00'
+                             +(function(){
+                                 var d=(typeof eodDestinatario==='function')?eodDestinatario():null;
+                                 if(!d) return '';
+                                 return d.tel
+                                   ? (' &middot; '+esc(d.nombre||d.email))
+                                   : (' &middot; <span style="color:var(--amberx)">'
+                                      +esc(d.nombre||d.email)+' sin telefono</span>');
+                               })()
                              +(_eod.apiListo?'':' &middot; <span style="color:var(--text3)">por plantilla</span>'))
                           :'apagado')
               :'consultando...'));
@@ -7691,9 +7759,15 @@ function integracionesAppHtml(){
       var iTok=localStorage.getItem('evold-conv-token')||'';
       var iLoc=localStorage.getItem('evold-conv-loc')||'';
       var listo=!!(iTok&&iLoc);
+      // El snapshot vive en la config de agencia, pero es el que se le aplica a
+      // cada subcuenta que se crea, asi que tenerlo tambien aca evita ir a
+      // buscarlo a la otra tarjeta para saber con que plantilla se esta armando.
+      var snap=(a.snapshotNombre||a.snapshotId||'').trim();
       return card({name:'Subcuenta interna', st:listo?'ok':'no',
         desc:'La subcuenta de la agencia. Desde aca se leen las conversaciones del equipo y salen los avisos por WhatsApp de los informes. No es un cliente y no entra en ninguna metrica.',
-        detail:listo?('Location '+esc(iLoc)):'Sin configurar',
+        detail:(listo?('Location '+esc(iLoc)):'Sin configurar')
+          +'<div style="margin-top:3px">Snapshot: '
+          +(snap?esc(snap):'<span style="color:var(--text3)">sin definir</span>')+'</div>',
         action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
     })(),
     (function(){
@@ -7802,10 +7876,10 @@ function integracionesAppHtml(){
         desc:'Quien maneja cada cliente. No limita nada: todos ven todo. Sirve para filtrar tu lista y saber a quien preguntarle.',
         detail:activos
           ?(conDuenio+' de '+activos+' asignados'+(sin?(' &middot; '+sin+' sin responsable'):'')
-            +(eq.length>1?(' &middot; '+eq.length+' personas'):''))
+            +(eq.length>1?(' &middot; '+eq.length+' usuarios'):''))
           :'Sin clientes activos',
         action:'abrirRepartoClientes()', actionLabel:'Repartir',
-        action2:'personasModal()', action2Label:'Personas'});
+        action2:'personasModal()', action2Label:'Usuarios'});
     })(),
     (function(){
       // La biblioteca es de la agencia, no del cliente: un diseno cargado
@@ -7840,10 +7914,10 @@ function integracionesAppHtml(){
       // numeros del resto de la app, para no tipearlos de nuevo en cada lugar.
       var ps=personas();
       var completos=ps.filter(function(p){ return p.nombre&&p.tel; }).length;
-      return card({name:'Personas', st:ps.length?(completos===ps.length?'ok':'partial'):'no',
+      return card({name:'Usuarios', st:ps.length?(completos===ps.length?'ok':'partial'):'no',
         desc:'Nombre, mail y telefono del equipo. Se cargan una vez aca y despues se eligen en el informe, en los avisos por WhatsApp y en el reparto de clientes.',
         detail:ps.length
-          ?(ps.length+' persona'+(ps.length===1?'':'s')
+          ?(ps.length+' usuario'+(ps.length===1?'':'s')
             +(completos===ps.length?' &middot; datos completos':(' &middot; '+(ps.length-completos)+' sin nombre o telefono')))
           :'Nadie cargado',
         action:'personasModal()', actionLabel:ps.length?'Editar':'Agregar'});
@@ -8181,7 +8255,6 @@ function toggleOverviewMenu(btn){
   };
   m.innerHTML=''
     +it('openNewClientModal()','ti-plus','Nuevo cliente')
-    +it('openSyncModal()','ti-refresh','Sincronizar Sheet')
     +it('syncFathomFromGmail()','ti-phone','Sincronizar llamadas')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
     +it('importData()','ti-download','Importar backup',true)
@@ -11486,8 +11559,8 @@ function showTickets(){
       +'border-radius:var(--radius-md);padding:10px 13px;margin-bottom:12px;font-size:11.5px;'
       +'color:var(--amberx);line-height:1.55">'
       +'Hay tareas asignadas a <b>'+window._tkSinResolver.map(esc).join('</b>, <b>')+'</b> que no '
-      +'coinciden con nadie en Personas, asi que no entran en este filtro. '
-      +'Agregá esos nombres en Configuracion &rarr; Personas, o corregí el responsable en cada tarea.'
+      +'coinciden con nadie en Usuarios, asi que no entran en este filtro. '
+      +'Agregá esos nombres en Configuracion &rarr; Usuarios, o corregí el responsable en cada tarea.'
       +'</div>';
   }
 
@@ -13840,7 +13913,7 @@ function openWeeklyReportModal(){
       +'</div>'
       +'<div id="env-resumen-'+e.id+'" style="font-size:11px;color:var(--text3);margin-top:11px;line-height:1.6"></div>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:7px">'
-        +'Los mails y telefonos salen de <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Personas</a>.</div>'
+        +'Los mails y telefonos salen de <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Usuarios</a>.</div>'
     +'</div>';
   };
 
@@ -13976,9 +14049,26 @@ function eodPanelHtml(suelto){
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
       +'<span style="font-size:12px;color:var(--text3)">A las</span>'
       +'<select id="eod-hora" style="'+inp+'">'+horas+'</select>'
-      +'<input type="tel" id="eod-numero" list="eod-tels" placeholder="+54 9 11 ..." value="'+esc(e.numero||'')+'" style="'+inp+';flex:1;min-width:170px">'
+      +'<input type="tel" id="eod-numero" list="eod-tels" placeholder="+54 9 11 ..." value="'
+        // El numero sale del toggle "fin de dia" de Usuarios. Si nadie lo tiene
+        // prendido queda el que estuviera cargado, para no romper lo que ya anda.
+        +esc((function(){
+          var d=(typeof eodDestinatario==='function')?eodDestinatario():null;
+          return (d&&d.tel)?d.tel:(e.numero||'');
+        })())+'" style="'+inp+';flex:1;min-width:170px">'
       +personasDatalist('eod-tels','tel')
     +'</div>'
+    +(function(){
+      var d=(typeof eodDestinatario==='function')?eodDestinatario():null;
+      if(d&&d.tel) return '<div style="font-size:11px;color:var(--text3);margin:-4px 0 10px">'
+        +'Va a <b style="color:var(--text2)">'+esc(d.nombre||d.email)+'</b>, '
+        +'segun su toggle en Usuarios. Guardá para que el cambio llegue al script.</div>';
+      if(d) return '<div style="font-size:11px;color:var(--amberx);margin:-4px 0 10px">'
+        +esc(d.nombre||d.email)+' tiene prendido el fin de dia pero no tiene telefono cargado.</div>';
+      return '<div style="font-size:11px;color:var(--text3);margin:-4px 0 10px">'
+        +'Nadie lo tiene prendido en Usuarios. Podes poner el numero a mano aca, '
+        +'o prender el toggle en la ficha de quien lo reciba.</div>';
+    })()
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
       +'<input type="password" id="eod-apikey" placeholder="'+(e.apiListo?'Clave de Claude ya cargada':'Clave de la API de Claude (sk-ant-...)')+'" style="'+inp+';flex:1;min-width:240px">'
       +'<button class="btn btn-sm" onclick="eodGuardar()">Guardar</button>'
@@ -14996,12 +15086,12 @@ function renderDefaultAlarmsModal(){
         var sueltos=actuales.filter(function(a){
           return !ps.some(function(p){ return p.email.toLowerCase()===a.toLowerCase(); });
         });
-        return (chips||'<span style="font-size:11.5px;color:var(--text3)">No hay personas cargadas. </span>')
+        return (chips||'<span style="font-size:11.5px;color:var(--text3)">No hay usuarios cargados. </span>')
           +(sueltos.length?'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">Ademas: '+esc(sueltos.join(', '))+'</div>':'')
           +'<input type="hidden" id="def-alarm-email" value="'+esc(d.email||'')+'">';
       })()
     +'<div style="font-size:11px;color:var(--text3);margin-top:5px;margin-bottom:10px">'
-      +'Salen de <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Personas</a>. '
+      +'Salen de <a href="javascript:void(0)" onclick="personasModal()" style="color:var(--accent);text-decoration:none">Usuarios</a>. '
       +'Cada cliente puede tener los suyos y pisar estos.</div>'
     // El aviso al telefono reusa los numeros de los envios del informe: una sola
     // lista de telefonos para todo.
@@ -18241,7 +18331,6 @@ function renderTab(){
     const metaOk=!!(c.metaToken&&c.metaAccountId);
     const al=getActiveLine(c.conversionLines||[]);
     const campN=((al&&al.metaCampaigns)||[]).length;
-    const sheetsOk=!!localStorage.getItem('evold-api-key');
     const fathomN=(c.fathomCalls||[]).length;
     const iaOk=!!localStorage.getItem('evold-anthropic-key');
     const _effR=effectiveAlarmRules(c).filter(function(r){return r.enabled;});
@@ -18279,10 +18368,6 @@ function renderTab(){
         desc:'Campanas, adsets, anuncios e inversion en tiempo real (por periodo, campana y pais). Requiere token de sistema y Account ID.',
         detail:metaOk?('act_'+esc(c.metaAccountId)+(campN?' &middot; '+campN+' campanas sincronizadas':'')):'',
         action:'openMetaConfig('+c.id+')',actionLabel:metaOk?'Editar token':'Conectar'}),
-      card({name:'Google Sheets (tracker semanal)',st:sheetsOk?'ok':'no',
-        desc:'Importa las metricas semanales del sheet del equipo a la linea activa de cada cliente (bloques, adsets y guiones).',
-        detail:sheetsOk?'API key cargada &middot; sheet del equipo':'',
-        action:'openSyncModal()',actionLabel:sheetsOk?'Sincronizar':'Conectar'}),
       (function(){
         var st=c.lpStats;
         var hay=!!(st&&st.vistas);
@@ -29383,7 +29468,7 @@ function sopCampoGuardar(id, bi, pi, i){
 function sopDatoPersona(id, bi, pi){
   var l=personas().filter(function(x){ return x.fbMail||x.socioId; });
   if(!l.length){
-    toast('Cargá el mail de Meta o el ID de socio en Configuracion \u2192 Personas');
+    toast('Cargá el mail de Meta o el ID de socio en Configuracion \u2192 Usuarios');
     return;
   }
   var op=[];
@@ -29446,12 +29531,12 @@ function _sopExtrasHtml(id, bi, pi, p){
         var per=personas().filter(function(x){
           return String(x.email).toLowerCase()===String(e.ref.mail).toLowerCase(); })[0];
         val=per?(per[e.ref.campo]||''):'';
-        if(!val) val='(falta en Personas)';
+        if(!val) val='(falta en Usuarios)';
       }
       return '<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
         +'<span style="font-size:11px;color:var(--text3);width:96px;flex:none">'+esc(e.l||'Dato')+'</span>'
         +'<span style="flex:1;min-width:0;font-size:12px;color:'
-          +(val==='(falta en Personas)'?'var(--amberx)':'var(--text)')+';word-break:break-all">'
+          +(val==='(falta en Usuarios)'?'var(--amberx)':'var(--text)')+';word-break:break-all">'
           +esc(val)+'</span>'
         +'<button class="btn btn-sm" style="font-size:10px;padding:2px 8px;flex:none" '
           +'onclick="_copiar(\''+esc(String(val).replace(/'/g,"\\'"))+'\')">Copiar</button>'
@@ -29515,7 +29600,7 @@ function _sopExtrasHtml(id, bi, pi, p){
         +'onclick="sopCampoElegir('+id+','+bi+','+pi+')">+ integracion</button>'
       +'<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
         +'onclick="sopDatoPersona('+id+','+bi+','+pi+')" '
-        +'title="Toma el mail de Meta o el ID de socio de Personas">+ de una persona</button>'
+        +'title="Toma el mail de Meta o el ID de socio de Usuarios">+ de una persona</button>'
     +'</div>';
   }
   return out;
