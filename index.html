@@ -7636,10 +7636,9 @@ function integracionesAppHtml(){
   var idProxy=function(u){ return recortar(String(u||'').replace('https://script.google.com/macros/s/',''),26); };
 
   var tarjetas=[
-    card({name:'Proxy de GHL', st:(proxyUrl&&proxySec)?'ok':(proxyUrl?'partial':'no'),
-      desc:'Puente de lectura hacia GoHighLevel. Trae contactos, oportunidades y atribucion para todos los clientes.',
-      detail:proxyUrl?idProxy(proxyUrl):'Sin URL de Web App',
-      action:'openGhlProxyModal()', actionLabel:(proxyUrl&&proxySec)?'Editar conexion':'Conectar'}),
+    // La tarjeta "Proxy de GHL" se fusiono con "Subcuenta interna": son las dos
+    // credenciales de GHL de la agencia y se cargan de una sola vez, en la misma
+    // pantalla. openGhlProxyModal() sigue existiendo por si hace falta suelta.
 
     // Se sacaron las tarjetas "Fathom por mail" y "Tickets por mail". La primera
     // quedo obsoleta con el webhook. La segunda era la unica pantalla para editar
@@ -7759,46 +7758,26 @@ function integracionesAppHtml(){
       var iTok=localStorage.getItem('evold-conv-token')||'';
       var iLoc=localStorage.getItem('evold-conv-loc')||'';
       var listo=!!(iTok&&iLoc);
-      // El snapshot vive en la config de agencia, pero es el que se le aplica a
-      // cada subcuenta que se crea, asi que tenerlo tambien aca evita ir a
-      // buscarlo a la otra tarjeta para saber con que plantilla se esta armando.
+      // El proxy de lectura ahora se carga en este mismo modal, asi que su
+      // estado tambien se muestra aca: si falta, no se lee nada de GHL.
+      var pOk=!!(proxyUrl&&proxySec);
       var snap=(a.snapshotNombre||a.snapshotId||'').trim();
-      return card({name:'Subcuenta interna', st:listo?'ok':'no',
-        desc:'La subcuenta de la agencia. Desde aca se leen las conversaciones del equipo y salen los avisos por WhatsApp de los informes. No es un cliente y no entra en ninguna metrica.',
+      return card({name:'Subcuenta interna', st:(listo&&pOk)?'ok':((listo||proxyUrl)?'partial':'no'),
+        desc:'La subcuenta de la agencia y el proxy de lectura de GHL. Desde aca se leen las conversaciones del equipo, salen los avisos por WhatsApp de los informes, y se traen contactos y oportunidades de todos los clientes.',
         detail:(listo?('Location '+esc(iLoc)):'Sin configurar')
           +'<div style="margin-top:3px">Snapshot: '
-          +(snap?esc(snap):'<span style="color:var(--text3)">sin definir</span>')+'</div>',
+          +(snap?esc(snap):'<span style="color:var(--text3)">sin definir</span>')+'</div>'
+          +'<div style="margin-top:3px">Proxy: '
+          +(pOk?esc(idProxy(proxyUrl))
+               :(proxyUrl?'<span style="color:var(--amberx)">falta el secreto</span>'
+                        :'<span style="color:var(--amberx)">sin configurar</span>'))+'</div>',
         action:'abrirSubcuentaInterna()', actionLabel:listo?'Editar':'Configurar'});
     })(),
     (function(){
-      // La revision se responde siempre en el tracker. Lo unico configurable
-      // aca es la direccion publica, que es la que viaja al mail y al WhatsApp.
-      var pend=(typeof rvPendientesCount==='function')?rvPendientesCount():0;
-      var total=(typeof rvClientesConInforme==='function')?rvClientesConInforme().length:0;
-      var url=(typeof rvTrackerUrl==='function')?rvTrackerUrl():'';
-      var propia=false;
-      try{ propia=!!localStorage.getItem('evold-tracker-url'); }catch(e){}
-      return card({name:'Revisiones', st:total?(propia?'ok':'partial'):'no',
-        desc:'Al terminar cada informe se abre una revision del periodo. Se responde en el tracker, venga del boton del mail, del link de WhatsApp o del Mirador.',
-        detail:total
-          ?(pend?(pend+' pendiente'+(pend===1?'':'s')+' de '+total+' clientes'):('al dia &middot; '+total+' clientes'))
-            +(propia?'':' &middot; falta fijar la direccion publica')
-          :'Sin clientes con informe',
-        action:'S.tkTab=\'revisiones\';showTickets()', actionLabel:'Ver revisiones',
-        action2:'rvAjustesModal()', action2Label:'Ajustes'});
-    })(),
-    (function(){
-      var rs=getRutinas();
-      var act=rs.filter(function(r){return r.activa&&r.texto;}).length;
-      return card({name:'Rutinas', st:act?'ok':'no',
-        desc:'Tareas que se repiten: se cargan solas el dia que toca, en los clientes que elijas. Se revisan al abrir el tracker.',
-        detail:act?(act+' rutina'+(act===1?'':'s')+' activa'+(act===1?'':'s')):'Sin rutinas',
-        action:'abrirRutinas()', actionLabel:rs.length?'Editar':'Crear'});
-    })(),
-    (function(){
-      // Las tres son lo mismo visto desde angulos distintos: como trabajamos.
-      // Procedimientos es que hacer, Formularios que preguntar, Guiones que
-      // decir. Separadas ocupaban tres tarjetas y ninguna se entendia sola.
+      // Todo lo que es "como trabaja la agencia" en una sola tarjeta. Antes
+      // eran cinco (Operaciones, Revisiones, Rutinas, Productos, Reparto) y
+      // ninguna se entendia sola: son partes del mismo tema. Con siete filas
+      // ya no entran botones, asi que cada fila es el acceso.
       var sops=(DB.sops||[]);
       var sopPend=sops.filter(function(x){ var c=_sopCuenta(x); return c.pct<100; }).length;
       var fs=formularios();
@@ -7810,31 +7789,85 @@ function integracionesAppHtml(){
       var gsCorridos=(DB.clients||[]).filter(function(c){
         return c.guionResp && Object.keys(c.guionResp).some(function(k){ return c.guionResp[k].at; });
       }).length;
-      var hay=sops.length+fs.length+gs.length;
-      var linea=function(n, rot, det){
-        return '<div style="display:flex;gap:8px;align-items:baseline;padding:1px 0">'
+
+      var rvPend=(typeof rvPendientesCount==='function')?rvPendientesCount():0;
+      var rvTotal=(typeof rvClientesConInforme==='function')?rvClientesConInforme().length:0;
+      var rvPropia=false;
+      try{ rvPropia=!!localStorage.getItem('evold-tracker-url'); }catch(e){}
+
+      var rs=getRutinas();
+      var rutAct=rs.filter(function(r){return r.activa&&r.texto;}).length;
+
+      var eq=equipo();
+      var activos=DB.clients.filter(function(c){return !c.archived;}).length;
+      var conDuenio=DB.clients.filter(function(c){return !c.archived && c.owner;}).length;
+
+      var ps=productos();
+      var conPres=ps.filter(function(p){ return _prodActual(p); }).length;
+      var vers=ps.reduce(function(s,p){ return s+((p.versiones||[]).length); },0);
+
+      // Los disenos del quiz son otro activo reutilizable, como los formularios
+      // y los guiones: se hacen una vez y sirven para el cliente siguiente.
+      var tpls=(DB.quizTpls||[]);
+      var tplUsan=(DB.clients||[]).filter(function(c){ return c.quiz&&c.quiz.tplId; }).length;
+
+      var hay=sops.length+fs.length+gs.length+tpls.length+rvTotal+rutAct+activos+ps.length;
+      // Ambar si algo esta a medias. Es el mismo criterio que tenian las
+      // tarjetas por separado, junto.
+      var falta=sopPend || (rvTotal&&!rvPropia) || (activos-conDuenio) || (ps.length-conPres);
+
+      // Cada fila es un link. El numero va en monoespaciada y alineado a la
+      // derecha para que la columna se lea de un vistazo.
+      var fila=function(n, rot, det, accion){
+        return '<a href="javascript:void(0)" onclick="'+accion+'" '
+          +'style="display:flex;gap:8px;align-items:baseline;padding:2px 0;text-decoration:none">'
           +'<span class="mono" style="font-size:11px;color:var(--text2);width:16px;flex:none;'
             +'text-align:right">'+n+'</span>'
           +'<span style="font-size:11px;color:var(--text2)">'+rot
           +(det?('<span style="color:var(--text3)"> \u00b7 '+det+'</span>'):'')+'</span>'
-        +'</div>';
+        +'</a>';
       };
-      return card({name:'Operaciones', st:hay?'ok':'no',
-        desc:'Como trabaja la agencia, en tres piezas: los <b>procedimientos</b> dicen que hacer, '
-          +'los <b>formularios</b> que preguntarle al cliente por escrito, y los <b>guiones</b> '
-          +'que preguntar y que dejarle claro en una llamada. Los tres se sacan de las llamadas '
-          +'que ya tuviste.',
+
+      return card({name:'Operaciones', st:hay?(falta?'partial':'ok'):'no',
+        desc:'Como trabaja la agencia. Los <b>procedimientos</b> dicen que hacer, los '
+          +'<b>formularios</b> que preguntarle al cliente por escrito, los <b>guiones</b> que '
+          +'decirle en una llamada y los <b>disenos de quiz</b> que reusa cada uno. Las '
+          +'<b>revisiones</b> cierran cada informe, las <b>rutinas</b> '
+          +'cargan solas lo que se repite, el <b>reparto</b> dice quien maneja a quien y los '
+          +'<b>productos</b> definen que se vende y con que alcance.',
         detail:hay
-          ? (linea(sops.length,'procedimientos', sops.length?(sopPend?(sopPend+' sin terminar'):'completos'):'')
-            +linea(fs.length,'formularios', fs.length?(fsResp?(fsResp+' cliente'+(fsResp===1?'':'s')+' respondio'):'sin responder'):'')
-            +linea(gs.length,'guiones', gs.length
-              ?((gs.length-gsArm)?((gs.length-gsArm)+' vacio'+((gs.length-gsArm)===1?'':'s'))
-                :(gsCorridos?('corrido con '+gsCorridos+' cliente'+(gsCorridos===1?'':'s'))
-                  :'sin correr')):''))
+          ? (fila(sops.length,'procedimientos',
+                sops.length?(sopPend?(sopPend+' sin terminar'):'completos'):'',
+                'abrirSopsModal()')
+            +fila(fs.length,'formularios',
+                fs.length?(fsResp?(fsResp+' cliente'+(fsResp===1?'':'s')+' respondio'):'sin responder'):'',
+                'abrirFormsModal()')
+            +fila(gs.length,'guiones', gs.length
+                ?((gs.length-gsArm)?((gs.length-gsArm)+' vacio'+((gs.length-gsArm)===1?'':'s'))
+                  :(gsCorridos?('corrido con '+gsCorridos+' cliente'+(gsCorridos===1?'':'s'))
+                    :'sin correr')):'',
+                'abrirGuionesModal()')
+            +fila(tpls.length,'disenos de quiz', tpls.length
+                ?(tplUsan?(tplUsan+' cliente'+(tplUsan===1?'':'s')+' con uno elegido')
+                         :'ninguno elegido'):'',
+                'quizTplModal(0)')
+            +fila(rvTotal,'revisiones', rvTotal
+                ?((rvPend?(rvPend+' pendiente'+(rvPend===1?'':'s')):'al dia')
+                  +(rvPropia?'':' \u00b7 falta la direccion publica')):'sin clientes con informe',
+                'S.tkTab=\'revisiones\';showTickets()')
+            +fila(rutAct,'rutinas', rutAct?'activas':'ninguna activa', 'abrirRutinas()')
+            +fila(activos,'clientes',
+                activos?(conDuenio+' con responsable'
+                  +((activos-conDuenio)?(' \u00b7 '+(activos-conDuenio)+' sin asignar'):'')):'',
+                'abrirRepartoClientes()')
+            +fila(ps.length,'productos', ps.length
+                ?((conPres===ps.length?'con presentacion':((ps.length-conPres)+' sin presentacion'))
+                  +(vers?(' \u00b7 '+vers+' version'+(vers===1?'':'es')):'')):'',
+                'abrirProductos()'))
           : 'Nada cargado todavia',
         action:'abrirSopsModal()',   actionLabel:'Procedimientos',
-        action2:'abrirFormsModal()', action2Label:'Formularios',
-        action3:'abrirGuionesModal()', action3Label:'Guiones'});
+        action2:'abrirRepartoClientes()', action2Label:'Repartir',
+        action3:'rvAjustesModal()', action3Label:'Ajustes de revisiones'});
     })(),
     (function(){
       // Almacenamiento. El aviso de espacio existia pero solo saltaba cuando ya
@@ -7844,71 +7877,28 @@ function integracionesAppHtml(){
       var st=pct>=85?'no':(pct>=60?'partial':'ok');
       var detalle=d.total.toFixed(2)+' MB de ~5 MB ('+pct+'%)';
       if(d.transcripciones>0.05) detalle+=' \u00b7 '+d.transcripciones.toFixed(2)+' MB en transcripciones';
-      return card({name:'Almacenamiento', st:st,
-        desc:'Cuanto ocupa el tracker en este navegador. Al llegar al limite deja de guardar '
-          +'local y solo sube a Supabase: si recargas antes de que suba, perdes lo ultimo.',
-        detail:detalle,
-        action:'_avisarEspacioManual()', actionLabel:'Ver detalle'});
-    })(),
-    (function(){
-      // Productos. No es una conexion externa, pero es configuracion de la
-      // agencia: define que se vende y con que alcance.
-      var ps=productos();
-      var conPres=ps.filter(function(p){ return _prodActual(p); }).length;
-      var vers=ps.reduce(function(s,p){ return s+((p.versiones||[]).length); },0);
-      return card({name:'Productos', st:ps.length?(conPres===ps.length?'ok':'partial'):'no',
-        desc:'Que vende la agencia. Guarda la presentacion de cada producto con sus entregables y su alcance, y versiona los cambios para saber que se le vendio a cada cliente.',
-        detail:ps.length
-          ?(ps.length+' producto'+(ps.length===1?'':'s')
-            +(conPres===ps.length?'':(' \u00b7 '+(ps.length-conPres)+' sin presentacion'))
-            +(vers?(' \u00b7 '+vers+' version'+(vers===1?'':'es')):''))
-          :'Sin productos cargados',
-        action:'abrirProductos()', actionLabel:ps.length?'Editar':'Cargar'});
-    })(),
-    (function(){
-      // Reparto de clientes. No es una conexion externa, pero vive aca porque es
-      // configuracion de la agencia y no de un cliente en particular.
-      var eq=equipo();
-      var conDuenio=DB.clients.filter(function(c){return !c.archived && c.owner;}).length;
-      var activos=DB.clients.filter(function(c){return !c.archived;}).length;
-      var sin=activos-conDuenio;
-      return card({name:'Reparto de clientes', st:conDuenio?'ok':'no',
-        desc:'Quien maneja cada cliente. No limita nada: todos ven todo. Sirve para filtrar tu lista y saber a quien preguntarle.',
-        detail:activos
-          ?(conDuenio+' de '+activos+' asignados'+(sin?(' &middot; '+sin+' sin responsable'):'')
-            +(eq.length>1?(' &middot; '+eq.length+' usuarios'):''))
-          :'Sin clientes activos',
-        action:'abrirRepartoClientes()', actionLabel:'Repartir',
-        action2:'personasModal()', action2Label:'Usuarios'});
-    })(),
-    (function(){
-      // La biblioteca es de la agencia, no del cliente: un diseno cargado
-      // trabajando con uno queda disponible para todos.
-      var tpls=(DB.quizTpls||[]);
-      var usan=(DB.clients||[]).filter(function(c){ return c.quiz&&c.quiz.tplId; }).length;
-      return card({name:'Plantillas de quiz', st:tpls.length?'ok':'no',
-        desc:'Los disenos del quiz, guardados a nivel agencia. Cada cliente elige cual usa, '
-          +'asi que un diseno hecho para uno se recicla en el siguiente.',
-        detail:tpls.length
-          ?(tpls.length+' diseno'+(tpls.length===1?'':'s')
-            +(usan?(' &middot; '+usan+' cliente'+(usan===1?'':'s')+' con uno elegido'):''))
-          :'Todavia no hay ninguno',
-        action:'quizTplModal(0)', actionLabel:tpls.length?'Ver la biblioteca':'Cargar el primero'});
-    })(),
-    (function(){
-      // Fichas en JSON. Lo que se carga al dar de alta un cliente termina
-      // encerrado en el navegador; esto lo saca en un formato que otra
-      // herramienta pueda leer. Es exportar datos, no un backup: el respaldo
-      // completo de la base esta aparte.
-      var act=DB.clients.filter(function(c){ return !c.archived; });
-      var conFicha=act.filter(function(c){
+      // Las fichas en JSON eran su propia tarjeta. Es sacar datos de la app, que
+      // es el mismo tema que cuanto ocupan y donde viven, asi que van juntas.
+      var _act=DB.clients.filter(function(c){ return !c.archived; });
+      var _conFicha=_act.filter(function(c){
         return c.email||c.contacto||c.phone||(c.ghl&&c.ghl.locationId);
       }).length;
-      return card({name:'Fichas de clientes', st:act.length?(conFicha?'ok':'partial'):'no',
-        desc:'Exporta en JSON los datos que se cargan al dar de alta: contacto, mail, telefono, industria, subcuenta de GHL y el equipo del cliente.',
-        detail:act.length?(conFicha+' de '+act.length+' con ficha cargada'):'Sin clientes activos',
-        action:'fichasExportarModal()', actionLabel:'Exportar'});
+      return card({name:'Datos y almacenamiento', st:st,
+        desc:'Cuanto ocupa el tracker en este navegador y como sacar los datos de aca. Al llegar '
+          +'al limite deja de guardar local y solo sube a Supabase: si recargas antes de que suba, '
+          +'perdes lo ultimo. Las fichas exportan en JSON lo que se carga al dar de alta un '
+          +'cliente: contacto, mail, telefono, industria, subcuenta de GHL y su equipo.',
+        detail:detalle
+          +'<div style="margin-top:3px">Fichas &middot; '
+          +(_act.length?(_conFicha+' de '+_act.length+' cargadas'):'sin clientes activos')+'</div>',
+        action:'_avisarEspacioManual()', actionLabel:'Ver detalle',
+        action2:'fichasExportarModal()', action2Label:'Exportar fichas'});
     })(),
+    // "Productos" y "Reparto de clientes" pasaron a ser filas de Operaciones.
+    // abrirProductos() y abrirRepartoClientes() siguen igual, se llaman desde ahi.
+    // "Plantillas de quiz" es ahora una fila de Operaciones, y "Fichas de
+    // clientes" una linea de "Datos y almacenamiento". quizTplModal() y
+    // fichasExportarModal() se llaman desde ahi.
     (function(){
       // Personas del equipo. Es la libreta de la que salen todos los mails y
       // numeros del resto de la app, para no tipearlos de nuevo en cada lugar.
@@ -7950,6 +7940,7 @@ function abrirSubcuentaInterna(){
   var url=localStorage.getItem('evold-conv-url')||'';
   var sec=localStorage.getItem('evold-conv-secret')||'evolve-tracker';
   var nom=localStorage.getItem('evold-conv-mi-numero')||'';
+  var _gp=(typeof getGhlProxy==='function')?getGhlProxy():{url:'',secret:''};
   var inp='padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font)';
   var lbl='font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
   document.getElementById('modal-root').innerHTML=''
@@ -7963,6 +7954,26 @@ function abrirSubcuentaInterna(){
       +'<input id="si-loc" value="'+esc(loc)+'" placeholder="UvEY3TDazLCLrRsu3RSC" style="'+inp+';width:100%;box-sizing:border-box"></div>'
     +'<div style="margin-bottom:12px"><div style="'+lbl+'">Token de la subcuenta (pit-...)</div>'
       +'<input id="si-tok" value="'+esc(tok)+'" placeholder="pit-..." style="'+inp+';width:100%;box-sizing:border-box"></div>'
+    // El proxy de lectura vivia en su propia tarjeta. Es otra cosa que la
+    // subcuenta (sirve para todos los clientes, no para esta location), pero se
+    // configura una sola vez y junto con esto, asi que estaba de mas como
+    // pantalla aparte. El bloque lo separa para que no se confundan.
+    +'<div style="border-top:1px solid var(--border);margin:18px 0 14px;padding-top:14px">'
+      +'<div style="font-size:12.5px;color:var(--text2);margin-bottom:3px">Proxy de lectura de GHL</div>'
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+        +'Distinto de lo de arriba: no es de esta subcuenta sino el puente que trae contactos, '
+        +'oportunidades y atribucion de <b>todos</b> los clientes. El navegador no puede llamar a '
+        +'GHL directo (CORS) y este Apps Script hace de intermediario.</div>'
+      +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">'
+        +'<div><div style="'+lbl+'">URL del Apps Script (/exec)</div>'
+          +'<input id="ghl-proxy-url" value="'+esc(_gp.url)+'" '
+          +'placeholder="https://script.google.com/macros/s/.../exec" '
+          +'style="'+inp+';width:100%;box-sizing:border-box"></div>'
+        +'<div><div style="'+lbl+'">Secreto compartido</div>'
+          +'<input id="ghl-proxy-secret" value="'+esc(_gp.secret)+'" '
+          +'style="'+inp+';width:100%;box-sizing:border-box"></div>'
+      +'</div>'
+    +'</div>'
     +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:12px">'
       +'<div><div style="'+lbl+'">URL del script de conversaciones (/exec)</div>'
         +'<input id="si-url" value="'+esc(url)+'" placeholder="https://script.google.com/.../exec" style="'+inp+';width:100%;box-sizing:border-box"></div>'
@@ -8023,6 +8034,18 @@ async function guardarSubcuentaInterna(){
   var _su=document.getElementById('si-user');
   localStorage.setItem('evold-conv-user',_su?_su.value:'');
   localStorage.setItem('evold-conv-user-nom',(_su&&_su.selectedIndex>=0)?(_su.options[_su.selectedIndex].textContent||''):'');
+  // El proxy se guarda antes de seguir: mas abajo esta misma funcion llama a
+  // getGhlProxy() para empujar los envios al Apps Script, y si se guardara
+  // despues usaria la URL vieja y el push iria al script equivocado.
+  var _pu=document.getElementById('ghl-proxy-url');
+  var _ps=document.getElementById('ghl-proxy-secret');
+  if(_pu){
+    localStorage.setItem('evold-ghl-proxy-url',
+      String(_pu.value||'').trim().replace(/[\u200B-\u200D\uFEFF]/g,''));
+  }
+  if(_ps){
+    localStorage.setItem('evold-ghl-proxy-secret', _cleanSecret(_ps.value));
+  }
   // Los avisos del informe viven en el Apps Script, asi que hay que empujarlos ahi
   decir('Guardado. Avisando al Apps Script...');
   var proxy=getGhlProxy();
@@ -14236,7 +14259,7 @@ async function eodGuardar(){
 }
 async function eodPreview(){
   var proxy=getGhlProxy&&getGhlProxy();
-  if(!proxy||!proxy.url){ _eodSal('Falta configurar el proxy de lectura (Integraciones > Proxy de GHL).','var(--amberx)'); return; }
+  if(!proxy||!proxy.url){ _eodSal('Falta configurar el proxy de lectura (Integraciones > Subcuenta interna).','var(--amberx)'); return; }
   var c=(DB.clients||[]).filter(function(x){return !x.archived;})[0];
   if(!c){ _eodSal('No hay clientes.','var(--amberx)'); return; }
   _eodSal('Armando el resumen de '+c.name+'... (puede tardar unos segundos)');
@@ -14251,7 +14274,7 @@ async function eodPreview(){
 }
 async function eodAhora(){
   var proxy=getGhlProxy&&getGhlProxy();
-  if(!proxy||!proxy.url){ _eodSal('Falta configurar el proxy de lectura (Integraciones > Proxy de GHL).','var(--amberx)'); return; }
+  if(!proxy||!proxy.url){ _eodSal('Falta configurar el proxy de lectura (Integraciones > Subcuenta interna).','var(--amberx)'); return; }
   // Sin numero guardado del otro lado no hay a donde mandar. Se avisa antes de
   // salir a consultar Meta y GHL para nada.
   if(!(S._eodEstado&&S._eodEstado.numero)){
