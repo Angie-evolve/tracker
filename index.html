@@ -176,6 +176,39 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .page-sub{font-size:12px;color:var(--text2);margin-top:2px}
 .topbar-actions{display:flex;gap:8px;align-items:center}
 
+/* ===== Panel 360 =====
+   Columnas por etapa. Scroll horizontal propio: son nueve y en un notebook no
+   entran, pero partirlas en dos filas romperia la lectura de izquierda a
+   derecha, que es lo que hace entender el avance de un vistazo. */
+.p3filtros{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+.p3f{font-size:11.5px;padding:5px 12px;border-radius:99px;border:1px solid var(--border2);
+  color:var(--text2);cursor:pointer;background:transparent;font-family:var(--font);
+  white-space:nowrap}
+.p3f:hover{border-color:var(--text3);color:var(--text)}
+.p3f.on{background:var(--accent);border-color:var(--accent);color:var(--bg);font-weight:500}
+.p3scroll{overflow-x:auto;margin:0 -4px;padding:0 4px 4px}
+.p3cols{display:flex;gap:10px;min-width:900px}
+.p3col{flex:1;min-width:132px}
+.p3cab{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;
+  padding:0 2px 8px;display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.p3cab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p3cab b{color:var(--text2);font-weight:500;flex:none}
+.p3card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  padding:9px 11px;margin-bottom:7px;cursor:pointer}
+.p3card:hover{border-color:var(--border2)}
+/* La barra de color dice de quien depende, que es la pregunta que se hace
+   cualquiera mirando el tablero. */
+.p3card.frena{border-left:2px solid var(--redx)}
+.p3card.espera{border-left:2px solid var(--amberx)}
+.p3n{font-size:12.5px;color:var(--text);line-height:1.35;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.p3p{font-size:10px;color:var(--text3);margin-top:2px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.p3b{font-size:10.5px;line-height:1.45;margin-top:6px;padding-top:6px;
+  border-top:1px solid var(--border)}
+/* Las columnas vacias mantienen el alto: sin esto el tablero se ve dentado. */
+.p3nada{height:56px;border:1px dashed var(--border);border-radius:var(--radius);opacity:.35}
+
 /* Chip de origen: de que llamada y de que minuto sale el dato. Si la llamada
    tiene grabacion es un link que abre en ese minuto exacto. Mismo estilo que
    los del brief, que se genera aparte. */
@@ -931,6 +964,7 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
       <div class="torre-sub" id="torre-sub">
         <div class="torre-sub-item" data-k="tickets" onclick="irTorre('tickets')">Tickets</div>
         <div class="torre-sub-item" data-k="actividad" onclick="irTorre('actividad')">Actividad</div>
+        <div class="torre-sub-item" data-k="panel360" onclick="irTorre('panel360')">Panel 360</div>
         <div class="torre-sub-item" data-k="rentabilidad" id="nav-rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
       </div>
       <div class="nav-head-row" style="margin-top:6px">
@@ -11409,6 +11443,7 @@ function showTickets(){
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
+      :(_torre==='panel360'?p360Html()
       :(_torre==='rentabilidad'?(verPlata()?rentabilidadHtml():_torreVacio('Rentabilidad','Esta seccion no esta habilitada para tu usuario.'))
       :(_torre==='actividad'?_actividadHtml():(''
     +rvAprobacionesHtml()
@@ -11452,7 +11487,7 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>')))))))
+        +'</div>'))))))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
@@ -20128,6 +20163,192 @@ function aplicarEntregablesIA(clientId){
   c.entregablesHechos[k.ver.id]=arr;
   save();
   if(typeof renderTab==='function') renderTab();
+}
+
+// ---- Panel 360 -----------------------------------------------------------
+// En que etapa esta cada cliente y que lo frena, en columnas. No inventa datos:
+// la ruta ya la calcula _ruta() y los bloqueos ya existen repartidos en tareas
+// vencidas, revisiones sin responder y pasos de SOP marcados como "frena". Lo
+// que faltaba era mirarlos juntos.
+function _p360Prod(c){
+  var p=c.productoId?_prodPorId(c.productoId):null;
+  if(!p&&c.producto){
+    var n=String(c.producto).trim().toLowerCase();
+    p=productos().find(function(x){ return String(x.nombre||'').trim().toLowerCase()===n; })||null;
+  }
+  return p?(p.nombre||''):(c.producto||'');
+}
+// Los frenos de un cliente, de todas las fuentes, ordenados por antiguedad: el
+// que mas tiempo lleva es el que mas dano hace.
+function _p360Frenos(c){
+  var out=[], hoy=new Date(); hoy.setHours(0,0,0,0);
+  var dias=function(f){
+    if(!f) return null;
+    var d=(f instanceof Date)?f:new Date(f);
+    if(isNaN(d)) return null;
+    return Math.max(0, Math.round((hoy-d)/86400000));
+  };
+  // 1. Tareas vencidas. Es el freno mas comun y el mas facil de perder de vista.
+  (c.tasks||[]).forEach(function(t){
+    if(t.done||t.archivada||!t.due) return;
+    var d=_dueEnd(t.due);
+    if(!d||d>=new Date()) return;
+    out.push({q:t.text||'Tarea sin titulo', de:'nosotros', dias:dias(t.due),
+              tipo:'tarea', accion:'irCliente('+c.id+')'});
+  });
+  // 2. Revisiones que el cliente todavia no respondio.
+  try{
+    (rvPendientesSemana()||[]).forEach(function(e){
+      if(String(e.cliente)!==String(c.id)) return;
+      out.push({q:'Informe sin responder', de:'cliente', dias:dias(e.enviado),
+                tipo:'revision', accion:'rvAbrir('+c.id+',\''+e.periodo+'\',\'tracker\')'});
+    });
+  }catch(e){}
+  // Los SOP quedan afuera a proposito. Son plantillas de la agencia y su tildado
+  // es global, no por cliente: sumarlos aca ponia el mismo freno en la tarjeta
+  // de todos, que es falso. Van arriba del tablero, una vez.
+  return out.sort(function(a,b){ return (b.dias||0)-(a.dias||0); });
+}
+// Los procedimientos frenados son de la agencia, no de un cliente. Se muestran
+// una sola vez arriba: frenan el trabajo de todos por igual.
+function _p360SopsHtml(){
+  var frs=[];
+  (DB.sops||[]).forEach(function(s){
+    var fr=(typeof _sopFreno==='function')?_sopFreno(s):null;
+    if(!fr) return;
+    frs.push({s:s, fr:fr, tapados:(typeof _sopTapados==='function')?_sopTapados(s,fr):0});
+  });
+  if(!frs.length) return '';
+  return '<div style="margin-bottom:14px;padding:10px 13px;border:1px solid var(--border);'
+      +'border-radius:var(--radius);background:var(--bg3)">'
+    +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin-bottom:6px">Procedimientos frenados</div>'
+    +frs.map(function(x){
+      var esCli=(x.fr.quien&&x.fr.quien.k==='cliente');
+      return '<div style="display:flex;gap:9px;align-items:baseline;padding:2px 0">'
+        +'<span style="color:'+(esCli?'var(--amberx)':'var(--redx)')+';font-size:10px;'
+          +'flex:none">&#9673;</span>'
+        +'<span style="flex:1;font-size:12px;color:var(--text2);line-height:1.5">'
+          +esc(x.s.titulo||'SOP')+': '+esc(x.fr.p.t||'')
+          +(x.tapados?('<span style="color:var(--text3)"> \u00b7 '+x.tapados+' pasos tapados</span>'):'')
+          +'</span>'
+        +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;flex:none" '
+          +'onclick="abrirSop('+x.s.id+')">Abrir</button>'
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
+// Etapa actual: la primera de la ruta que todavia no esta hecha.
+function _p360Etapa(c){
+  var r=[];
+  try{ r=_ruta(c)||[]; }catch(e){ return null; }
+  var fijas=r.filter(function(x){ return !x.manual; });
+  if(!fijas.length) return null;
+  var i=fijas.findIndex(function(x){ return x.estado!=='hecho'; });
+  if(i<0) i=fijas.length-1;
+  return {l:fijas[i].l, i:i, total:fijas.length, estado:fijas[i].estado,
+          hechas:fijas.filter(function(x){ return x.estado==='hecho'; }).length};
+}
+function p360Filtro(v){ S.p360=v||''; showTickets(); }
+function p360Html(){
+  var cls=(DB.clients||[]).filter(function(c){ return !c.archived; });
+  if(!cls.length) return _torreVacio('Panel 360','Todavia no hay clientes activos.');
+
+  var datos=cls.map(function(c){
+    var et=_p360Etapa(c);
+    var fr=_p360Frenos(c);
+    return {c:c, prod:_p360Prod(c), et:et, fr:fr,
+            // El peor freno manda el color de la tarjeta.
+            peor:fr.length?fr[0]:null};
+  });
+  // El filtro cuenta sobre el total, no sobre lo ya filtrado: si no, los
+  // numeros de las pastillas cambian al tocarlas y no se puede comparar.
+  var porProd={};
+  datos.forEach(function(d){ if(d.prod) porProd[d.prod]=(porProd[d.prod]||0)+1; });
+  var sel=S.p360||'';
+  var ver=sel?datos.filter(function(d){ return d.prod===sel; }):datos;
+
+  var pill=function(k, l, n){
+    var on=(sel===k);
+    return '<button class="p3f'+(on?' on':'')+'" onclick="p360Filtro(\''
+      +String(k).replace(/'/g,"\\'")+'\')">'+esc(l)
+      +'<span style="opacity:.6"> \u00b7 '+n+'</span></button>';
+  };
+  var filtros='<div class="p3filtros">'
+    +pill('','Todos',datos.length)
+    +(Object.keys(porProd).length?'<span class="p3sep"></span>':'')
+    +Object.keys(porProd).sort().map(function(p){ return pill(p,p,porProd[p]); }).join('')
+  +'</div>';
+
+  // Una columna por etapa de la ruta, en orden. Se usan las etiquetas de
+  // RUTA_DEFAULT para no desincronizarse si alguien las cambia ahi.
+  var cols=RUTA_DEFAULT.map(function(e){ return {l:e.l, cards:[]}; });
+  var sinRuta=[];
+  ver.forEach(function(d){
+    if(!d.et){ sinRuta.push(d); return; }
+    var i=cols.findIndex(function(x){ return x.l===d.et.l; });
+    if(i<0){ sinRuta.push(d); return; }
+    cols[i].cards.push(d);
+  });
+
+  var tarjeta=function(d){
+    var f=d.peor;
+    var clase=f ? (f.de==='cliente'?' espera':' frena') : '';
+    var txt='', col='var(--text3)';
+    if(f){
+      col=(f.de==='cliente')?'var(--amberx)':'var(--redx)';
+      txt=esc(f.q)+(f.dias!==null&&f.dias!==undefined?(' \u00b7 '+f.dias+' d'):'')
+        +(f.tapados?('<span style="color:var(--text3)"> \u00b7 '+f.tapados+' tapados</span>'):'');
+    } else {
+      txt=(d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia';
+      if(d.et&&d.et.estado==='tarde') col='var(--amberx)';
+    }
+    return '<div class="p3card'+clase+'" onclick="irCliente('+d.c.id+')" '
+        +'title="'+esc(d.c.name||'')+'">'
+      +'<div class="p3n">'+esc(d.c.name||'')+'</div>'
+      +(d.prod?('<div class="p3p">'+esc(d.prod)+'</div>'):'')
+      +'<div class="p3b" style="color:'+col+'">'+txt+'</div>'
+    +'</div>';
+  };
+
+  var vacias=cols.filter(function(x){ return !x.cards.length; }).length;
+  return '<div class="tk-card" style="padding:18px 20px 22px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;'
+      +'flex-wrap:wrap;margin-bottom:4px">'
+      +'<div style="font-size:13px;font-weight:500;color:var(--strong)">Panel 360</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'
+        +ver.length+' cliente'+(ver.length===1?'':'s')
+        +(sel?(' en '+esc(sel)):'')
+        +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado</div>'
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:14px">'
+      +'En que etapa esta cada uno y que le impide avanzar. '
+      +'<span style="color:var(--redx)">Rojo</span> depende de nosotros, '
+      +'<span style="color:var(--amberx)">ambar</span> del cliente.</div>'
+    +filtros
+    +_p360SopsHtml()
+    +'<div class="p3scroll"><div class="p3cols">'
+    +cols.map(function(col){
+      return '<div class="p3col">'
+        +'<div class="p3cab"><span>'+esc(col.l)+'</span><b>'+(col.cards.length||'')+'</b></div>'
+        +(col.cards.length?col.cards.map(tarjeta).join('')
+          :'<div class="p3nada"></div>')
+      +'</div>';
+    }).join('')
+    +'</div></div>'
+    +(sinRuta.length
+      ?('<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);'
+        +'font-size:11.5px;color:var(--text3);line-height:1.55">'
+        +'<b style="color:var(--text2)">Sin etapa detectada:</b> '
+        +sinRuta.map(function(d){
+          return '<a href="javascript:void(0)" onclick="irCliente('+d.c.id+')" '
+            +'style="color:var(--text2);text-decoration:none">'+esc(d.c.name||'')+'</a>'; }).join(', ')
+        +'. La etapa sale del titulo de las llamadas de Fathom: si no coincide con ninguna, '
+        +'el cliente no entra en ninguna columna.</div>'):'')
+    +(vacias===cols.length
+      ?('<div style="margin-top:14px;font-size:11.5px;color:var(--text3)">'
+        +'Ningun cliente'+(sel?(' de '+esc(sel)):'')+' cayo en una etapa.</div>'):'')
+  +'</div>';
 }
 
 // ---- Ruta del cliente ---------------------------------------------------
