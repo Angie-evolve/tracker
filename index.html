@@ -21350,6 +21350,273 @@ async function matAbrirArchivo(clientId, id){
     toast('No pude abrirlo: '+e.message,'red');
   }
 }
+// ---- Leer la marca de un zip -------------------------------------------
+// Un zip de branding es opaco para la IA: son PNGs, fuentes y un PDF. Lo que
+// si se puede sacar en el navegador son las dos cosas que la landing necesita
+// de verdad: los colores y el logo. El resto del zip queda guardado igual, para
+// que lo mire una persona.
+var MARCA_MAX_IMGS=12;   // con mas, el analisis tarda y la paleta no mejora
+
+// Un pixel casi blanco, casi negro o casi gris no dice nada de la marca: son
+// fondos y sombras. Sin filtrarlos, la paleta de cualquier logo sale gris.
+function _mkColorUtil(r,g,b,a){
+  if(a<200) return false;                       // transparente
+  var max=Math.max(r,g,b), min=Math.min(r,g,b);
+  if(max>242 && min>242) return false;          // blanco
+  if(max<28) return false;                      // negro
+  if((max-min)<18) return false;                // gris sin saturacion
+  return true;
+}
+function _mkHex(r,g,b){
+  return '#'+[r,g,b].map(function(x){
+    return ('0'+Math.max(0,Math.min(255,Math.round(x))).toString(16)).slice(-2);
+  }).join('').toUpperCase();
+}
+// Cuantiza a cubos de 32 para agrupar tonos parecidos, cuenta y devuelve los
+// dominantes. Es lo mismo que hace cualquier extractor de paleta, sin libreria.
+function _mkPaleta(datos, tope){
+  var cubos={};
+  for(var i=0;i<datos.length;i+=4){
+    var r=datos[i], g=datos[i+1], b=datos[i+2], a=datos[i+3];
+    if(!_mkColorUtil(r,g,b,a)) continue;
+    var k=(r>>5)+','+(g>>5)+','+(b>>5);
+    var c=cubos[k]||(cubos[k]={n:0,r:0,g:0,b:0});
+    c.n++; c.r+=r; c.g+=g; c.b+=b;
+  }
+  return Object.keys(cubos).map(function(k){ return cubos[k]; })
+    .sort(function(x,y){ return y.n-x.n; })
+    .slice(0, tope||6)
+    .map(function(c){ return {hex:_mkHex(c.r/c.n, c.g/c.n, c.b/c.n), n:c.n}; });
+}
+// Dibuja la imagen chica y lee sus pixeles. Chica a proposito: 120px alcanza
+// para la paleta y evita colgar el navegador con un PNG de 4000px.
+function _mkPixeles(blob){
+  return new Promise(function(res){
+    var url=URL.createObjectURL(blob);
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var lado=120;
+        var cv=document.createElement('canvas');
+        var esc=Math.min(lado/(img.width||1), lado/(img.height||1), 1);
+        cv.width=Math.max(1,Math.round((img.width||lado)*esc));
+        cv.height=Math.max(1,Math.round((img.height||lado)*esc));
+        var cx=cv.getContext('2d');
+        cx.drawImage(img,0,0,cv.width,cv.height);
+        var d=cx.getImageData(0,0,cv.width,cv.height).data;
+        URL.revokeObjectURL(url);
+        res({datos:d, w:img.width, h:img.height});
+      }catch(e){ URL.revokeObjectURL(url); res(null); }
+    };
+    img.onerror=function(){ URL.revokeObjectURL(url); res(null); };
+    img.src=url;
+  });
+}
+// Cual de todas las imagenes es el logo. El nombre manda: en un manual de marca
+// el archivo se llama "logo" o "isotipo" casi siempre. Si ninguno lo dice, se
+// elige la mas cuadrada y chica, que es la forma tipica de un logo frente a una
+// foto o un mockup.
+function _mkEsLogo(nombre){
+  return /logo|isotipo|imagotipo|marca|brand(mark)?|icon/i.test(nombre);
+}
+function _mkPuntajeLogo(nombre, w, h){
+  var p=0;
+  if(_mkEsLogo(nombre)) p+=100;
+  if(/\.svg$/i.test(nombre)) p+=20;             // vectorial: mejor para la web
+  if(/primari|principal|full|color/i.test(nombre)) p+=10;
+  if(/blanco|white|negativ|mono|gris/i.test(nombre)) p-=15;  // version alternativa
+  if(w&&h){
+    var rel=Math.min(w,h)/Math.max(w,h);
+    p+=rel*20;                                   // cuanto mas cuadrada, mejor
+    if(Math.max(w,h)>2000) p-=15;                // una foto grande no es el logo
+  }
+  return p;
+}
+function _mkLeerComoDataUrl(blob){
+  return new Promise(function(res){
+    var fr=new FileReader();
+    fr.onload=function(){ res(fr.result); };
+    fr.onerror=function(){ res(''); };
+    fr.readAsDataURL(blob);
+  });
+}
+function _mkEstado(t,col){
+  var e=document.getElementById('mk-estado');
+  if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
+}
+// Analiza un archivo ya subido del material. Se baja del bucket, se abre y se
+// saca la paleta y el logo.
+async function marcaLeerDeMaterial(clientId, id){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var m=(c.material||[]).filter(function(x){return x.id===id;})[0];
+  if(!m||!m.path){ toast('Eso no es un archivo subido.','amber'); return; }
+  if(!SB.token){ toast('Entra con tu cuenta.','amber'); return; }
+  _mkEstado('Bajando '+esc(m.archivo||m.label)+'...');
+  try{
+    var fr=await fetch(SB_URL+'/storage/v1/object/sign/'+(m.bucket||MAT_BUCKET)+'/'+encodeURI(m.path),{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify({expiresIn:600})
+    });
+    var fd=await fr.json();
+    var firmada=fd.signedURL||fd.signedUrl;
+    if(!fr.ok||!firmada){ _mkEstado('No pude bajarlo: '+((fd&&fd.message)||fr.status),'var(--redx)'); return; }
+    var blob=await (await fetch(SB_URL+'/storage/v1'+firmada)).blob();
+    await marcaAnalizarBlob(clientId, blob, m.archivo||m.label);
+  }catch(e){
+    _mkEstado('No pude leerlo: '+e.message,'var(--redx)');
+  }
+}
+async function marcaAnalizarBlob(clientId, blob, nombre){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var imgs=[];   // {nombre, blob}
+  try{
+    if(/\.zip$/i.test(nombre||'')){
+      _mkEstado('Abriendo el zip...');
+      var JSZipL=await _cargarJSZip();
+      var zip=await JSZipL.loadAsync(blob);
+      var nombres=Object.keys(zip.files).filter(function(n){
+        // __MACOSX son los metadatos que agrega el Finder al comprimir: son
+        // copias basura que ensucian la deteccion del logo.
+        return !zip.files[n].dir && !/^__MACOSX|\/\._/.test(n)
+          && /\.(png|jpe?g|webp|svg)$/i.test(n);
+      });
+      for(var i=0;i<nombres.length && imgs.length<MARCA_MAX_IMGS;i++){
+        imgs.push({nombre:nombres[i], blob:await zip.files[nombres[i]].async('blob')});
+      }
+      if(!nombres.length){ _mkEstado('El zip no tiene imagenes.','var(--amberx)'); return; }
+    }else if(/\.(png|jpe?g|webp|svg)$/i.test(nombre||'')){
+      imgs.push({nombre:nombre, blob:blob});
+    }else{
+      _mkEstado('Solo puedo leer un zip o una imagen.','var(--amberx)'); return;
+    }
+
+    _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');
+    var todos={}, mejor=null, mejorP=-1e9;
+    for(var j=0;j<imgs.length;j++){
+      var px=await _mkPixeles(imgs[j].blob);
+      var w=px?px.w:0, h=px?px.h:0;
+      var p=_mkPuntajeLogo(imgs[j].nombre, w, h);
+      if(p>mejorP){ mejorP=p; mejor=imgs[j]; }
+      if(!px) continue;
+      // Los colores de cada imagen se suman: un color que aparece en varias
+      // piezas es de la marca, no de una foto suelta.
+      _mkPaleta(px.datos, 5).forEach(function(x){
+        todos[x.hex]=(todos[x.hex]||0)+x.n;
+      });
+    }
+    var paleta=Object.keys(todos).sort(function(a,b){ return todos[b]-todos[a]; }).slice(0,6);
+    if(!paleta.length){ _mkEstado('No encontre colores utiles (todo blanco, negro o gris).','var(--amberx)'); return; }
+
+    c.marca=c.marca||{};
+    c.marca.colores=paleta;
+    c.marca.de=nombre||'';
+    c.marca.at=new Date().toISOString();
+    // El logo va como data URL: la landing queda autocontenida y no depende de
+    // un link firmado que vence en una hora.
+    if(mejor && mejor.blob.size<=400*1024){
+      c.marca.logo=await _mkLeerComoDataUrl(mejor.blob);
+      c.marca.logoNombre=mejor.nombre;
+    }else if(mejor){
+      c.marca.logo='';
+      c.marca.logoNombre=mejor.nombre+' (muy pesado para incrustar)';
+    }
+    save();
+    _mkEstado('');
+    if(typeof renderTab==='function') renderTab();
+    toast(paleta.length+' colores'+(c.marca.logo?' y el logo':'')+' desde '+(nombre||'el archivo'));
+  }catch(e){
+    _mkEstado('No pude analizarlo: '+e.message,'var(--redx)');
+  }
+}
+// Bloque de marca: la paleta y el logo que salieron del zip, editables. Vive
+// debajo del material porque de ahi sale.
+function _marcaHtml(c){
+  var mk=c.marca||{};
+  var cols=mk.colores||[];
+  // Solo los archivos que se pueden analizar. Un PDF o un .ai no se abren aca.
+  var cand=(c.material||[]).filter(function(m){
+    return m.path && /\.(zip|png|jpe?g|webp|svg)$/i.test(m.archivo||m.label||'');
+  });
+  var sel=cand.length
+    ? ('<select id="mk-fuente" style="font-size:11.5px;padding:4px 8px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text)">'
+        +cand.map(function(m){
+          return '<option value="'+m.id+'">'+esc(m.label||m.archivo)+'</option>'; }).join('')
+      +'</select>'
+      +'<button class="btn btn-sm" onclick="marcaLeerDeMaterial('+c.id+', '
+        +'+document.getElementById(\'mk-fuente\').value)">Leer la marca</button>')
+    : '<span style="font-size:11px;color:var(--text3)">Subi un zip o una imagen arriba '
+      +'para poder leer la paleta.</span>';
+
+  return '<div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:10px">'
+      +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.07em">Marca</div>'
+      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+sel+'</div>'
+    +'</div>'
+    +'<div id="mk-estado" style="font-size:11px;color:var(--text3);margin-bottom:8px"></div>'
+    +(cols.length
+      ? ('<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+          +(mk.logo
+            ? ('<div style="flex:none;width:64px;height:64px;border:1px solid var(--border);'
+               +'border-radius:var(--radius);background:'
+               // Damero para que se vea la transparencia del logo.
+               +'repeating-conic-gradient(#2a2a2a 0% 25%, #1c1c1c 0% 50%) 50%/12px 12px;'
+               +'display:flex;align-items:center;justify-content:center;overflow:hidden">'
+               +'<img src="'+esc(mk.logo)+'" alt="logo" '
+               +'style="max-width:56px;max-height:56px;object-fit:contain"></div>')
+            : '')
+          +cols.map(function(h){
+            return '<div style="flex:none;text-align:center">'
+              +'<div style="width:44px;height:44px;border-radius:var(--radius);background:'+esc(h)+';'
+                +'border:1px solid var(--border2)"></div>'
+              +'<div class="mono" style="font-size:9.5px;color:var(--text3);margin-top:3px">'+esc(h)+'</div>'
+              +'<a href="javascript:void(0)" onclick="marcaColorQuitar('+c.id+',\''+esc(h)+'\')" '
+                +'style="font-size:9.5px;color:var(--text3);text-decoration:none">quitar</a>'
+            +'</div>';
+          }).join('')
+        +'</div>'
+        +'<div style="font-size:10.5px;color:var(--text3);margin-bottom:10px">'
+          +'De '+esc(mk.de||'')+(mk.logoNombre?(' \u00b7 logo: '+esc(mk.logoNombre)):'')
+          +' \u00b7 <a href="javascript:void(0)" onclick="marcaBorrar('+c.id+')" '
+          +'style="color:var(--text3)">borrar todo</a></div>')
+      : '<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+        +'Todavia no lei la marca. Al leer un zip saco los colores dominantes de sus imagenes '
+        +'y elijo el logo. Van al COPY de la landing.</div>')
+    +'<textarea id="mk-notas" onblur="marcaNotasGuardar('+c.id+')" rows="2" '
+      +'placeholder="Tipografias, tono, que evitar. Lo que el zip no dice y la landing necesita." '
+      +'style="width:100%;box-sizing:border-box;font-size:11.5px;resize:vertical">'
+      +esc(mk.notas||'')+'</textarea>'
+  +'</div>';
+}
+function marcaBorrar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  delete c.marca;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+function marcaColorQuitar(clientId, hex){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.marca) return;
+  c.marca.colores=(c.marca.colores||[]).filter(function(x){ return x!==hex; });
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+function marcaNotasGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('mk-notas');
+  if(!e) return;
+  c.marca=c.marca||{};
+  c.marca.notas=e.value;
+  save();
+  toast('Guardado');
+}
 function matAgregar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -22003,7 +22270,8 @@ function materialHtml(c){
       +hered.map(function(m){ return fila(m.l, m.u, m.de, null); }).join('')
       +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px">'
         +'Se editan donde se cargaron. Aca estan solo para tenerlos juntos.</div>'
-    +'</div>'):'');
+    +'</div>'):'')
+    +_marcaHtml(c);
 }
 
 // ---- Voz del mercado ----------------------------------------------------
@@ -23027,6 +23295,15 @@ function _lpContextoInterno(c){
                  : ('- '+m.label+' (archivo'+(m.archivo?': '+m.archivo:'')+')');
   });
   _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
+  // La marca leida del zip. Los hex son lo unico del branding que el modelo
+  // puede usar: el logo es binario y no entra en un prompt de texto.
+  var _mk=c.marca||{};
+  if((_mk.colores||[]).length || _mk.notas){
+    out.push('MARCA:'
+      +((_mk.colores||[]).length?('\nPaleta (el primero es el dominante): '+_mk.colores.join(', ')):'')
+      +(_mk.logo?'\nHay logo cargado: usalo en el header.':'')
+      +(_mk.notas?('\n'+_mk.notas):''));
+  }
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
   // Las llamadas no entraban. Estaban en el cliente pero este contexto solo
   // pasaba links, asi que el paso 1 suponia cosas que se habian hablado en la
@@ -23264,6 +23541,11 @@ function copiarCopyLanding(clientId){
     promesas:LA(o.promesas), bajada:L(o.bajada),
     cta:L(o.cta), bajoCta:L(o.bajoCta), puntos:LA(o.puntos),
     pruebaSocial:LA(inv.pruebaSocial), clientes:LA(inv.clientes), faq:LA(inv.faq),
+    // La identidad sale del zip de branding leido en Material. El logo va como
+    // data URL para que la plantilla no dependa de un link firmado que vence.
+    paleta:((c.marca||{}).colores||[]),
+    logo:((c.marca||{}).logo||''),
+    notasMarca:((c.marca||{}).notas||''),
     _piel:cfg.piel, _tema:cfg.tema, _mecanica:cfg.mecanica
   };
   navigator.clipboard.writeText('const COPY = '+JSON.stringify(salida,null,2)+';').then(function(){
