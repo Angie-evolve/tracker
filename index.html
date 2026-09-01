@@ -21472,6 +21472,7 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var imgs=[];   // {nombre, blob}
+  var _txtZip='';
   try{
     if(/\.zip$/i.test(nombre||'')){
       _mkEstado('Abriendo el zip...');
@@ -21486,15 +21487,47 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
       for(var i=0;i<nombres.length && imgs.length<MARCA_MAX_IMGS;i++){
         imgs.push({nombre:nombres[i], blob:await zip.files[nombres[i]].async('blob')});
       }
-      if(!nombres.length){ _mkEstado('El zip no tiene imagenes.','var(--amberx)'); return; }
+      // El texto del zip es lo que reemplaza a la web cuando el cliente no
+      // tiene sitio: el manual de marca suele traer el tono, la propuesta y a
+      // veces los testimonios. Se lee con los mismos lectores que ya usa el kit.
+      var docs=Object.keys(zip.files).filter(function(n){
+        return !zip.files[n].dir && !/^__MACOSX|\/\._/.test(n)
+          && /\.(pdf|docx|txt|md|json|css)$/i.test(n);
+      }).slice(0,6);
+      var partes=[];
+      for(var k=0;k<docs.length;k++){
+        var nd=docs[k];
+        _mkEstado('Leyendo '+esc(nd)+'...');
+        try{
+          if(/\.pdf$/i.test(nd)){
+            var pb=await zip.files[nd].async('blob');
+            pb.name=nd.split('/').pop();
+            partes.push('--- '+nd+' ---\n'+await _pdfATexto(pb, function(t){ _mkEstado(esc(t)); }));
+          }else if(/\.docx$/i.test(nd)){
+            var mm=await _cargarMammoth();
+            var ab=await zip.files[nd].async('arraybuffer');
+            var rr=await mm.extractRawText({arrayBuffer:ab});
+            partes.push('--- '+nd+' ---\n'+(rr&&rr.value||''));
+          }else{
+            partes.push('--- '+nd+' ---\n'+await zip.files[nd].async('string'));
+          }
+        }catch(e){ /* un archivo ilegible no frena el resto */ }
+      }
+      if(partes.length){
+        // Se corta: un manual entero puede tener 80.000 caracteres y no entra
+        // en el contexto sin desplazar a las llamadas, que valen mas.
+        _txtZip=partes.join('\n\n').replace(/\n{3,}/g,'\n\n').slice(0,12000);
+      }
+      if(!nombres.length && !partes.length){
+        _mkEstado('El zip no tiene imagenes ni documentos que pueda leer.','var(--amberx)'); return;
+      }
     }else if(/\.(png|jpe?g|webp|svg)$/i.test(nombre||'')){
       imgs.push({nombre:nombre, blob:blob});
     }else{
       _mkEstado('Solo puedo leer un zip o una imagen.','var(--amberx)'); return;
     }
 
-    _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');
-    var todos={}, mejor=null, mejorP=-1e9;
+    _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');    var todos={}, mejor=null, mejorP=-1e9;
     for(var j=0;j<imgs.length;j++){
       var px=await _mkPixeles(imgs[j].blob);
       var w=px?px.w:0, h=px?px.h:0;
@@ -21508,12 +21541,12 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
       });
     }
     var paleta=Object.keys(todos).sort(function(a,b){ return todos[b]-todos[a]; }).slice(0,6);
-    if(!paleta.length){ _mkEstado('No encontre colores utiles (todo blanco, negro o gris).','var(--amberx)'); return; }
 
     c.marca=c.marca||{};
     c.marca.colores=paleta;
     c.marca.de=nombre||'';
     c.marca.at=new Date().toISOString();
+    if(_txtZip) c.marca.texto=_txtZip;
     // El logo va como data URL: la landing queda autocontenida y no depende de
     // un link firmado que vence en una hora.
     if(mejor && mejor.blob.size<=400*1024){
@@ -21526,7 +21559,13 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
     save();
     _mkEstado('');
     if(typeof renderTab==='function') renderTab();
-    toast(paleta.length+' colores'+(c.marca.logo?' y el logo':'')+' desde '+(nombre||'el archivo'));
+    var dicho=[];
+    if(paleta.length) dicho.push(paleta.length+' colores');
+    if(c.marca.logo) dicho.push('el logo');
+    if(_txtZip) dicho.push(Math.round(_txtZip.length/1000)+'k de texto');
+    toast(dicho.length?(dicho.join(', ')+' desde '+(nombre||'el archivo'))
+                      :'No saque nada util de '+(nombre||'el archivo'),
+          dicho.length?undefined:'amber');
   }catch(e){
     _mkEstado('No pude analizarlo: '+e.message,'var(--redx)');
   }
@@ -21587,6 +21626,19 @@ function _marcaHtml(c){
       : '<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
         +'Todavia no lei la marca. Al leer un zip saco los colores dominantes de sus imagenes '
         +'y elijo el logo. Van al COPY de la landing.</div>')
+    // El texto de los PDF y documentos del zip. Se muestra plegado: es largo, y
+    // lo que importa es poder confirmar que leyo algo y de donde salio.
+    +(mk.texto
+      ? ('<details style="margin-bottom:10px">'
+        +'<summary style="font-size:11px;color:var(--text2);cursor:pointer">'
+          +'Texto leido del archivo \u00b7 '+Math.round(mk.texto.length/1000)+'k caracteres'
+          +'<span style="color:var(--text3)"> \u00b7 entra en el contexto en lugar de la web</span>'
+        +'</summary>'
+        +'<pre style="white-space:pre-wrap;font-size:10.5px;color:var(--text3);line-height:1.5;'
+          +'max-height:220px;overflow:auto;margin:8px 0 0;padding:10px 12px;background:var(--bg3);'
+          +'border-radius:var(--radius)">'+esc(mk.texto.slice(0,4000))
+          +(mk.texto.length>4000?'\n\n[...]':'')+'</pre></details>')
+      : '')
     +'<textarea id="mk-notas" onblur="marcaNotasGuardar('+c.id+')" rows="2" '
       +'placeholder="Tipografias, tono, que evitar. Lo que el zip no dice y la landing necesita." '
       +'style="width:100%;box-sizing:border-box;font-size:11.5px;resize:vertical">'
@@ -23304,6 +23356,11 @@ function _lpContextoInterno(c){
       +(_mk.logo?'\nHay logo cargado: usalo en el header.':'')
       +(_mk.notas?('\n'+_mk.notas):''));
   }
+  // Cuando el cliente no tiene sitio web, esto es lo unico escrito por el en
+  // primera persona. Ocupa el lugar que tendria la investigacion de la web.
+  if(_mk.texto){
+    out.push('MATERIAL DE MARCA QUE MANDO EL CLIENTE (de '+(_mk.de||'un archivo')+'):\n'+_mk.texto);
+  }
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
   // Las llamadas no entraban. Estaban en el cliente pero este contexto solo
   // pasaba links, asi que el paso 1 suponia cosas que se habian hablado en la
@@ -23396,6 +23453,20 @@ async function investigarLanding(clientId){
     urls=urls.filter(function(u,i){
       return /^https?:\/\//i.test(u) && urls.indexOf(u)===i && !_noSirve.test(u);
     });
+    // Sin sitio web y sin un link que se pueda abrir no hay nada que
+    // investigar: la llamada volveria con todo vacio y un parrafo explicando
+    // que no habia por donde empezar. Mejor decirlo antes de gastarla.
+    if(!urls.length){
+      var _hayZip=!!((c.marca||{}).texto);
+      _lpEstado('Este cliente no tiene sitio web cargado ni links que se puedan abrir. '
+        +(_hayZip
+          ? 'El material del zip ya entra en el contexto, asi que pod\u00e9s saltear este paso '
+            +'e ir directo a escribir el copy.'
+          : 'Carg\u00e1 el sitio en Material, o le\u00e9 el zip de marca para que su texto '
+            +'reemplace a la web.'),
+        'var(--amberx)');
+      return;
+    }
     var o=await _lpApi(apiKey,{
       model:'claude-sonnet-5', max_tokens:8000,
       // web_search encuentra, web_fetch LEE. Con busqueda sola el modelo arma
