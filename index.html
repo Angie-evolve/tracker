@@ -23744,6 +23744,194 @@ function copiarCopyLanding(clientId){
   },function(){ _lpEstado('No pude copiar al portapapeles.','var(--amberx)'); });
 }
 
+// ---- Ver la landing ------------------------------------------------------
+// Arma la pagina entera con el COPY y la marca del cliente, y la abre. La
+// identidad la pone la paleta del zip: la plantilla es deliberadamente sobria
+// para que el color y el logo carguen el peso, no al reves.
+function _lpLum(hex){
+  var h=String(hex||'').replace('#',''); if(h.length!==6) return 0.5;
+  var v=[0,2,4].map(function(i){
+    var x=parseInt(h.substr(i,2),16)/255;
+    return x<=0.03928 ? x/12.92 : Math.pow((x+0.055)/1.055, 2.4);
+  });
+  return 0.2126*v[0]+0.7152*v[1]+0.0722*v[2];
+}
+function _lpContraste(hex){ return _lpLum(hex)>0.42 ? '#101014' : '#FFFFFF'; }
+function _lpMezcla(a,b,t){
+  var pa=function(h){ h=String(h).replace('#',''); return [0,2,4].map(function(i){
+    return parseInt(h.substr(i,2),16); }); };
+  var x=pa(a), y=pa(b);
+  return '#'+x.map(function(v,i){
+    return ('0'+Math.round(v+(y[i]-v)*t).toString(16)).slice(-2); }).join('').toUpperCase();
+}
+// El acento es el color mas vivo de la paleta, no el primero: en un kit el
+// primero suele ser el fondo oscuro de marca, que no sirve para un boton.
+function _lpAcento(pal, fallback){
+  var mejor=null, mejorS=-1;
+  (pal||[]).forEach(function(h){
+    var c=String(h).replace('#',''); if(c.length!==6) return;
+    var r=parseInt(c.substr(0,2),16), g=parseInt(c.substr(2,2),16), b=parseInt(c.substr(4,2),16);
+    var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+    var sat=mx?((mx-mn)/mx):0;
+    var luz=(mx+mn)/510;
+    // Se penalizan los extremos: un color casi negro o casi blanco no sirve
+    // de acento aunque este saturado.
+    var s=sat*(1-Math.abs(luz-0.5)*1.2);
+    if(s>mejorS){ mejorS=s; mejor=h; }
+  });
+  return mejor||fallback;
+}
+function lpVer(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var html=_lpPaginaHtml(c);
+  var w=window.open('','_blank');
+  if(!w){ toast('El navegador bloqueo la pestana. Permiti las ventanas emergentes.','amber'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+function lpDescargar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var b=new Blob([_lpPaginaHtml(c)],{type:'text/html'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download=(String(c.name||'landing').toLowerCase().replace(/[^a-z0-9]+/g,'-'))+'.html';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+}
+function _lpPaginaHtml(c){
+  var cfg=_lpCfg(c);
+  var o=(cfg.copy||{}), inv=(cfg.investigacion||{}), mk=(c.marca||{});
+  var pal=(mk.colores||[]);
+  var oscuro=(cfg.tema!=='claro');
+
+  var acento=_lpAcento(pal, oscuro?'#5146E5':'#1B1938');
+  var base=pal[0]||acento;
+  // El fondo se tinta con el color de marca en vez de ser negro o blanco puro:
+  // es lo que hace que dos landings con la misma plantilla no se parezcan.
+  var fondo = oscuro ? _lpMezcla('#0E0E12', base, 0.14) : _lpMezcla('#FFFFFF', base, 0.04);
+  var texto = oscuro ? _lpMezcla('#FFFFFF', base, 0.06) : _lpMezcla('#14141A', base, 0.10);
+  // En tema claro el texto tenue se mezcla menos con el fondo: al 0.42 quedaba
+  // en 4.3:1, por debajo del minimo legible. Medido, no estimado.
+  var tenue = _lpMezcla(texto, fondo, oscuro?0.42:0.34);
+  var linea = _lpMezcla(texto, fondo, 0.84);
+  var panel = _lpMezcla(fondo, texto, 0.045);
+  var sobreAcento=_lpContraste(acento);
+
+  var E=function(s){ return esc(s==null?'':String(s)); };
+  var A=function(x){ return Array.isArray(x)?x:[]; };
+  var promesa=A(o.promesas)[0]||o.bajada||(c.name||'');
+  var puntos=A(o.puntos), ps=A(o.pruebaSocial), faq=A(o.faq), clientes=A(o.clientes);
+  var esSimple=(cfg.piel==='simple'), esInst=(cfg.piel==='institucional');
+
+  var cta='<a class="cta" href="#contacto">'+E(o.cta||'Quiero empezar')+'</a>'
+    +(o.bajoCta?('<p class="bajo">'+E(o.bajoCta)+'</p>'):'');
+
+  var logo = mk.logo
+    ? '<img class="logo" src="'+E(mk.logo)+'" alt="'+E(c.name||'')+'">'
+    : '<span class="marca">'+E(c.name||'')+'</span>';
+
+  // El eyebrow va en caja baja y con el color de acento: en versalitas con
+  // letter-spacing es el tic mas reconocible de una pagina generada.
+  var eyebrow = o.eyebrow ? '<p class="eyebrow">'+E(o.eyebrow)+'</p>' : '';
+
+  var seccion=function(t, cuerpo){
+    if(!cuerpo) return '';
+    return '<section><h2>'+E(t)+'</h2>'+cuerpo+'</section>';
+  };
+
+  var bloquePS = ps.length
+    ? ('<ul class="cifras">'+ps.map(function(x){
+        return '<li><b>'+E(x.n||'')+'</b><span>'+E(x.l||'')+'</span></li>'; }).join('')+'</ul>')
+    : '';
+  var bloqueClientes = clientes.length
+    ? ('<p class="clientes">'+clientes.map(E).join('<i>,</i> ')+'</p>') : '';
+  var bloquePuntos = puntos.length
+    ? ('<ul class="puntos">'+puntos.map(function(p){
+        return '<li>'+E(p)+'</li>'; }).join('')+'</ul>') : '';
+  var bloqueFaq = faq.length
+    ? ('<dl class="faq">'+faq.map(function(f){
+        return '<dt>'+E(f.q||'')+'</dt><dd>'+E(f.a||'')+'</dd>'; }).join('')+'</dl>') : '';
+
+  var mecanica = cfg.mecanica==='calendario'
+    ? '<p class="nota">Aca va el embed del calendario de GHL.</p>'
+    : cfg.mecanica==='quiz'
+      ? '<p class="nota">Aca va el quiz. Califica antes de pedir el dato.</p>'
+      : '<form onsubmit="event.preventDefault()">'
+          +'<label>Nombre<input name="nombre" required></label>'
+          +'<label>Email<input type="email" name="email" required></label>'
+          +'<label>Telefono<input type="tel" name="telefono"></label>'
+          +'<button type="submit">'+E(o.cta||'Enviar')+'</button>'
+        +'</form>';
+
+  return '<!doctype html><html lang="es"><head><meta charset="utf-8">'
+    +'<meta name="viewport" content="width=device-width,initial-scale=1">'
+    +'<title>'+E(c.name||'Landing')+'</title><style>'
+    +':root{--fondo:'+fondo+';--texto:'+texto+';--tenue:'+tenue+';--linea:'+linea
+      +';--panel:'+panel+';--acento:'+acento+';--sobre:'+sobreAcento+'}'
+    +'*{box-sizing:border-box}'
+    +'body{margin:0;background:var(--fondo);color:var(--texto);'
+      +'font-family:"Inter","Helvetica Neue",Helvetica,Arial,sans-serif;'
+      +'font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased}'
+    // Medida corta a proposito: menos de 70 caracteres por linea.
+    +'.env{max-width:1080px;margin:0 auto;padding:0 28px}'
+    +'header{display:flex;align-items:center;justify-content:space-between;'
+      +'padding:26px 0;gap:16px}'
+    +'.logo{height:34px;width:auto;display:block}'
+    +'.marca{font-weight:600;font-size:19px;letter-spacing:-0.01em}'
+    +'.hero{padding:'+(esSimple?'14vh 0 16vh':'8vh 0 7vh')+'}'
+    +'.eyebrow{margin:0 0 14px;color:var(--acento);font-size:15px;font-weight:500}'
+    // Escala tipografica: el titulo es el unico elemento que se permite gritar.
+    +'h1{margin:0;font-size:clamp(38px,6.4vw,'+(esSimple?'82px':'64px')+');line-height:1.04;'
+      +'letter-spacing:-0.035em;font-weight:650;max-width:16ch}'
+    +'.bajada{margin:22px 0 0;font-size:clamp(17px,2vw,21px);color:var(--tenue);max-width:52ch}'
+    +'.cta{display:inline-block;margin-top:34px;background:var(--acento);color:var(--sobre);'
+      +'text-decoration:none;font-weight:600;font-size:17px;padding:15px 30px;border-radius:8px}'
+    +'.cta:hover{filter:brightness(1.08)}'
+    +'.cta:focus-visible,a:focus-visible,button:focus-visible,input:focus-visible{'
+      +'outline:2px solid var(--acento);outline-offset:3px}'
+    +'.bajo{margin:12px 0 0;font-size:14px;color:var(--tenue)}'
+    +'section{padding:64px 0;border-top:1px solid var(--linea)}'
+    +'h2{font-size:26px;font-weight:600;letter-spacing:-0.02em;margin:0 0 26px;max-width:24ch}'
+    // Las cifras van sobre una linea, no en tarjetas: son datos, no productos.
+    +'.cifras{list-style:none;display:flex;flex-wrap:wrap;gap:14px 56px;margin:0;padding:0}'
+    +'.cifras b{display:block;font-size:40px;font-weight:650;letter-spacing:-0.03em;'
+      +'color:var(--acento);line-height:1.1}'
+    +'.cifras span{font-size:14px;color:var(--tenue)}'
+    +'.clientes{color:var(--tenue);font-size:16px}.clientes i{font-style:normal;opacity:.5}'
+    +'.puntos{list-style:none;margin:0;padding:0;display:grid;gap:2px;'
+      +'grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}'
+    // La linea de acento a la izquierda reemplaza a la tarjeta con sombra.
+    +'.puntos li{padding:14px 0 14px 18px;border-left:2px solid var(--acento);'
+      +'max-width:46ch;margin-right:32px}'
+    +'.faq{margin:0}'
+    +'.faq dt{font-weight:600;margin-top:22px}'
+    +'.faq dd{margin:6px 0 0;color:var(--tenue);max-width:62ch}'
+    +'form{display:grid;gap:14px;max-width:420px}'
+    +'label{display:grid;gap:6px;font-size:14px;color:var(--tenue)}'
+    +'input{font:inherit;font-size:16px;padding:12px 14px;border-radius:8px;'
+      +'border:1px solid var(--linea);background:var(--panel);color:var(--texto)}'
+    +'button{font:inherit;font-weight:600;background:var(--acento);color:var(--sobre);'
+      +'border:0;padding:14px;border-radius:8px;cursor:pointer;font-size:16px}'
+    +'.nota{color:var(--tenue);border:1px dashed var(--linea);padding:22px;border-radius:10px}'
+    +'footer{padding:46px 0;border-top:1px solid var(--linea);color:var(--tenue);font-size:14px}'
+    +'@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}'
+    +'@media(max-width:640px){.hero{padding:8vh 0 10vh}.cifras{gap:22px 34px}'
+      +'.cifras b{font-size:32px}}'
+    +'</style></head><body><div class="env">'
+    +'<header>'+logo+'<a class="cta" style="margin:0;padding:11px 20px;font-size:15px" '
+      +'href="#contacto">'+E(o.cta||'Hablemos')+'</a></header>'
+    +'<div class="hero">'+eyebrow+'<h1>'+E(promesa)+'</h1>'
+      +(o.bajada?('<p class="bajada">'+E(o.bajada)+'</p>'):'')
+      +cta+'</div>'
+    +(esSimple ? '' :
+        (bloquePS?seccion('En numeros', bloquePS+bloqueClientes):'')
+       +(bloquePuntos?seccion('Que incluye', bloquePuntos):'')
+       +(esInst&&bloqueFaq?seccion('Preguntas', bloqueFaq):''))
+    +'<section id="contacto"><h2>'+E(o.cta||'Empecemos')+'</h2>'+mecanica+'</section>'
+    +'<footer>'+E(c.name||'')+'</footer>'
+    +'</div></body></html>';
+}
 function landingHtml(c){
   var cfg=_lpCfg(c);
   var head='<div style="display:flex;align-items:center;justify-content:space-between;'
@@ -23753,6 +23941,11 @@ function landingHtml(c){
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
       +'title="Un solo prompt con todo el contexto, para hacerla afuera de punta a punta" '
       +'onclick="lpPromptMaestro('+c.id+')">Hacerla afuera</button>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'title="Arma la pagina con el COPY y la paleta de la marca, y la abre" '
+      +'onclick="lpVer('+c.id+')">Ver la landing</button>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
   +'</div>';
 
   var opciones=function(titulo, lista, campo, extra, motivo, sugerida){
