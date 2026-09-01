@@ -7526,6 +7526,17 @@ function integracionesAppHtml(){
         action:'abrirFormsModal()', actionLabel:l.length?'Abrir':'Crear el primero'});
     })(),
     (function(){
+      var l=guiones();
+      var armados=l.filter(function(g){ return (g.bloques||[]).length; }).length;
+      return card({name:'Guiones de llamada', st:armados?'ok':(l.length?'warn':'no'),
+        desc:'Que decir y en que orden en nuestras llamadas. Se saca de las que ya tuviste, '
+          +'con las frases textuales que funcionaron y las que conviene evitar.',
+        detail:l.length?(l.length+' guion'+(l.length===1?'':'es')
+          +(armados<l.length?(' \u00b7 '+(l.length-armados)+' vacio'+((l.length-armados)===1?'':'s')):''))
+          :'Sin guiones',
+        action:'abrirGuionesModal()', actionLabel:l.length?'Abrir':'Crear el primero'});
+    })(),
+    (function(){
       // Almacenamiento. El aviso de espacio existia pero solo saltaba cuando ya
       // no entraba nada; para entonces ya perdiste lo ultimo que hiciste.
       var d=_diagEspacio();
@@ -22858,6 +22869,302 @@ function formResponder(id, clientId, k, v){
 // El bloque en la pestaña Contexto del cliente: los formularios de la agencia
 // con su avance. Se responden aca porque es donde vive el resto del material
 // que despues alimenta los analisis.
+// ---- Guiones de llamada --------------------------------------------------
+// Lo que decimos NOSOTROS en una llamada, sacado de las que ya salieron bien.
+// No es el proceso comercial del cliente (eso mira como vende el) ni un SOP
+// (eso es que hacer): esto es que decir y en que orden, con las frases que ya
+// funcionaron y las que conviene evitar.
+var GUION_MOMENTOS=[
+  {k:'apertura',    l:'Apertura',    d:'Encuadre y permiso. Que sepa que va a pasar.'},
+  {k:'diagnostico', l:'Diagnostico', d:'Preguntar. Todavia no se vende nada.'},
+  {k:'dolor',       l:'El costo',    d:'El problema se vuelve numero.'},
+  {k:'propuesta',   l:'Propuesta',   d:'Recien aca, y atada a lo que dijo.'},
+  {k:'objeciones',  l:'Objeciones',  d:'Lo que aparece siempre.'},
+  {k:'cierre',      l:'Cierre',      d:'El proximo paso concreto.'}
+];
+function _gmom(k){ return GUION_MOMENTOS.filter(function(x){return x.k===k;})[0]||GUION_MOMENTOS[0]; }
+// El orden de una llamada no es opinable: apertura, diagnostico, costo,
+// propuesta, objeciones, cierre. Se fuerza siempre.
+function _guionOrdenar(g){
+  if(!g||!Array.isArray(g.bloques)) return;
+  var o={}; GUION_MOMENTOS.forEach(function(x,i){ o[x.k]=i; });
+  g.bloques.sort(function(a,b){
+    return (o[a.momento]===undefined?99:o[a.momento])-(o[b.momento]===undefined?99:o[b.momento]); });
+}
+function guiones(){
+  if(!Array.isArray(DB.guiones)) DB.guiones=[];
+  return DB.guiones;
+}
+function _guion(id){ return guiones().filter(function(x){ return x.id===id; })[0]; }
+function guionNuevo(){
+  var g={ id:Date.now(), titulo:'Guion sin nombre', creadoAt:new Date().toISOString(), bloques:[] };
+  guiones().unshift(g); save(); abrirGuion(g.id);
+}
+function abrirGuionesModal(){
+  var l=guiones();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:86vh;overflow-y:auto">'
+      +'<div class="modal-title">Guiones de llamada</div>'
+      +'<div class="modal-sub">Que decir y en que orden. Se sacan de las llamadas que ya '
+        +'tuviste: las frases son las que de verdad usaste, no las que suenan bien.</div>'
+      +(l.length
+        ? l.map(function(g){
+            var n=(g.bloques||[]).length;
+            return '<div style="display:flex;align-items:center;gap:10px;padding:11px 0;'
+                +'border-bottom:1px solid var(--border)">'
+              +'<div style="flex:1;min-width:0">'
+                +'<div style="font-size:13px;color:var(--text)">'+esc(g.titulo||'')+'</div>'
+                +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+                  +(n?(n+' momento'+(n===1?'':'s')):'vacio')
+                  +((g.deLlamadas||0)?(' \u00b7 de '+g.deLlamadas+' llamadas'):'')+'</div>'
+              +'</div>'
+              +'<button class="btn btn-sm" onclick="abrirGuion('+g.id+')">Abrir</button>'
+              +'<button onclick="guionBorrar('+g.id+')" aria-label="Borrar" '
+                +'style="border:0;background:none;color:var(--text3);cursor:pointer;'
+                +'font-size:15px">&times;</button>'
+            +'</div>';
+          }).join('')
+        : '<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+          +'Todavia no hay ninguno.</div>')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+        +'<button class="btn btn-primary" onclick="guionNuevo()">Nuevo guion</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function guionBorrar(id){
+  var g=_guion(id); if(!g) return;
+  if(!confirm('Borrar "'+(g.titulo||'')+'"?')) return;
+  DB.guiones=guiones().filter(function(x){ return x.id!==id; });
+  save(); abrirGuionesModal();
+}
+function abrirGuion(id){
+  var g=_guion(id); if(!g) return;
+  // Se ordena al pintar, no solo al generar: borrar un bloque o editar a mano
+  // podia dejar el cierre antes de la apertura, que es peor que no tener guion.
+  _guionOrdenar(g);
+  var inp=_FORM_INP;
+  var lista=function(arr, rot, col){
+    if(!arr||!arr.length) return '';
+    return '<div style="margin-top:8px">'
+      +'<div style="font-size:10px;color:'+(col||'var(--text3)')+';text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:4px">'+rot+'</div>'
+      +arr.map(function(x){
+        var t=(typeof x==='string')?x:(x.texto||x.que||'');
+        var f=(typeof x==='object')?x:null;
+        return '<div style="display:flex;gap:9px;align-items:baseline;padding:2px 0">'
+          +'<span style="flex:1;font-size:12.5px;color:var(--text2);line-height:1.55">'
+            +esc(_lpLimpiar(t))+'</span>'
+          +((f&&(f.ll||f.m))?('<span class="fte">'
+            +esc([f.ll,f.m].filter(Boolean).join(' \u00b7 '))+'</span>'):'')
+        +'</div>';
+      }).join('')
+    +'</div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:660px;max-height:88vh;overflow-y:auto">'
+      +'<input value="'+esc(g.titulo||'')+'" onchange="guionTitulo('+id+',this.value)" '
+        +'placeholder="Como se llama el guion" '
+        +'style="'+inp+';font-size:15px;font-weight:600;color:var(--strong)">'
+      +'<div class="modal-sub">'
+        +((g.bloques||[]).length
+          ?('Sacado de '+(g.deLlamadas||'?')+' llamadas. Las frases son textuales: '
+            +'si algo suena raro escrito, es porque asi se dijo.')
+          :'Todavia esta vacio. Sacalo de las llamadas que ya tuviste.')+'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
+        +((g.bloques||[]).length
+          ?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+            +'onclick="guionCopiar('+id+')">Copiar</button>'):'')
+        +'<button class="btn btn-sm'+((g.bloques||[]).length?'':' btn-primary')
+          +'" style="font-size:11px;padding:3px 9px" '
+          +'onclick="guionLlamadasModal('+id+')">'
+          +((g.bloques||[]).length?'Volver a sacarlo':'Sacarlo de las llamadas')+'</button>'
+      +'</div>'
+      +'<div id="guion-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
+        +'margin-top:8px"></div>'
+      +'<div style="margin-top:12px">'
+      +(g.bloques||[]).map(function(b,i){
+        var m=_gmom(b.momento);
+        return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+            +'padding:12px 14px;margin-bottom:9px">'
+          +'<div style="display:flex;align-items:baseline;gap:9px">'
+            +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;'
+              +'color:var(--text3);flex:none">'+(i+1)+'</span>'
+            +'<div style="flex:1">'
+              +'<div style="font-size:13px;color:var(--strong);font-weight:500">'
+                +esc(m.l)+'</div>'
+              +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:1px">'
+                +esc(b.objetivo||m.d)+'</div>'
+            +'</div>'
+            +'<button onclick="guionBloqueBorrar('+id+','+i+')" '
+              +'style="border:0;background:none;color:var(--text3);cursor:pointer;'
+              +'font-size:15px;flex:none">&times;</button>'
+          +'</div>'
+          +lista(b.decir, 'Decir', 'var(--accent)')
+          +lista(b.preguntas, 'Preguntar')
+          +lista(b.evitar, 'No decir', 'var(--redx)')
+          +(b.senal?('<div style="font-size:11.5px;color:var(--text3);line-height:1.55;'
+            +'margin-top:9px;padding-top:8px;border-top:1px solid var(--border)">'
+            +'<b style="color:var(--text2)">Pasa al siguiente cuando:</b> '
+            +esc(_lpLimpiar(b.senal))+'</div>'):'')
+        +'</div>';
+      }).join('')
+      +'</div>'
+      +((g.objeciones||[]).length
+        ?('<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.07em;margin:16px 0 8px">Lo que siempre aparece</div>'
+          +g.objeciones.map(function(o){
+            return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+                +'padding:11px 13px;margin-bottom:8px">'
+              +'<div style="font-size:12.5px;color:var(--text)">'+esc(_lpLimpiar(o.objecion||''))
+                +((o.veces)?('<span style="color:var(--text3);font-size:11px"> \u00b7 '
+                  +esc(o.veces)+'</span>'):'')+'</div>'
+              +(o.responder?('<div style="font-size:12.5px;color:var(--text2);line-height:1.55;'
+                +'margin-top:5px">'+esc(_lpLimpiar(o.responder))+'</div>'):'')
+              +((o.ll||o.m)?('<div style="margin-top:6px"><span class="fte">'
+                +esc([o.ll,o.m].filter(Boolean).join(' \u00b7 '))+'</span></div>'):'')
+            +'</div>';
+          }).join('')):'')
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function guionTitulo(id, v){
+  var g=_guion(id); if(!g) return;
+  g.titulo=String(v||'').trim()||'Guion sin nombre'; save();
+}
+function guionBloqueBorrar(id, i){
+  var g=_guion(id); if(!g) return;
+  g.bloques.splice(i,1); save(); abrirGuion(id);
+}
+function guionCopiar(id){
+  var g=_guion(id); if(!g) return;
+  var pl=function(a){ return (a||[]).map(function(x){
+    return '  - '+(typeof x==='string'?x:(x.texto||x.que||'')); }).join('\n'); };
+  var t=(g.titulo||'')+'\n\n'+(g.bloques||[]).map(function(b,i){
+    var m=_gmom(b.momento);
+    return (i+1)+'. '+m.l.toUpperCase()+(b.objetivo?(' — '+b.objetivo):'')+'\n'
+      +((b.decir||[]).length?('DECIR:\n'+pl(b.decir)+'\n'):'')
+      +((b.preguntas||[]).length?('PREGUNTAR:\n'+pl(b.preguntas)+'\n'):'')
+      +((b.evitar||[]).length?('NO DECIR:\n'+pl(b.evitar)+'\n'):'')
+      +(b.senal?('Pasa al siguiente cuando: '+b.senal+'\n'):'');
+  }).join('\n')
+  +((g.objeciones||[]).length?('\nOBJECIONES\n'+g.objeciones.map(function(o){
+    return '- '+(o.objecion||'')+(o.veces?(' ('+o.veces+')'):'')+'\n  '+(o.responder||'');
+  }).join('\n')):'');
+  navigator.clipboard.writeText(t).then(function(){ toast('Guion copiado.'); },
+    function(){ toast('No pude copiar.','amber'); });
+}
+// Mismo selector que los formularios, pero el default es distinto: aca se
+// aprende de las llamadas NUESTRAS que salieron bien, no de cruzar clientes.
+function guionLlamadasModal(id){
+  var g=_guion(id); if(!g) return;
+  var l=_formLlamadas();
+  if(!l.length){ toast('No hay llamadas con transcripcion.','amber'); return; }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:600px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">De que llamadas sacarlo</div>'
+      +'<div class="modal-sub">Elegi las que salieron bien y son del mismo tipo: solo '
+        +'diagnosticos, o solo ventas. Mezclar tipos da un guion que no sirve para ninguno.</div>'
+      +'<div onchange="guionLlContar()" style="margin-top:12px">'
+      +l.map(function(x,i){
+        return '<label style="display:flex;align-items:center;gap:10px;padding:7px 0;'
+            +'border-bottom:1px solid var(--border);cursor:pointer">'
+          +'<input type="checkbox" class="gll" value="'+i+'">'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+            +'text-overflow:ellipsis;white-space:nowrap">'+esc(x.cl.title||'Llamada')+'</span>'
+          +'<span style="font-size:11px;color:var(--text3);white-space:nowrap">'
+            +esc(x.c.name||'')+'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3);width:46px;text-align:right">'
+            +Math.round(x.chars/1000)+'k</span>'
+        +'</label>';
+      }).join('')
+      +'</div>'
+      +'<div id="gll-n" style="font-size:11.5px;color:var(--text3);margin-top:10px;'
+        +'line-height:1.5;min-height:16px"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="abrirGuion('+id+')">Volver</button>'
+        +'<button class="btn btn-primary" onclick="guionDesdeLlamadas('+id+')">Leerlas</button>'
+      +'</div>'
+    +'</div></div>';
+  guionLlContar();
+}
+function guionLlContar(){
+  var n=document.querySelectorAll('.gll:checked').length;
+  var e=document.getElementById('gll-n');
+  if(!e) return;
+  e.textContent = n
+    ? (n+' llamada'+(n===1?'':'s')+'.'+(n>8?' Son muchas: con 3 a 6 del mismo tipo sale mejor.':''))
+    : 'Elegi al menos una.';
+  e.style.color = n>8 ? 'var(--amberx)' : 'var(--text3)';
+}
+async function guionDesdeLlamadas(id){
+  var g=_guion(id); if(!g) return;
+  var idx=[].slice.call(document.querySelectorAll('.gll:checked')).map(function(x){ return +x.value; });
+  if(!idx.length){ toast('Elegi al menos una llamada.','amber'); return; }
+  var l=_formLlamadas();
+  var elegidas=idx.map(function(i){ return l[i]; }).filter(Boolean);
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaSinApi()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
+  abrirGuion(id);
+  var e=document.getElementById('guion-estado');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var tope=elegidas.length>6?14000:24000;
+  var n=elegidas.length;
+  decir('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Leyendo '+n+' llamada'+(n===1?'':'s')+'...</span></span>');
+  var pedido='Sos consultor comercial. Abajo hay transcripciones de llamadas que tomamos '
+    +'NOSOTROS con clientes o prospectos.\n\n'
+    +'Sacá el guion: que decir, en que orden, y con que palabras.\n\n'
+    +'REGLAS, y la primera es la que importa:\n'
+    +'- Las frases de "decir" son TEXTUALES de las llamadas. Copialas tal cual se dijeron, '
+    +'aunque suenen desprolijas escritas. Si las reescribis prolijas dejan de sonar a persona '
+    +'y el guion no se puede usar.\n'
+    +'- Solo lo que se repite o lo que claramente funciono. Una frase que aparece una vez y no '
+    +'movio nada no va.\n'
+    +'- "evitar" es lo que se dijo y salio mal: la pregunta que trabo la charla, la explicacion '
+    +'que aburrio, la frase que puso a la defensiva. Esto vale mas que los aciertos.\n'
+    +'- "senal" es como te das cuenta de que ya podes pasar al momento siguiente. Concreto, '
+    +'algo que la otra persona dice o hace.\n'
+    +'- Cada frase lleva "ll" (titulo exacto de la llamada) y "m" (minuto mm:ss).\n'
+    +'- No inventes momentos que no aparecen. Si estas llamadas nunca llegan al cierre, no '
+    +'escribas un cierre.\n'
+    +'- Rioplatense.\n\n'
+    +'Los momentos posibles son: '+GUION_MOMENTOS.map(function(x){return x.k;}).join(', ')+'.\n\n'
+    +'Devolve SOLO este JSON, sin markdown:\n'
+    +'{"titulo":"",'
+    +'"bloques":[{"momento":"apertura","objetivo":"una linea",'
+      +'"decir":[{"texto":"frase textual","ll":"","m":""}],'
+      +'"preguntas":[{"texto":"","ll":"","m":""}],'
+      +'"evitar":[{"texto":"","ll":"","m":""}],'
+      +'"senal":""}],'
+    +'"objeciones":[{"objecion":"","veces":"aparece en 3 de 5","responder":"como se respondio '
+      +'y funciono","ll":"","m":""}]}\n\n'
+    +'LLAMADAS:\n'+elegidas.map(function(x){
+      return '--- '+(x.cl.title||'Llamada')+' ('+(x.c.name||'')+') ---\n'
+        +String(x.cl.transcript||x.cl.summary||'').slice(0,tope);
+    }).join('\n\n');
+  try{
+    var r=await _vtaApi(apiKey||'sin-clave',{model:'claude-sonnet-5',max_tokens:12000,
+      messages:[{role:'user',content:pedido}]});
+    var o=r.o;
+    if(!o||!(o.bloques||[]).length) throw new Error('no devolvio ningun momento');
+    g.bloques=o.bloques;
+    g.objeciones=o.objeciones||[];
+    g.deLlamadas=n;
+    if(o.titulo && /sin nombre/i.test(g.titulo||'')) g.titulo=String(o.titulo).trim();
+    save(); abrirGuion(id);
+    toast('Guion armado con '+o.bloques.length+' momentos'+(r.cortado?', aunque llego cortado':'')+'.');
+  }catch(err){
+    console.error('Guion desde llamadas:', err);
+    decir('No pude armarlo: '+esc(err.message),'var(--redx)');
+  }
+}
+
 function formsClienteHtml(c){
   var l=formularios();
   var cab='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
