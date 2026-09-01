@@ -21245,6 +21245,111 @@ function matCerrar(){
   var b=document.getElementById('mat-abrir');
   if(b) b.style.display='';
 }
+// ---- Archivos del material ----------------------------------------------
+// Los archivos NO van a la base: un zip en localStorage o en una fila de
+// Supabase revienta el limite del navegador, que ya viene justo. Van a Supabase
+// Storage y en el cliente queda solo la referencia (bucket + path). El link se
+// firma en el momento de abrirlo, asi el bucket puede quedar privado.
+var MAT_BUCKET='material';
+var MAT_MAX_MB=45;   // el limite por archivo que trae Supabase por defecto es 50
+function _matTam(b){
+  b=+b||0;
+  if(b<1024) return b+' B';
+  if(b<1048576) return (b/1024).toFixed(0)+' KB';
+  return (b/1048576).toFixed(1)+' MB';
+}
+// Un nombre seguro para el path: acentos, espacios y simbolos rompen la URL.
+function _matSlug(s){
+  return String(s||'archivo')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-zA-Z0-9._-]+/g,'-')
+    .replace(/^-+|-+$/g,'').slice(0,80) || 'archivo';
+}
+function matElegirArchivo(clientId){
+  var i=document.getElementById('mat-file');
+  if(i) i.click();
+}
+async function matSubirArchivo(clientId, input){
+  var f=(input&&input.files&&input.files[0])||null;
+  if(!f) return;
+  input.value='';                       // permite volver a elegir el mismo archivo
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!SB.token){ toast('Entra con tu cuenta para subir archivos.','amber'); return; }
+  if(f.size > MAT_MAX_MB*1048576){
+    toast('El archivo pesa '+_matTam(f.size)+'. El maximo es '+MAT_MAX_MB+' MB.','red');
+    return;
+  }
+  var est=document.getElementById('mat-estado');
+  var decir=function(t,col){ if(est){ est.textContent=t; est.style.color=col||'var(--text3)'; } };
+  decir('Subiendo '+f.name+' ('+_matTam(f.size)+')...');
+  // El path lleva el id del cliente y la fecha: dos archivos con el mismo
+  // nombre no se pisan, y desde el bucket se entiende de quien es cada uno.
+  var path=clientId+'/'+Date.now()+'-'+_matSlug(f.name);
+  try{
+    var r=await fetch(SB_URL+'/storage/v1/object/'+MAT_BUCKET+'/'+encodeURI(path),{
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
+                'x-upsert':'false',
+                'Content-Type':f.type||'application/octet-stream' },
+      body:f
+    });
+    if(!r.ok){
+      var t=await r.text();
+      if(/Bucket not found/i.test(t)){
+        decir('Falta crear el bucket "'+MAT_BUCKET+'" en Supabase → Storage.','var(--redx)');
+      }else if(r.status===403||/row-level security|Unauthorized/i.test(t)){
+        decir('El bucket existe pero no te deja escribir: faltan las policies.','var(--redx)');
+      }else{
+        decir('No pude subirlo: '+t,'var(--redx)');
+      }
+      return;
+    }
+    var l=String((document.getElementById('mat-label')||{}).value||'').trim();
+    c.material=c.material||[];
+    c.material.unshift({id:Date.now(), label:l||f.name, archivo:f.name,
+                        bucket:MAT_BUCKET, path:path, tam:f.size,
+                        at:new Date().toISOString()});
+    save();
+    decir('');
+    matCerrar();
+    if(typeof renderTab==='function') renderTab();
+    toast(f.name+' subido');
+  }catch(e){
+    decir('No pude subirlo: '+e.message,'var(--redx)');
+  }
+}
+// El link se firma recien al abrirlo: si se guardara, venceria y quedaria una
+// fila que no abre nada sin explicar por que.
+async function matAbrirArchivo(clientId, id){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var m=(c.material||[]).filter(function(x){return x.id===id;})[0];
+  if(!m||!m.path) return;
+  if(!SB.token){ toast('Entra con tu cuenta para abrir archivos.','amber'); return; }
+  // La pestaña se abre antes del await: si se abre despues, el navegador la
+  // bloquea porque ya no es una accion directa del usuario.
+  var w=window.open('','_blank');
+  try{
+    var r=await fetch(SB_URL+'/storage/v1/object/sign/'+(m.bucket||MAT_BUCKET)+'/'+encodeURI(m.path),{
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
+                'Content-Type':'application/json' },
+      body:JSON.stringify({expiresIn:3600})
+    });
+    var d=await r.json();
+    if(!r.ok||!d.signedURL&&!d.signedUrl){
+      if(w) w.close();
+      toast('No pude abrirlo: '+((d&&d.message)||('HTTP '+r.status)),'red');
+      return;
+    }
+    var u=SB_URL+'/storage/v1'+(d.signedURL||d.signedUrl);
+    if(w) w.location=u; else window.open(u,'_blank','noopener');
+  }catch(e){
+    if(w) w.close();
+    toast('No pude abrirlo: '+e.message,'red');
+  }
+}
 function matAgregar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -21259,6 +21364,17 @@ function matAgregar(clientId){
 function matQuitar(clientId, id){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.material) return;
+  var m=c.material.filter(function(x){return x.id===id;})[0];
+  // Si es un archivo, se borra tambien del bucket. Sin esto la fila desaparece
+  // pero el archivo sigue ocupando espacio en Supabase para siempre, sin nada
+  // que lo referencie.
+  if(m&&m.path&&SB.token){
+    if(!confirm('Borrar "'+(m.label||m.archivo||'el archivo')+'"?\n\nSe elimina tambien de Supabase.')) return;
+    fetch(SB_URL+'/storage/v1/object/'+(m.bucket||MAT_BUCKET)+'/'+encodeURI(m.path),{
+      method:'DELETE',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token }
+    }).catch(function(e){ console.warn('no pude borrar el archivo:', e&&e.message); });
+  }
   c.material=c.material.filter(function(m){return m.id!==id;});
   save();
   if(typeof renderTab==='function') renderTab();
@@ -21813,15 +21929,21 @@ function matVer(clientId, id){
 function materialHtml(c){
   var propios=(c.material||[]);
   var hered=_matHeredado(c);
-  var fila=function(l,u,de,id){
+  var fila=function(l,u,de,id,arch){
     var emb=_embedUrl(u);
     var abierto=(emb && id && _MAT_ABIERTO===id);
     return '<div style="border-bottom:1px solid var(--border)">'
       +'<div style="display:flex;align-items:center;gap:10px;padding:8px 0">'
-      +(u?('<a href="'+esc(u)+'" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:12.5px;'
+      // Un archivo no tiene URL fija: el link se firma al tocarlo.
+      +(arch?('<a href="javascript:void(0)" onclick="matAbrirArchivo('+c.id+','+id+')" '
+        +'style="flex:1;min-width:0;font-size:12.5px;color:var(--text);text-decoration:none;'
+        +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+        +esc(l)+'<span style="color:var(--text3)"> &middot; archivo'
+        +(arch.tam?(' &middot; '+_matTam(arch.tam)):'')+'</span></a>')
+      :(u?('<a href="'+esc(u)+'" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:12.5px;'
         +'color:var(--text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
         +esc(l)+'<span style="color:var(--text3)"> &middot; '+esc(_matDominio(u)||u)+'</span></a>')
-        :('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text3)">'+esc(l)+'</span>'))
+        :('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text3)">'+esc(l)+'</span>')))
       +((emb&&id)?('<button onclick="matVer('+c.id+','+id+')" class="btn btn-sm" '
         +'style="font-size:10.5px;padding:2px 8px;'+(abierto?'border-color:var(--accent);color:var(--accent)':'')+'" '
         +'title="Ver el '+_embedNombre(u)+' aca mismo">'+(abierto?'Cerrar':'Ver')+'</button>'):'')
@@ -21862,10 +21984,16 @@ function materialHtml(c){
         +'else if(event.key===\'Escape\'){matCerrar();}">'
       +'<button class="btn btn-sm btn-primary" style="flex:none" '
         +'onclick="matAgregar('+c.id+')">Guardar</button>'
+      +'<button class="btn btn-sm" style="flex:none" onclick="matElegirArchivo('+c.id+')" '
+        +'title="Sube el archivo a Supabase. Hasta '+MAT_MAX_MB+' MB.">Subir archivo</button>'
+      +'<input type="file" id="mat-file" style="display:none" '
+        +'onchange="matSubirArchivo('+c.id+', this)">'
       +'<button class="btn btn-sm" style="flex:none" onclick="matCerrar()">Cancelar</button>'
     +'</div>'
+    +'<div id="mat-estado" style="font-size:11px;color:var(--text3);margin:-6px 0 10px"></div>'
     +(propios.length?propios.map(function(m){
-        return fila(m.label, m.url, new Date(m.at).toLocaleDateString('es-AR'), m.id);
+        return fila(m.label, m.url, new Date(m.at).toLocaleDateString('es-AR'), m.id,
+                    m.path?m:null);
       }).join('')
       :'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;padding-bottom:6px">'
        +'Todavia no cargaste nada. Aca van los accesos, la marca, la landing, lo que necesites tener a mano.</div>')
@@ -22892,7 +23020,12 @@ function _lpContextoInterno(c){
     }).filter(Boolean);
     if(lineas.length) out.push('FORMULARIO \u2014 '+(f.titulo||'')+':\n'+lineas.join('\n'));
   });
-  var links=(c.material||[]).map(function(m){ return '- '+m.label+': '+m.url; });
+  // Un archivo subido no tiene URL: se nombra como archivo en vez de mandar
+  // "undefined" al prompt, que es ruido y no dice nada.
+  var links=(c.material||[]).map(function(m){
+    return m.url ? ('- '+m.label+': '+m.url)
+                 : ('- '+m.label+' (archivo'+(m.archivo?': '+m.archivo:'')+')');
+  });
   _matHeredado(c).forEach(function(m){ if(m.u) links.push('- '+m.l+': '+m.u); });
   if(links.length) out.push('LINKS DEL CLIENTE:\n'+links.join('\n'));
   // Las llamadas no entraban. Estaban en el cliente pero este contexto solo
