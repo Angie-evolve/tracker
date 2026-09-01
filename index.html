@@ -21417,20 +21417,55 @@ function _mkPixeles(blob){
 // elige la mas cuadrada y chica, que es la forma tipica de un logo frente a una
 // foto o un mockup.
 function _mkEsLogo(nombre){
-  return /logo|isotipo|imagotipo|marca|brand(mark)?|icon/i.test(nombre);
+  return /logo|isotipo|imagotipo|brand(mark)?/i.test(_mkBase(nombre));
+}
+// Solo el nombre del archivo. Mirar la ruta entera daba puntos a todo el kit:
+// si el zip se llama "brand/", hasta un screenshot puntuaba como logo.
+function _mkBase(n){ return String(n||'').split('/').pop(); }
+function _mkCarpeta(n){
+  var p=String(n||'').split('/');
+  return p.length>1 ? p[p.length-2] : '';
 }
 function _mkPuntajeLogo(nombre, w, h){
-  var p=0;
+  var base=_mkBase(nombre), carp=_mkCarpeta(nombre), p=0;
   if(_mkEsLogo(nombre)) p+=100;
-  if(/\.svg$/i.test(nombre)) p+=20;             // vectorial: mejor para la web
-  if(/primari|principal|full|color/i.test(nombre)) p+=10;
-  if(/blanco|white|negativ|mono|gris/i.test(nombre)) p-=15;  // version alternativa
+  // La carpeta que CONTIENE al archivo, no cualquier tramo de la ruta.
+  if(/^(logos?|identidad|isotipos?)$/i.test(carp)) p+=40;
+  if(/^(screenshots?|capturas|fotos|photos|mockups?|social)$/i.test(carp)) p-=80;
+  if(/\.svg$/i.test(base)) p+=25;               // vectorial: mejor para la web
+  if(/primari|principal|full|color|horizontal/i.test(base)) p+=15;
+  if(/blanco|white|negativ|mono|gris|black/i.test(base)) p-=15;  // version alternativa
+  // Un favicon o un apple-touch-icon es el logo recortado a 32 o 180 px, con
+  // fondo solido y sin aire. Sirve para la pestana del navegador, no para el
+  // header de una landing.
+  if(/favicon|apple-touch|android-chrome|mstile|maskable|touch-icon|app-icon/i.test(base)) p-=120;
+  if(/^(icons?|favicons?)$/i.test(carp)) p-=60;
   if(w&&h){
     var rel=Math.min(w,h)/Math.max(w,h);
-    p+=rel*20;                                   // cuanto mas cuadrada, mejor
+    p+=rel*15;                                   // cuanto mas cuadrada, mejor
+    if(Math.max(w,h)<200) p-=40;                 // demasiado chico para un header
     if(Math.max(w,h)>2000) p-=15;                // una foto grande no es el logo
   }
   return p;
+}
+// Los hex escritos en el README, tokens.json o el CSS del kit son los valores
+// exactos del disenador. Le ganan a cualquier estimacion por pixeles, que
+// confunde el marron de una foto con un color de marca.
+function _mkHexDelTexto(txt){
+  var vistos={}, orden=[];
+  String(txt||'').replace(/#([0-9a-fA-F]{6})\b/g, function(_, h){
+    var hex='#'+h.toUpperCase();
+    if(vistos[hex]) { vistos[hex]++; return _; }
+    vistos[hex]=1; orden.push(hex);
+    return _;
+  });
+  return orden.filter(function(hex){
+    var r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+    // Se descartan los neutros por el mismo motivo que en la paleta por pixeles:
+    // #FFFFFF y #000000 estan en todos los kits y no dicen nada de la marca.
+    var max=Math.max(r,g,b), min=Math.min(r,g,b);
+    return !(max>242&&min>242) && !(max<28) && (max-min)>=18;
+  }).slice(0,6);
 }
 function _mkLeerComoDataUrl(blob){
   return new Promise(function(res){
@@ -21446,7 +21481,7 @@ function _mkEstado(t,col){
 }
 // Analiza un archivo ya subido del material. Se baja del bucket, se abre y se
 // saca la paleta y el logo.
-async function marcaLeerDeMaterial(clientId, id){
+async function marcaLeerDeMaterial(clientId, id, forzarLogo){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var m=(c.material||[]).filter(function(x){return x.id===id;})[0];
@@ -21463,12 +21498,12 @@ async function marcaLeerDeMaterial(clientId, id){
     var firmada=fd.signedURL||fd.signedUrl;
     if(!fr.ok||!firmada){ _mkEstado('No pude bajarlo: '+((fd&&fd.message)||fr.status),'var(--redx)'); return; }
     var blob=await (await fetch(SB_URL+'/storage/v1'+firmada)).blob();
-    await marcaAnalizarBlob(clientId, blob, m.archivo||m.label);
+    await marcaAnalizarBlob(clientId, blob, m.archivo||m.label, forzarLogo, id);
   }catch(e){
     _mkEstado('No pude leerlo: '+e.message,'var(--redx)');
   }
 }
-async function marcaAnalizarBlob(clientId, blob, nombre){
+async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var imgs=[];   // {nombre, blob}
@@ -21527,11 +21562,15 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
       _mkEstado('Solo puedo leer un zip o una imagen.','var(--amberx)'); return;
     }
 
-    _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');    var todos={}, mejor=null, mejorP=-1e9;
+    _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');
+    var todos={}, mejor=null, mejorP=-1e9;
     for(var j=0;j<imgs.length;j++){
       var px=await _mkPixeles(imgs[j].blob);
       var w=px?px.w:0, h=px?px.h:0;
-      var p=_mkPuntajeLogo(imgs[j].nombre, w, h);
+      // Si elegiste un logo a mano, gana sin discusion: viste el zip y sabes
+      // cual es. El puntaje solo decide cuando nadie eligio.
+      var p=(forzarLogo && imgs[j].nombre===forzarLogo)
+        ? 1e9 : _mkPuntajeLogo(imgs[j].nombre, w, h);
       if(p>mejorP){ mejorP=p; mejor=imgs[j]; }
       if(!px) continue;
       // Los colores de cada imagen se suman: un color que aparece en varias
@@ -21540,12 +21579,23 @@ async function marcaAnalizarBlob(clientId, blob, nombre){
         todos[x.hex]=(todos[x.hex]||0)+x.n;
       });
     }
-    var paleta=Object.keys(todos).sort(function(a,b){ return todos[b]-todos[a]; }).slice(0,6);
+    var porPixel=Object.keys(todos).sort(function(a,b){ return todos[b]-todos[a]; }).slice(0,6);
+    // Los hex escritos en el kit le ganan a los estimados: son exactos. Los de
+    // pixeles solo completan si el texto no trae suficientes.
+    var escritos=_mkHexDelTexto(_txtZip);
+    var paleta=escritos.concat(porPixel.filter(function(h){
+      return escritos.indexOf(h)<0;
+    })).slice(0,6);
 
     c.marca=c.marca||{};
     c.marca.colores=paleta;
     c.marca.de=nombre||'';
     c.marca.at=new Date().toISOString();
+    // La lista de imagenes se guarda para poder cambiar el logo despues sin
+    // volver a adivinar: se muestran todas y elegis. Solo los nombres, no los
+    // archivos: guardar doce imagenes en la ficha reventaria el almacenamiento.
+    c.marca.imagenes=imgs.map(function(x){ return x.nombre; });
+    c.marca.matId=matId||c.marca.matId||null;
     if(_txtZip) c.marca.texto=_txtZip;
     // El logo va como data URL: la landing queda autocontenida y no depende de
     // un link firmado que vence en una hora.
@@ -21622,7 +21672,23 @@ function _marcaHtml(c){
         +'<div style="font-size:10.5px;color:var(--text3);margin-bottom:10px">'
           +'De '+esc(mk.de||'')+(mk.logoNombre?(' \u00b7 logo: '+esc(mk.logoNombre)):'')
           +' \u00b7 <a href="javascript:void(0)" onclick="marcaBorrar('+c.id+')" '
-          +'style="color:var(--text3)">borrar todo</a></div>')
+          +'style="color:var(--text3)">borrar todo</a></div>'
+        // Elegir el logo a mano. El automatico acierta casi siempre, pero un kit
+        // suele traer diez variantes y solo vos sabes cual va en el header.
+        +((mk.imagenes||[]).length>1 && mk.matId
+          ? ('<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+            +'<span style="font-size:10.5px;color:var(--text3)">Logo:</span>'
+            +'<select id="mk-logo" style="font-size:11px;padding:4px 8px;border-radius:var(--radius);'
+              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+              +'max-width:340px">'
+            +(mk.imagenes||[]).map(function(n){
+              return '<option value="'+esc(n)+'"'+(n===mk.logoNombre?' selected':'')+'>'
+                +esc(n)+'</option>'; }).join('')
+            +'</select>'
+            +'<button class="btn btn-sm" onclick="marcaLeerDeMaterial('+c.id+', '+mk.matId+', '
+              +'document.getElementById(\'mk-logo\').value)">Usar este</button>'
+          +'</div>')
+          : ''))
       : '<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
         +'Todavia no lei la marca. Al leer un zip saco los colores dominantes de sus imagenes '
         +'y elijo el logo. Van al COPY de la landing.</div>')
