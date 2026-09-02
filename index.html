@@ -193,6 +193,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   padding:0 2px 8px;display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .p3cab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .p3cab b{color:var(--text2);font-weight:500;flex:none}
+.p3cab{cursor:pointer}
+.p3cab:hover span{color:var(--text2)}
+.p3cabsel span{color:var(--accent)}
 .p3card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
   padding:9px 11px;margin-bottom:7px;cursor:grab}
 .p3card:hover{border-color:var(--border2)}
@@ -20718,6 +20721,78 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
       +'</div>'
     +'</div></div>';
 }
+// Abrir una columna: no alcanza con saber que alguien esta en "Sprint de
+// lanzamiento", hace falta saber por donde va adentro. El subproceso vive en
+// las tareas del cliente que tienen un SOP enganchado: el avance cuelga de la
+// tarea, no del SOP, asi que dos clientes corren el mismo SOP por separado.
+function p360AbrirCol(etapa){
+  S.p360Col=(S.p360Col===etapa)?null:etapa;
+  showTickets();
+}
+function _p360SubprocesoHtml(c){
+  var tareas=(c.tasks||[]).filter(function(t){
+    return t.sopId && !t.done && !t.deleted && !t.archivada; });
+  if(!tareas.length) return '';
+  return tareas.map(function(t){
+    var av=sopAvanceTarea(t);
+    if(!av) return '';
+    // El freno se calcula sobre los hechos de ESTA tarea, no sobre los
+    // globales: _sopFreno lee el contexto abierto y aca no hay ninguno.
+    var h=t.sopHechos||{}, fr=null;
+    (av.s.bloques||[]).forEach(function(b,bi){
+      (b.pasos||[]).forEach(function(p){
+        if(fr||!p.bloq) return;
+        if(h[_sopIdPaso(bi,p)]) return;
+        fr={p:p, quien:_sopQuien(p.de)};
+      });
+    });
+    var col=fr?(fr.quien.k==='cliente'?'var(--amberx)':'var(--redx)'):'var(--accent)';
+    return '<div style="display:flex;gap:8px;align-items:baseline;padding:2px 0 2px 14px">'
+      +'<span style="flex:none;font-size:10px;color:'+col+'">&#9673;</span>'
+      +'<span style="flex:1;font-size:11.5px;color:var(--text3);line-height:1.5">'
+        +esc(av.s.titulo||'SOP')+' <span class="mono">'+av.n+'/'+av.tot+'</span>'
+        +(fr?(' \u00b7 <span style="color:'+col+'">'+esc(fr.p.t||'')+'</span>'
+             +' <span style="color:var(--text3)">('+esc(fr.quien.l).toLowerCase()+')</span>')
+            :' \u00b7 sin pasos que frenen')
+      +'</span>'
+      +'<a href="javascript:void(0)" onclick="irCliente('+c.id+')" '
+        +'style="flex:none;font-size:10.5px;color:var(--text3);text-decoration:none">abrir</a>'
+    +'</div>';
+  }).join('');
+}
+function _p360ColHtml(etapa, cards){
+  if(!cards.length){
+    return '<div style="margin-top:10px;padding:11px 13px;border:1px solid var(--border);'
+      +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3)">'
+      +'Nadie en '+esc(etapa)+'.</div>';
+  }
+  return '<div style="margin-top:10px;padding:11px 13px;border:1px solid var(--border);'
+      +'border-radius:var(--radius);background:var(--bg3)">'
+    +'<div style="font-size:12px;color:var(--strong);margin-bottom:2px">'+esc(etapa)+'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:9px">'
+      +'Para salir de esta etapa hace falta '+esc(P360_PIDE[etapa]||'completarla')+'. '
+      +'Debajo de cada cliente, por donde va su procedimiento.</div>'
+    +cards.map(function(d){
+      var sub=_p360SubprocesoHtml(d.c);
+      var f=d.peor;
+      return '<div style="padding:5px 0;border-top:1px solid var(--border)">'
+        +'<div style="display:flex;gap:9px;align-items:baseline">'
+          +'<a href="javascript:void(0)" onclick="p360Abrir('+d.c.id+')" '
+            +'style="flex:1;font-size:12.5px;color:var(--text);text-decoration:none">'
+            +esc(d.c.name||'')+'</a>'
+          +'<span style="flex:none;font-size:11px;color:'
+            +(f?(f.de==='cliente'?'var(--amberx)':'var(--redx)')
+               :((d.et&&d.et.estado==='tarde')?'var(--amberx)':'var(--text3)'))+'">'
+            +(f?esc(f.q):((d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia'))+'</span>'
+        +'</div>'
+        // Sin SOP enganchado no hay subproceso que mostrar. Decirlo es mejor
+        // que dejar el hueco: se entiende que falta armarlo, no que anda mal.
+        +(sub||('<div style="padding:2px 0 2px 14px;font-size:11px;color:var(--text3)">'
+          +'Sin procedimiento enganchado a una tarea.</div>'))
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
 function p360Abrir(clientId){
   S.p360Abierto=(S.p360Abierto===clientId)?null:clientId;
   showTickets();
@@ -20964,7 +21039,10 @@ function p360Html(){
       return '<div class="p3col" data-et="'+esc(col.l)+'" '
         +'ondragover="p360SobreCol(event,this)" ondragleave="this.classList.remove(\'p3drop\')" '
         +'ondrop="p360Soltar(event,this,\''+lb+'\')">'
-        +'<div class="p3cab"><span>'+esc(col.l)+'</span><b>'+(col.cards.length||'')+'</b></div>'
+        +'<div class="p3cab'+(S.p360Col===col.l?' p3cabsel':'')+'" '
+          +'onclick="p360AbrirCol(\''+esc(col.l).replace(/'/g,"\\'")+'\')" '
+          +'title="Ver por donde va cada uno dentro de '+esc(col.l)+'">'
+          +'<span>'+esc(col.l)+'</span><b>'+(col.cards.length||'')+'</b></div>'
         +(col.cards.length?col.cards.map(tarjeta).join('')
           :'<div class="p3nada"></div>')
       +'</div>';
@@ -20984,6 +21062,13 @@ function p360Html(){
         +'Ningun cliente'+(sel?(' de '+esc(selLabel)):'')+' cayo en una etapa.</div>'):'')
     // La ficha del cliente abierto va debajo del tablero, no encima de la
     // tarjeta: asi no tapa las columnas ni desplaza las otras tarjetas.
+    // La columna abierta va debajo del tablero, igual que la ficha: adentro de
+    // la columna no entra, miden 150px.
+    +(function(){
+      if(!S.p360Col) return '';
+      var col=cols.filter(function(x){ return x.l===S.p360Col; })[0];
+      return col?_p360ColHtml(col.l, col.cards):'';
+    })()
     +(function(){
       if(!S.p360Abierto) return '';
       var d=ver.filter(function(x){ return x.c.id===S.p360Abierto; })[0];
