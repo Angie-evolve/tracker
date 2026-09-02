@@ -207,6 +207,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
    cual de las nueve va a recibir la tarjeta. */
 .p3col.p3drop{background:var(--bg3);outline:1px dashed var(--accent);outline-offset:2px;
   border-radius:var(--radius)}
+/* Filas del editor de etapas. La linea marca donde va a caer lo que arrastras:
+   sin senal, soltar es a ciegas. */
+.rt-fila.rt-drop{box-shadow:inset 0 2px 0 var(--accent)}
+.rt-asa:active{cursor:grabbing}
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
 .p3card.frena{border-left:2px solid var(--redx)}
@@ -21101,7 +21105,16 @@ function rutaModal(){
       +r.map(function(e,i){
         var ps=(e.pasos||[]);
         var abierto=(S._rutaPasos===i);
-        return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+        return '<div class="rt-fila" draggable="true" data-i="'+i+'" '
+          +'ondragstart="rutaDragStart(event,'+i+')" ondragend="rutaDragEnd()" '
+          +'ondragover="rutaDragSobre(event,this)" ondragleave="this.classList.remove(\'rt-drop\')" '
+          +'ondrop="rutaDrop(event,this,'+i+')" '
+          +'style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+          // El asa evita que arrastrar dentro de un input seleccione texto en
+          // vez de mover la fila.
+          +'<span class="rt-asa" title="Arrastrar para reordenar" '
+            +'style="flex:none;width:14px;color:var(--text3);cursor:grab;'
+            +'font-size:12px;line-height:1;user-select:none">\u2237</span>'
           +'<input value="'+esc(e.l)+'" onchange="rutaSet('+i+',\'l\',this.value)" '
             +'style="'+inp+';flex:1;min-width:0'+(e.sub?';margin-left:16px':'')+'">'
           +'<input value="'+esc(e.kw||'')+'" placeholder="sin deteccion" '
@@ -21117,15 +21130,10 @@ function rutaModal(){
           +'<button class="btn btn-sm" style="width:76px;flex:none;font-size:10px;padding:1px 6px'
             +(abierto?';border-color:var(--accent)':'')+'" '
             +'onclick="rutaVerPasos('+i+')">'+(ps.length?(ps.length+' pasos'):'pasos')+'</button>'
-          +'<span style="width:100px;display:flex;gap:3px;justify-content:flex-end">'
-            // Insertar donde va, en vez de agregar al final y subirla a flechazos.
+          +'<span style="width:56px;display:flex;gap:3px;justify-content:flex-end">'
             +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
               +'title="Agregar una etapa justo debajo de esta" '
               +'onclick="rutaInsertar('+i+')">+</button>'
-            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
-              +(i===0?'disabled':'onclick="rutaMoverEtapa('+i+',-1)"')+'>&uarr;</button>'
-            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
-              +(i===r.length-1?'disabled':'onclick="rutaMoverEtapa('+i+',1)"')+'>&darr;</button>'
             +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px;color:var(--redx)" '
               +'onclick="rutaBorrarEtapa('+i+')">&times;</button>'
           +'</span>'
@@ -21148,6 +21156,90 @@ function rutaModal(){
     +'</div></div>';
 }
 // Los pasos de una etapa, desplegados debajo de su fila.
+// ---- Arrastrar para reordenar -------------------------------------------
+var _RT_DRAG=null;
+function rutaDragStart(ev, i){
+  _RT_DRAG={tipo:'etapa', i:i};
+  ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain','e'+i); }catch(e){}
+}
+function rutaPasoDragStart(ev, i, j){
+  _RT_DRAG={tipo:'paso', i:i, j:j};
+  ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain','p'+i+'-'+j); }catch(e){}
+  // Sin esto el drop de un paso lo agarra tambien la fila de la etapa que lo
+  // contiene, y la etapa termina moviendose sola.
+  ev.stopPropagation();
+}
+function rutaDragSobre(ev, el){
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect='move';
+  el.classList.add('rt-drop');
+}
+function rutaDragEnd(){
+  _RT_DRAG=null;
+  document.querySelectorAll('.rt-drop').forEach(function(x){ x.classList.remove('rt-drop'); });
+}
+// Sacar de una posicion y meter en otra. Intercambiar solo servia para mover de
+// a uno; arrastrando se espera que la fila caiga donde la soltaste.
+function _rtMover(arr, de, a){
+  if(de===a||de<0||a<0||de>=arr.length) return null;
+  var x=arr.splice(de,1)[0];
+  arr.splice(a>de?a:a, 0, x);
+  return {de:de, a:a>de?a:a};
+}
+// Como quedan los indices despues de mover uno. Sirve para arrastrar los
+// tildados de cada cliente junto con su paso.
+function _rtReindex(x, de, a){
+  if(x===de) return a;
+  if(de<a && x>de && x<=a) return x-1;
+  if(de>a && x>=a && x<de) return x+1;
+  return x;
+}
+function rutaDrop(ev, el, destino){
+  ev.preventDefault();
+  el.classList.remove('rt-drop');
+  var d=_RT_DRAG; _RT_DRAG=null;
+  if(!d||d.tipo!=='etapa'||d.i===destino) return;
+  var r=_rutaEditable();
+  _rtMover(r, d.i, destino);
+  // La primera no puede quedar como sub: no hay etapa de arriba de la cual
+  // colgar.
+  if(r.length&&r[0].sub) r[0].sub=false;
+  S._rutaPasos=null;
+  save(); rutaModal();
+}
+function rutaPasoDrop(ev, el, i, destino){
+  ev.preventDefault();
+  ev.stopPropagation();
+  el.classList.remove('rt-drop');
+  var d=_RT_DRAG; _RT_DRAG=null;
+  // Solo dentro de la misma etapa: mover un paso a otra columna es otra cosa y
+  // no esta claro que deberia pasar con los tildados.
+  if(!d||d.tipo!=='paso'||d.i!==i||d.j===destino) return;
+  var r=_rutaEditable();
+  if(!r[i]||!r[i].pasos) return;
+  _rtMover(r[i].pasos, d.j, destino);
+  // Los tildados de cada cliente son indices sobre esta lista.
+  (DB.clients||[]).forEach(function(c){
+    var h=(c.rutaPasos||{})[r[i].l];
+    if(!h) return;
+    c.rutaPasos[r[i].l]=h.map(function(x){ return _rtReindex(x, d.j, destino); });
+  });
+  save(); rutaModal();
+}
+function rutaPasoInsertar(i, j){
+  var r=_rutaEditable();
+  if(!r[i]) return;
+  r[i].pasos=r[i].pasos||[];
+  r[i].pasos.splice(j+1, 0, {t:'Paso nuevo'});
+  (DB.clients||[]).forEach(function(c){
+    var h=(c.rutaPasos||{})[r[i].l];
+    if(!h) return;
+    c.rutaPasos[r[i].l]=h.map(function(x){ return x>j?x+1:x; });
+  });
+  save(); rutaModal();
+}
 function _rutaPasosHtml(i, e, inp){
   var ps=(e.pasos||[]);
   return '<div style="margin:2px 0 8px 16px;padding:9px 11px;border-left:2px solid var(--accent);'
@@ -21157,8 +21249,16 @@ function _rutaPasosHtml(i, e, inp){
       +'Es igual para todos los clientes: lo que cambia es hasta donde llego cada uno.</div>'
     +(ps.length
       ? ps.map(function(p,j){
-          return '<div style="display:flex;gap:6px;align-items:center;padding:2px 0">'
-            +'<span class="mono" style="flex:none;width:16px;font-size:10px;color:var(--text3);'
+          return '<div class="rt-fila" draggable="true" '
+            +'ondragstart="rutaPasoDragStart(event,'+i+','+j+')" ondragend="rutaDragEnd()" '
+            +'ondragover="rutaDragSobre(event,this)" '
+            +'ondragleave="this.classList.remove(\'rt-drop\')" '
+            +'ondrop="rutaPasoDrop(event,this,'+i+','+j+')" '
+            +'style="display:flex;gap:6px;align-items:center;padding:2px 0">'
+            +'<span class="rt-asa" title="Arrastrar para reordenar" '
+              +'style="flex:none;width:12px;color:var(--text3);cursor:grab;font-size:11px;'
+              +'line-height:1;user-select:none">\u2237</span>'
+            +'<span class="mono" style="flex:none;width:14px;font-size:10px;color:var(--text3);'
               +'text-align:right">'+(j+1)+'</span>'
             +'<input value="'+esc(p.t||'')+'" onchange="rutaPasoSet('+i+','+j+',\'t\',this.value)" '
               +'style="'+inp+';flex:1;min-width:0">'
@@ -21170,9 +21270,8 @@ function _rutaPasosHtml(i, e, inp){
                   +esc(a)+'</option>'; }).join('')
             +'</select>'
             +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 6px" '
-              +(j===0?'disabled':'onclick="rutaPasoMover('+i+','+j+',-1)"')+'>&uarr;</button>'
-            +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 6px" '
-              +(j===ps.length-1?'disabled':'onclick="rutaPasoMover('+i+','+j+',1)"')+'>&darr;</button>'
+              +'title="Agregar un paso justo debajo" '
+              +'onclick="rutaPasoInsertar('+i+','+j+')">+</button>'
             +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 6px;'
               +'color:var(--redx)" onclick="rutaPasoBorrar('+i+','+j+')">&times;</button>'
           +'</div>';
@@ -21202,21 +21301,6 @@ function rutaPasoAgregar(i){
   r[i].pasos.push({t:'Paso nuevo'});
   save(); rutaModal();
 }
-function rutaPasoMover(i, j, d){
-  var r=_rutaEditable();
-  if(!r[i]||!r[i].pasos) return;
-  var L=r[i].pasos, k=j+d;
-  if(k<0||k>=L.length) return;
-  var t=L[j]; L[j]=L[k]; L[k]=t;
-  // El tildado de cada cliente son indices sobre esta lista: si se mueve un
-  // paso hay que moverlos con el, o el tilde queda en el paso equivocado.
-  (DB.clients||[]).forEach(function(c){
-    var h=(c.rutaPasos||{})[r[i].l];
-    if(!h) return;
-    c.rutaPasos[r[i].l]=h.map(function(x){ return x===j?k:(x===k?j:x); });
-  });
-  save(); rutaModal();
-}
 function rutaPasoBorrar(i, j){
   var r=_rutaEditable();
   if(!r[i]||!r[i].pasos) return;
@@ -21237,14 +21321,6 @@ function rutaSet(i, campo, val){
   else r[i][campo]=String(val||'').trim();
   save();
   rutaModal();
-}
-function rutaMoverEtapa(i, d){
-  var r=_rutaEditable(), j=i+d;
-  if(j<0||j>=r.length) return;
-  var t=r[i]; r[i]=r[j]; r[j]=t;
-  // La primera no puede ser sub: no hay etapa de arriba de la cual colgar.
-  if(r[0].sub) r[0].sub=false;
-  save(); rutaModal();
 }
 function rutaBorrarEtapa(i){
   var r=_rutaEditable();
