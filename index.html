@@ -7250,18 +7250,191 @@ function _entrDia(e){
 }
 // En el editor se escribe "texto | 7". Es la forma mas corta de cargar dos
 // datos por linea sin abandonar el pegado desde la presentacion.
+// Areas: quien hace cada entregable. Salen del diagrama de proceso, donde lo
+// que importa no es solo si algo esta hecho sino quien lo tiene trabado.
+var ENTR_AREAS=['Cliente','Comercial','Delivery','Sistemas'];
+function _entrArea(e){
+  var a=String((e&&e.a)||'').trim();
+  // Se compara sin acentos ni mayusculas para que "delivery" y "Delivery" sean
+  // la misma area y no aparezcan dos grupos con el mismo nombre.
+  var n=a.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  var m=ENTR_AREAS.filter(function(x){
+    return x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')===n; })[0];
+  return m||a||'';
+}
+// El formato de linea es: texto | dias | area. Los dos ultimos son opcionales,
+// y el area puede venir sin dias: "Kickoff tecnico || Delivery".
 function _entrParse(linea){
   var s=String(linea||'').trim();
   if(!s) return null;
-  var m=s.match(/^(.*?)\s*\|\s*(\d+)\s*$/);
-  return m?{t:m[1].trim(), dia:+m[2]}:{t:s, dia:null};
+  var p=s.split('|').map(function(x){ return x.trim(); });
+  var t=p[0]||'';
+  if(!t) return null;
+  var dia=(p[1]!==undefined && p[1]!=='' && /^\d+$/.test(p[1])) ? +p[1] : null;
+  var a=(p[2]||'').trim();
+  // Si el segundo campo no es un numero, se toma como area: escribir
+  // "Kickoff | Delivery" es lo que sale natural y no deberia perderse.
+  if(dia===null && p[1] && !/^\d+$/.test(p[1]) && !a) a=p[1];
+  return {t:t, dia:dia, a:a||undefined};
 }
 function _entrSerial(e){
-  var d=_entrDia(e);
-  return _entrTexto(e)+(d!==null?(' | '+d):'');
+  var d=_entrDia(e), a=_entrArea(e);
+  return _entrTexto(e)+((d!==null||a)?(' | '+(d!==null?d:'')):'')+(a?(' | '+a):'');
 }
-function _prodLineas(s){
-  return String(s||'').split('\n').map(_entrParse).filter(Boolean);
+// Los entregables del producto son la plantilla. Cada cliente puede tener su
+// propia copia editada: se sacan cosas, se agregan, se cambian plazos. Mientras
+// no se toque, se usa la del producto y los cambios de version llegan solos.
+function entrDeCliente(c, ver){
+  if(c && c.entregables && c.entregables.length) return c.entregables;
+  return (ver&&ver.entregables)||[];
+}
+function entrEsPropia(c){ return !!(c&&c.entregables&&c.entregables.length); }
+// El tildado se guarda por id de version. Al pasar a lista propia se usa una
+// clave aparte: si no, sacar un entregable del medio corre los indices y los
+// tildes quedan apuntando a otra cosa.
+function entrClaveHechos(c, ver){
+  return entrEsPropia(c) ? '_propia' : ((ver&&ver.id)||'');
+}
+function entrPersonalizar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var k=_compromiso(c), ver=k&&k.ver;
+  var base=((ver&&ver.entregables)||[]).map(function(e){
+    return {t:_entrTexto(e), dia:_entrDia(e), a:_entrArea(e)||undefined}; });
+  if(!base.length){ toast('El producto no tiene entregables cargados','amber'); return; }
+  c.entregables=base;
+  // Los tildes de la version se arrastran: en el momento de copiar, la lista es
+  // identica, asi que los indices siguen siendo validos.
+  c.entregablesHechos=c.entregablesHechos||{};
+  c.entregablesHechos._propia=((c.entregablesHechos[(ver&&ver.id)||''])||[]).slice();
+  save();
+  entrModal(clientId);
+}
+function entrVolverAlProducto(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!confirm('Volver a los entregables del producto?\n\nSe pierden los cambios hechos para '
+    +(c.name||'este cliente')+'.')) return;
+  delete c.entregables;
+  if(c.entregablesHechos) delete c.entregablesHechos._propia;
+  save();
+  entrModal(clientId);
+}
+function entrSet(clientId, i, campo, val){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.entregables||!c.entregables[i]) return;
+  if(campo==='dia'){ c.entregables[i].dia=(String(val).trim()==='')?null:(+val); }
+  else if(campo==='a'){ c.entregables[i].a=String(val||'').trim()||undefined; }
+  else c.entregables[i].t=String(val||'').trim();
+  save();
+}
+function entrMover(clientId, i, d){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.entregables) return;
+  var j=i+d, L=c.entregables;
+  if(j<0||j>=L.length) return;
+  var t=L[i]; L[i]=L[j]; L[j]=t;
+  // Los tildes son indices: si se mueve una fila hay que moverlos con ella o
+  // el tilde queda en el entregable equivocado.
+  var h=(c.entregablesHechos&&c.entregablesHechos._propia)||[];
+  c.entregablesHechos._propia=h.map(function(x){
+    return x===i?j:(x===j?i:x); });
+  save(); entrModal(clientId);
+}
+function entrBorrar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.entregables) return;
+  c.entregables.splice(i,1);
+  var h=(c.entregablesHechos&&c.entregablesHechos._propia)||[];
+  c.entregablesHechos._propia=h.filter(function(x){ return x!==i; })
+    .map(function(x){ return x>i?x-1:x; });
+  save(); entrModal(clientId);
+}
+function entrAgregar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.entregables=c.entregables||[];
+  c.entregables.push({t:'Entregable nuevo', dia:null});
+  save(); entrModal(clientId);
+}
+function entrModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var k=_compromiso(c), ver=k&&k.ver;
+  var propia=entrEsPropia(c);
+  var lista=entrDeCliente(c, ver);
+  var inp='padding:5px 8px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:11.5px';
+  var cuerpo;
+  if(!propia){
+    // Vista de solo lectura de la plantilla. Editar aca cambiaria el producto
+    // para todos los clientes, que no es lo que se quiere desde una ficha.
+    cuerpo='<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Estos vienen del producto y son iguales para todos los clientes que lo tienen. '
+      +'Si a '+esc(c.name||'este cliente')+' le corresponde otra cosa, hace una copia y editala: '
+      +'el producto queda intacto.</div>'
+      +(lista.length
+        ? lista.map(function(e){
+            var a=_entrArea(e), d=_entrDia(e);
+            return '<div style="font-size:12px;color:var(--text2);padding:2px 0">'
+              +esc(_entrTexto(e))
+              +'<span style="color:var(--text3)">'
+              +(d!==null?(' \u00b7 dia '+d):'')+(a?(' \u00b7 '+esc(a)):'')+'</span></div>';
+          }).join('')
+        : '<div style="font-size:12px;color:var(--text3)">El producto no tiene entregables.</div>')
+      +'<div style="margin-top:12px"><button class="btn btn-sm btn-primary" '
+        +'onclick="entrPersonalizar('+c.id+')">Hacer una copia para este cliente</button></div>';
+  }else{
+    cuerpo='<div style="display:flex;gap:8px;font-size:10px;color:var(--text3);'
+      +'text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">'
+      +'<span style="flex:1">Entregable</span><span style="width:60px">Dia</span>'
+      +'<span style="width:120px">Area</span><span style="width:76px"></span></div>'
+      +lista.map(function(e,i){
+        return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+          +'<input value="'+esc(_entrTexto(e))+'" onchange="entrSet('+c.id+','+i+',\'t\',this.value)" '
+            +'style="'+inp+';flex:1;min-width:0">'
+          +'<input type="number" value="'+(_entrDia(e)===null?'':_entrDia(e))+'" placeholder="-" '
+            +'title="Dias desde el arranque" onchange="entrSet('+c.id+','+i+',\'dia\',this.value)" '
+            +'style="'+inp+';width:60px">'
+          +'<select onchange="entrSet('+c.id+','+i+',\'a\',this.value)" style="'+inp+';width:120px">'
+            +'<option value="">sin area</option>'
+            +ENTR_AREAS.map(function(a){
+              return '<option value="'+esc(a)+'"'+(_entrArea(e)===a?' selected':'')+'>'
+                +esc(a)+'</option>'; }).join('')
+          +'</select>'
+          +'<span style="width:76px;display:flex;gap:3px;justify-content:flex-end">'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
+              +(i===0?'disabled':'onclick="entrMover('+c.id+','+i+',-1)"')+'>&uarr;</button>'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
+              +(i===lista.length-1?'disabled':'onclick="entrMover('+c.id+','+i+',1)"')+'>&darr;</button>'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px;color:var(--redx)" '
+              +'onclick="entrBorrar('+c.id+','+i+')">&times;</button>'
+          +'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="margin-top:12px;display:flex;gap:8px">'
+        +'<button class="btn btn-sm" onclick="entrAgregar('+c.id+')">Agregar</button>'
+        +'<button class="btn btn-sm" onclick="entrVolverAlProducto('+c.id+')">'
+          +'Volver a los del producto</button>'
+      +'</div>'
+      +'<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);'
+        +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3);'
+        +'line-height:1.6">Esta lista ya no sigue al producto: si se publica una version nueva, '
+        +'los cambios no llegan a '+esc(c.name||'este cliente')+'.</div>';
+  }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:820px">'
+      +'<div class="modal-title">Entregables de '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">'
+        +(propia?'Lista propia de este cliente.'
+                :('Del producto'+((k&&k.p)?(' '+esc(k.p.nombre)):'')+'.'))
+        +' El area dice quien lo hace, y es lo que agrupa las tareas en el panel.</div>'
+      +'<div style="margin-top:14px">'+cuerpo+'</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-primary" onclick="closeModal();renderTab&&renderTab()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
 }
 function _prodResumen(p){
   var v=_prodActual(p);
@@ -20276,8 +20449,10 @@ function _compromiso(c){
   var total=(ini&&fin)?Math.round((fin-ini)/86400000):null;
   var pasados=ini?Math.round((hoy-ini)/86400000):null;
   var pctTiempo=(total&&total>0&&pasados!==null)?Math.max(0,Math.min(100,Math.round(pasados/total*100))):null;
-  var entregables=(ver&&ver.entregables)||[];
-  var hechos=((c.entregablesHechos||{})[ver?ver.id:'']||[]);
+  // La lista del cliente manda sobre la del producto. Sin esto se podia editar
+  // y no cambiaba nada: la ficha seguia leyendo la plantilla.
+  var entregables=entrDeCliente(c, ver);
+  var hechos=((c.entregablesHechos||{})[entrClaveHechos(c, ver)]||[]);
   var pctEntrega=entregables.length?Math.round(hechos.length/entregables.length*100):null;
   // El arranque del plan: la firma del contrato si esta, y si no la primera
   // llamada. Sin una de las dos no hay dia cero y no hay atraso que calcular.
@@ -20347,12 +20522,15 @@ function toggleEntregable(clientId, idx){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var k=_compromiso(c);
-  if(!k.ver) return;
+  // Con lista propia el tildado va a otra clave: los indices de una lista
+  // editada no significan lo mismo que los de la version del producto.
+  var cl=entrClaveHechos(c, k.ver);
+  if(!cl) return;
   c.entregablesHechos=c.entregablesHechos||{};
-  var arr=(c.entregablesHechos[k.ver.id]||[]).slice();
+  var arr=(c.entregablesHechos[cl]||[]).slice();
   var i=arr.indexOf(idx);
   if(i>=0) arr.splice(i,1); else arr.push(idx);
-  c.entregablesHechos[k.ver.id]=arr;
+  c.entregablesHechos[cl]=arr;
   save();
   if(typeof renderTab==='function') renderTab();
 }
@@ -20470,12 +20648,13 @@ function aplicarEntregablesIA(clientId){
   var k=_compromiso(c);
   var an=(c.entregablesIA||{})[k.ver?k.ver.id:''];
   if(!an) return;
-  var arr=(c.entregablesHechos&&c.entregablesHechos[k.ver.id]||[]).slice();
+  var cl=entrClaveHechos(c, k.ver);
+  var arr=(c.entregablesHechos&&c.entregablesHechos[cl]||[]).slice();
   Object.keys(an.items).forEach(function(i){
     if(an.items[i].estado==='hecho' && arr.indexOf(+i)<0) arr.push(+i);
   });
   c.entregablesHechos=c.entregablesHechos||{};
-  c.entregablesHechos[k.ver.id]=arr;
+  c.entregablesHechos[cl]=arr;
   save();
   if(typeof renderTab==='function') renderTab();
 }
@@ -21016,6 +21195,44 @@ function p360EngancharSop(clientId, etapa){
   showTickets();
   toast(s.titulo+' enganchado a '+(c.name||''));
 }
+// Los entregables pendientes agrupados por area, como en el diagrama de
+// proceso: lo que importa no es solo cuantos faltan sino quien los tiene.
+// Solo los pendientes: los hechos no dicen nada sobre lo que traba hoy.
+function _p360AreasHtml(c){
+  var k=null;
+  try{ k=_compromiso(c); }catch(e){ return ''; }
+  if(!k||!k.items||!k.items.length) return '';
+  var pend=k.items.filter(function(x){ return !x.hecho; });
+  if(!pend.length) return '<div style="padding:2px 0 2px 14px;font-size:10.5px;'
+    +'color:var(--accent)">Entregables al dia</div>';
+  var grupos={};
+  pend.forEach(function(x){
+    var a=_entrArea(k.entregables[x.i])||'Sin area';
+    (grupos[a]=grupos[a]||[]).push(x);
+  });
+  // Las areas conocidas primero y en su orden; lo demas al final.
+  var orden=ENTR_AREAS.filter(function(a){ return grupos[a]; })
+    .concat(Object.keys(grupos).filter(function(a){ return ENTR_AREAS.indexOf(a)<0; }));
+  return '<div style="padding:3px 0 3px 14px;display:flex;gap:14px;flex-wrap:wrap">'
+    +orden.map(function(a){
+      var g=grupos[a];
+      var vencidos=g.filter(function(x){return x.vencido;}).length;
+      return '<div style="flex:none;min-width:118px">'
+        +'<div style="font-size:9.5px;color:'+(vencidos?'var(--redx)':'var(--text3)')+';'
+          +'text-transform:uppercase;letter-spacing:.06em">'+esc(a)
+          +(vencidos?(' \u00b7 '+vencidos+' vencido'+(vencidos===1?'':'s')):'')+'</div>'
+        +g.slice(0,4).map(function(x){
+          return '<div style="font-size:10.5px;color:'
+            +(x.vencido?'var(--redx)':(x.porVencer?'var(--amberx)':'var(--text3)'))+';'
+            +'line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+            +'max-width:190px">'+esc(x.t)+'</div>';
+        }).join('')
+        +(g.length>4?('<div style="font-size:9.5px;color:var(--text3)">y '+(g.length-4)
+          +' mas</div>'):'')
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
 function _p360SubprocesoHtml(c, etapa){
   var tareas=(c.tasks||[]).filter(function(t){
     return t.sopId && !t.done && !t.deleted && !t.archivada; });
@@ -21117,6 +21334,7 @@ function _p360ColHtml(etapa, cards){
             +(f?esc(f.q):((d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia'))+'</span>'
         +'</div>'
         +(pasos?('<div style="padding:2px 0 2px 14px">'+pasos+'</div>'):'')
+        +_p360AreasHtml(d.c)
         +sub
       +'</div>';
     }).join('')
@@ -21868,8 +22086,18 @@ function compromisoHtml(c){
           +'onclick="revisarEntregables('+c.id+')">'+(an?'Volver a revisar':'Revisar contra las llamadas')+'</button>'):'')
         +'<button class="btn btn-sm" id="cp-ver" style="font-size:11px;padding:3px 9px" '
           +'onclick="toggleEntregablesTodos()">'+(abierto?'Ver solo lo proximo':('Ver los '+k.entregables.length))+'</button>'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'title="Sacar, agregar o cambiar entregables solo para este cliente" '
+          +'onclick="entrModal('+c.id+')">Editar</button>'
       +'</div>'
       +'<div id="cp-estado" style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+        // Que la lista sea propia cambia como leer todo lo de abajo: conviene
+        // decirlo antes y no que alguien busque por que no coincide con el
+        // producto.
+        +(entrEsPropia(c)
+          ?('<span style="color:var(--text2)">Lista propia de este cliente</span> &middot; '
+            +'no sigue al producto &middot; ')
+          :'')
         +esc(k.p.nombre)+(k.ver.fecha?(' &middot; version del '+esc(k.ver.fecha)):'')
         +(k.versionVieja?' &middot; <span style="color:var(--amberx)">la version que le vendiste ya no existe</span>':'')
         +(an?(' &middot; revisado contra '+an.n+' llamada'+(an.n===1?'':'s')
