@@ -210,6 +210,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* Filas del editor de etapas. La linea marca donde va a caer lo que arrastras:
    sin senal, soltar es a ciegas. */
 .rt-fila.rt-drop{box-shadow:inset 0 2px 0 var(--accent)}
+/* Meter adentro se ve distinto de reordenar: recuadro en vez de linea, y la
+   fila se corre a la derecha para anticipar donde va a quedar. */
+.rt-fila.rt-dentro{outline:1px dashed var(--accent);outline-offset:-1px;
+  border-radius:var(--radius);padding-left:14px}
 .rt-asa:active{cursor:grabbing}
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
@@ -21174,11 +21178,17 @@ function rutaPasoDragStart(ev, i, j){
 function rutaDragSobre(ev, el){
   ev.preventDefault();
   ev.dataTransfer.dropEffect='move';
-  el.classList.add('rt-drop');
+  // Soltar corrido a la derecha mete adentro; soltar a la izquierda reordena.
+  // Es el gesto de cualquier editor de listas: arrastrar a la derecha indenta.
+  var r=el.getBoundingClientRect();
+  var adentro=(ev.clientX-r.left)>140 && _RT_DRAG && _RT_DRAG.tipo==='etapa';
+  el.classList.toggle('rt-drop', !adentro);
+  el.classList.toggle('rt-dentro', !!adentro);
 }
 function rutaDragEnd(){
   _RT_DRAG=null;
-  document.querySelectorAll('.rt-drop').forEach(function(x){ x.classList.remove('rt-drop'); });
+  document.querySelectorAll('.rt-drop,.rt-dentro').forEach(function(x){
+    x.classList.remove('rt-drop'); x.classList.remove('rt-dentro'); });
 }
 // Sacar de una posicion y meter en otra. Intercambiar solo servia para mover de
 // a uno; arrastrando se espera que la fila caiga donde la soltaste.
@@ -21198,13 +21208,42 @@ function _rtReindex(x, de, a){
 }
 function rutaDrop(ev, el, destino){
   ev.preventDefault();
-  el.classList.remove('rt-drop');
+  var adentro=el.classList.contains('rt-dentro');
+  el.classList.remove('rt-drop'); el.classList.remove('rt-dentro');
   var d=_RT_DRAG; _RT_DRAG=null;
   if(!d||d.tipo!=='etapa'||d.i===destino) return;
   var r=_rutaEditable();
+  if(adentro){
+    // La etapa se convierte en un paso de la otra. Se lleva su nombre y sus
+    // palabras clave, asi que sigue marcandose sola cuando entra su llamada.
+    var org=r[d.i], dst=r[destino];
+    if(!org||!dst) return;
+    if((org.pasos||[]).length &&
+       !confirm('"'+org.l+'" tiene '+org.pasos.length+' pasos propios.\n\n'
+         +'Al meterla adentro de "'+dst.l+'" esos pasos pasan a ser pasos de "'+dst.l+'". Seguir?'))
+      return;
+    dst.pasos=dst.pasos||[];
+    dst.pasos.push({t:org.l, kw:org.kw||undefined});
+    // Los pasos que tenia se suman detras, para no perderlos.
+    (org.pasos||[]).forEach(function(p){ dst.pasos.push(p); });
+    // Lo que los clientes tenian tildado de esa etapa se traduce al paso nuevo.
+    var idx=dst.pasos.length-(org.pasos||[]).length-1;
+    (DB.clients||[]).forEach(function(c){
+      if(!c.rutaHechas||!c.rutaHechas[org.l]) return;
+      c.rutaPasos=c.rutaPasos||{};
+      var h=(c.rutaPasos[dst.l]||[]).slice();
+      if(h.indexOf(idx)<0) h.push(idx);
+      c.rutaPasos[dst.l]=h;
+      delete c.rutaHechas[org.l];
+    });
+    r.splice(d.i,1);
+    if(r.length&&r[0].sub) r[0].sub=false;
+    S._rutaPasos=r.indexOf(dst);
+    save(); rutaModal();
+    toast('"'+org.l+'" ahora es un paso de "'+dst.l+'"');
+    return;
+  }
   _rtMover(r, d.i, destino);
-  // La primera no puede quedar como sub: no hay etapa de arriba de la cual
-  // colgar.
   if(r.length&&r[0].sub) r[0].sub=false;
   S._rutaPasos=null;
   save(); rutaModal();
@@ -21262,6 +21301,10 @@ function _rutaPasosHtml(i, e, inp){
               +'text-align:right">'+(j+1)+'</span>'
             +'<input value="'+esc(p.t||'')+'" onchange="rutaPasoSet('+i+','+j+',\'t\',this.value)" '
               +'style="'+inp+';flex:1;min-width:0">'
+            +'<input value="'+esc(p.kw||'')+'" placeholder="palabras clave" '
+              +'title="Si entra una llamada que las contenga, el paso se marca solo" '
+              +'onchange="rutaPasoSet('+i+','+j+',\'kw\',this.value)" '
+              +'style="'+inp+';flex:0.8;min-width:0">'
             +'<select onchange="rutaPasoSet('+i+','+j+',\'a\',this.value)" '
               +'style="'+inp+';width:120px">'
               +'<option value="">sin area</option>'
@@ -21291,6 +21334,7 @@ function rutaPasoSet(i, j, campo, val){
   var r=_rutaEditable();
   if(!r[i]||!r[i].pasos||!r[i].pasos[j]) return;
   if(campo==='a') r[i].pasos[j].a=String(val||'').trim()||undefined;
+  else if(campo==='kw') r[i].pasos[j].kw=String(val||'').trim()||undefined;
   else r[i].pasos[j].t=String(val||'').trim();
   save();
 }
@@ -21413,9 +21457,12 @@ function _p360PasosHtml(c, etapa){
         +'<div style="font-size:9.5px;color:var(--text3);text-transform:uppercase;'
           +'letter-spacing:.06em">'+esc(a)+'</div>'
         +grupos[a].map(function(x){
-          return '<label style="display:flex;gap:5px;align-items:baseline;cursor:pointer;'
-            +'padding:1px 0">'
-            +'<input type="checkbox"'+(x.ok?' checked':'')+' style="flex:none" '
+          var auto=rutaPasoAuto(c, etapa, x.i);
+          return '<label style="display:flex;gap:5px;align-items:baseline;'
+            +(auto?'':'cursor:pointer;')+'padding:1px 0"'
+            +(auto?' title="La marca su llamada de Fathom, no se destilda a mano"':'')+'>'
+            +'<input type="checkbox"'+(x.ok?' checked':'')+(auto?' disabled':'')
+            +' style="flex:none" '
             +'onchange="rutaPasoTildar('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\','+x.i+')">'
             +'<span style="font-size:10.5px;line-height:1.5;color:'
               +(x.ok?'var(--text3)':(act&&act.i===x.i?'var(--amberx)':'var(--text2)'))+';'
@@ -21939,9 +21986,29 @@ function rutaPasos(label){
   var e=rutaDef().filter(function(x){ return x.l===label; })[0];
   return (e&&e.pasos)||[];
 }
-// Que pasos de esta etapa tiene hechos este cliente.
+// Que pasos de esta etapa tiene hechos este cliente. Los tildados a mano mas
+// los que se detectan solos: un paso puede tener palabras clave igual que una
+// etapa, y asi convertir una etapa en paso no pierde su deteccion automatica.
 function rutaPasosHechos(c, label){
-  return ((c.rutaPasos||{})[label]||[]).slice();
+  var man=((c.rutaPasos||{})[label]||[]).slice();
+  var ps=rutaPasos(label);
+  var calls=(c&&c.fathomCalls)||[];
+  ps.forEach(function(p,i){
+    if(!p.kw || man.indexOf(i)>=0) return;
+    var re=_rutaRe(p);
+    if(calls.some(function(x){
+      return re.test(String(x.tipo||'')+' '+String(x.title||'')); })) man.push(i);
+  });
+  return man;
+}
+// Un paso detectado por su llamada no se puede destildar a mano, igual que una
+// etapa: volveria a marcarse en el proximo render.
+function rutaPasoAuto(c, label, i){
+  var p=rutaPasos(label)[i];
+  if(!p||!p.kw) return false;
+  var re=_rutaRe(p);
+  return ((c&&c.fathomCalls)||[]).some(function(x){
+    return re.test(String(x.tipo||'')+' '+String(x.title||'')); });
 }
 function rutaPasoTildar(clientId, label, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
