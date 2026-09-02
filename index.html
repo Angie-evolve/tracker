@@ -210,10 +210,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* Filas del editor de etapas. La linea marca donde va a caer lo que arrastras:
    sin senal, soltar es a ciegas. */
 .rt-fila.rt-drop{box-shadow:inset 0 2px 0 var(--accent)}
-/* Meter adentro se ve distinto de reordenar: recuadro en vez de linea, y la
-   fila se corre a la derecha para anticipar donde va a quedar. */
-.rt-fila.rt-dentro{outline:1px dashed var(--accent);outline-offset:-1px;
-  border-radius:var(--radius);padding-left:14px}
+/* El boton de pasos cuando esta por recibir una etapa. */
+.rt-pasos.rt-dentro{border-color:var(--accent);background:var(--accent);color:var(--bg)}
 .rt-asa:active{cursor:grabbing}
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
@@ -21097,7 +21095,8 @@ function rutaModal(){
       +'<div class="modal-title">Etapas del cliente</div>'
       +'<div class="modal-sub">Las columnas del Panel 360. Cada etapa se marca sola cuando '
         +'entra una llamada cuyo titulo contiene alguna de sus palabras clave. '
-        +'<b>Adentro</b> la saca de las columnas y la muestra dentro de la etapa de arriba.</div>'
+        +'Arrastra de <span class="mono">\u2237</span> para reordenar, o solta una etapa sobre el '
+        +'boton <b>pasos</b> de otra para meterla adentro como paso.</div>'
       +'<div style="display:flex;gap:8px;font-size:10px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.06em;margin:14px 0 5px">'
         +'<span style="flex:1">Nombre</span>'
@@ -21131,8 +21130,15 @@ function rutaModal(){
             +'<input type="checkbox"'+(e.sub?' checked':'')
             +(i===0?' disabled title="La primera no puede estar adentro de nada"':'')
             +' onchange="rutaSet('+i+',\'sub\',this.checked)">dentro</label>'
-          +'<button class="btn btn-sm" style="width:76px;flex:none;font-size:10px;padding:1px 6px'
-            +(abierto?';border-color:var(--accent)':'')+'" '
+          +'<button class="btn btn-sm rt-pasos" style="width:76px;flex:none;font-size:10px;'
+            +'padding:1px 6px'+(abierto?';border-color:var(--accent)':'')+'" '
+            // Soltar una etapa aca la mete adentro. Es un destino explicito:
+            // decidirlo por la posicion del cursor obligaba a adivinar donde
+            // termina "reordenar" y donde empieza "meter adentro".
+            +'ondragover="rutaSobrePasos(event,this)" '
+            +'ondragleave="this.classList.remove(\'rt-dentro\')" '
+            +'ondrop="rutaDropPasos(event,this,'+i+')" '
+            +'title="Ver los pasos, o soltar una etapa aca para meterla adentro" '
             +'onclick="rutaVerPasos('+i+')">'+(ps.length?(ps.length+' pasos'):'pasos')+'</button>'
           +'<span style="width:56px;display:flex;gap:3px;justify-content:flex-end">'
             +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
@@ -21178,12 +21184,25 @@ function rutaPasoDragStart(ev, i, j){
 function rutaDragSobre(ev, el){
   ev.preventDefault();
   ev.dataTransfer.dropEffect='move';
-  // Soltar corrido a la derecha mete adentro; soltar a la izquierda reordena.
-  // Es el gesto de cualquier editor de listas: arrastrar a la derecha indenta.
-  var r=el.getBoundingClientRect();
-  var adentro=(ev.clientX-r.left)>140 && _RT_DRAG && _RT_DRAG.tipo==='etapa';
-  el.classList.toggle('rt-drop', !adentro);
-  el.classList.toggle('rt-dentro', !!adentro);
+  el.classList.add('rt-drop');
+}
+// El boton de pasos como destino: soltar una etapa aca la convierte en paso de
+// esta. Solo se ilumina si lo que viene es una etapa distinta de esta.
+function rutaSobrePasos(ev, el){
+  if(!_RT_DRAG||_RT_DRAG.tipo!=='etapa') return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.dataTransfer.dropEffect='move';
+  el.classList.add('rt-dentro');
+}
+function rutaDropPasos(ev, el, destino){
+  if(!_RT_DRAG||_RT_DRAG.tipo!=='etapa') return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  el.classList.remove('rt-dentro');
+  var d=_RT_DRAG; _RT_DRAG=null;
+  if(d.i===destino) return;
+  _rutaMeterAdentro(d.i, destino);
 }
 function rutaDragEnd(){
   _RT_DRAG=null;
@@ -21206,44 +21225,45 @@ function _rtReindex(x, de, a){
   if(de>a && x>=a && x<de) return x+1;
   return x;
 }
+// Convertir una etapa en paso de otra. Se lleva su nombre y sus palabras clave,
+// asi que sigue marcandose sola cuando entra su llamada.
+function _rutaMeterAdentro(iOrigen, iDestino){
+  var r=_rutaEditable();
+  var org=r[iOrigen], dst=r[iDestino];
+  if(!org||!dst) return;
+  if((org.pasos||[]).length &&
+     !confirm('"'+org.l+'" tiene '+org.pasos.length+' pasos propios.\n\n'
+       +'Al meterla adentro de "'+dst.l+'" esos pasos pasan a ser pasos de "'+dst.l+'". Seguir?'))
+    return;
+  dst.pasos=dst.pasos||[];
+  dst.pasos.push({t:org.l, kw:org.kw||undefined});
+  var idx=dst.pasos.length-1;
+  // Los pasos que tenia se suman detras, para no perderlos.
+  (org.pasos||[]).forEach(function(p){ dst.pasos.push(p); });
+  // Lo que los clientes tenian tildado de esa etapa se traduce al paso nuevo.
+  (DB.clients||[]).forEach(function(c){
+    if(!c.rutaHechas||!c.rutaHechas[org.l]) return;
+    c.rutaPasos=c.rutaPasos||{};
+    var h=(c.rutaPasos[dst.l]||[]).slice();
+    if(h.indexOf(idx)<0) h.push(idx);
+    c.rutaPasos[dst.l]=h;
+    delete c.rutaHechas[org.l];
+  });
+  r.splice(iOrigen,1);
+  if(r.length&&r[0].sub) r[0].sub=false;
+  S._rutaPasos=r.indexOf(dst);
+  save(); rutaModal();
+  toast('"'+org.l+'" ahora es un paso de "'+dst.l+'"');
+}
 function rutaDrop(ev, el, destino){
   ev.preventDefault();
-  var adentro=el.classList.contains('rt-dentro');
-  el.classList.remove('rt-drop'); el.classList.remove('rt-dentro');
+  el.classList.remove('rt-drop');
   var d=_RT_DRAG; _RT_DRAG=null;
   if(!d||d.tipo!=='etapa'||d.i===destino) return;
   var r=_rutaEditable();
-  if(adentro){
-    // La etapa se convierte en un paso de la otra. Se lleva su nombre y sus
-    // palabras clave, asi que sigue marcandose sola cuando entra su llamada.
-    var org=r[d.i], dst=r[destino];
-    if(!org||!dst) return;
-    if((org.pasos||[]).length &&
-       !confirm('"'+org.l+'" tiene '+org.pasos.length+' pasos propios.\n\n'
-         +'Al meterla adentro de "'+dst.l+'" esos pasos pasan a ser pasos de "'+dst.l+'". Seguir?'))
-      return;
-    dst.pasos=dst.pasos||[];
-    dst.pasos.push({t:org.l, kw:org.kw||undefined});
-    // Los pasos que tenia se suman detras, para no perderlos.
-    (org.pasos||[]).forEach(function(p){ dst.pasos.push(p); });
-    // Lo que los clientes tenian tildado de esa etapa se traduce al paso nuevo.
-    var idx=dst.pasos.length-(org.pasos||[]).length-1;
-    (DB.clients||[]).forEach(function(c){
-      if(!c.rutaHechas||!c.rutaHechas[org.l]) return;
-      c.rutaPasos=c.rutaPasos||{};
-      var h=(c.rutaPasos[dst.l]||[]).slice();
-      if(h.indexOf(idx)<0) h.push(idx);
-      c.rutaPasos[dst.l]=h;
-      delete c.rutaHechas[org.l];
-    });
-    r.splice(d.i,1);
-    if(r.length&&r[0].sub) r[0].sub=false;
-    S._rutaPasos=r.indexOf(dst);
-    save(); rutaModal();
-    toast('"'+org.l+'" ahora es un paso de "'+dst.l+'"');
-    return;
-  }
   _rtMover(r, d.i, destino);
+  // La primera no puede quedar como sub: no hay etapa de arriba de la cual
+  // colgar.
   if(r.length&&r[0].sub) r[0].sub=false;
   S._rutaPasos=null;
   save(); rutaModal();
