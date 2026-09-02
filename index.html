@@ -20588,6 +20588,79 @@ function p360Soltar(ev, el, etapa){
 // entrada en fathomCalls con un titulo que matchee su regex — si el titulo no
 // matchea, la etapa sigue sin marcarse y no se entiende por que. Para el
 // documento va a Material, que es donde viven los links del cliente.
+// Buscar en Fathom las reuniones de este cliente. El webhook solo trae lo
+// nuevo; esto es para lo viejo. Filtra por el mail del contacto y por el
+// dominio, que agarra al resto de su equipo.
+async function p360Buscar(clientId, etapa){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  var est=document.getElementById('p3-buscar-estado');
+  var di=function(t,col){ if(est){ est.innerHTML=t; est.style.color=col||'var(--text3)'; } };
+  if(!url||!sec){ di('Falta configurar el webhook en Integraciones.','var(--amberx)'); return; }
+  var mails=[c.email, c.contactoEmail].filter(Boolean);
+  // Del mail sale el dominio, salvo que sea una casilla personal: filtrar por
+  // gmail.com traeria todas las reuniones de todos los clientes.
+  var genericos=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
+  var doms=mails.map(function(m){ return String(m).split('@')[1]||''; })
+    .filter(function(d){ return d && !genericos.test(d+'.'); });
+  if(!mails.length){ di('Este cliente no tiene mail cargado en la ficha.','var(--amberx)'); return; }
+  di('Buscando en Fathom...');
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({emails:mails, dominios:doms, transcripcion:true})});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok){ di((d&&d.error)||('HTTP '+r.status),'var(--redx)'); return; }
+    var items=(d.items||[]);
+    if(!items.length){
+      di('Fathom no devolvio reuniones con '+esc(mails.join(', '))
+        +'. Puede ser que las haya grabado otra persona y no esten compartidas con el team.',
+        'var(--amberx)');
+      return;
+    }
+    // Las que ya estan cargadas no se ofrecen: importarlas dos veces duplica
+    // la llamada y la etapa se marca igual.
+    var ya={};
+    (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
+    S._p360Hallazgos={cid:clientId, etapa:etapa, items:items, ya:ya};
+    di('');
+    p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
+  }catch(e){
+    di('No pude buscar: '+e.message,'var(--redx)');
+  }
+}
+// Importar una de las reuniones encontradas como la llamada de esa etapa. El
+// titulo se reescribe con el nombre de la etapa adelante para que _ruta la
+// reconozca: el titulo original de Fathom rara vez matchea la regex.
+function p360Importar(clientId, etapa, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var h=S._p360Hallazgos;
+  if(!c||!h) return;
+  var m=(h.items||[])[i];
+  if(!m) return;
+  var f=m.fecha?new Date(m.fecha):new Date();
+  c.fathomCalls=c.fathomCalls||[];
+  c.fathomCalls.unshift({
+    id:'fathom-'+(m.recording_id||Date.now()),
+    title:etapa+' - '+(c.name||''),
+    tituloFathom:m.title||'',
+    date:('0'+f.getDate()).slice(-2)+'/'+('0'+(f.getMonth()+1)).slice(-2)+'/'+f.getFullYear(),
+    duration:'',
+    sentiment:'satisfecho',
+    summary:m.resumen||'',
+    actionItems:(m.action_items||[]).map(function(a){
+      return (a&&(a.description||a.texto||a.text))||String(a||''); }).filter(Boolean),
+    riskFlags:[],
+    initials:(c.name||'?').split(' ').map(function(w){return w[0];}).join('')
+      .substring(0,2).toUpperCase(),
+    _cid:c.id, tipo:etapa, url:m.url||'', transcript:m.transcripcion||''
+  });
+  save();
+  toast(etapa+' importada de Fathom'+(m.transcripcion?' con transcripcion':''));
+  p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
+}
 function p360Cargar(clientId, etapa, esDoc){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -20664,11 +20737,51 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
   // que termines tildando y siguiendo, que es justo lo que no queremos.
   var completar=function(arr){
     if(!arr.length) return '';
+    // Los resultados de la busqueda, si ya se hizo para este cliente.
+    var h=S._p360Hallazgos;
+    var hallados=(h&&h.cid===clientId)?(h.items||[]):[];
+    var listaHallada=hallados.length
+      ? ('<div style="margin-top:8px;border:1px solid var(--border);border-radius:var(--radius);'
+          +'padding:8px 10px;background:var(--bg2)">'
+        +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin-bottom:5px">'+hallados.length
+          +' reuniones en Fathom con este cliente</div>'
+        +hallados.map(function(m,i){
+          var yaEsta=h.ya&&h.ya[m.url];
+          return '<div style="display:flex;gap:8px;align-items:baseline;padding:2px 0">'
+            +'<span style="flex:1;font-size:11.5px;color:var(--text2);overflow:hidden;'
+              +'text-overflow:ellipsis;white-space:nowrap">'+esc(m.title||'Sin titulo')
+              +'<span style="color:var(--text3)"> \u00b7 '
+              +esc(m.fecha?new Date(m.fecha).toLocaleDateString('es-AR'):'')
+              +(m.transcripcion?' \u00b7 con transcripcion':'')+'</span></span>'
+            +(yaEsta
+              ? '<span style="flex:none;font-size:10.5px;color:var(--text3)">ya cargada</span>'
+              : ('<select id="p3imp-'+i+'" style="flex:none;font-size:10.5px;padding:2px 6px;'
+                +'border-radius:var(--radius);border:1px solid var(--border2);'
+                +'background:var(--bg3);color:var(--text)">'
+                +arr.map(function(e){
+                  return '<option value="'+esc(e.l)+'">'+esc(e.l)+'</option>'; }).join('')
+                +'</select>'
+                +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:2px 7px" '
+                +'onclick="p360Importar('+clientId+', document.getElementById(\'p3imp-'+i
+                +'\').value, '+i+')">Usar</button>'))
+          +'</div>';
+        }).join('')
+      +'</div>')
+      : '';
     return '<div style="margin-top:10px">'
       +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.06em;margin-bottom:2px">Se van a dar por hechas sin respaldo</div>'
-      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:7px">'
-        +'Si tenés el link, cargalo y deja de ser a mano.</div>'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:7px">'
+        +'<span style="flex:1;min-width:180px;font-size:11px;color:var(--text3);line-height:1.5">'
+          +'Busca las llamadas viejas en Fathom, o pega el link a mano.</span>'
+        +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+          +'onclick="p360Buscar('+clientId+',\''+esc(arr[0].l).replace(/'/g,"\\'")+'\')">'
+          +'Buscar en Fathom</button>'
+      +'</div>'
+      +'<div id="p3-buscar-estado" style="font-size:11px;color:var(--text3);'
+        +'line-height:1.5;margin-bottom:6px"></div>'
+      +listaHallada
       +arr.map(function(e){
         // Si lo que pide es una llamada, va a fathomCalls. Si no (el dataset,
         // el lanzamiento), es un link que vive en Material.
