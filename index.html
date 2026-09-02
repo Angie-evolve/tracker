@@ -194,11 +194,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .p3cab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .p3cab b{color:var(--text2);font-weight:500;flex:none}
 .p3card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
-  padding:9px 11px;margin-bottom:7px;cursor:pointer}
+  padding:9px 11px;margin-bottom:7px;cursor:grab}
 .p3card:hover{border-color:var(--border2)}
 /* La tarjeta abierta se marca: sin esto, con la ficha abajo del tablero no se
    sabe de cual de las nueve columnas salio. */
 .p3card.p3sel{border-color:var(--accent);background:var(--bg2)}
+.p3card:active{cursor:grabbing}
+/* La columna destino se marca mientras arrastras: sin senal visible no se sabe
+   cual de las nueve va a recibir la tarjeta. */
+.p3col.p3drop{background:var(--bg3);outline:1px dashed var(--accent);outline-offset:2px;
+  border-radius:var(--radius)}
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
 .p3card.frena{border-left:2px solid var(--redx)}
@@ -20544,6 +20549,104 @@ var P360_PIDE={
   'Llamada de sistemas':  'la llamada de sistemas',
   'Lanzamiento':          'el lanzamiento'
 };
+// ---- Arrastrar entre etapas ---------------------------------------------
+var _P360_DRAG=null;
+function p360Arrastrar(ev, clientId){
+  _P360_DRAG=clientId;
+  try{ ev.dataTransfer.setData('text/plain', String(clientId)); }catch(e){}
+  ev.dataTransfer.effectAllowed='move';
+}
+function p360FinArrastre(){
+  _P360_DRAG=null;
+  document.querySelectorAll('.p3col.p3drop').forEach(function(x){ x.classList.remove('p3drop'); });
+}
+function p360SobreCol(ev, el){
+  // Sin preventDefault el navegador no considera la columna una zona valida y
+  // el drop nunca dispara.
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect='move';
+  el.classList.add('p3drop');
+}
+function p360Soltar(ev, el, etapa){
+  ev.preventDefault();
+  el.classList.remove('p3drop');
+  var id=_P360_DRAG;
+  if(id===null||id===undefined){
+    var t=ev.dataTransfer.getData('text/plain');
+    id=t?+t:null;
+  }
+  _P360_DRAG=null;
+  if(id===null||isNaN(id)) return;
+  p360ConfirmarMover(id, etapa);
+}
+// Antes de mover, mostrar que implica. Arrastrar es un gesto barato y esto
+// reescribe el historial del cliente: conviene ver que se va a dar por hecho.
+function p360ConfirmarMover(clientId, etapa){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var idx=RUTA_DEFAULT.map(function(e){return e.l;}).indexOf(etapa);
+  if(idx<0) return;
+  var calls=(c.fathomCalls||[]);
+  var actual=_p360Etapa(c);
+  if(actual && actual.l===etapa){
+    toast(c.name+' ya esta en '+etapa); return;
+  }
+  var conLlamada=function(def){
+    return def && calls.some(function(x){
+      return def.re.test(String(x.tipo||'')+' '+String(x.title||'')); });
+  };
+  var antes=RUTA_DEFAULT.slice(0,idx);
+  // Lo que se va a dar por hecho sin respaldo. Es el dato que importa: las que
+  // ya tienen llamada no cambian nada, las otras las estas afirmando vos.
+  var sinRespaldo=antes.filter(function(e){
+    return !conLlamada(e) && !((c.rutaHechas||{})[e.l]); });
+  var yaHechas=antes.filter(function(e){ return conLlamada(e); });
+  var adelante=RUTA_DEFAULT.slice(idx).filter(function(e){
+    return (c.rutaHechas||{})[e.l] && !conLlamada(e); });
+  var def=RUTA_DEFAULT[idx];
+  var lista=function(t, arr, col){
+    if(!arr.length) return '';
+    return '<div style="margin-top:10px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:4px">'+t+'</div>'
+      +arr.map(function(e){
+        return '<div style="font-size:12px;color:'+(col||'var(--text2)')+';padding:1px 0">'
+          +esc(e.l)+'</div>'; }).join('')
+    +'</div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px">'
+      +'<div class="modal-title">Mover '+esc(c.name||'')+' a '+esc(etapa)+'</div>'
+      +'<div class="modal-sub">'
+        +'Para estar en '+esc(etapa)+', '+esc(c.name||'')+' tiene que haber pasado por todo lo '
+        +'anterior. Esto es lo que va a quedar registrado.</div>'
+      +lista('Ya estaban, con su llamada de Fathom', yaHechas, 'var(--accent)')
+      +lista('Se van a dar por hechas sin llamada que lo respalde', sinRespaldo, 'var(--amberx)')
+      +lista('Se van a destildar, porque quedan adelante', adelante, 'var(--redx)')
+      +'<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);'
+        +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3);'
+        +'line-height:1.5">'
+        +'Para que <b style="color:var(--text2)">'+esc(etapa)+'</b> se marque sola hace falta '
+        +esc(P360_PIDE[etapa]||'esta etapa')+'.'
+        +(conLlamada(def)
+          ? ' Ya existe, asi que va a quedar hecha igual.'
+          : ' Todavia no esta: el cliente va a quedar <b style="color:var(--text2)">en</b> esa '
+            +'etapa, no despues de ella.')
+      +'</div>'
+      +(sinRespaldo.length
+        ? ('<div style="margin-top:10px;font-size:11.5px;color:var(--amberx);line-height:1.5">'
+          +'Ojo: '+sinRespaldo.length+' etapa'+(sinRespaldo.length===1?'':'s')
+          +' se van a marcar a mano. Si en realidad falta la llamada, mejor cargala y el '
+          +'panel se acomoda solo.</div>')
+        : '')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="closeModal();p360Mover('+c.id+',\''
+          +esc(etapa).replace(/'/g,"\\'")+'\')">Mover</button>'
+      +'</div>'
+    +'</div></div>';
+}
 function p360Abrir(clientId){
   S.p360Abierto=(S.p360Abierto===clientId)?null:clientId;
   showTickets();
@@ -20758,8 +20861,10 @@ function p360Html(){
     // mismo: mover de etapa y ver que falta es lo que se viene a hacer al
     // panel, e irse pierde el contexto de las otras columnas.
     return '<div class="p3card'+clase+(S.p360Abierto===d.c.id?' p3sel':'')+'" '
+        +'draggable="true" ondragstart="p360Arrastrar(event,'+d.c.id+')" '
+        +'ondragend="p360FinArrastre()" '
         +'onclick="p360Abrir('+d.c.id+')" '
-        +'title="'+esc(d.c.name||'')+' \u2014 ver la ruta">'
+        +'title="'+esc(d.c.name||'')+' \u2014 arrastrala a otra etapa, o tocala para ver la ruta">'
       +'<div class="p3n">'+esc(d.c.name||'')+'</div>'
       +(d.prod?('<div class="p3p">'+esc(d.prod)+'</div>'):'')
       +'<div class="p3b" style="color:'+col+'">'+txt+'</div>'
@@ -20784,7 +20889,10 @@ function p360Html(){
     +_p360SopsHtml()
     +'<div class="p3scroll"><div class="p3cols">'
     +cols.map(function(col){
-      return '<div class="p3col">'
+      var lb=esc(col.l).replace(/'/g,"\\'");
+      return '<div class="p3col" data-et="'+esc(col.l)+'" '
+        +'ondragover="p360SobreCol(event,this)" ondragleave="this.classList.remove(\'p3drop\')" '
+        +'ondrop="p360Soltar(event,this,\''+lb+'\')">'
         +'<div class="p3cab"><span>'+esc(col.l)+'</span><b>'+(col.cards.length||'')+'</b></div>'
         +(col.cards.length?col.cards.map(tarjeta).join('')
           :'<div class="p3nada"></div>')
