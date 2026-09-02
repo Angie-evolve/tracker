@@ -21467,83 +21467,48 @@ function p360EngancharSop(clientId, etapa){
 // En que paso de esta etapa quedo el cliente. Es lo que se viene a ver al
 // abrir una columna: no cuantos faltan sino donde se paro.
 function _p360PasosHtml(c, etapa){
-  var ps=rutaPasos(etapa);
-  if(!ps.length) return '';
-  var h=rutaPasosHechos(c, etapa);
-  // Un paso con hijos no se tilda solo: esta hecho cuando lo estan todos sus
-  // hijos. Marcarlo aparte dejaria decir "listo" con cosas adentro sin hacer.
-  var hijosDe=function(j){
-    var out=[];
-    for(var k=j+1;k<ps.length && ps[k].sub;k++) out.push(k);
-    return out;
-  };
-  var hecho=function(j){
-    var hs=hijosDe(j);
-    if(!hs.length) return h.indexOf(j)>=0;
-    return hs.every(function(k){ return h.indexOf(k)>=0; });
-  };
-  // Los padres, en orden. Cada uno con sus hijos.
-  var padres=[];
-  ps.forEach(function(p,j){ if(!p.sub) padres.push(j); });
-  var totales=0, hechosN=0, act=null;
-  padres.forEach(function(j){
-    var hs=hijosDe(j);
-    if(hs.length){
-      hs.forEach(function(k){ totales++; if(h.indexOf(k)>=0) hechosN++; });
-    }else{ totales++; if(h.indexOf(j)>=0) hechosN++; }
-    if(!act && !hecho(j)){
-      var pend=hs.filter(function(k){ return h.indexOf(k)<0; });
-      act={t:ps[j].t, detalle:pend.length?ps[pend[0]].t:''};
-    }
-  });
-  // Agrupados por area, como el diagrama. El area de un padre manda sobre la de
-  // sus hijos para que el grupo no se parta en varias columnas.
-  var grupos={}, orden=[];
-  padres.forEach(function(j){
-    var a=ps[j].a||'Sin area';
-    if(!grupos[a]){ grupos[a]=[]; orden.push(a); }
-    grupos[a].push(j);
-  });
-  orden.sort(function(a,b){
-    var x=ENTR_AREAS.indexOf(a), y=ENTR_AREAS.indexOf(b);
-    return (x<0?99:x)-(y<0?99:y);
-  });
-  var fila=function(j, esHijo){
-    var auto=rutaPasoAuto(c, etapa, j);
-    var hs=hijosDe(j);
-    var ok=hecho(j);
-    var padre=!esHijo && hs.length;
-    if(padre){
-      var n=hs.filter(function(k){ return h.indexOf(k)>=0; }).length;
-      // Sin checkbox: su estado sale de los hijos.
-      return '<div style="font-size:10.5px;line-height:1.6;color:'
-          +(ok?'var(--text3)':'var(--text2)')+';margin-top:2px">'
-        +esc(ps[j].t||'')+' <span class="mono" style="color:var(--text3)">'
-        +n+'/'+hs.length+'</span></div>'
-        +hs.map(function(k){ return fila(k, true); }).join('');
-    }
-    return '<label style="display:flex;gap:5px;align-items:baseline;'
-      +(auto?'':'cursor:pointer;')+'padding:1px 0'+(esHijo?';margin-left:14px':'')+'"'
-      +(auto?' title="La marca su llamada de Fathom, no se destilda a mano"':'')+'>'
-      +'<input type="checkbox"'+(ok?' checked':'')+(auto?' disabled':'')+' style="flex:none" '
-      +'onchange="rutaPasoTildar('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\','+j+')">'
-      +'<span style="font-size:10.5px;line-height:1.5;color:'
-        +(ok?'var(--text3)':'var(--text2)')+';'
-        +(ok?'text-decoration:line-through':'')+'">'+esc(ps[j].t||'')+'</span>'
-    +'</label>';
-  };
+  var pr=rutaProcesos(c, etapa);
+  if(!pr.length) return '';
+  var abiertos=pr.filter(function(x){ return !x.listo; });
+  var esc2=function(s){ return esc(s).replace(/'/g,"\\'"); };
   return '<div style="padding:4px 0 4px 14px">'
     +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
-      +'letter-spacing:.06em;margin-bottom:3px">'
-      +hechosN+' de '+totales
-      +(act?(' \u00b7 va por: '+esc(act.t)+(act.detalle?(' \u2014 '+esc(act.detalle)):''))
-           :' \u00b7 completo')+'</div>'
-    +'<div style="display:flex;gap:16px;flex-wrap:wrap">'
-    +orden.map(function(a){
-      return '<div style="flex:none;min-width:160px">'
-        +'<div style="font-size:9.5px;color:var(--text3);text-transform:uppercase;'
-          +'letter-spacing:.06em">'+esc(a)+'</div>'
-        +grupos[a].map(function(j){ return fila(j, false); }).join('')
+      +'letter-spacing:.06em;margin-bottom:4px">'
+      +(abiertos.length
+        ? (abiertos.length+' de '+pr.length+' frentes abiertos')
+        : 'los '+pr.length+' frentes cerrados')+'</div>'
+    // Cada proceso en su bloque. Corren en paralelo, asi que van uno al lado
+    // del otro y no en una lista: la lista sugiere un orden que no existe.
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap">'
+    +pr.map(function(x){
+      var col=x.listo?'var(--accent)':(x.n?'var(--amberx)':'var(--redx)');
+      return '<div style="flex:none;min-width:168px;max-width:230px;'
+          +'border-left:2px solid '+col+';padding-left:8px">'
+        +'<div style="font-size:10.5px;color:'+(x.listo?'var(--text3)':'var(--text2)')+';'
+          +'line-height:1.4">'+esc(x.p.t||'')
+          +'<span class="mono" style="color:var(--text3)"> '+x.n+'/'+x.tot+'</span>'
+          +(x.p.a?('<span style="color:var(--text3)"> \u00b7 '+esc(x.p.a)+'</span>'):'')+'</div>'
+        // Solo lo que falta. Lo hecho no explica por que esta trabado.
+        +(x.hijos.length
+          ? x.hijos.filter(function(y){ return !y.ok; }).slice(0,4).map(function(y){
+              var auto=rutaPasoAuto(c, etapa, y.i);
+              return '<label style="display:flex;gap:5px;align-items:baseline;'
+                +(auto?'':'cursor:pointer;')+'padding:1px 0"'
+                +(auto?' title="La marca su llamada de Fathom"':'')+'>'
+                +'<input type="checkbox"'+(auto?' disabled':'')+' style="flex:none" '
+                +'onchange="rutaPasoTildar('+c.id+',\''+esc2(etapa)+'\','+y.i+')">'
+                +'<span style="font-size:10.5px;line-height:1.5;color:var(--text3)">'
+                +esc(y.p.t||'')+'</span></label>';
+            }).join('')
+          : (x.listo?'':('<label style="display:flex;gap:5px;align-items:baseline;'
+              +'cursor:pointer;padding:1px 0">'
+              +'<input type="checkbox" style="flex:none" '
+              +'onchange="rutaPasoTildar('+c.id+',\''+esc2(etapa)+'\','+x.i+')">'
+              +'<span style="font-size:10.5px;color:var(--text3)">marcarlo hecho</span></label>')))
+        +(x.hijos.filter(function(y){return !y.ok;}).length>4
+          ? ('<div style="font-size:9.5px;color:var(--text3)">y '
+             +(x.hijos.filter(function(y){return !y.ok;}).length-4)+' mas</div>')
+          : '')
       +'</div>';
     }).join('')
     +'</div>'
@@ -21942,13 +21907,15 @@ function p360Html(){
       // Si la etapa tiene proceso, el paso en el que quedo dice mucho mas que
       // "atrasada": es lo concreto que hay que destrabar.
       if(d.et){
-        var pa=rutaPasoActual(d.c, d.et.l);
-        var tot=rutaPasoTotales(d.et.l);
-        if(tot && pa){
-          txt=esc(pa.p.t||'')+'<span style="color:var(--text3)"> \u00b7 '
-            +pa.n+'/'+pa.tot+'</span>';
-        }else if(tot){
-          txt='Proceso completo'; col='var(--accent)';
+        var rs=rutaResumen(d.c, d.et.l);
+        if(rs && rs.listo){ txt='Proceso completo'; col='var(--accent)'; }
+        else if(rs){
+          // Se nombra el frente mas atrasado y cuantos mas quedan abiertos.
+          // "1 de 9" escondia que hay cuatro cosas distintas trabadas.
+          txt=esc(rs.peor.p.t||'')
+            +'<span style="color:var(--text3)"> '+rs.peor.n+'/'+rs.peor.tot
+            +(rs.abiertos>1?(' \u00b7 +'+(rs.abiertos-1)+' abiertos'):'')+'</span>';
+          if(d.et.estado==='tarde') col='var(--amberx)';
         }
       }
     }
@@ -22096,27 +22063,41 @@ function rutaPasoTildar(clientId, label, i){
   save();
   showTickets();
 }
-// El paso donde quedo el cliente y cuanto lleva. Los padres no se cuentan: lo
-// que se hace son los hijos, y contarlos a los dos infla el total.
-function rutaPasoActual(c, label){
-  var ps=rutaPasos(label), h=rutaPasosHechos(c, label);
-  var tot=0, n=0, act=null;
+// Los pasos de primer nivel son procesos que corren EN PARALELO, no una fila
+// india: dataset, piezas, sistemas y landings avanzan a la vez. Leerlos como
+// secuencia daba "va por: Lead Journey" cuando en realidad hay cuatro frentes
+// abiertos al mismo tiempo.
+function rutaProcesos(c, etapa){
+  var ps=rutaPasos(etapa);
+  if(!ps.length) return [];
+  var h=rutaPasosHechos(c, etapa);
+  var out=[];
   ps.forEach(function(p,j){
-    var esPadre=(!p.sub && ps[j+1] && ps[j+1].sub);
-    if(esPadre) return;          // su estado sale de sus hijos
-    tot++;
-    if(h.indexOf(j)>=0) n++;
-    else if(!act) act={i:j, p:p};
+    if(p.sub) return;
+    var hijos=[];
+    for(var k=j+1;k<ps.length && ps[k].sub;k++) hijos.push({i:k, p:ps[k], ok:h.indexOf(k)>=0});
+    var n=hijos.length ? hijos.filter(function(x){return x.ok;}).length
+                       : (h.indexOf(j)>=0?1:0);
+    var tot=hijos.length||1;
+    out.push({i:j, p:p, hijos:hijos, n:n, tot:tot, listo:(n>=tot),
+              // El proximo pendiente de ESTE proceso, que es lo que lo traba.
+              traba:hijos.length
+                ? (hijos.filter(function(x){return !x.ok;})[0]||null)
+                : (h.indexOf(j)>=0?null:{i:j, p:p})});
   });
-  return act?{i:act.i, p:act.p, n:n, tot:tot}:null;
+  return out;
 }
-function rutaPasoTotales(label){
-  var ps=rutaPasos(label), tot=0;
-  ps.forEach(function(p,j){
-    if(!p.sub && ps[j+1] && ps[j+1].sub) return;
-    tot++;
-  });
-  return tot;
+// El resumen para la tarjeta: cuantos frentes hay abiertos y cual es el mas
+// atrasado. Con varios en paralelo, decir "1 de 9" esconde que hay cuatro
+// cosas distintas trabadas.
+function rutaResumen(c, etapa){
+  var pr=rutaProcesos(c, etapa);
+  if(!pr.length) return null;
+  var abiertos=pr.filter(function(x){ return !x.listo; });
+  if(!abiertos.length) return {listo:true, n:pr.length, tot:pr.length};
+  // El mas atrasado en proporcion. Si empatan, el primero de la lista.
+  var peor=abiertos.slice().sort(function(a,b){ return (a.n/a.tot)-(b.n/b.tot); })[0];
+  return {listo:false, abiertos:abiertos.length, total:pr.length, peor:peor};
 }
 // La regex se arma de las palabras clave en vez de escribirse a mano: nadie va
 // a cargar /(strategy|estrategia)\s*1/i en un formulario, y una regex mal
