@@ -196,6 +196,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .p3card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
   padding:9px 11px;margin-bottom:7px;cursor:pointer}
 .p3card:hover{border-color:var(--border2)}
+/* La tarjeta abierta se marca: sin esto, con la ficha abajo del tablero no se
+   sabe de cual de las nueve columnas salio. */
+.p3card.p3sel{border-color:var(--accent);background:var(--bg2)}
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
 .p3card.frena{border-left:2px solid var(--redx)}
@@ -20526,6 +20529,102 @@ function _p360Etapa(c){
   return {l:fijas[i].l, i:i, total:fijas.length, estado:fijas[i].estado,
           hechas:fijas.filter(function(x){ return x.estado==='hecho'; }).length};
 }
+// Que hace falta para que una etapa se de por hecha sola. La etapa no es un
+// campo que se edite: sale de las llamadas de Fathom que matchean su regex.
+// Cuando algo esta trabado casi siempre es porque la llamada no entro, o entro
+// con un titulo que no matchea.
+var P360_PIDE={
+  'Diagnostico':          'la llamada de diagnostico',
+  'Presentacion / venta': 'la llamada de venta o presentacion',
+  'Pago / onboarding':    'la llamada de onboarding',
+  'Estrategia 1':         'la llamada Strategy 1',
+  'Estrategia 2':         'la llamada Strategy 2',
+  'Documento dataset':    'el documento dataset',
+  'Sprint de lanzamiento':'la llamada de sprint',
+  'Llamada de sistemas':  'la llamada de sistemas',
+  'Lanzamiento':          'el lanzamiento'
+};
+function p360Abrir(clientId){
+  S.p360Abierto=(S.p360Abierto===clientId)?null:clientId;
+  showTickets();
+}
+// Tildar desde el panel y quedarse en el panel. rutaTildar re-renderiza la
+// ficha del cliente, que no es donde estamos.
+function p360Tildar(clientId, label){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.rutaHechas=c.rutaHechas||{};
+  if(c.rutaHechas[label]){
+    delete c.rutaHechas[label];
+  }else{
+    var et=_ruta(c).filter(function(x){ return x.l===label; })[0];
+    var d=(et&&et.fecha&&et.fecha>new Date())?et.fecha:new Date();
+    c.rutaHechas[label]=('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)
+      +'/'+d.getFullYear();
+  }
+  save();
+  showTickets();
+}
+// Mover a una etapa = dar por hechas todas las anteriores. Es lo que uno espera
+// al arrastrar una tarjeta, y evita tildar seis casillas a mano.
+function p360Mover(clientId, hasta){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var i=RUTA_DEFAULT.map(function(e){return e.l;}).indexOf(hasta);
+  if(i<0) return;
+  c.rutaHechas=c.rutaHechas||{};
+  var hoy=new Date();
+  var f=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
+  RUTA_DEFAULT.forEach(function(e,j){
+    if(j<i){ if(!c.rutaHechas[e.l]) c.rutaHechas[e.l]=f; }
+    // Las posteriores se destildan: si retrocedis a alguien es porque las de
+    // adelante no pasaron. Solo se toca lo tildado a mano, nunca una llamada.
+    else { delete c.rutaHechas[e.l]; }
+  });
+  save();
+  showTickets();
+  toast(c.name+' quedo en '+hasta);
+}
+function _p360FichaHtml(c){
+  var ruta=_ruta(c).filter(function(x){ return !x.manual; });
+  var calls=(c.fathomCalls||[]);
+  var fila=function(e){
+    var def=RUTA_DEFAULT.filter(function(x){ return x.l===e.l; })[0];
+    // Si la etapa esta hecha pero no hay llamada, fue tildada a mano.
+    var hayLlamada=def && calls.some(function(x){
+      return def.re.test(String(x.tipo||'')+' '+String(x.title||'')); });
+    var col=e.estado==='hecho'?'var(--accent)':(e.estado==='tarde'?'var(--redx)':'var(--text3)');
+    var falta = e.estado==='hecho'
+      ? (hayLlamada?'':'tildada a mano, sin llamada')
+      : ('falta '+(P360_PIDE[e.l]||'esta etapa'));
+    return '<div style="display:flex;gap:10px;align-items:center;padding:4px 0">'
+      +'<input type="checkbox"'+(e.estado==='hecho'?' checked':'')
+        +' onchange="p360Tildar('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\')" '
+        +(hayLlamada?' disabled title="La marca la llamada de Fathom, no se destilda a mano"':'')
+        +'>'
+      +'<span style="flex:1;font-size:12px;color:'+col+'">'+esc(e.l)
+        +'<span style="color:var(--text3)"> \u00b7 '+esc(falta||'con su llamada')+'</span></span>'
+      +(e.fecha?('<span class="mono" style="font-size:10px;color:var(--text3)">'
+        +e.fecha.toLocaleDateString('es-AR')+'</span>'):'')
+      +'<a href="javascript:void(0)" onclick="p360Mover('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\')" '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none;'
+        +'border-bottom:1px dotted var(--border2)">mover aca</a>'
+    +'</div>';
+  };
+  return '<div style="margin-top:10px;padding:11px 13px;border:1px solid var(--border);'
+      +'border-radius:var(--radius);background:var(--bg3)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'margin-bottom:6px">'
+      +'<div style="font-size:12px;color:var(--strong)">'+esc(c.name||'')+'</div>'
+      +'<a href="javascript:void(0)" onclick="irCliente('+c.id+')" '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none">abrir la ficha</a>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:8px">'
+      +'La etapa la marcan las llamadas de Fathom. Las que no son llamada se tildan a mano. '
+      +'"Mover aca" da por hechas las anteriores y destilda las de adelante.</div>'
+    +ruta.map(fila).join('')
+  +'</div>';
+}
 function p360Filtro(v){ S.p360=v||''; showTickets(); }
 // El producto solo se guardaba en el alta. Los clientes cargados antes de que
 // ese selector existiera quedaron sin ninguno y no habia forma de asignarlo
@@ -20655,8 +20754,12 @@ function p360Html(){
       txt=(d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia';
       if(d.et&&d.et.estado==='tarde') col='var(--amberx)';
     }
-    return '<div class="p3card'+clase+'" onclick="irCliente('+d.c.id+')" '
-        +'title="'+esc(d.c.name||'')+'">'
+    // Antes el click salia a la ficha del cliente. Ahora abre la ruta acá
+    // mismo: mover de etapa y ver que falta es lo que se viene a hacer al
+    // panel, e irse pierde el contexto de las otras columnas.
+    return '<div class="p3card'+clase+(S.p360Abierto===d.c.id?' p3sel':'')+'" '
+        +'onclick="p360Abrir('+d.c.id+')" '
+        +'title="'+esc(d.c.name||'')+' \u2014 ver la ruta">'
       +'<div class="p3n">'+esc(d.c.name||'')+'</div>'
       +(d.prod?('<div class="p3p">'+esc(d.prod)+'</div>'):'')
       +'<div class="p3b" style="color:'+col+'">'+txt+'</div>'
@@ -20700,6 +20803,13 @@ function p360Html(){
     +(vacias===cols.length
       ?('<div style="margin-top:14px;font-size:11.5px;color:var(--text3)">'
         +'Ningun cliente'+(sel?(' de '+esc(selLabel)):'')+' cayo en una etapa.</div>'):'')
+    // La ficha del cliente abierto va debajo del tablero, no encima de la
+    // tarjeta: asi no tapa las columnas ni desplaza las otras tarjetas.
+    +(function(){
+      if(!S.p360Abierto) return '';
+      var d=ver.filter(function(x){ return x.c.id===S.p360Abierto; })[0];
+      return d?_p360FichaHtml(d.c):'';
+    })()
     +_p360SinProdHtml(datos, sel)
   +'</div>';
 }
