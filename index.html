@@ -21238,8 +21238,14 @@ function _rutaMeterAdentro(iOrigen, iDestino){
   dst.pasos=dst.pasos||[];
   dst.pasos.push({t:org.l, kw:org.kw||undefined});
   var idx=dst.pasos.length-1;
-  // Los pasos que tenia se suman detras, para no perderlos.
-  (org.pasos||[]).forEach(function(p){ dst.pasos.push(p); });
+  // Los pasos que tenia quedan COMO HIJOS del paso nuevo, no al mismo nivel.
+  // Aplanarlos perdia la relacion: "Crear Dataset" pasaba a ser hermano de
+  // "Documento dataset" en vez de estar adentro.
+  (org.pasos||[]).forEach(function(p){
+    var q={}; Object.keys(p).forEach(function(k){ q[k]=p[k]; });
+    q.sub=true;
+    dst.pasos.push(q);
+  });
   // Lo que los clientes tenian tildado de esa etapa se traduce al paso nuevo.
   (DB.clients||[]).forEach(function(c){
     if(!c.rutaHechas||!c.rutaHechas[org.l]) return;
@@ -21318,9 +21324,9 @@ function _rutaPasosHtml(i, e, inp){
               +'style="flex:none;width:12px;color:var(--text3);cursor:grab;font-size:11px;'
               +'line-height:1;user-select:none">\u2237</span>'
             +'<span class="mono" style="flex:none;width:14px;font-size:10px;color:var(--text3);'
-              +'text-align:right">'+(j+1)+'</span>'
+              +'text-align:right">'+(p.sub?'':(j+1))+'</span>'
             +'<input value="'+esc(p.t||'')+'" onchange="rutaPasoSet('+i+','+j+',\'t\',this.value)" '
-              +'style="'+inp+';flex:1;min-width:0">'
+              +'style="'+inp+';flex:1;min-width:0'+(p.sub?';margin-left:18px':'')+'">'
             +'<input value="'+esc(p.kw||'')+'" placeholder="palabras clave" '
               +'title="Si entra una llamada que las contenga, el paso se marca solo" '
               +'onchange="rutaPasoSet('+i+','+j+',\'kw\',this.value)" '
@@ -21332,6 +21338,12 @@ function _rutaPasosHtml(i, e, inp){
                 return '<option value="'+esc(a)+'"'+((p.a||'')===a?' selected':'')+'>'
                   +esc(a)+'</option>'; }).join('')
             +'</select>'
+            +'<label style="flex:none;width:56px;display:flex;align-items:center;gap:3px;'
+              +'font-size:10px;color:var(--text3);cursor:pointer" '
+              +'title="Meterlo adentro del paso de arriba">'
+              +'<input type="checkbox"'+(p.sub?' checked':'')
+              +(j===0?' disabled title="El primero no puede estar adentro de nada"':'')
+              +' onchange="rutaPasoSet('+i+','+j+',\'sub\',this.checked)">dentro</label>'
             +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 6px" '
               +'title="Agregar un paso justo debajo" '
               +'onclick="rutaPasoInsertar('+i+','+j+')">+</button>'
@@ -21355,6 +21367,11 @@ function rutaPasoSet(i, j, campo, val){
   if(!r[i]||!r[i].pasos||!r[i].pasos[j]) return;
   if(campo==='a') r[i].pasos[j].a=String(val||'').trim()||undefined;
   else if(campo==='kw') r[i].pasos[j].kw=String(val||'').trim()||undefined;
+  else if(campo==='sub'){
+    r[i].pasos[j].sub=!!val;
+    if(r[i].pasos[0]) r[i].pasos[0].sub=false;
+    save(); rutaModal(); return;
+  }
   else r[i].pasos[j].t=String(val||'').trim();
   save();
 }
@@ -21453,42 +21470,80 @@ function _p360PasosHtml(c, etapa){
   var ps=rutaPasos(etapa);
   if(!ps.length) return '';
   var h=rutaPasosHechos(c, etapa);
-  // Agrupados por area, como el diagrama: importa quien lo tiene, no solo que
-  // falta. Los que no tienen area van juntos al final.
+  // Un paso con hijos no se tilda solo: esta hecho cuando lo estan todos sus
+  // hijos. Marcarlo aparte dejaria decir "listo" con cosas adentro sin hacer.
+  var hijosDe=function(j){
+    var out=[];
+    for(var k=j+1;k<ps.length && ps[k].sub;k++) out.push(k);
+    return out;
+  };
+  var hecho=function(j){
+    var hs=hijosDe(j);
+    if(!hs.length) return h.indexOf(j)>=0;
+    return hs.every(function(k){ return h.indexOf(k)>=0; });
+  };
+  // Los padres, en orden. Cada uno con sus hijos.
+  var padres=[];
+  ps.forEach(function(p,j){ if(!p.sub) padres.push(j); });
+  var totales=0, hechosN=0, act=null;
+  padres.forEach(function(j){
+    var hs=hijosDe(j);
+    if(hs.length){
+      hs.forEach(function(k){ totales++; if(h.indexOf(k)>=0) hechosN++; });
+    }else{ totales++; if(h.indexOf(j)>=0) hechosN++; }
+    if(!act && !hecho(j)){
+      var pend=hs.filter(function(k){ return h.indexOf(k)<0; });
+      act={t:ps[j].t, detalle:pend.length?ps[pend[0]].t:''};
+    }
+  });
+  // Agrupados por area, como el diagrama. El area de un padre manda sobre la de
+  // sus hijos para que el grupo no se parta en varias columnas.
   var grupos={}, orden=[];
-  ps.forEach(function(p,i){
-    var a=p.a||'Sin area';
+  padres.forEach(function(j){
+    var a=ps[j].a||'Sin area';
     if(!grupos[a]){ grupos[a]=[]; orden.push(a); }
-    grupos[a].push({p:p, i:i, ok:h.indexOf(i)>=0});
+    grupos[a].push(j);
   });
   orden.sort(function(a,b){
     var x=ENTR_AREAS.indexOf(a), y=ENTR_AREAS.indexOf(b);
     return (x<0?99:x)-(y<0?99:y);
   });
-  var act=rutaPasoActual(c, etapa);
+  var fila=function(j, esHijo){
+    var auto=rutaPasoAuto(c, etapa, j);
+    var hs=hijosDe(j);
+    var ok=hecho(j);
+    var padre=!esHijo && hs.length;
+    if(padre){
+      var n=hs.filter(function(k){ return h.indexOf(k)>=0; }).length;
+      // Sin checkbox: su estado sale de los hijos.
+      return '<div style="font-size:10.5px;line-height:1.6;color:'
+          +(ok?'var(--text3)':'var(--text2)')+';margin-top:2px">'
+        +esc(ps[j].t||'')+' <span class="mono" style="color:var(--text3)">'
+        +n+'/'+hs.length+'</span></div>'
+        +hs.map(function(k){ return fila(k, true); }).join('');
+    }
+    return '<label style="display:flex;gap:5px;align-items:baseline;'
+      +(auto?'':'cursor:pointer;')+'padding:1px 0'+(esHijo?';margin-left:14px':'')+'"'
+      +(auto?' title="La marca su llamada de Fathom, no se destilda a mano"':'')+'>'
+      +'<input type="checkbox"'+(ok?' checked':'')+(auto?' disabled':'')+' style="flex:none" '
+      +'onchange="rutaPasoTildar('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\','+j+')">'
+      +'<span style="font-size:10.5px;line-height:1.5;color:'
+        +(ok?'var(--text3)':'var(--text2)')+';'
+        +(ok?'text-decoration:line-through':'')+'">'+esc(ps[j].t||'')+'</span>'
+    +'</label>';
+  };
   return '<div style="padding:4px 0 4px 14px">'
     +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
       +'letter-spacing:.06em;margin-bottom:3px">'
-      +h.length+' de '+ps.length
-      +(act?(' \u00b7 va por: '+esc(act.p.t||'')):' \u00b7 completo')+'</div>'
+      +hechosN+' de '+totales
+      +(act?(' \u00b7 va por: '+esc(act.t)+(act.detalle?(' \u2014 '+esc(act.detalle)):''))
+           :' \u00b7 completo')+'</div>'
     +'<div style="display:flex;gap:16px;flex-wrap:wrap">'
     +orden.map(function(a){
-      return '<div style="flex:none;min-width:150px">'
+      return '<div style="flex:none;min-width:160px">'
         +'<div style="font-size:9.5px;color:var(--text3);text-transform:uppercase;'
           +'letter-spacing:.06em">'+esc(a)+'</div>'
-        +grupos[a].map(function(x){
-          var auto=rutaPasoAuto(c, etapa, x.i);
-          return '<label style="display:flex;gap:5px;align-items:baseline;'
-            +(auto?'':'cursor:pointer;')+'padding:1px 0"'
-            +(auto?' title="La marca su llamada de Fathom, no se destilda a mano"':'')+'>'
-            +'<input type="checkbox"'+(x.ok?' checked':'')+(auto?' disabled':'')
-            +' style="flex:none" '
-            +'onchange="rutaPasoTildar('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\','+x.i+')">'
-            +'<span style="font-size:10.5px;line-height:1.5;color:'
-              +(x.ok?'var(--text3)':(act&&act.i===x.i?'var(--amberx)':'var(--text2)'))+';'
-              +(x.ok?'text-decoration:line-through':'')+'">'+esc(x.p.t||'')+'</span>'
-          +'</label>';
-        }).join('')
+        +grupos[a].map(function(j){ return fila(j, false); }).join('')
       +'</div>';
     }).join('')
     +'</div>'
@@ -21888,10 +21943,10 @@ function p360Html(){
       // "atrasada": es lo concreto que hay que destrabar.
       if(d.et){
         var pa=rutaPasoActual(d.c, d.et.l);
-        var tot=rutaPasos(d.et.l).length;
+        var tot=rutaPasoTotales(d.et.l);
         if(tot && pa){
           txt=esc(pa.p.t||'')+'<span style="color:var(--text3)"> \u00b7 '
-            +(pa.i+1)+'/'+tot+'</span>';
+            +pa.n+'/'+pa.tot+'</span>';
         }else if(tot){
           txt='Proceso completo'; col='var(--accent)';
         }
@@ -22041,11 +22096,27 @@ function rutaPasoTildar(clientId, label, i){
   save();
   showTickets();
 }
-// El primer paso sin hacer: es "en que quedo" dentro de la etapa.
+// El paso donde quedo el cliente y cuanto lleva. Los padres no se cuentan: lo
+// que se hace son los hijos, y contarlos a los dos infla el total.
 function rutaPasoActual(c, label){
   var ps=rutaPasos(label), h=rutaPasosHechos(c, label);
-  for(var i=0;i<ps.length;i++){ if(h.indexOf(i)<0) return {i:i, p:ps[i]}; }
-  return null;
+  var tot=0, n=0, act=null;
+  ps.forEach(function(p,j){
+    var esPadre=(!p.sub && ps[j+1] && ps[j+1].sub);
+    if(esPadre) return;          // su estado sale de sus hijos
+    tot++;
+    if(h.indexOf(j)>=0) n++;
+    else if(!act) act={i:j, p:p};
+  });
+  return act?{i:act.i, p:act.p, n:n, tot:tot}:null;
+}
+function rutaPasoTotales(label){
+  var ps=rutaPasos(label), tot=0;
+  ps.forEach(function(p,j){
+    if(!p.sub && ps[j+1] && ps[j+1].sub) return;
+    tot++;
+  });
+  return tot;
 }
 // La regex se arma de las palabras clave en vez de escribirse a mano: nadie va
 // a cargar /(strategy|estrategia)\s*1/i en un formulario, y una regex mal
