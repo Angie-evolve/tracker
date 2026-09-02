@@ -20581,14 +20581,56 @@ function p360Soltar(ev, el, etapa){
 }
 // Antes de mover, mostrar que implica. Arrastrar es un gesto barato y esto
 // reescribe el historial del cliente: conviene ver que se va a dar por hecho.
-function p360ConfirmarMover(clientId, etapa){
+// Cargar lo que falta sin salir del popup. Para una etapa de llamada crea la
+// entrada en fathomCalls con un titulo que matchee su regex — si el titulo no
+// matchea, la etapa sigue sin marcarse y no se entiende por que. Para el
+// documento va a Material, que es donde viven los links del cliente.
+function p360Cargar(clientId, etapa, esDoc){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('p3f-'+etapa.replace(/[^a-zA-Z0-9]/g,''));
+  var url=String((e||{}).value||'').trim();
+  if(!url){ toast('Pega el link primero','amber'); if(e&&e.focus) e.focus(); return; }
+  var hoy=new Date();
+  var f=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
+  if(esDoc){
+    c.material=c.material||[];
+    c.material.unshift({id:Date.now(), label:etapa, url:url, at:new Date().toISOString()});
+    // El documento no genera llamada, asi que la etapa se tilda igual: es de
+    // las que siempre fueron manuales.
+    c.rutaHechas=c.rutaHechas||{};
+    c.rutaHechas[etapa]=f;
+  }else{
+    c.fathomCalls=c.fathomCalls||[];
+    c.fathomCalls.unshift({
+      id:'manual-'+Date.now(),
+      // El titulo lleva la etapa adelante para que _ruta la reconozca.
+      title:etapa+' - '+(c.name||''),
+      date:f, duration:'',
+      sentiment:'satisfecho',
+      summary:'', actionItems:[], riskFlags:[],
+      initials:(c.name||'?').split(' ').map(function(w){return w[0];}).join('')
+        .substring(0,2).toUpperCase(),
+      _cid:c.id, manual:true, tipo:etapa, url:url, transcript:''
+    });
+  }
+  save();
+  toast(etapa+' cargada');
+  // Se rearma el popup para que la etapa pase de ambar a verde y se vea el
+  // efecto de lo que acabas de cargar.
+  p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
+}
+function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var idx=RUTA_DEFAULT.map(function(e){return e.l;}).indexOf(etapa);
   if(idx<0) return;
+  S._p360Destino=etapa;
   var calls=(c.fathomCalls||[]);
   var actual=_p360Etapa(c);
-  if(actual && actual.l===etapa){
+  // Al reabrir despues de cargar algo no se corta: el cliente puede haber
+  // llegado justo a esa etapa y cerrar el popup ahi seria perder el hilo.
+  if(!_reabrir && actual && actual.l===etapa){
     toast(c.name+' ya esta en '+etapa); return;
   }
   var conLlamada=function(def){
@@ -20614,6 +20656,35 @@ function p360ConfirmarMover(clientId, etapa){
           +esc(e.l)+'</div>'; }).join('')
     +'</div>';
   };
+  // En vez de solo avisar que se marcan a mano, dejar cargarlas aca. Es donde
+  // te enterás de que falta: mandarte a otra pantalla a buscar el link hace
+  // que termines tildando y siguiendo, que es justo lo que no queremos.
+  var completar=function(arr){
+    if(!arr.length) return '';
+    return '<div style="margin-top:10px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:2px">Se van a dar por hechas sin respaldo</div>'
+      +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:7px">'
+        +'Si tenés el link, cargalo y deja de ser a mano.</div>'
+      +arr.map(function(e){
+        // Si lo que pide es una llamada, va a fathomCalls. Si no (el dataset,
+        // el lanzamiento), es un link que vive en Material.
+        var esDoc=!/^la llamada/i.test(P360_PIDE[e.l]||'');
+        return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0;flex-wrap:wrap">'
+          +'<span style="flex:none;min-width:150px;font-size:12px;color:var(--amberx)">'
+            +esc(e.l)+'</span>'
+          +'<input id="p3f-'+esc(e.l).replace(/[^a-zA-Z0-9]/g,'')+'" '
+            +'placeholder="'+(esDoc?'link del documento':'link de la llamada')+'" '
+            +'style="flex:1;min-width:180px;font-size:11.5px;padding:5px 8px;'
+            +'border-radius:var(--radius);border:1px solid var(--border2);'
+            +'background:var(--bg3);color:var(--text)">'
+          +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+            +'onclick="p360Cargar('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\','+(esDoc?'1':'0')+')">'
+            +'Cargar</button>'
+        +'</div>';
+      }).join('')
+    +'</div>';
+  };
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:640px">'
@@ -20622,7 +20693,7 @@ function p360ConfirmarMover(clientId, etapa){
         +'Para estar en '+esc(etapa)+', '+esc(c.name||'')+' tiene que haber pasado por todo lo '
         +'anterior. Esto es lo que va a quedar registrado.</div>'
       +lista('Ya estaban, con su llamada de Fathom', yaHechas, 'var(--accent)')
-      +lista('Se van a dar por hechas sin llamada que lo respalde', sinRespaldo, 'var(--amberx)')
+      +completar(sinRespaldo)
       +lista('Se van a destildar, porque quedan adelante', adelante, 'var(--redx)')
       +'<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);'
         +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3);'
