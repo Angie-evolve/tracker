@@ -20878,10 +20878,57 @@ function p360AbrirCol(etapa){
   S.p360Col=(S.p360Col===etapa)?null:etapa;
   showTickets();
 }
-function _p360SubprocesoHtml(c){
+// Enganchar un procedimiento desde el panel. Un SOP no se corre suelto: cuelga
+// de una tarea, porque el avance es por cliente y no del SOP en si. Asi que
+// esto crea la tarea y le ata el procedimiento en un paso.
+function p360EngancharSop(clientId, etapa){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var sel=document.getElementById('p3sop-'+clientId);
+  var sid=+((sel||{}).value||0);
+  if(!sid){ toast('Elegi un procedimiento','amber'); return; }
+  var s=_sop(sid);
+  if(!s) return;
+  c.tasks=c.tasks||[];
+  c.tasks.unshift({
+    id:Date.now()+Math.floor(Math.random()*100000),
+    text:(s.titulo||'Procedimiento')+' \u2014 '+etapa,
+    responsible:(c.owner||''),
+    due:'', done:false, source:'Panel 360', delegated:false,
+    ticket:(typeof nextTicketFromApp==='function')?('#'+nextTicketFromApp()):'',
+    sopId:sid, sopHechos:{}
+  });
+  save();
+  showTickets();
+  toast(s.titulo+' enganchado a '+(c.name||''));
+}
+function _p360SubprocesoHtml(c, etapa){
   var tareas=(c.tasks||[]).filter(function(t){
     return t.sopId && !t.done && !t.deleted && !t.archivada; });
-  if(!tareas.length) return '';
+  if(!tareas.length){
+    var sops=(DB.sops||[]);
+    if(!sops.length){
+      return '<div style="padding:2px 0 2px 14px;font-size:11px;color:var(--text3)">'
+        +'No hay procedimientos cargados todavia. Se arman en '
+        +'<a href="javascript:void(0)" onclick="abrirSopsModal()" '
+        +'style="color:var(--text2);text-decoration:none">Operaciones</a>.</div>';
+    }
+    return '<div style="display:flex;gap:6px;align-items:center;padding:3px 0 3px 14px;'
+        +'flex-wrap:wrap">'
+      +'<span style="flex:none;font-size:11px;color:var(--text3)">Sin procedimiento.</span>'
+      +'<select id="p3sop-'+c.id+'" style="flex:none;font-size:10.5px;padding:2px 6px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);'
+        +'background:var(--bg3);color:var(--text);max-width:230px">'
+      +sops.map(function(s){
+        var cu=_sopCuenta(s);
+        return '<option value="'+s.id+'">'+esc(s.titulo||'SOP')
+          +(cu&&cu.tot?(' ('+cu.tot+' pasos)'):'')+'</option>'; }).join('')
+      +'</select>'
+      +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:2px 7px" '
+        +'onclick="p360EngancharSop('+c.id+',\''+esc(etapa||'').replace(/'/g,"\\'")+'\')">'
+        +'Enganchar</button>'
+    +'</div>';
+  }
   return tareas.map(function(t){
     var av=sopAvanceTarea(t);
     if(!av) return '';
@@ -20922,7 +20969,7 @@ function _p360ColHtml(etapa, cards){
       +'Para salir de esta etapa hace falta '+esc(P360_PIDE[etapa]||'completarla')+'. '
       +'Debajo de cada cliente, por donde va su procedimiento.</div>'
     +cards.map(function(d){
-      var sub=_p360SubprocesoHtml(d.c);
+      var sub=_p360SubprocesoHtml(d.c, etapa);
       var f=d.peor;
       return '<div style="padding:5px 0;border-top:1px solid var(--border)">'
         +'<div style="display:flex;gap:9px;align-items:baseline">'
@@ -20934,10 +20981,9 @@ function _p360ColHtml(etapa, cards){
                :((d.et&&d.et.estado==='tarde')?'var(--amberx)':'var(--text3)'))+'">'
             +(f?esc(f.q):((d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia'))+'</span>'
         +'</div>'
-        // Sin SOP enganchado no hay subproceso que mostrar. Decirlo es mejor
-        // que dejar el hueco: se entiende que falta armarlo, no que anda mal.
-        +(sub||('<div style="padding:2px 0 2px 14px;font-size:11px;color:var(--text3)">'
-          +'Sin procedimiento enganchado a una tarea.</div>'))
+        // _p360SubprocesoHtml siempre devuelve algo: el avance si hay SOP, o el
+        // selector para engancharlo si no. Ya no hace falta un texto de relleno.
+        +sub
       +'</div>';
     }).join('')
   +'</div>';
