@@ -20564,11 +20564,10 @@ function _p360Etapa(c){
   return {l:fijas[i].l, i:i, total:fijas.length, estado:fijas[i].estado,
           hechas:fijas.filter(function(x){ return x.estado==='hecho'; }).length};
 }
-// Que hace falta para que una etapa se de por hecha sola. La etapa no es un
-// campo que se edite: sale de las llamadas de Fathom que matchean su regex.
-// Cuando algo esta trabado casi siempre es porque la llamada no entro, o entro
-// con un titulo que no matchea.
-var P360_PIDE={
+// Que hace falta para que una etapa se de por hecha sola. Ya no es una lista
+// fija: la ruta se edita, asi que el texto sale de las palabras clave que tenga
+// cargadas. Sin palabras clave no hay deteccion posible y se dice.
+var P360_PIDE_FIJO={
   'Diagnostico':          'la llamada de diagnostico',
   'Presentacion / venta': 'la llamada de venta o presentacion',
   'Pago / onboarding':    'la llamada de onboarding',
@@ -20579,6 +20578,14 @@ var P360_PIDE={
   'Llamada de sistemas':  'la llamada de sistemas',
   'Lanzamiento':          'el lanzamiento'
 };
+var P360_PIDE=new Proxy({},{get:function(_,k){
+  if(typeof k!=='string') return undefined;
+  var e=rutaDef().filter(function(x){ return x.l===k; })[0];
+  if(e && !e.kw) return 'tildarla a mano (no tiene palabras clave)';
+  if(P360_PIDE_FIJO[k]) return P360_PIDE_FIJO[k];
+  return e ? ('una llamada que diga "'+String(e.kw).split(',')[0].trim()+'"')
+           : 'esta etapa';
+}});
 // ---- Arrastrar entre etapas ---------------------------------------------
 var _P360_DRAG=null;
 function p360Arrastrar(ev, clientId){
@@ -20727,7 +20734,8 @@ function p360Cargar(clientId, etapa, esDoc){
 function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var idx=RUTA_DEFAULT.map(function(e){return e.l;}).indexOf(etapa);
+  var RD=rutaDef();
+  var idx=RD.map(function(e){return e.l;}).indexOf(etapa);
   if(idx<0) return;
   S._p360Destino=etapa;
   var calls=(c.fathomCalls||[]);
@@ -20741,15 +20749,15 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
     return def && calls.some(function(x){
       return def.re.test(String(x.tipo||'')+' '+String(x.title||'')); });
   };
-  var antes=RUTA_DEFAULT.slice(0,idx);
+  var antes=RD.slice(0,idx);
   // Lo que se va a dar por hecho sin respaldo. Es el dato que importa: las que
   // ya tienen llamada no cambian nada, las otras las estas afirmando vos.
   var sinRespaldo=antes.filter(function(e){
     return !conLlamada(e) && !((c.rutaHechas||{})[e.l]); });
   var yaHechas=antes.filter(function(e){ return conLlamada(e); });
-  var adelante=RUTA_DEFAULT.slice(idx).filter(function(e){
+  var adelante=RD.slice(idx).filter(function(e){
     return (c.rutaHechas||{})[e.l] && !conLlamada(e); });
-  var def=RUTA_DEFAULT[idx];
+  var def=RD[idx];
   var lista=function(t, arr, col){
     if(!arr.length) return '';
     return '<div style="margin-top:10px">'
@@ -20874,6 +20882,112 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
 // lanzamiento", hace falta saber por donde va adentro. El subproceso vive en
 // las tareas del cliente que tienen un SOP enganchado: el avance cuelga de la
 // tarea, no del SOP, asi que dos clientes corren el mismo SOP por separado.
+// ---- Editar la ruta ------------------------------------------------------
+// Las etapas dejaron de estar fijas. Se pueden renombrar, reordenar, agregar y
+// convertir en sub-etapa de la anterior, que es como se mete una adentro de
+// otra sin perder su deteccion automatica.
+function _rutaEditable(){
+  if(!DB.ruta||!DB.ruta.length){
+    DB.ruta=RUTA_DEFAULT.map(function(e){
+      return {l:e.l, kw:e.kw||'', dia:e.dia, sub:false}; });
+  }
+  return DB.ruta;
+}
+function rutaModal(){
+  var r=_rutaEditable();
+  var inp='padding:5px 8px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:11.5px';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:900px">'
+      +'<div class="modal-title">Etapas del cliente</div>'
+      +'<div class="modal-sub">Las columnas del Panel 360. Cada etapa se marca sola cuando '
+        +'entra una llamada cuyo titulo contiene alguna de sus palabras clave. '
+        +'<b>Adentro</b> la saca de las columnas y la muestra dentro de la etapa de arriba.</div>'
+      +'<div style="display:flex;gap:8px;font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:14px 0 5px">'
+        +'<span style="flex:1">Nombre</span>'
+        +'<span style="flex:1.2">Palabras clave, separadas por coma</span>'
+        +'<span style="width:60px">Dia</span>'
+        +'<span style="width:62px">Adentro</span>'
+        +'<span style="width:76px"></span>'
+      +'</div>'
+      +r.map(function(e,i){
+        return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+          +'<input value="'+esc(e.l)+'" onchange="rutaSet('+i+',\'l\',this.value)" '
+            +'style="'+inp+';flex:1;min-width:0'+(e.sub?';margin-left:16px':'')+'">'
+          +'<input value="'+esc(e.kw||'')+'" placeholder="sin deteccion" '
+            +'onchange="rutaSet('+i+',\'kw\',this.value)" style="'+inp+';flex:1.2;min-width:0">'
+          +'<input type="number" value="'+(e.dia===null||e.dia===undefined?'':e.dia)+'" '
+            +'placeholder="-" title="Dias desde el onboarding para la fecha estimada" '
+            +'onchange="rutaSet('+i+',\'dia\',this.value)" style="'+inp+';width:60px">'
+          +'<label style="width:62px;display:flex;align-items:center;gap:4px;font-size:10.5px;'
+            +'color:var(--text3);cursor:pointer">'
+            +'<input type="checkbox"'+(e.sub?' checked':'')
+            +(i===0?' disabled title="La primera no puede estar adentro de nada"':'')
+            +' onchange="rutaSet('+i+',\'sub\',this.checked)">dentro</label>'
+          +'<span style="width:76px;display:flex;gap:3px;justify-content:flex-end">'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
+              +(i===0?'disabled':'onclick="rutaMoverEtapa('+i+',-1)"')+'>&uarr;</button>'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" '
+              +(i===r.length-1?'disabled':'onclick="rutaMoverEtapa('+i+',1)"')+'>&darr;</button>'
+            +'<button class="btn btn-sm" style="font-size:10px;padding:1px 6px;color:var(--redx)" '
+              +'onclick="rutaBorrarEtapa('+i+')">&times;</button>'
+          +'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="margin-top:12px;display:flex;gap:8px">'
+        +'<button class="btn btn-sm" onclick="rutaAgregarEtapa()">Agregar etapa</button>'
+        +'<button class="btn btn-sm" onclick="rutaRestaurar()">Volver a la de fabrica</button>'
+      +'</div>'
+      +'<div style="margin-top:14px;padding:10px 12px;border:1px solid var(--border);'
+        +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3);'
+        +'line-height:1.6">'
+        +'Renombrar una etapa <b style="color:var(--text2)">no</b> mueve lo ya tildado a mano: '
+        +'eso se guarda por nombre. Si renombras algo que alguien ya tildo, esa marca queda '
+        +'huerfana y la etapa vuelve a figurar pendiente.</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-primary" onclick="closeModal();showTickets()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function rutaSet(i, campo, val){
+  var r=_rutaEditable();
+  if(!r[i]) return;
+  if(campo==='dia'){ r[i].dia=(String(val).trim()==='')?null:(+val); }
+  else if(campo==='sub'){ r[i].sub=!!val; }
+  else r[i][campo]=String(val||'').trim();
+  save();
+  rutaModal();
+}
+function rutaMoverEtapa(i, d){
+  var r=_rutaEditable(), j=i+d;
+  if(j<0||j>=r.length) return;
+  var t=r[i]; r[i]=r[j]; r[j]=t;
+  // La primera no puede ser sub: no hay etapa de arriba de la cual colgar.
+  if(r[0].sub) r[0].sub=false;
+  save(); rutaModal();
+}
+function rutaBorrarEtapa(i){
+  var r=_rutaEditable();
+  if(!r[i]) return;
+  if(!confirm('Borrar "'+r[i].l+'"?\n\nLos clientes que estaban ahi pasan a la etapa siguiente. '
+    +'Las llamadas no se borran.')) return;
+  r.splice(i,1);
+  if(r.length&&r[0].sub) r[0].sub=false;
+  save(); rutaModal();
+}
+function rutaAgregarEtapa(){
+  var r=_rutaEditable();
+  r.push({l:'Etapa nueva', kw:'', dia:null, sub:false});
+  save(); rutaModal();
+}
+function rutaRestaurar(){
+  if(!confirm('Volver a las 9 etapas de fabrica? Se pierden los cambios de esta pantalla.')) return;
+  DB.ruta=RUTA_DEFAULT.map(function(e){
+    return {l:e.l, kw:e.kw||'', dia:e.dia, sub:false}; });
+  save(); rutaModal();
+}
 function p360AbrirCol(etapa){
   S.p360Col=(S.p360Col===etapa)?null:etapa;
   showTickets();
@@ -20962,15 +21076,36 @@ function _p360ColHtml(etapa, cards){
       +'border-radius:var(--radius);background:var(--bg3);font-size:11.5px;color:var(--text3)">'
       +'Nadie en '+esc(etapa)+'.</div>';
   }
+  var hijas=rutaHijas(etapa);
   return '<div style="margin-top:10px;padding:11px 13px;border:1px solid var(--border);'
       +'border-radius:var(--radius);background:var(--bg3)">'
-    +'<div style="font-size:12px;color:var(--strong);margin-bottom:2px">'+esc(etapa)+'</div>'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">'
+      +'<div style="font-size:12px;color:var(--strong);margin-bottom:2px">'+esc(etapa)+'</div>'
+      +'<a href="javascript:void(0)" onclick="rutaModal()" '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none">editar las etapas</a>'
+    +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:9px">'
       +'Para salir de esta etapa hace falta '+esc(P360_PIDE[etapa]||'completarla')+'. '
-      +'Debajo de cada cliente, por donde va su procedimiento.</div>'
+      +(hijas.length
+        ? ('Tiene '+hijas.length+' paso'+(hijas.length===1?'':'s')+' adentro: '
+           +hijas.map(function(h){ return esc(h.l); }).join(', ')+'.')
+        : 'Debajo de cada cliente, por donde va su procedimiento.')
+    +'</div>'
     +cards.map(function(d){
       var sub=_p360SubprocesoHtml(d.c, etapa);
       var f=d.peor;
+      // El estado de cada sub-etapa para este cliente. Sale de la misma ruta,
+      // asi que se sigue detectando por el titulo de la llamada aunque ya no
+      // tenga columna propia.
+      var suRuta=[];
+      try{ suRuta=_ruta(d.c)||[]; }catch(e){}
+      var pasos=hijas.map(function(h){
+        var et=suRuta.filter(function(x){ return x.l===h.l; })[0];
+        var ok=et&&et.estado==='hecho';
+        var col=ok?'var(--accent)':((et&&et.estado==='tarde')?'var(--redx)':'var(--text3)');
+        return '<span style="font-size:10.5px;color:'+col+'">'
+          +(ok?'\u2713 ':'\u00b7 ')+esc(h.l)+'</span>';
+      }).join('<span style="color:var(--border2)"> | </span>');
       return '<div style="padding:5px 0;border-top:1px solid var(--border)">'
         +'<div style="display:flex;gap:9px;align-items:baseline">'
           +'<a href="javascript:void(0)" onclick="p360Abrir('+d.c.id+')" '
@@ -20981,8 +21116,7 @@ function _p360ColHtml(etapa, cards){
                :((d.et&&d.et.estado==='tarde')?'var(--amberx)':'var(--text3)'))+'">'
             +(f?esc(f.q):((d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia'))+'</span>'
         +'</div>'
-        // _p360SubprocesoHtml siempre devuelve algo: el avance si hay SOP, o el
-        // selector para engancharlo si no. Ya no hace falta un texto de relleno.
+        +(pasos?('<div style="padding:2px 0 2px 14px">'+pasos+'</div>'):'')
         +sub
       +'</div>';
     }).join('')
@@ -21014,12 +21148,13 @@ function p360Tildar(clientId, label){
 function p360Mover(clientId, hasta){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var i=RUTA_DEFAULT.map(function(e){return e.l;}).indexOf(hasta);
+  var RD=rutaDef();
+  var i=RD.map(function(e){return e.l;}).indexOf(hasta);
   if(i<0) return;
   c.rutaHechas=c.rutaHechas||{};
   var hoy=new Date();
   var f=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
-  RUTA_DEFAULT.forEach(function(e,j){
+  RD.forEach(function(e,j){
     if(j<i){ if(!c.rutaHechas[e.l]) c.rutaHechas[e.l]=f; }
     // Las posteriores se destildan: si retrocedis a alguien es porque las de
     // adelante no pasaron. Solo se toca lo tildado a mano, nunca una llamada.
@@ -21033,7 +21168,7 @@ function _p360FichaHtml(c){
   var ruta=_ruta(c).filter(function(x){ return !x.manual; });
   var calls=(c.fathomCalls||[]);
   var fila=function(e){
-    var def=RUTA_DEFAULT.filter(function(x){ return x.l===e.l; })[0];
+    var def=rutaDef().filter(function(x){ return x.l===e.l; })[0];
     // Si la etapa esta hecha pero no hay llamada, fue tildada a mano.
     var hayLlamada=def && calls.some(function(x){
       return def.re.test(String(x.tipo||'')+' '+String(x.title||'')); });
@@ -21177,7 +21312,7 @@ function p360Html(){
 
   // Una columna por etapa de la ruta, en orden. Se usan las etiquetas de
   // RUTA_DEFAULT para no desincronizarse si alguien las cambia ahi.
-  var cols=RUTA_DEFAULT.map(function(e){ return {l:e.l, cards:[]}; });
+  var cols=rutaColumnas().map(function(e){ return {l:e.l, cards:[]}; });
   var sinRuta=[];
   ver.forEach(function(d){
     if(!d.et){ sinRuta.push(d); return; }
@@ -21225,7 +21360,10 @@ function p360Html(){
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:14px">'
       +'En que etapa esta cada uno y que le impide avanzar. '
       +'<span style="color:var(--redx)">Rojo</span> depende de nosotros, '
-      +'<span style="color:var(--amberx)">ambar</span> del cliente.</div>'
+      +'<span style="color:var(--amberx)">ambar</span> del cliente. '
+      +'<a href="javascript:void(0)" onclick="rutaModal()" '
+        +'style="color:var(--text2);text-decoration:none;border-bottom:1px dotted var(--border2)">'
+        +'Editar las etapas</a>.</div>'
     +filtros
     +_p360SopsHtml()
     +'<div class="p3scroll"><div class="p3cols">'
@@ -21278,21 +21416,62 @@ function p360Html(){
 // una llamada real por el titulo; si esa llamada todavia no existe, la fecha
 // se proyecta desde el onboarding con el plazo del plan.
 var RUTA_DEFAULT=[
-  {l:'Diagnostico',          re:/diagn/i,                          dia:null},
-  {l:'Presentacion / venta', re:/venta|present|propuesta/i,        dia:null},
-  {l:'Pago / onboarding',    re:/onboarding/i,                     dia:0},
-  {l:'Estrategia 1',         re:/(strategy|estrategia)\s*1/i,      dia:7},
-  {l:'Estrategia 2',         re:/(strategy|estrategia)\s*2/i,      dia:14},
-  {l:'Documento dataset',    re:/dataset|documento/i,              dia:18},
-  {l:'Sprint de lanzamiento',re:/sprint/i,                         dia:21},
-  {l:'Llamada de sistemas',  re:/sistema/i,                        dia:26},
-  {l:'Lanzamiento',          re:/lanzam|launch|handoff/i,          dia:30}
+  {l:'Diagnostico',          kw:'diagn',                    dia:null},
+  {l:'Presentacion / venta', kw:'venta, present, propuesta', dia:null},
+  {l:'Pago / onboarding',    kw:'onboarding',               dia:0},
+  {l:'Estrategia 1',         kw:'strategy 1, estrategia 1', dia:7},
+  {l:'Estrategia 2',         kw:'strategy 2, estrategia 2', dia:14},
+  {l:'Documento dataset',    kw:'dataset, documento',       dia:18},
+  {l:'Sprint de lanzamiento',kw:'sprint',                   dia:21},
+  {l:'Llamada de sistemas',  kw:'sistema',                  dia:26},
+  {l:'Lanzamiento',          kw:'lanzam, launch, handoff',  dia:30}
 ];
+// La ruta dejo de estar fija en el codigo: se edita y se guarda en DB.ruta.
+// Mientras nadie la toque se usa la de arriba, asi nada cambia solo.
+function rutaDef(){
+  var r=(DB.ruta&&DB.ruta.length)?DB.ruta:RUTA_DEFAULT;
+  return r.map(function(e){
+    return {l:e.l, kw:e.kw||'', dia:(e.dia===undefined?null:e.dia), sub:!!e.sub,
+            re:_rutaRe(e)};
+  });
+}
+// La regex se arma de las palabras clave en vez de escribirse a mano: nadie va
+// a cargar /(strategy|estrategia)\s*1/i en un formulario, y una regex mal
+// escrita rompe la deteccion de todas las etapas.
+function _rutaRe(e){
+  var kw=String(e.kw||'').split(',').map(function(x){ return x.trim(); }).filter(Boolean);
+  if(!kw.length) return /(?!)/;   // no matchea nada: la etapa se tilda a mano
+  var partes=kw.map(function(k){
+    // Se escapan los caracteres de regex y los espacios aceptan varios.
+    return k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\s+/g,'\\s*');
+  });
+  try{ return new RegExp('('+partes.join('|')+')','i'); }catch(err){ return /(?!)/; }
+}
+// Las etapas que son columna. Una sub-etapa se sigue detectando y se sigue
+// tildando, pero no ocupa columna: se ve adentro de la anterior que no sea sub.
+function rutaColumnas(){ return rutaDef().filter(function(e){ return !e.sub; }); }
+// De que columna cuelga cada sub-etapa: la ultima no-sub que quedo antes.
+function rutaPadre(label){
+  var r=rutaDef(), padre=null;
+  for(var i=0;i<r.length;i++){
+    if(!r[i].sub) padre=r[i].l;
+    if(r[i].l===label) return r[i].sub?padre:null;
+  }
+  return null;
+}
+function rutaHijas(label){
+  var r=rutaDef(), out=[], dentro=false;
+  r.forEach(function(e){
+    if(!e.sub){ dentro=(e.l===label); return; }
+    if(dentro) out.push(e);
+  });
+  return out;
+}
 function _ruta(c){
   var k=_compromiso(c);
   var hoy=new Date(); hoy.setHours(0,0,0,0);
   var calls=(c.fathomCalls||[]).slice();
-  var etapas=RUTA_DEFAULT.map(function(e){
+  var etapas=rutaDef().map(function(e){
     var m=calls.filter(function(x){
       return e.re.test(String(x.tipo||'')+' '+String(x.title||''));
     }).map(function(x){ return parseDDMMYYYY(x.date); }).filter(Boolean).sort(function(a,b){return a-b;});
