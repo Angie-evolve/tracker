@@ -25258,6 +25258,9 @@ async function escribirCopyLanding(clientId){
     cfg.copyAt=new Date().toISOString();
     save();
     if(typeof renderTab==='function') renderTab();
+    // Si la vista previa esta abierta, se repinta con el copy nuevo: sin esto
+    // el boton "Reescribir con IA" del propio preview no mostraba el cambio.
+    _lpRefrescarPreview(clientId);
     toast('Copy listo en '+Math.round((Date.now()-t0)/1000)+'s');
   }catch(e){
     console.error('Escribir copy:', e);
@@ -25337,13 +25340,94 @@ function _lpAcento(pal, fallback){
   });
   return mejor||fallback;
 }
+// Ver la landing dentro del tracker, en un iframe. Antes se abria en una
+// pestaña suelta con document.write: se veia, pero no habia forma de editar y
+// que el cambio volviera. Con el iframe same-origin el padre entra al documento
+// y escribe directo en el COPY.
 function lpVer(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var html=_lpPaginaHtml(c);
-  var w=window.open('','_blank');
-  if(!w){ toast('El navegador bloqueo la pestana. Permiti las ventanas emergentes.','amber'); return; }
-  w.document.open(); w.document.write(html); w.document.close();
+  S._lpEdit=false;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" style="padding:0" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:none;width:96vw;height:94vh;padding:0;display:flex;'
+      +'flex-direction:column;overflow:hidden">'
+      +'<div style="display:flex;align-items:center;gap:10px;padding:11px 16px;'
+        +'border-bottom:1px solid var(--border);flex:none;flex-wrap:wrap">'
+        +'<div style="font-size:13px;color:var(--strong);flex:1">'+esc(c.name||'')+'</div>'
+        +'<span id="lp-edit-msg" style="font-size:11px;color:var(--text3)"></span>'
+        +'<button class="btn btn-sm" id="lp-edit-btn" onclick="lpEditToggle('+c.id+')">'
+          +'Editar el texto</button>'
+        +'<button class="btn btn-sm" onclick="escribirCopyLanding('+c.id+')">Reescribir con IA</button>'
+        +'<button class="btn btn-sm" onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+      +'<iframe id="lp-frame" style="flex:1;border:0;width:100%;background:#fff"></iframe>'
+    +'</div></div>';
+  var f=document.getElementById('lp-frame');
+  f.srcdoc=_lpPaginaHtml(c);
+}
+// Prende y apaga la edicion sobre el iframe ya renderizado.
+// Repinta el iframe si esta abierto. Se usa al reescribir el copy desde el
+// propio preview.
+function _lpRefrescarPreview(clientId){
+  var f=document.getElementById('lp-frame');
+  if(!f) return;
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  S._lpEdit=false;
+  var b=document.getElementById('lp-edit-btn');
+  if(b) b.textContent='Editar el texto';
+  f.srcdoc=_lpPaginaHtml(c);
+}
+function lpEditToggle(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var f=document.getElementById('lp-frame');
+  var b=document.getElementById('lp-edit-btn');
+  var m=document.getElementById('lp-edit-msg');
+  if(!c||!f||!f.contentDocument) return;
+  S._lpEdit=!S._lpEdit;
+  var d=f.contentDocument;
+  d.querySelectorAll('[data-c]').forEach(function(el){
+    el.contentEditable=S._lpEdit?'true':'false';
+    el.style.outline=S._lpEdit?'1px dashed rgba(127,127,127,.45)':'';
+    el.style.outlineOffset=S._lpEdit?'3px':'';
+    if(S._lpEdit && !el._lpBound){
+      el._lpBound=true;
+      // Al salir del campo se guarda. Guardar en cada tecla haria un save() por
+      // letra sobre una base que ya viene justa de espacio.
+      el.addEventListener('blur', function(){
+        lpCopySet(clientId, el.getAttribute('data-c'), el.innerText);
+      });
+      // Enter no debe partir el titulo en dos nodos.
+      el.addEventListener('keydown', function(ev){
+        if(ev.key==='Enter'){ ev.preventDefault(); el.blur(); }
+      });
+    }
+  });
+  if(b) b.textContent=S._lpEdit?'Terminar de editar':'Editar el texto';
+  if(m) m.textContent=S._lpEdit?'Toca cualquier texto y escribi. Se guarda al salir del campo.':'';
+}
+// Escribe un valor del COPY por su ruta: "promesas.0", "faq.2.q", "bajada".
+function lpCopySet(clientId, ruta, valor){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!ruta) return;
+  var cfg=_lpCfg(c);
+  cfg.copy=cfg.copy||{};
+  var partes=ruta.split('.');
+  var obj=cfg.copy;
+  for(var i=0;i<partes.length-1;i++){
+    var k=partes[i], sig=partes[i+1];
+    // Si el proximo tramo es un numero, este nivel es una lista.
+    if(obj[k]===undefined||obj[k]===null) obj[k]=/^\d+$/.test(sig)?[]:{};
+    obj=obj[k];
+  }
+  obj[partes[partes.length-1]]=String(valor||'').trim();
+  save();
+  var m=document.getElementById('lp-edit-msg');
+  if(m){ m.textContent='Guardado'; setTimeout(function(){
+    if(m && S._lpEdit) m.textContent='Toca cualquier texto y escribi. Se guarda al salir del campo.';
+  },1200); }
 }
 function lpDescargar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -25489,8 +25573,8 @@ function _lpPaginaHtml(c){
   var esSimple=(cfg.piel==='simple');
   var video=(cfg.piel==='hollywood' && cfg.videoUrl) ? String(cfg.videoUrl) : '';
 
-  var cta='<a class="cta" href="#contacto">'+E(o.cta||'Quiero empezar')+'</a>'
-    +(o.bajoCta?('<p class="bajo">'+E(o.bajoCta)+'</p>'):'');
+  var cta='<a class="cta" data-c="cta" href="#contacto">'+E(o.cta||'Quiero empezar')+'</a>'
+    +(o.bajoCta?('<p class="bajo" data-c="bajoCta">'+E(o.bajoCta)+'</p>'):'');
 
   var logo = mk.logo
     ? '<img class="logo" src="'+E(mk.logo)+'" alt="'+E(c.name||'')+'">'
@@ -25498,7 +25582,9 @@ function _lpPaginaHtml(c){
 
   // El eyebrow va en caja baja y con el color de acento: en versalitas con
   // letter-spacing es el tic mas reconocible de una pagina generada.
-  var eyebrow = o.eyebrow ? '<p class="eyebrow">'+E(o.eyebrow)+'</p>' : '';
+  // data-c marca a que campo del COPY corresponde cada texto. Es lo que
+  // permite editar en la landing y guardar en el lugar correcto.
+  var eyebrow = o.eyebrow ? '<p class="eyebrow" data-c="eyebrow">'+E(o.eyebrow)+'</p>' : '';
 
   var seccion=function(t, cuerpo){
     if(!cuerpo) return '';
@@ -25506,17 +25592,19 @@ function _lpPaginaHtml(c){
   };
 
   var bloquePS = ps.length
-    ? ('<ul class="cifras">'+ps.map(function(x){
-        return '<li><b>'+E(x.n||'')+'</b><span>'+E(x.l||'')+'</span></li>'; }).join('')+'</ul>')
+    ? ('<ul class="cifras">'+ps.map(function(x,i){
+        return '<li><b data-c="pruebaSocial.'+i+'.n">'+E(x.n||'')+'</b>'
+          +'<span data-c="pruebaSocial.'+i+'.l">'+E(x.l||'')+'</span></li>'; }).join('')+'</ul>')
     : '';
   var bloqueClientes = clientes.length
     ? ('<p class="clientes">'+clientes.map(E).join('<i>,</i> ')+'</p>') : '';
   var bloquePuntos = puntos.length
-    ? ('<ul class="puntos">'+puntos.map(function(p){
-        return '<li>'+E(p)+'</li>'; }).join('')+'</ul>') : '';
+    ? ('<ul class="puntos">'+puntos.map(function(p,i){
+        return '<li data-c="puntos.'+i+'">'+E(p)+'</li>'; }).join('')+'</ul>') : '';
   var bloqueFaq = faq.length
-    ? ('<dl class="faq">'+faq.map(function(f){
-        return '<dt>'+E(f.q||'')+'</dt><dd>'+E(f.a||'')+'</dd>'; }).join('')+'</dl>') : '';
+    ? ('<dl class="faq">'+faq.map(function(f,i){
+        return '<dt data-c="faq.'+i+'.q">'+E(f.q||'')+'</dt>'
+          +'<dd data-c="faq.'+i+'.a">'+E(f.a||'')+'</dd>'; }).join('')+'</dl>') : '';
 
   var mecanica = cfg.mecanica==='calendario'
     ? '<p class="nota">Aca va el embed del calendario de GHL.</p>'
@@ -25604,8 +25692,9 @@ function _lpPaginaHtml(c){
     +(function(){
       var partes={
         hero: function(){
-          return '<div class="hero">'+eyebrow+'<h1>'+E(promesa)+'</h1>'
-            +(o.bajada?('<p class="bajada">'+E(o.bajada)+'</p>'):'')
+          return '<div class="hero">'+eyebrow
+            +'<h1 data-c="promesas.0">'+E(promesa)+'</h1>'
+            +(o.bajada?('<p class="bajada" data-c="bajada">'+E(o.bajada)+'</p>'):'')
             +cta+'</div>';
         },
         cifras: function(){ return bloquePS?seccion('En numeros', bloquePS):''; },
