@@ -25516,8 +25516,9 @@ function lpVolverAPiel(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
-  if(!Array.isArray(cfg.layout)) return;
+  if(!Array.isArray(cfg.layout) && !cfg.anchos) return;
   delete cfg.layout;
+  delete cfg.anchos;
   save();
   if(typeof renderTab==='function') renderTab();
   _lpMovRepintar(clientId);
@@ -25535,10 +25536,12 @@ function _lpMoverAplicar(clientId){
   if(vb) vb.style.display=(on&&_lpLayoutPropio(c))?'':'none';
   if(m) m.textContent=on
     ? (_lpLayoutPropio(c)
-        ? 'Arrastra lo que quieras a donde quieras. Esta pagina tiene su propio armado '
-          +'y ya no sigue a la piel "'+piel+'".'
-        : 'Arrastra lo que quieras a donde quieras. Al primer movimiento esta pagina se '
-          +'despega de la piel "'+piel+'" y pasa a tener su propio armado.')
+        ? 'Arrastra los elementos a donde quieras, o estira el borde derecho para '
+          +'cambiar el ancho. Esta pagina tiene su propio armado y ya no sigue a la '
+          +'piel "'+piel+'".'
+        : 'Arrastra los elementos a donde quieras, o estira el borde derecho para '
+          +'cambiar el ancho. Al primer cambio esta pagina se despega de la piel "'
+          +piel+'".')
     : '';
   if(d.body) d.body.classList.toggle('lp-mover', on);
   var st=d.getElementById('lp-mov-css');
@@ -25549,8 +25552,12 @@ function _lpMoverAplicar(clientId){
       +'[data-sec].lp-mov::before{content:attr(data-nom);position:absolute;top:4px;left:0;'
         +'font:600 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
         +'text-transform:uppercase;color:var(--acento);opacity:.8;pointer-events:none}'
+      +'[data-mov]{position:relative}'
       +'[data-mov].lp-mov,[data-fmov].lp-mov{outline:1px dashed var(--acento);'
         +'outline-offset:3px;cursor:grab}'
+      +'.lp-asa{position:absolute;top:0;right:6px;width:10px;height:100%;'
+        +'cursor:col-resize;background:var(--acento);opacity:.18;border-radius:3px}'
+      +'.lp-asa:hover{opacity:.55}'
       +'body.lp-mover .lp-vacia{display:block}'
       +'.lp-drag{opacity:.35}'
       +'.lp-drop{box-shadow:inset 0 3px 0 0 var(--acento)}';
@@ -25638,7 +25645,54 @@ function _lpMoverAplicar(clientId){
   d.querySelectorAll('[data-mov]').forEach(function(el){
     el.draggable=on;
     el.classList.toggle('lp-mov', on);
-    if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
+    if(!on){
+      el.classList.remove('lp-drop'); el.classList.remove('lp-drag');
+      if(el._lpAsa){ el._lpAsa.parentNode.removeChild(el._lpAsa); el._lpAsa=null; }
+      return;
+    }
+    // El tirador del borde derecho cambia el ancho. Los saltos son fijos —un
+    // cuarto, un tercio, media, dos tercios, tres cuartos, entera— porque un
+    // ancho libre en pixeles no sobrevive a un monitor distinto.
+    if(!el._lpAsa){
+      var asa=d.createElement('span');
+      asa.className='lp-asa';
+      asa.title='Arrastra para cambiar el ancho';
+      el.appendChild(asa);
+      el._lpAsa=asa;
+      asa.addEventListener('mousedown', function(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        var fila=el.parentNode;
+        if(!fila) return;
+        var ancho=fila.clientWidth||1;
+        var x0=el.getBoundingClientRect().left;
+        var SALTOS=[25,33,50,66,75,100];
+        var elegido=parseInt(el.getAttribute('data-an'),10)||100;
+        // Mientras se estira no puede estar arrastrandose tambien de lugar.
+        el.draggable=false;
+        var estirar=function(e2){
+          var pct=((e2.clientX-x0)/ancho)*100;
+          var mejor=SALTOS[0];
+          SALTOS.forEach(function(v){
+            if(Math.abs(v-pct)<Math.abs(mejor-pct)) mejor=v;
+          });
+          elegido=mejor;
+          el.style.flexBasis=mejor+'%';
+          el.setAttribute('data-an', mejor);
+        };
+        var soltar=function(){
+          d.removeEventListener('mousemove', estirar);
+          d.removeEventListener('mouseup', soltar);
+          el.draggable=!!S._lpMover;
+          var cf=_lpCfg(c);
+          cf.anchos=cf.anchos||{};
+          cf.anchos[refDe(el)]=elegido;
+          save();
+          _lpMovRepintar(clientId);
+        };
+        d.addEventListener('mousemove', estirar);
+        d.addEventListener('mouseup', soltar);
+      });
+    }
     if(el._lpMovBound) return;
     el._lpMovBound=true;
     el.addEventListener('dragstart', function(ev){
@@ -25776,7 +25830,10 @@ function _lpAtomos(o){
   l.push({r:'mecanica', casa:'contacto'});
   return l;
 }
-function _lpLayoutPropio(c){ return Array.isArray((_lpCfg(c)||{}).layout); }
+function _lpLayoutPropio(c){
+  var cfg=_lpCfg(c)||{};
+  return Array.isArray(cfg.layout) || !!cfg.anchos;
+}
 // El layout es una vista sobre el COPY, no una copia: se reconcilia cada vez
 // que se lee. Sin esto, reescribir el copy con un bullet menos dejaba una
 // referencia colgada y uno nuevo no aparecia en ningun lado.
@@ -25964,6 +26021,17 @@ function _lpPaginaHtml(c){
 
   var bloqueClientes = clientes.length
     ? ('<p class="clientes">'+clientes.map(E).join('<i>,</i> ')+'</p>') : '';
+  // El ancho de cada elemento, en porcentaje de la fila. Sin esto todo ocupaba
+  // el ancho entero y dos cosas no podian convivir en la misma linea.
+  var anchos=(cfg.anchos&&typeof cfg.anchos==='object')?cfg.anchos:{};
+  var anchoDe=function(r){
+    var a2=anchos[r];
+    if(a2) return a2;
+    // Los bullets nacen en tres columnas y las cifras en cuatro: es como se
+    // veian antes de que el ancho fuera editable.
+    var t=r.split(':')[0];
+    return t==='punto' ? 33 : t==='cifra' ? 25 : 100;
+  };
 
   // El tipo del campo lo escribe el redactor en castellano, no en HTML. Se
   // traduce aca: si llegara suelto al atributo type, el navegador lo trata como
@@ -26051,20 +26119,21 @@ function _lpPaginaHtml(c){
     +'.bajo{margin:12px 0 0;font-size:14px;color:var(--tenue)}'
     +'section{padding:64px 0;border-top:1px solid var(--linea)}'
     +'h2{font-size:26px;font-weight:600;letter-spacing:-0.02em;margin:0 0 26px;max-width:24ch}'
+    // Cada elemento es una columna de una fila flexible. El ancho lo decide el
+    // porcentaje guardado, y el padding hace de separacion sin romper la cuenta
+    // de los porcentajes, que es lo que pasa con gap.
+    +'.fila{display:flex;flex-wrap:wrap;align-items:flex-start}'
+    +'.col{box-sizing:border-box;min-width:0;padding-right:28px}'
     // Las cifras van sobre una linea, no en tarjetas: son datos, no productos.
-    +'.cifras{list-style:none;display:flex;flex-wrap:wrap;gap:14px 56px;margin:0;padding:0}'
-    +'.cifras b{display:block;font-size:40px;font-weight:650;letter-spacing:-0.03em;'
+    +'.cifra b{display:block;font-size:40px;font-weight:650;letter-spacing:-0.03em;'
       +'color:var(--acento);line-height:1.1}'
-    +'.cifras span{font-size:14px;color:var(--tenue)}'
+    +'.cifra span{font-size:14px;color:var(--tenue)}'
     +'.clientes{color:var(--tenue);font-size:16px}.clientes i{font-style:normal;opacity:.5}'
-    +'.puntos{list-style:none;margin:0;padding:0;display:grid;gap:2px;'
-      +'grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}'
     // La linea de acento a la izquierda reemplaza a la tarjeta con sombra.
-    +'.puntos li{padding:14px 0 14px 18px;border-left:2px solid var(--acento);'
-      +'max-width:46ch;margin-right:32px}'
-    +'.faq{margin:0}'
-    +'.faq dt{font-weight:600;margin-top:22px}'
-    +'.faq dd{margin:6px 0 0;color:var(--tenue);max-width:62ch}'
+    +'.punto{margin:0;padding:14px 0 14px 18px;border-left:2px solid var(--acento);'
+      +'max-width:46ch}'
+    +'.faqi .q{font-weight:600;margin:22px 0 0}'
+    +'.faqi .a{margin:6px 0 0;color:var(--tenue);max-width:62ch}'
     +'form{display:grid;gap:14px;max-width:420px}'
     +'label{display:grid;gap:6px;font-size:14px;color:var(--tenue)}'
     +'input,textarea{font:inherit;font-size:16px;padding:12px 14px;border-radius:8px;'
@@ -26086,8 +26155,11 @@ function _lpPaginaHtml(c){
     +(video?'body{background:transparent}section{backdrop-filter:blur(2px)}':'')
     +'footer{padding:46px 0;border-top:1px solid var(--linea);color:var(--tenue);font-size:14px}'
     +'@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}'
-    +'@media(max-width:640px){.hero{padding:8vh 0 10vh}.cifras{gap:22px 34px}'
-      +'.cifras b{font-size:32px}}'
+    +'@media(max-width:640px){.hero{padding:8vh 0 10vh}'
+      +'.cifra b{font-size:32px}'
+      // La mayoria entra desde el anuncio en el telefono: ahi no hay dos
+      // columnas que valgan, cualquier ancho guardado vuelve a fila entera.
+      +'.col{flex-basis:100%!important;padding-right:0}}'
     +'</style></head><body>'
     // playsinline y muted son obligatorios para que iOS reproduzca solo. El
     // video se oculta si prefiere menos movimiento.
@@ -26101,45 +26173,38 @@ function _lpPaginaHtml(c){
     // seccion. Cada elemento se dibuja igual caiga donde caiga, y los que
     // necesitan contenedor (ul, dl) se agrupan solos cuando quedan pegados.
     +(function(){
+      // Cada elemento se dibuja entero y solo: nada de <ul> compartido entre
+      // hermanos. Es lo que deja que dos cosas cualesquiera compartan fila.
       var dib=function(r){
-        if(r==='eyebrow') return {w:'', h:eyebrow};
-        if(r==='h1')      return {w:'', h:'<h1 data-c="promesas.0">'+E(promesa)+'</h1>'};
-        if(r==='bajada')  return {w:'', h:o.bajada?('<p class="bajada" data-c="bajada">'
-                                    +E(o.bajada)+'</p>'):''};
-        if(r==='cta')     return {w:'', h:ctaBoton};
-        if(r==='bajo')    return {w:'', h:ctaBajo};
-        if(r==='clientes')return {w:'', h:bloqueClientes};
-        if(r==='mecanica')return {w:'', h:'<div class="mec">'+mecanica+'</div>'};
+        if(r==='eyebrow') return eyebrow;
+        if(r==='h1')      return '<h1 data-c="promesas.0">'+E(promesa)+'</h1>';
+        if(r==='bajada')  return o.bajada?('<p class="bajada" data-c="bajada">'
+                                  +E(o.bajada)+'</p>'):'';
+        if(r==='cta')     return ctaBoton;
+        if(r==='bajo')    return ctaBajo;
+        if(r==='clientes')return bloqueClientes;
+        if(r==='mecanica')return mecanica;
         var t=r.split(':'), i=parseInt(t[1],10);
         if(t[0]==='punto' && puntos[i]!=null)
-          return {w:'ul|puntos', h:'<li data-c="puntos.'+i+'">'+E(puntos[i])+'</li>'};
+          return '<p class="punto" data-c="puntos.'+i+'">'+E(puntos[i])+'</p>';
         if(t[0]==='cifra' && ps[i])
-          return {w:'ul|cifras', h:'<li><b data-c="pruebaSocial.'+i+'.n">'+E(ps[i].n||'')+'</b>'
-            +'<span data-c="pruebaSocial.'+i+'.l">'+E(ps[i].l||'')+'</span></li>'};
+          return '<div class="cifra"><b data-c="pruebaSocial.'+i+'.n">'+E(ps[i].n||'')+'</b>'
+            +'<span data-c="pruebaSocial.'+i+'.l">'+E(ps[i].l||'')+'</span></div>';
         if(t[0]==='faq' && faq[i])
-          return {w:'dl|faq', h:'<div><dt data-c="faq.'+i+'.q">'+E(faq[i].q||'')+'</dt>'
-            +'<dd data-c="faq.'+i+'.a">'+E(faq[i].a||'')+'</dd></div>'};
-        return null;
+          return '<div class="faqi"><p class="q" data-c="faq.'+i+'.q">'+E(faq[i].q||'')+'</p>'
+            +'<p class="a" data-c="faq.'+i+'.a">'+E(faq[i].a||'')+'</p></div>';
+        return '';
       };
       var cuerpo=function(items){
-        var out='', abierto='';
-        var cerrar=function(){
-          if(abierto) out+='</'+abierto.split('|')[0]+'>';
-          abierto='';
-        };
+        var out='';
         items.forEach(function(r){
-          var d=dib(r);
-          if(!d||!d.h) return;
-          if(d.w!==abierto){
-            cerrar();
-            if(d.w){ abierto=d.w; out+='<'+d.w.split('|')[0]+' class="'+d.w.split('|')[1]+'">'; }
-          }
-          // La referencia va en el nodo: es lo que se arrastra y lo que se
-          // busca despues en el layout para moverlo.
-          out+=d.h.replace(/^(<[a-z0-9]+\b)/i, '$1 data-mov="'+r+'"');
+          var h=dib(r);
+          if(!h) return;
+          var an=anchoDe(r);
+          out+='<div class="col" data-mov="'+r+'" data-an="'+an+'" '
+            +'style="flex-basis:'+an+'%">'+h+'</div>';
         });
-        cerrar();
-        return out;
+        return out ? ('<div class="fila">'+out+'</div>') : '';
       };
       return _lpLayout(c).map(function(sec){
         var dentro=cuerpo(sec.it);
