@@ -25404,6 +25404,7 @@ function lpVer(clientId){
       +'<iframe id="lp-frame" style="flex:1;border:0;width:100%;background:#fff"></iframe>'
     +'</div></div>';
   var f=document.getElementById('lp-frame');
+  f.onload=function(){ f.onload=null; _lpAltBind(clientId); };
   f.srcdoc=_lpPaginaHtml(c);
 }
 // Prende y apaga la edicion sobre el iframe ya renderizado.
@@ -25419,7 +25420,85 @@ function _lpRefrescarPreview(clientId){
   if(b) b.textContent='Editar el texto';
   var mb=document.getElementById('lp-mover-btn');
   if(mb) mb.textContent='Mover';
+  f.onload=function(){ f.onload=null; _lpAltBind(clientId); };
   f.srcdoc=_lpPaginaHtml(c);
+}
+// Lo que tiene mas de una version se cambia con doble clic sobre el elemento,
+// en el preview. Un menu para dos opciones es mas clicks que probarlas.
+function _lpAltBind(clientId){
+  var f=document.getElementById('lp-frame');
+  if(!f||!f.contentDocument) return;
+  var d=f.contentDocument;
+  d.querySelectorAll('[data-alt]').forEach(function(el){
+    if(el._lpAltBound) return;
+    el._lpAltBound=true;
+    el.title='Doble clic para cambiar';
+    el.addEventListener('dblclick', function(ev){
+      // En modo edicion el doble clic selecciona la palabra: ahi no se toca.
+      if(S._lpEdit) return;
+      ev.preventDefault();
+      lpAlternar(clientId, el.getAttribute('data-alt'));
+    });
+  });
+}
+function _lpAltMsg(t){
+  var m=document.getElementById('lp-edit-msg');
+  if(!m) return;
+  m.textContent=t;
+  setTimeout(function(){ if(m.textContent===t) m.textContent=''; },2600);
+}
+async function lpAlternar(clientId, que){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  if(que==='promesa'){
+    var pr=((cfg.copy||{}).promesas)||[];
+    if(pr.length<2){
+      _lpAltMsg('Hay un solo titular escrito. Reescribi el copy y salen tres.');
+      return;
+    }
+    // Rota en vez de pisar: el que estaba pasa al final y vuelve dando la vuelta.
+    pr.push(pr.shift());
+    save();
+    if(typeof renderTab==='function') renderTab();
+    _lpRefrescarPreview(clientId);
+    _lpAltMsg('Otro titular. Quedan '+(pr.length-1)+' mas.');
+    return;
+  }
+  if(que==='logo'){
+    var mk=c.marca||{};
+    var imgs=(mk.imagenes||[]).map(function(x){ return (typeof x==='string')?{n:x}:x; })
+      .filter(function(x){ return x && x.n; });
+    // El ciclo es: cada imagen del kit, y al final el nombre en texto.
+    var opciones=(mk.matId?imgs.length:0)+1;
+    if(opciones<2){
+      _lpAltMsg(mk.logo
+        ? 'El archivo de marca trae un solo logo.'
+        : 'Todavia no hay logo: lei un zip de marca en Material.');
+      return;
+    }
+    var actual=imgs.length;
+    if(!cfg.logoTexto){
+      actual=0;
+      imgs.forEach(function(im,i){ if(im.n===mk.logoNombre) actual=i; });
+    }
+    var sig=(actual+1)%opciones;
+    if(sig===imgs.length){
+      cfg.logoTexto=true;
+      save();
+      if(typeof renderTab==='function') renderTab();
+      _lpRefrescarPreview(clientId);
+      _lpAltMsg('Ahora va el nombre en texto.');
+      return;
+    }
+    delete cfg.logoTexto;
+    save();
+    _lpAltMsg('Buscando '+(imgs[sig].n||'el otro logo')+'...');
+    // Vuelve a leer el zip de Material: de la miniatura de 56px no sale un logo.
+    await marcaLeerDeMaterial(c.id, mk.matId, imgs[sig].n);
+    _lpRefrescarPreview(clientId);
+    _lpAltMsg('Logo: '+(imgs[sig].n||''));
+  }
 }
 function lpEditToggle(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -25506,6 +25585,7 @@ function _lpMovRepintar(clientId){
   f.onload=function(){
     f.onload=null;
     try{ f.contentWindow.scrollTo(0,y); }catch(e){}
+    _lpAltBind(clientId);
     _lpMoverAplicar(clientId);
     _lpMovAviso(clientId);
   };
@@ -26004,9 +26084,11 @@ function _lpPaginaHtml(c){
   var ctaBoton='<a class="cta" data-c="cta" href="#contacto">'+E(o.cta||'Quiero empezar')+'</a>';
   var ctaBajo=o.bajoCta?('<p class="bajo" data-c="bajoCta">'+E(o.bajoCta)+'</p>'):'';
 
-  var logo = mk.logo
-    ? '<img class="logo" src="'+E(mk.logo)+'" alt="'+E(c.name||'')+'">'
-    : '<span class="marca">'+E(c.name||'')+'</span>';
+  // data-alt marca lo que tiene mas de una version posible. El doble clic en el
+  // preview pasa a la siguiente sin abrir ningun menu.
+  var logo = (mk.logo && !cfg.logoTexto)
+    ? '<img class="logo" data-alt="logo" src="'+E(mk.logo)+'" alt="'+E(c.name||'')+'">'
+    : '<span class="marca" data-alt="logo">'+E(c.name||'')+'</span>';
 
   // El eyebrow va en caja baja y con el color de acento: en versalitas con
   // letter-spacing es el tic mas reconocible de una pagina generada.
@@ -26177,7 +26259,8 @@ function _lpPaginaHtml(c){
       // hermanos. Es lo que deja que dos cosas cualesquiera compartan fila.
       var dib=function(r){
         if(r==='eyebrow') return eyebrow;
-        if(r==='h1')      return '<h1 data-c="promesas.0">'+E(promesa)+'</h1>';
+        if(r==='h1')      return '<h1 data-c="promesas.0" data-alt="promesa">'
+                                  +E(promesa)+'</h1>';
         if(r==='bajada')  return o.bajada?('<p class="bajada" data-c="bajada">'
                                   +E(o.bajada)+'</p>'):'';
         if(r==='cta')     return ctaBoton;
