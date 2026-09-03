@@ -25241,26 +25241,28 @@ async function escribirCopyLanding(clientId){
         +'"bajada":"dos lineas que expliquen como se cumple la promesa",'
         +'"cta":"texto del boton, en verbo",'
         +'"bajoCta":"lo que saca el miedo a hacer clic",'
-        +'"puntos":["3 bullets de una linea"]'
-        // El formulario solo se pide si es la mecanica elegida. Con quiz o
-        // calendario no se dibuja en ningun lado, y pedirlo igual es gastar
-        // tokens del mismo presupuesto que escribe el titular.
-        +(cfg.mecanica==='formulario'
-          ? (',"formulario":{"campos":[{"l":"etiqueta del campo",'
-             +'"tipo":"texto|email|tel|texto largo","req":true,'
-             +'"porque":"para que sirve este dato en la primera llamada"}],'
-             +'"boton":"texto del boton del formulario",'
-             +'"gracias":"lo que ve despues de enviar"}')
-          : '')
-        +'}\n\n'
+        +'"puntos":["3 bullets de una linea"],'
+        // Los campos se piden con las tres mecanicas. El calendario de GHL pide
+        // datos antes de confirmar y el quiz los pide en el gate: cambia donde
+        // aparecen, no que haya que decidir cuales son.
+        +'"formulario":{"campos":[{"l":"etiqueta del campo",'
+          +'"tipo":"texto|email|tel|texto largo","req":true,'
+          +'"porque":"para que sirve este dato en la primera llamada"}],'
+          +'"boton":"texto del boton",'
+          +'"gracias":"lo que ve despues de enviar"}}\n\n'
         +'Reglas: castellano rioplatense. Usa las palabras del cliente, no las tuyas. '
         +_glosParaPrompt(c)+' '
         +'Nunca inventes numeros: solo los de PRUEBA SOCIAL de abajo, si los hay. '
-        +(cfg.mecanica==='formulario'
-          ? 'El formulario pide lo minimo: cada campo de mas se paga en abandono. Maximo 4 '
-            +'campos, y ninguno que no vayas a usar en la primera llamada. Lo que se puede '
-            +'preguntar en esa llamada no va en el formulario. '
-          : '')
+        +'Los campos piden lo minimo: cada campo de mas se paga en abandono. Maximo 4, y '
+        +'ninguno que no vayas a usar en la primera llamada. Lo que se puede preguntar en '
+        +'esa llamada no va aca. '
+        +(cfg.mecanica==='calendario'
+          ? 'Estos campos son los que pide el calendario antes de confirmar el turno: van '
+            +'al hueso, porque el que llego hasta aca ya decidio. '
+          : cfg.mecanica==='quiz'
+            ? 'Estos campos son el gate del quiz y van DESPUES de las preguntas, cuando ya '
+              +'contesto: por eso se puede pedir un dato mas que en un formulario suelto. '
+            : '')
         +(cfg.piel==='simple'?'Piel Simple: la promesa tiene que entenderse sola, sin contexto.\n':'')
         +(cfg.piel==='hollywood'?'Piel Hollywood: hay un video de fondo que ya muestra el negocio. '
           +'El titular NO describe lo que se ve: maximo 5 palabras.\n':'')
@@ -25659,6 +25661,13 @@ var LP_SECCION_NOMBRE={
 // cada cliente: lo que se mueve aca es su texto, no la plantilla. Por eso vive
 // en el COPY y no en DB.lpEstructura.
 var LP_HERO=['eyebrow','h1','bajada','cta','bajo'];
+// Los mismos campos se llaman distinto segun donde caen. Decirle "formulario"
+// al gate de un quiz confunde en la revision con el cliente.
+function _lpFormTitulo(mec){
+  return mec==='calendario' ? 'Datos que pide el calendario'
+       : mec==='quiz' ? 'Gate del quiz'
+       : 'Formulario';
+}
 function _lpHeroOrden(o){
   var g=(o&&o._hero);
   if(!Array.isArray(g)||!g.length) return LP_HERO.slice();
@@ -25879,10 +25888,15 @@ function _lpPaginaHtml(c){
         +'f.addEventListener("submit",function(e){e.preventDefault();'
         +'f.hidden=true;g.hidden=false;});})();<\/script>'):'');
   };
+  // Con calendario y con quiz los campos van igual: cambia donde caen, no que
+  // existan. La nota dice cual de los dos casos es, para que la maqueta no se
+  // lea como si el formulario estuviera suelto en el medio.
   var mecanica = cfg.mecanica==='calendario'
-    ? '<p class="nota">Aca va el embed del calendario de GHL.</p>'
+    ? ('<p class="nota">Aca va el embed del calendario de GHL. Estos son los datos que '
+       +'pide antes de confirmar el turno.</p>'+_lpFormHtml())
     : cfg.mecanica==='quiz'
-      ? '<p class="nota">Aca va el quiz. Califica antes de pedir el dato.</p>'
+      ? ('<p class="nota">Aca va el quiz. Califica antes de pedir el dato: estos campos '
+         +'son el gate, al final de las preguntas.</p>'+_lpFormHtml())
       : _lpFormHtml();
 
   return '<!doctype html><html lang="es"><head><meta charset="utf-8">'
@@ -26295,7 +26309,8 @@ function landingHtml(c){
       // sin abrir la landing.
       +((cp.formulario&&(cp.formulario.campos||[]).length)
         ?('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border)">'
-          +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">Formulario &middot; '
+          +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">'
+            +esc(_lpFormTitulo(cfg.mecanica))+' &middot; '
             +cp.formulario.campos.length+' campo'+(cp.formulario.campos.length===1?'':'s')+'</div>'
           +cp.formulario.campos.map(function(f2){
             return '<div style="display:flex;gap:9px;align-items:baseline;padding:3px 0">'
@@ -26316,15 +26331,13 @@ function landingHtml(c){
                 +'Despues de enviar: '+esc(_lpLimpiar(cp.formulario.gracias))+'</span>'):'')
           +'</div>'
         +'</div>')
-        // Si la mecanica es formulario y el copy no lo trae, es de antes de este
-        // cambio. Se dice: si no, la landing sale con los tres campos de fabrica
-        // y no hay nada que avise que nadie los eligio.
-        : (cfg.mecanica==='formulario'
-          ?('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);'
-            +'font-size:10.5px;color:var(--amberx);line-height:1.55">'
-            +'Este copy no trae formulario, asi que la landing muestra nombre, email y '
-            +'telefono. Reescribi el copy y lo arma.</div>')
-          : ''))
+        // Si el copy no trae campos es de antes de este cambio. Se dice: si no, la
+        // landing sale con los tres de fabrica y no hay nada que avise que nadie
+        // los eligio.
+        : ('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);'
+          +'font-size:10.5px;color:var(--amberx);line-height:1.55">'
+          +'Este copy no trae campos, asi que sale con nombre, email y telefono. '
+          +'Reescribi el copy y los arma.</div>'))
     +'</div>';
   }
   p2+='</div>';
