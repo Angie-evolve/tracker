@@ -24822,6 +24822,13 @@ async function lpRecomendar(clientId){
     decir('');
     if(typeof renderTab==='function') renderTab();
     toast('Listo: quedaron elegidas. Podes cambiar cualquiera a mano.');
+    // La investigacion de la web se encadena sola, y solo si hay algo que
+    // abrir. Se hace despues y no en la misma llamada para que ver la
+    // combinacion no espere a la busqueda: repensar la combinacion es algo que
+    // se hace varias veces, y buscar tarda decenas de segundos.
+    if(_lpHayQueBuscar(c)){
+      investigarLanding(clientId, true);
+    }
   }catch(err){
     console.error('Landing / recomendacion:', err);
     decir('No pude recomendarte: '+esc(err.message)
@@ -25054,7 +25061,37 @@ async function _lpApi(apiKey, body, beta){
 // Solo busca. No escribe copy. Separarlo es lo que hace que el
 // modelo dedique todo su presupuesto a encontrar, y sobre todo que
 // cambiar de piel no obligue a investigar de nuevo.
-async function investigarLanding(clientId){
+// Las URLs que se pueden abrir de verdad. Vive aparte porque la usan dos
+// lugares: el paso que investiga y el que decide si vale la pena encadenarlo.
+// Duplicar el criterio garantizaba que en algun momento dejaran de coincidir.
+// Borra el resultado de una corrida vieja. Cuando el cliente no tiene web, ese
+// informe no se puede rehacer ni sirve, y solo ocupa lugar.
+function lpBorrarInvestigacion(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  if(!confirm('Borrar el resultado de la investigacion?\n\n'
+    +'Este cliente no tiene web, asi que no se va a poder volver a correr.')) return;
+  delete cfg.investigacion;
+  delete cfg.investigadoAt;
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+function _lpUrlsAbribles(c){
+  var urls=[];
+  (c.material||[]).forEach(function(m){ if(m.url) urls.push(m.url); });
+  _matHeredado(c).forEach(function(m){ if(m.u) urls.push(m.u); });
+  if(c.website) urls.unshift(c.website);
+  // Estos nunca se pueden leer y cada intento gasta una lectura: Fathom solo
+  // devuelve metadata, Drive pide login, y WhatsApp e Instagram bloquean. Las
+  // llamadas ya entran por texto en el contexto, no hace falta ir a buscarlas.
+  var noSirve=/fathom\.video|drive\.google\.com|docs\.google\.com|api\.whatsapp\.com|wa\.me|instagram\.com|facebook\.com|linkedin\.com/i;
+  return urls.filter(function(u,i){
+    return /^https?:\/\//i.test(u) && urls.indexOf(u)===i && !noSirve.test(u);
+  });
+}
+function _lpHayQueBuscar(c){ return _lpUrlsAbribles(c).length>0; }
+async function investigarLanding(clientId, encadenada){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
@@ -25066,19 +25103,7 @@ async function investigarLanding(clientId){
     +'<span class="carga-spin"></span><span>Buscando en el sitio y las redes...</span></span>','var(--text2)');
   var _pedidoInv='';
   try{
-    // Las URLs van sueltas y completas: web_fetch solo puede abrir links que ya
-    // aparecieron en la conversacion, asi que si no estan aca no las lee.
-    var urls=[];
-    (c.material||[]).forEach(function(m){ if(m.url) urls.push(m.url); });
-    _matHeredado(c).forEach(function(m){ if(m.u) urls.push(m.u); });
-    if(c.website) urls.unshift(c.website);
-    // Estos nunca se pueden leer y cada intento gasta una lectura: Fathom solo
-    // devuelve metadata, Drive pide login, y WhatsApp e Instagram bloquean. Las
-    // llamadas ya entran por texto en el contexto, no hace falta ir a buscarlas.
-    var _noSirve=/fathom\.video|drive\.google\.com|docs\.google\.com|api\.whatsapp\.com|wa\.me|instagram\.com|facebook\.com|linkedin\.com/i;
-    urls=urls.filter(function(u,i){
-      return /^https?:\/\//i.test(u) && urls.indexOf(u)===i && !_noSirve.test(u);
-    });
+    var urls=_lpUrlsAbribles(c);
     // Sin sitio web y sin un link que se pueda abrir no hay nada que
     // investigar: la llamada volveria con todo vacio y un parrafo explicando
     // que no habia por donde empezar. Mejor decirlo antes de gastarla.
@@ -25749,25 +25774,38 @@ function landingHtml(c){
       +'aca abajo, o cambiar a otra piel.</div>'
     : '';
 
-  // ── Paso 1 ──────────────────────────────────────────────────
+  // ── Paso 2 ──────────────────────────────────────────────────
+  // Se esconde si no hay nada que abrir: el paso queda sin sentido y lo unico
+  // que hacia era mostrar un informe vacio explicando que no habia por donde
+  // empezar. Cuando si hay web, la busqueda la encadena solo el paso 1.
+  var hayQueBuscar=_lpHayQueBuscar(c);
   var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
-  var p1='<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
+  var p1=(!hayQueBuscar && !inv) ? '' :
+    ('<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
       +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
       +'<div style="font-size:12.5px;color:var(--text);flex:1">Investigar la web del cliente</div>'
       +(inv?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.investigadoAt)+'</span>'):'')
-      +'<button class="btn btn-sm'+(inv?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
-        +'onclick="investigarLanding('+c.id+')">'+(inv?'Volver a buscar':'Buscar')+'</button>'
+      +(hayQueBuscar
+        ? ('<button class="btn btn-sm'+(inv?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
+          +'onclick="investigarLanding('+c.id+')">'+(inv?'Volver a buscar':'Buscar')+'</button>')
+        : ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'title="Este cliente ya no tiene web ni links abribles" '
+          +'onclick="lpBorrarInvestigacion('+c.id+')">Borrar</button>'))
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
-      +ctx.links+' links de Material'
-      +(ctx.llamadas?(' &middot; '+ctx.llamadas+' llamada'+(ctx.llamadas===1?'':'s')):'')
-      +(ctx.llamadasFuera?('<span style="color:var(--amberx)"> ('+ctx.llamadasFuera
-        +' no entraron por tama\u00f1o)</span>'):'')
-      +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
-      +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
-        +' no entraron por tama\u00f1o</span>'):'')
-      +' &middot; busca prueba social, precios y diferenciales</div>';
+      +(hayQueBuscar
+        ? (ctx.links+' links de Material'
+          +(ctx.llamadas?(' &middot; '+ctx.llamadas+' llamada'+(ctx.llamadas===1?'':'s')):'')
+          +(ctx.llamadasFuera?('<span style="color:var(--amberx)"> ('+ctx.llamadasFuera
+            +' no entraron por tama\u00f1o)</span>'):'')
+          +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
+          +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
+            +' no entraron por tama\u00f1o</span>'):'')
+          +' &middot; se corre solo al elegir la combinacion')
+        : 'Este resultado quedo de una corrida vieja. Hoy el cliente no tiene sitio web ni '
+          +'links que se puedan abrir, asi que no hay nada que buscar.')
+      +'</div>');
 
   if(inv){
     var ps=(inv.pruebaSocial||[]), cl=(inv.clientes||[]);
@@ -25816,7 +25854,9 @@ function landingHtml(c){
         +'</div>';
       }).join('');
   }
-  p1+='</div>';
+  // El bloque puede no existir: si no hay nada que buscar ni resultado viejo,
+  // p1 quedo vacio y cerrarlo dejaria un div huerfano.
+  if(p1) p1+='</div>';
 
   // ── Paso 2 ──────────────────────────────────────────────────
   var p2='<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">'
