@@ -25272,9 +25272,6 @@ async function escribirCopyLanding(clientId){
           })
         +'\n\nLO QUE SABEMOS DE LAS LLAMADAS:\n'+ctx.texto}]
     });
-    // El orden del hero es una decision de armado, no de texto: sobrevive a la
-    // reescritura. Sin esto, cada "Reescribir" devolvia el boton a su lugar.
-    if(cfg.copy&&cfg.copy._hero) o._hero=cfg.copy._hero;
     cfg.copy=o;
     cfg.copyAt=new Date().toISOString();
     save();
@@ -25287,7 +25284,6 @@ async function escribirCopyLanding(clientId){
     console.error('Escribir copy:', e);
     _lpEstado('No pude escribirlo: '+esc(e.message)
       +iaManualBoton('El copy', _pedidoCopy, function(o){
-        if(cfg.copy&&cfg.copy._hero) o._hero=cfg.copy._hero;
         cfg.copy=o;
         cfg.copyAt=new Date().toISOString();
         save();
@@ -25384,6 +25380,9 @@ function lpVer(clientId){
           +'Editar el texto</button>'
         +'<button class="btn btn-sm" id="lp-mover-btn" onclick="lpMoverToggle('+c.id+')" '
           +'title="Arrastra secciones enteras o elementos sueltos">Mover</button>'
+        +'<button class="btn btn-sm" id="lp-piel-btn" style="display:none" '
+          +'title="Descarta el armado propio de esta pagina" '
+          +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
         +'<button class="btn btn-sm" onclick="escribirCopyLanding('+c.id+')">Reescribir con IA</button>'
         +'<button class="btn btn-sm" onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
@@ -25480,9 +25479,10 @@ function _lpMovLimpiar(d){
   d.querySelectorAll('.lp-drop').forEach(function(x){ x.classList.remove('lp-drop'); });
   d.querySelectorAll('.lp-drag').forEach(function(x){ x.classList.remove('lp-drag'); });
 }
-// Mover un item cambia los indices de todos los data-c que vienen despues. Si
-// no se repinta, editar un bullet despues de moverlo escribe en el bullet
-// equivocado. Se guarda el scroll para no perder de vista lo que se movio.
+// Se repinta despues de cada movimiento. Los data-c no se rompen —la referencia
+// lleva el indice del dato— pero los contenedores si: dos bullets que quedan
+// pegados tienen que terminar dentro del mismo <ul>, y eso no se arregla
+// moviendo un nodo. Se guarda el scroll para no perder de vista lo movido.
 function _lpMovRepintar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -25497,6 +25497,17 @@ function _lpMovRepintar(clientId){
   };
   f.srcdoc=_lpPaginaHtml(c);
 }
+// Vuelve a la estructura de la piel: tira el layout propio del cliente.
+function lpVolverAPiel(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  if(!Array.isArray(cfg.layout)) return;
+  delete cfg.layout;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpMovRepintar(clientId);
+}
 function _lpMoverAplicar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -25505,30 +25516,60 @@ function _lpMoverAplicar(clientId){
   var cfg=_lpCfg(c), piel=(cfg.piel||'institucional');
   var b=document.getElementById('lp-mover-btn');
   var m=document.getElementById('lp-edit-msg');
+  var vb=document.getElementById('lp-piel-btn');
   if(b) b.textContent=on?'Terminar de mover':'Mover';
+  if(vb) vb.style.display=(on&&_lpLayoutPropio(c))?'':'none';
   if(m) m.textContent=on
-    ? ('Arrastra una seccion entera, o un elemento sobre otro del mismo grupo. '
-       +'Las secciones son de la piel "'+piel+'"; lo de adentro, solo de este cliente.')
+    ? (_lpLayoutPropio(c)
+        ? 'Arrastra lo que quieras a donde quieras. Esta pagina tiene su propio armado '
+          +'y ya no sigue a la piel "'+piel+'".'
+        : 'Arrastra lo que quieras a donde quieras. Al primer movimiento esta pagina se '
+          +'despega de la piel "'+piel+'" y pasa a tener su propio armado.')
     : '';
+  if(d.body) d.body.classList.toggle('lp-mover', on);
   var st=d.getElementById('lp-mov-css');
   if(on && !st){
     st=d.createElement('style'); st.id='lp-mov-css';
-    // El nombre de la seccion se dibuja encima con ::before y data-nom: sin el
-    // cartel, "cifras" y "clientes" son dos bloques de texto parecidos y se
-    // arrastra el equivocado. Los items no lo llevan: se ven solos.
     st.textContent='[data-sec]{position:relative}'
       +'[data-sec].lp-mov{outline:1px dashed var(--acento);outline-offset:6px;cursor:grab}'
       +'[data-sec].lp-mov::before{content:attr(data-nom);position:absolute;top:4px;left:0;'
         +'font:600 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
         +'text-transform:uppercase;color:var(--acento);opacity:.8;pointer-events:none}'
-      +'[data-mov].lp-mov{outline:1px dashed var(--acento);outline-offset:3px;cursor:grab}'
+      +'[data-mov].lp-mov,[data-fmov].lp-mov{outline:1px dashed var(--acento);'
+        +'outline-offset:3px;cursor:grab}'
+      +'body.lp-mover .lp-vacia{display:block}'
       +'.lp-drag{opacity:.35}'
       +'.lp-drop{box-shadow:inset 0 3px 0 0 var(--acento)}';
     d.head.appendChild(st);
   }
   if(!on && st) st.parentNode.removeChild(st);
 
-  // ── Secciones enteras ──────────────────────────────────────
+  var refDe=function(el){ return el.getAttribute('data-mov'); };
+  // Mueve una referencia a donde cayo. Cruzar de seccion esta permitido: es
+  // justamente lo que antes no se podia.
+  var mover=function(origen, destinoRef, destinoSec){
+    var L=_lpLayoutFijar(c);
+    var a=_lpBuscarRef(L, origen);
+    if(!a) return false;
+    L[a.s].it.splice(a.i,1);
+    if(destinoRef){
+      var b2=_lpBuscarRef(L, destinoRef);
+      if(!b2){ L[a.s].it.splice(a.i,0,origen); return false; }
+      // En la misma seccion y bajando, cae despues del destino; en cualquier
+      // otro caso cae en el lugar que ocupaba el destino.
+      var despues=(b2.s===a.s && a.i<b2.i);
+      L[b2.s].it.splice(b2.i+(despues?1:0), 0, origen);
+    }else{
+      var k=-1, i2;
+      for(i2=0;i2<L.length;i2++) if(L[i2].k===destinoSec){ k=i2; break; }
+      if(k<0){ L[a.s].it.splice(a.i,0,origen); return false; }
+      L[k].it.push(origen);
+    }
+    save();
+    return true;
+  };
+
+  // ── Secciones ──────────────────────────────────────────────
   d.querySelectorAll('[data-sec]').forEach(function(el){
     el.draggable=on;
     el.classList.toggle('lp-mov', on);
@@ -25548,7 +25589,9 @@ function _lpMoverAplicar(clientId){
     el.addEventListener('dragend', function(){ _LP_MOV=null; _lpMovLimpiar(d); });
     el.addEventListener('dragover', function(ev){
       var g=_LP_MOV;
-      if(!S._lpMover||!g||g.tipo!=='sec'||g.k===el.getAttribute('data-sec')) return;
+      if(!S._lpMover||!g) return;
+      if(g.tipo==='campo') return;
+      if(g.tipo==='sec' && g.k===el.getAttribute('data-sec')) return;
       ev.preventDefault();
       ev.dataTransfer.dropEffect='move';
       el.classList.add('lp-drop');
@@ -25556,54 +25599,50 @@ function _lpMoverAplicar(clientId){
     el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
     el.addEventListener('drop', function(ev){
       var g=_LP_MOV;
-      if(!g||g.tipo!=='sec') return;
+      if(!g||g.tipo==='campo') return;
       ev.preventDefault();
-      var origen=g.k, destino=el.getAttribute('data-sec');
+      var destino=el.getAttribute('data-sec');
       _LP_MOV=null; _lpMovLimpiar(d);
-      if(origen===destino) return;
-      var L=_lpEst(piel);
-      var i=L.indexOf(origen), j=L.indexOf(destino);
+      if(g.tipo==='item'){
+        // Soltar sobre el aire de una seccion mete el elemento al final. Es lo
+        // que hace alcanzable una seccion vacia.
+        if(mover(g.r, null, destino)) _lpMovRepintar(clientId);
+        return;
+      }
+      if(g.k===destino) return;
+      var L=_lpLayoutFijar(c);
+      var i=-1, j=-1, n;
+      for(n=0;n<L.length;n++){ if(L[n].k===g.k) i=n; if(L[n].k===destino) j=n; }
       if(i<0||j<0) return;
       _rtMover(L, i, j);
       save();
-      // Aca alcanza con mover el nodo: el orden de las secciones son claves, no
-      // indices, asi que ningun data-c queda apuntando a otro lado.
-      var nodo=d.querySelector('[data-sec="'+origen+'"]');
-      if(nodo) el.parentNode.insertBefore(nodo, i<j ? el.nextSibling : el);
-      _lpMovAviso(clientId);
+      _lpMovRepintar(clientId);
     });
   });
 
-  // ── Elementos sueltos: piezas del hero, bullets, cifras, preguntas, campos ──
+  // ── Elementos sueltos, de cualquier seccion a cualquier otra ──
   d.querySelectorAll('[data-mov]').forEach(function(el){
     el.draggable=on;
     el.classList.toggle('lp-mov', on);
     if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
     if(el._lpMovBound) return;
     el._lpMovBound=true;
-    var leer=function(x){
-      var v=String(x.getAttribute('data-mov')||'').split('|');
-      return {k:v[0], i:parseInt(v[1],10)};
-    };
     el.addEventListener('dragstart', function(ev){
       if(!S._lpMover) return;
-      // Sin esto el drag sube hasta la seccion que lo contiene y se termina
-      // moviendo el bloque entero en vez del bullet.
+      // Sin esto el drag sube hasta la seccion que lo contiene y termina
+      // moviendose el bloque entero en vez del elemento.
       ev.stopPropagation();
-      var q=leer(el);
-      _LP_MOV={tipo:'item', k:q.k, i:q.i};
+      _LP_MOV={tipo:'item', r:refDe(el)};
       el.classList.add('lp-drag');
       ev.dataTransfer.effectAllowed='move';
-      try{ ev.dataTransfer.setData('text/plain', q.k+'|'+q.i); }catch(e){}
+      try{ ev.dataTransfer.setData('text/plain', _LP_MOV.r); }catch(e){}
     });
     el.addEventListener('dragend', function(ev){
       ev.stopPropagation(); _LP_MOV=null; _lpMovLimpiar(d);
     });
     el.addEventListener('dragover', function(ev){
-      var g=_LP_MOV, q=leer(el);
-      // Solo entre hermanos de la misma lista. Un bullet no tiene donde caer
-      // dentro del FAQ, y dejarlo intentar es prometer algo que no existe.
-      if(!S._lpMover||!g||g.tipo!=='item'||g.k!==q.k||g.i===q.i) return;
+      var g=_LP_MOV;
+      if(!S._lpMover||!g||g.tipo!=='item'||g.r===refDe(el)) return;
       ev.preventDefault();
       ev.stopPropagation();
       ev.dataTransfer.dropEffect='move';
@@ -25611,15 +25650,55 @@ function _lpMoverAplicar(clientId){
     });
     el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
     el.addEventListener('drop', function(ev){
-      var g=_LP_MOV, q=leer(el);
-      if(!g||g.tipo!=='item'||g.k!==q.k) return;
+      var g=_LP_MOV;
+      if(!g||g.tipo!=='item') return;
       ev.preventDefault();
       ev.stopPropagation();
+      var destino=refDe(el);
       _LP_MOV=null; _lpMovLimpiar(d);
-      if(g.i===q.i||isNaN(g.i)||isNaN(q.i)) return;
-      var L=_lpListaMov(cfg, g.k);
-      if(!L||g.i>=L.length||q.i>=L.length) return;
-      _rtMover(L, g.i, q.i);
+      if(g.r===destino) return;
+      if(mover(g.r, destino, null)) _lpMovRepintar(clientId);
+    });
+  });
+
+  // ── Campos del formulario: solo entre ellos ────────────────
+  // Un campo fuera del <form> no se envia. Mover uno al hero seria dibujarlo en
+  // un lugar donde el dato que pide no llega a ningun lado.
+  d.querySelectorAll('[data-fmov]').forEach(function(el){
+    el.draggable=on;
+    el.classList.toggle('lp-mov', on);
+    if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
+    if(el._lpMovBound) return;
+    el._lpMovBound=true;
+    var idx=function(x){ return parseInt(x.getAttribute('data-fmov'),10); };
+    el.addEventListener('dragstart', function(ev){
+      if(!S._lpMover) return;
+      ev.stopPropagation();
+      _LP_MOV={tipo:'campo', i:idx(el)};
+      el.classList.add('lp-drag');
+      ev.dataTransfer.effectAllowed='move';
+      try{ ev.dataTransfer.setData('text/plain','campo'+idx(el)); }catch(e){}
+    });
+    el.addEventListener('dragend', function(ev){
+      ev.stopPropagation(); _LP_MOV=null; _lpMovLimpiar(d);
+    });
+    el.addEventListener('dragover', function(ev){
+      var g=_LP_MOV;
+      if(!S._lpMover||!g||g.tipo!=='campo'||g.i===idx(el)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      ev.dataTransfer.dropEffect='move';
+      el.classList.add('lp-drop');
+    });
+    el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
+    el.addEventListener('drop', function(ev){
+      var g=_LP_MOV, j=idx(el);
+      if(!g||g.tipo!=='campo') return;
+      ev.preventDefault(); ev.stopPropagation();
+      _LP_MOV=null; _lpMovLimpiar(d);
+      var L=((cfg.copy||{}).formulario||{}).campos;
+      if(!Array.isArray(L)||isNaN(g.i)||isNaN(j)||g.i===j) return;
+      if(g.i>=L.length||j>=L.length) return;
+      _rtMover(L, g.i, j);
       save();
       _lpMovRepintar(clientId);
     });
@@ -25657,42 +25736,77 @@ var LP_SECCION_NOMBRE={
   hero:'Hero', cifras:'Cifras', clientes:'Clientes', puntos:'Que incluye',
   faq:'Preguntas', contacto:'Contacto'
 };
-// Las piezas del hero. El orden de las secciones es de la piel, pero esto es de
-// cada cliente: lo que se mueve aca es su texto, no la plantilla. Por eso vive
-// en el COPY y no en DB.lpEstructura.
-var LP_HERO=['eyebrow','h1','bajada','cta','bajo'];
-// Los mismos campos se llaman distinto segun donde caen. Decirle "formulario"
-// al gate de un quiz confunde en la revision con el cliente.
-function _lpFormTitulo(mec){
-  return mec==='calendario' ? 'Datos que pide el calendario'
-       : mec==='quiz' ? 'Gate del quiz'
-       : 'Formulario';
-}
-function _lpHeroOrden(o){
-  var g=(o&&o._hero);
-  if(!Array.isArray(g)||!g.length) return LP_HERO.slice();
-  var l=g.filter(function(k){ return LP_HERO.indexOf(k)>=0; });
-  // Se completan las que falten. Un COPY guardado antes de que existiera una
-  // pieza no tiene por que hacerla desaparecer de la pagina.
-  LP_HERO.forEach(function(k){ if(l.indexOf(k)<0) l.push(k); });
+// ---- El armado de la pagina, elemento por elemento ----------------------
+// Antes cada pieza estaba atada a su seccion: los bullets solo se movian entre
+// bullets. La pagina ahora se dibuja desde una lista de referencias por cliente
+// —{k:'hero', it:['h1','cta','punto:0']}— y cualquier elemento puede caer en
+// cualquier seccion. La referencia guarda el indice del dato, no su lugar, asi
+// que mover algo nunca desacomoda los data-c que usa "Editar el texto".
+var LP_TITULO={cifras:'En numeros', clientes:'Quienes ya lo usan',
+               puntos:'Que incluye', faq:'Preguntas'};
+// Cada elemento que existe hoy segun el COPY, con la seccion donde nace.
+function _lpAtomos(o){
+  var A=function(x){ return Array.isArray(x)?x:[]; };
+  var l=[];
+  if(o.eyebrow) l.push({r:'eyebrow', casa:'hero'});
+  l.push({r:'h1', casa:'hero'});
+  if(o.bajada) l.push({r:'bajada', casa:'hero'});
+  l.push({r:'cta', casa:'hero'});
+  if(o.bajoCta) l.push({r:'bajo', casa:'hero'});
+  A(o.pruebaSocial).forEach(function(x,i){ l.push({r:'cifra:'+i, casa:'cifras'}); });
+  if(A(o.clientes).length) l.push({r:'clientes', casa:'clientes'});
+  A(o.puntos).forEach(function(x,i){ l.push({r:'punto:'+i, casa:'puntos'}); });
+  A(o.faq).forEach(function(x,i){ l.push({r:'faq:'+i, casa:'faq'}); });
+  l.push({r:'mecanica', casa:'contacto'});
   return l;
 }
-// Devuelve la lista real detras de un data-mov, para poder moverla y guardarla.
-function _lpListaMov(cfg, k){
-  var o=cfg.copy=cfg.copy||{};
-  if(k==='hero'){ o._hero=_lpHeroOrden(o); return o._hero; }
-  var p=k.split('.'), a=o;
-  for(var i=0;i<p.length;i++){
-    if(!a||typeof a!=='object') return null;
-    a=a[p[i]];
-  }
-  return Array.isArray(a)?a:null;
+function _lpLayoutPropio(c){ return Array.isArray((_lpCfg(c)||{}).layout); }
+// El layout es una vista sobre el COPY, no una copia: se reconcilia cada vez
+// que se lee. Sin esto, reescribir el copy con un bullet menos dejaba una
+// referencia colgada y uno nuevo no aparecia en ningun lado.
+function _lpLayout(c){
+  var cfg=_lpCfg(c), o=cfg.copy||{};
+  var atomos=_lpAtomos(o), valido={};
+  atomos.forEach(function(a){ valido[a.r]=a; });
+  var L=Array.isArray(cfg.layout)
+    ? cfg.layout.map(function(x){ return {k:x.k, it:(x.it||[]).slice()}; })
+    : lpSecciones(cfg.piel).map(function(k){ return {k:k, it:[]}; });
+  var visto={};
+  L.forEach(function(sec){
+    sec.it=sec.it.filter(function(r){
+      if(!valido[r]||visto[r]) return false;
+      visto[r]=true; return true;
+    });
+  });
+  atomos.forEach(function(a){
+    if(visto[a.r]) return;
+    var sec=null, i;
+    for(i=0;i<L.length;i++) if(L[i].k===a.casa){ sec=L[i]; break; }
+    if(!sec){
+      sec={k:a.casa, it:[]};
+      // Contacto siempre ultimo: es el cierre, y una seccion despues del
+      // formulario deja al lector sin donde ir.
+      var ic=-1;
+      for(i=0;i<L.length;i++) if(L[i].k==='contacto') ic=i;
+      if(a.casa==='contacto'||ic<0) L.push(sec); else L.splice(ic,0,sec);
+    }
+    sec.it.push(a.r);
+  });
+  return L;
 }
-// La estructura editada se guarda en DB.lpEstructura y pisa a la de fabrica.
-function lpSecciones(piel){
-  var g=(DB.lpEstructura||{})[piel];
-  if(g&&g.length) return g.slice();
-  return (LP_ESTRUCTURA[piel]||LP_ESTRUCTURA.institucional).slice();
+// Materializa el layout del cliente. Se llama recien al arrastrar: mientras no
+// toque nada, la landing sigue la estructura de la piel y cambia con ella.
+function _lpLayoutFijar(c){
+  var cfg=_lpCfg(c);
+  cfg.layout=_lpLayout(c);
+  return cfg.layout;
+}
+function _lpBuscarRef(L, r){
+  for(var i=0;i<L.length;i++){
+    var j=L[i].it.indexOf(r);
+    if(j>=0) return {s:i, i:j};
+  }
+  return null;
 }
 function lpEstructuraModal(piel){
   piel=piel||'hollywood';
@@ -25824,23 +25938,8 @@ function _lpPaginaHtml(c){
     return '<section><h2>'+E(t)+'</h2>'+cuerpo+'</section>';
   };
 
-  var bloquePS = ps.length
-    ? ('<ul class="cifras">'+ps.map(function(x,i){
-        return '<li data-mov="pruebaSocial|'+i+'">'
-          +'<b data-c="pruebaSocial.'+i+'.n">'+E(x.n||'')+'</b>'
-          +'<span data-c="pruebaSocial.'+i+'.l">'+E(x.l||'')+'</span></li>'; }).join('')+'</ul>')
-    : '';
   var bloqueClientes = clientes.length
     ? ('<p class="clientes">'+clientes.map(E).join('<i>,</i> ')+'</p>') : '';
-  var bloquePuntos = puntos.length
-    ? ('<ul class="puntos">'+puntos.map(function(p,i){
-        return '<li data-c="puntos.'+i+'" data-mov="puntos|'+i+'">'+E(p)+'</li>';
-      }).join('')+'</ul>') : '';
-  var bloqueFaq = faq.length
-    ? ('<dl class="faq">'+faq.map(function(f,i){
-        return '<div data-mov="faq|'+i+'">'
-          +'<dt data-c="faq.'+i+'.q">'+E(f.q||'')+'</dt>'
-          +'<dd data-c="faq.'+i+'.a">'+E(f.a||'')+'</dd></div>'; }).join('')+'</dl>') : '';
 
   // El tipo del campo lo escribe el redactor en castellano, no en HTML. Se
   // traduce aca: si llegara suelto al atributo type, el navegador lo trata como
@@ -25867,7 +25966,7 @@ function _lpPaginaHtml(c){
       +campos.map(function(cp,i){
         var largo=/largo|textarea|mensaje|comentario|contanos/i.test(String(cp.tipo||''));
         var req=(cp.req===false)?'':' required';
-        return '<label'+(deFabrica?'':' data-mov="formulario.campos|'+i+'"')+'>'
+        return '<label'+(deFabrica?'':' data-fmov="'+i+'"')+'>'
           +'<span'+(deFabrica?'':' data-c="formulario.campos.'+i+'.l"')+'>'
             +E(cp.l||cp.label||'')+'</span>'
           +(largo
@@ -25950,6 +26049,10 @@ function _lpPaginaHtml(c){
     +'button{font:inherit;font-weight:600;background:var(--acento);color:var(--sobre);'
       +'border:0;padding:14px;border-radius:8px;cursor:pointer;font-size:16px}'
     +'.nota{color:var(--tenue);border:1px dashed var(--linea);padding:22px;border-radius:10px}'
+    // La seccion vacia existe en el HTML pero no en la pagina: solo aparece
+    // mientras se esta moviendo, como lugar donde soltar.
+    +'.lp-vacia{display:none}'
+    +'.lp-hueco{margin:0;padding:26px 0;color:var(--tenue);font-size:13px;opacity:.6}'
     // El video va detras de todo, con un velo encima: sin el velo el titulo se
     // pierde en cuanto el plano tiene una zona clara.
     +'.fondo{position:fixed;inset:0;z-index:-2;overflow:hidden}'
@@ -25970,39 +26073,65 @@ function _lpPaginaHtml(c){
     +'<div class="env">'
     +'<header>'+logo+'<a class="cta" style="margin:0;padding:11px 20px;font-size:15px" '
       +'href="#contacto">'+E(o.cta||'Hablemos')+'</a></header>'
-    // El cuerpo sale de la lista declarada arriba. Agregar o mover una seccion
-    // es editar LP_ESTRUCTURA, no tocar el render: por eso siempre sale igual.
+    // El cuerpo sale del layout del cliente: una lista de referencias por
+    // seccion. Cada elemento se dibuja igual caiga donde caiga, y los que
+    // necesitan contenedor (ul, dl) se agrupan solos cuando quedan pegados.
     +(function(){
-      var partes={
-        hero: function(){
-          var piezas={
-            eyebrow: eyebrow,
-            h1: '<h1 data-c="promesas.0">'+E(promesa)+'</h1>',
-            bajada: o.bajada?('<p class="bajada" data-c="bajada">'+E(o.bajada)+'</p>'):'',
-            cta: ctaBoton,
-            bajo: ctaBajo
-          };
-          // El indice del data-mov es la posicion en el array guardado, no la
-          // visual: una pieza vacia no se dibuja y correria la cuenta.
-          return '<div class="hero">'+_lpHeroOrden(o).map(function(k,i){
-            var h=piezas[k]||'';
-            return h ? h.replace(/^(<[a-z0-9]+\b)/i, '$1 data-mov="hero|'+i+'"') : '';
-          }).join('')+'</div>';
-        },
-        cifras: function(){ return bloquePS?seccion('En numeros', bloquePS):''; },
-        clientes: function(){ return bloqueClientes?seccion('Quienes ya lo usan', bloqueClientes):''; },
-        puntos: function(){ return bloquePuntos?seccion('Que incluye', bloquePuntos):''; },
-        faq: function(){ return bloqueFaq?seccion('Preguntas', bloqueFaq):''; },
-        contacto: function(){
-          return '<section id="contacto"><h2>'+E(o.cta||'Empecemos')+'</h2>'+mecanica+'</section>';
-        }
+      var dib=function(r){
+        if(r==='eyebrow') return {w:'', h:eyebrow};
+        if(r==='h1')      return {w:'', h:'<h1 data-c="promesas.0">'+E(promesa)+'</h1>'};
+        if(r==='bajada')  return {w:'', h:o.bajada?('<p class="bajada" data-c="bajada">'
+                                    +E(o.bajada)+'</p>'):''};
+        if(r==='cta')     return {w:'', h:ctaBoton};
+        if(r==='bajo')    return {w:'', h:ctaBajo};
+        if(r==='clientes')return {w:'', h:bloqueClientes};
+        if(r==='mecanica')return {w:'', h:mecanica};
+        var t=r.split(':'), i=parseInt(t[1],10);
+        if(t[0]==='punto' && puntos[i]!=null)
+          return {w:'ul|puntos', h:'<li data-c="puntos.'+i+'">'+E(puntos[i])+'</li>'};
+        if(t[0]==='cifra' && ps[i])
+          return {w:'ul|cifras', h:'<li><b data-c="pruebaSocial.'+i+'.n">'+E(ps[i].n||'')+'</b>'
+            +'<span data-c="pruebaSocial.'+i+'.l">'+E(ps[i].l||'')+'</span></li>'};
+        if(t[0]==='faq' && faq[i])
+          return {w:'dl|faq', h:'<div><dt data-c="faq.'+i+'.q">'+E(faq[i].q||'')+'</dt>'
+            +'<dd data-c="faq.'+i+'.a">'+E(faq[i].a||'')+'</dd></div>'};
+        return null;
       };
-      return lpSecciones(cfg.piel).map(function(k){
-        var h=partes[k]?partes[k]():'';
-        // Cada seccion sale marcada con su clave. Es lo unico que necesita el
-        // preview para saber que bloque agarro el que arrastra: sin esto habria
-        // que adivinar por el texto del h2, que cambia con cada reescritura.
-        return h ? h.replace(/^(<(?:section|div)\b)/, '$1 data-sec="'+k+'"') : '';
+      var cuerpo=function(items){
+        var out='', abierto='';
+        var cerrar=function(){
+          if(abierto) out+='</'+abierto.split('|')[0]+'>';
+          abierto='';
+        };
+        items.forEach(function(r){
+          var d=dib(r);
+          if(!d||!d.h) return;
+          if(d.w!==abierto){
+            cerrar();
+            if(d.w){ abierto=d.w; out+='<'+d.w.split('|')[0]+' class="'+d.w.split('|')[1]+'">'; }
+          }
+          // La referencia va en el nodo: es lo que se arrastra y lo que se
+          // busca despues en el layout para moverlo.
+          out+=d.h.replace(/^(<[a-z0-9]+\b)/i, '$1 data-mov="'+r+'"');
+        });
+        cerrar();
+        return out;
+      };
+      return _lpLayout(c).map(function(sec){
+        var dentro=cuerpo(sec.it);
+        // Una seccion vacia no se dibuja en la pagina publicada, pero queda en
+        // el HTML: en modo mover se muestra como zona para soltar algo adentro.
+        // Sin eso, vaciar una seccion la volvia inalcanzable.
+        var vacia=!dentro;
+        if(sec.k==='hero')
+          return '<div class="hero'+(vacia?' lp-vacia':'')+'" data-sec="hero">'
+            +(vacia?'<p class="lp-hueco">Hero</p>':dentro)+'</div>';
+        var tit=(sec.k==='contacto') ? E(o.cta||'Empecemos') : (LP_TITULO[sec.k]||'');
+        return '<section'+(vacia?' class="lp-vacia"':'')+' data-sec="'+sec.k+'"'
+          +(sec.k==='contacto'?' id="contacto"':'')+'>'
+          +(tit?('<h2>'+tit+'</h2>'):'')
+          +(vacia?('<p class="lp-hueco">'+E(LP_SECCION_NOMBRE[sec.k]||sec.k)+'</p>'):dentro)
+        +'</section>';
       }).join('');
     })()
     +'<footer>'+E(c.name||'')+'</footer>'
