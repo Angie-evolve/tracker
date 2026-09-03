@@ -24711,13 +24711,22 @@ async function lpRecomendar(clientId){
   var b=document.getElementById('lp-reco-btn');
   if(b){ b.disabled=true; b.textContent='Pensando...'; }
   closeModal();
+  // El texto dice si va a buscar: con herramientas la llamada tarda decenas de
+  // segundos y en silencio parece colgada.
   decir('<span style="display:inline-flex;align-items:center;gap:8px">'
-    +'<span class="carga-spin"></span><span>Leyendo el material del cliente...</span></span>');
+    +'<span class="carga-spin"></span><span>'
+    +(_lpUrlsAbribles(c).length
+      ? 'Leyendo el material y abriendo el sitio del cliente. Tarda un minuto.'
+      : 'Leyendo el material del cliente...')
+    +'</span></span>');
   var ctx=_lpContextoInterno(c);
   // El dato de si el negocio se ve no se le pregunta a la IA: ya lo sabe el
   // parser mirando Material, y es mas confiable que una inferencia.
   var hayVisual=_lpHollywoodViable(c);
   var ins=_lpInsumos(c);
+  // Los sitios que se pueden abrir. Si hay alguno, esta llamada tambien
+  // investiga y por eso tarda mas: la piel se decide con lo que encuentre.
+  var _urlsBuscar=_lpUrlsAbribles(c);
   // Se guarda el prompt armado para poder ofrecerlo a mano si la API falla.
   var _pedidoReco='';
   var opc=function(lista){ return lista.map(function(o){
@@ -24727,7 +24736,12 @@ async function lpRecomendar(clientId){
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,messages:[{role:'user',content:
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:8000,
+        // Las herramientas solo se activan si hay algo que abrir: sin sitio, la
+        // llamada seria mas lenta y mas cara para nada.
+        tools:(_urlsBuscar.length?[{type:'web_search_20250305',name:'web_search'},
+               {type:'web_fetch_20250910',name:'web_fetch',max_uses:6}]:undefined),
+        messages:[{role:'user',content:
         _pedidoReco='Sos estratega de una agencia. Hay que armar una landing de conversion para el cliente '
         +(c.name||'')+(c.industry?(', que vende '+c.industry):'')+'. Elegi la combinacion de '
         +'mecanica, piel y tema a partir del material de abajo.\n\n'
@@ -24775,13 +24789,26 @@ async function lpRecomendar(clientId){
         +'las responde y cambiarian la eleccion. Maximo 3. Si no falta nada, dejalo en [].\n'
         +'- Rioplatense, directo, sin adjetivos de mas.\n\n'
         +'\nMATERIAL:\n'+(ctx.texto||'(no hay material cargado)')
-        // El esquema va al final, despues del material: arriba de un bloque
-        // largo queda enterrado y el modelo arranca escribiendo prosa.
+        // Cuando hay sitio, la investigacion va en la MISMA llamada: la piel se
+        // decide con lo que se encuentre. Separarlo obligaba a recomendar a ciegas
+        // y descubrir despues que si habia prueba social.
+        +(_urlsBuscar.length
+          ? ('\n\nSITIOS DEL CLIENTE, abrilos antes de decidir:\n'+_urlsBuscar.join('\n')
+            +'\nBusca prueba social con numeros, clientes con nombre, precios y '
+            +'diferenciales. Lo que encuentres cambia la piel: con prueba social real '
+            +'institucional se sostiene, sin ella no. Si algo del sitio contradice lo que '
+            +'dicen las llamadas, anotalo en contradicciones.')
+          : '')
         +'\n\nDevolve SOLO este JSON, sin markdown ni preambulo:\n'
         +'{"resumen":"una oracion con la lectura del cliente",'
         +'"mecanica":"formulario|calendario|quiz","porqueMecanica":"",'
         +'"piel":"institucional|simple|hollywood","porquePiel":"",'
-        +'"tema":"oscuro|claro","porqueTema":"","falta":[""]}'
+        +'"tema":"oscuro|claro","porqueTema":"","falta":[""]'
+        +(_urlsBuscar.length
+          ? ',"investigacion":{"pruebaSocial":[{"n":"el numero","l":"que mide"}],'
+            +'"clientes":["nombre"],"faq":[{"q":"","a":""}],"contradicciones":[""]}'
+          : '')
+        +'}'
         // El prefill (dejarle la llave abierta en un mensaje del asistente) no
         // se puede: este modelo exige que la conversacion termine en el usuario.
         // Se pide por instruccion y el parser aguanta si igual viene envuelto.
@@ -24818,17 +24845,15 @@ async function lpRecomendar(clientId){
       o.porquePiel='Sin fotos ni videos del cliente en Material, Hollywood sale con stock generico.';
     }
     _lpAplicarReco(c, o);
+    // La investigacion viene en la misma respuesta cuando hubo web que abrir.
+    if(o.investigacion){
+      cfg.investigacion=o.investigacion;
+      cfg.investigadoAt=new Date().toISOString();
+    }
     save();
     decir('');
     if(typeof renderTab==='function') renderTab();
     toast('Listo: quedaron elegidas. Podes cambiar cualquiera a mano.');
-    // La investigacion de la web se encadena sola, y solo si hay algo que
-    // abrir. Se hace despues y no en la misma llamada para que ver la
-    // combinacion no espere a la busqueda: repensar la combinacion es algo que
-    // se hace varias veces, y buscar tarda decenas de segundos.
-    if(_lpHayQueBuscar(c)){
-      investigarLanding(clientId, true);
-    }
   }catch(err){
     console.error('Landing / recomendacion:', err);
     decir('No pude recomendarte: '+esc(err.message)
@@ -25783,12 +25808,14 @@ function landingHtml(c){
   var p1=(!hayQueBuscar && !inv) ? '' :
     ('<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
-      +'<div style="font-size:12.5px;color:var(--text);flex:1">Investigar la web del cliente</div>'
+      // Sin numero: dejo de ser un paso. La busqueda ocurre dentro del paso 1,
+      // asi que esto es el resultado de esa corrida, no algo que haya que hacer.
+      +'<div style="font-size:12.5px;color:var(--text);flex:1">Lo que encontre en el sitio</div>'
       +(inv?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.investigadoAt)+'</span>'):'')
       +(hayQueBuscar
-        ? ('<button class="btn btn-sm'+(inv?'':' btn-primary')+'" style="font-size:11px;padding:3px 9px" '
-          +'onclick="investigarLanding('+c.id+')">'+(inv?'Volver a buscar':'Buscar')+'</button>')
+        ? ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+          +'title="Volver a abrir el sitio sin repensar la combinacion" '
+          +'onclick="investigarLanding('+c.id+')">Volver a buscar</button>')
         : ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
           +'title="Este cliente ya no tiene web ni links abribles" '
           +'onclick="lpBorrarInvestigacion('+c.id+')">Borrar</button>'))
@@ -25802,7 +25829,7 @@ function landingHtml(c){
           +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
           +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
             +' no entraron por tama\u00f1o</span>'):'')
-          +' &middot; se corre solo al elegir la combinacion')
+          +' &middot; se abre al elegir la combinacion')
         : 'Este resultado quedo de una corrida vieja. Hoy el cliente no tiene sitio web ni '
           +'links que se puedan abrir, asi que no hay nada que buscar.')
       +'</div>');
@@ -25861,7 +25888,7 @@ function landingHtml(c){
   // ── Paso 2 ──────────────────────────────────────────────────
   var p2='<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">'
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">3</span>'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3)">2</span>'
       +'<div style="font-size:12.5px;color:var(--text);flex:1">Escribir el copy</div>'
       +(cp?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.copyAt)+'</span>'):'')
       +(cp?('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
