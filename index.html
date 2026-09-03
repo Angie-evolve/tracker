@@ -25230,7 +25230,7 @@ async function escribirCopyLanding(clientId){
   var _pedidoCopy='';
   try{
     var o=await _lpApi(apiKey,{
-      model:'claude-sonnet-5', max_tokens:3000,
+      model:'claude-sonnet-5', max_tokens:3600,
       messages:[{role:'user',content: _pedidoCopy=
         'Sos director creativo. Escribi el copy de una landing de conversion para "'+(c.name||'')+'".\n\n'
         +'PIEL: '+cfg.piel+' — '+(piel.d||'')+'\n'
@@ -25241,10 +25241,26 @@ async function escribirCopyLanding(clientId){
         +'"bajada":"dos lineas que expliquen como se cumple la promesa",'
         +'"cta":"texto del boton, en verbo",'
         +'"bajoCta":"lo que saca el miedo a hacer clic",'
-        +'"puntos":["3 bullets de una linea"]}\n\n'
+        +'"puntos":["3 bullets de una linea"]'
+        // El formulario solo se pide si es la mecanica elegida. Con quiz o
+        // calendario no se dibuja en ningun lado, y pedirlo igual es gastar
+        // tokens del mismo presupuesto que escribe el titular.
+        +(cfg.mecanica==='formulario'
+          ? (',"formulario":{"campos":[{"l":"etiqueta del campo",'
+             +'"tipo":"texto|email|tel|texto largo","req":true,'
+             +'"porque":"para que sirve este dato en la primera llamada"}],'
+             +'"boton":"texto del boton del formulario",'
+             +'"gracias":"lo que ve despues de enviar"}')
+          : '')
+        +'}\n\n'
         +'Reglas: castellano rioplatense. Usa las palabras del cliente, no las tuyas. '
         +_glosParaPrompt(c)+' '
         +'Nunca inventes numeros: solo los de PRUEBA SOCIAL de abajo, si los hay. '
+        +(cfg.mecanica==='formulario'
+          ? 'El formulario pide lo minimo: cada campo de mas se paga en abandono. Maximo 4 '
+            +'campos, y ninguno que no vayas a usar en la primera llamada. Lo que se puede '
+            +'preguntar en esa llamada no va en el formulario. '
+          : '')
         +(cfg.piel==='simple'?'Piel Simple: la promesa tiene que entenderse sola, sin contexto.\n':'')
         +(cfg.piel==='hollywood'?'Piel Hollywood: hay un video de fondo que ya muestra el negocio. '
           +'El titular NO describe lo que se ve: maximo 5 palabras.\n':'')
@@ -25290,6 +25306,8 @@ function copiarCopyLanding(clientId){
     marca:c.name||'', eyebrow:L(o.eyebrow),
     promesas:LA(o.promesas), bajada:L(o.bajada),
     cta:L(o.cta), bajoCta:L(o.bajoCta), puntos:LA(o.puntos),
+    formulario:(o.formulario?{campos:LA(o.formulario.campos),
+      boton:L(o.formulario.boton), gracias:L(o.formulario.gracias)}:null),
     pruebaSocial:LA(inv.pruebaSocial), clientes:LA(inv.clientes), faq:LA(inv.faq),
     // La identidad sale del zip de branding leido en Material. El logo va como
     // data URL para que la plantilla no dependa de un link firmado que vence.
@@ -25709,16 +25727,57 @@ function _lpPaginaHtml(c){
         return '<dt data-c="faq.'+i+'.q">'+E(f.q||'')+'</dt>'
           +'<dd data-c="faq.'+i+'.a">'+E(f.a||'')+'</dd>'; }).join('')+'</dl>') : '';
 
+  // El tipo del campo lo escribe el redactor en castellano, no en HTML. Se
+  // traduce aca: si llegara suelto al atributo type, el navegador lo trata como
+  // "text" y se pierde el teclado numerico del telefono en movil.
+  var _lpTipo=function(t){
+    t=String(t||'').toLowerCase();
+    if(t.indexOf('mail')>=0) return 'email';
+    if(t.indexOf('tel')>=0||t.indexOf('whats')>=0||t.indexOf('celu')>=0) return 'tel';
+    if(t.indexOf('num')>=0||t.indexOf('cant')>=0) return 'number';
+    if(t.indexOf('url')>=0||t.indexOf('web')>=0||t.indexOf('sitio')>=0) return 'url';
+    return 'text';
+  };
+  var _lpFormHtml=function(){
+    var fo=(o.formulario&&typeof o.formulario==='object')?o.formulario:{};
+    var campos=Array.isArray(fo.campos)?fo.campos.filter(function(x){ return x&&(x.l||x.label); }):[];
+    // Sin formulario escrito quedan los tres de siempre. Un copy de antes de
+    // este cambio tiene que seguir dando una pagina que se pueda mostrar.
+    var deFabrica=!campos.length;
+    if(deFabrica) campos=[{l:'Nombre',tipo:'texto',req:true},
+                          {l:'Email',tipo:'email',req:true},
+                          {l:'Telefono',tipo:'tel',req:false}];
+    var gracias=String(fo.gracias||'');
+    return '<form id="lp-form" onsubmit="event.preventDefault()">'
+      +campos.map(function(cp,i){
+        var largo=/largo|textarea|mensaje|comentario|contanos/i.test(String(cp.tipo||''));
+        var req=(cp.req===false)?'':' required';
+        return '<label>'
+          +'<span'+(deFabrica?'':' data-c="formulario.campos.'+i+'.l"')+'>'
+            +E(cp.l||cp.label||'')+'</span>'
+          +(largo
+            ? '<textarea name="c'+i+'" rows="3"'+req+'></textarea>'
+            : '<input type="'+_lpTipo(cp.tipo)+'" name="c'+i+'"'+req+'>')
+        +'</label>';
+      }).join('')
+      +'<button type="submit"'+(deFabrica?'':' data-c="formulario.boton"')+'>'
+        +E(fo.boton||o.cta||'Enviar')+'</button>'
+    +'</form>'
+    // El mensaje de gracias no se muestra hasta que se envia: en la pagina
+    // siempre visible parece un error de maquetado. Asi se le puede mostrar al
+    // cliente el circuito entero desde el preview.
+    +(gracias?('<p class="nota" id="lp-gracias" hidden data-c="formulario.gracias">'
+        +E(gracias)+'</p>'
+      +'<script>(function(){var f=document.getElementById("lp-form"),'
+        +'g=document.getElementById("lp-gracias");if(!f||!g)return;'
+        +'f.addEventListener("submit",function(e){e.preventDefault();'
+        +'f.hidden=true;g.hidden=false;});})();<\/script>'):'');
+  };
   var mecanica = cfg.mecanica==='calendario'
     ? '<p class="nota">Aca va el embed del calendario de GHL.</p>'
     : cfg.mecanica==='quiz'
       ? '<p class="nota">Aca va el quiz. Califica antes de pedir el dato.</p>'
-      : '<form onsubmit="event.preventDefault()">'
-          +'<label>Nombre<input name="nombre" required></label>'
-          +'<label>Email<input type="email" name="email" required></label>'
-          +'<label>Telefono<input type="tel" name="telefono"></label>'
-          +'<button type="submit">'+E(o.cta||'Enviar')+'</button>'
-        +'</form>';
+      : _lpFormHtml();
 
   return '<!doctype html><html lang="es"><head><meta charset="utf-8">'
     +'<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -25765,8 +25824,9 @@ function _lpPaginaHtml(c){
     +'.faq dd{margin:6px 0 0;color:var(--tenue);max-width:62ch}'
     +'form{display:grid;gap:14px;max-width:420px}'
     +'label{display:grid;gap:6px;font-size:14px;color:var(--tenue)}'
-    +'input{font:inherit;font-size:16px;padding:12px 14px;border-radius:8px;'
-      +'border:1px solid var(--linea);background:var(--panel);color:var(--texto)}'
+    +'input,textarea{font:inherit;font-size:16px;padding:12px 14px;border-radius:8px;'
+      +'border:1px solid var(--linea);background:var(--panel);color:var(--texto);'
+      +'width:100%;resize:vertical}'
     +'button{font:inherit;font-weight:600;background:var(--acento);color:var(--sobre);'
       +'border:0;padding:14px;border-radius:8px;cursor:pointer;font-size:16px}'
     +'.nota{color:var(--tenue);border:1px dashed var(--linea);padding:22px;border-radius:10px}'
@@ -26115,6 +26175,41 @@ function landingHtml(c){
       +((cp.puntos||[]).length?('<div style="margin-top:10px">'+cp.puntos.map(function(x){
         return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '+esc(_lpLimpiar(x))+'</div>';
       }).join('')+'</div>'):'')
+      // Cada campo con el motivo al lado. Un formulario se discute por lo que
+      // pide de mas, y para discutirlo hay que ver por que se pide cada dato
+      // sin abrir la landing.
+      +((cp.formulario&&(cp.formulario.campos||[]).length)
+        ?('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border)">'
+          +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">Formulario &middot; '
+            +cp.formulario.campos.length+' campo'+(cp.formulario.campos.length===1?'':'s')+'</div>'
+          +cp.formulario.campos.map(function(f2){
+            return '<div style="display:flex;gap:9px;align-items:baseline;padding:3px 0">'
+              +'<span style="font-size:11.5px;color:var(--text);flex:none">'
+                +esc(_lpLimpiar(f2.l||f2.label||''))+'</span>'
+              +'<span style="font-size:10px;color:var(--text3);flex:none;white-space:nowrap">'
+                +esc(_lpLimpiar(f2.tipo||'texto'))+(f2.req===false?'':' &middot; obligatorio')+'</span>'
+              +'<span style="font-size:10.5px;color:var(--text3);line-height:1.5;flex:1;min-width:0">'
+                +esc(_lpLimpiar(f2.porque||''))+'</span>'
+            +'</div>';
+          }).join('')
+          +'<div style="display:flex;gap:9px;align-items:center;margin-top:9px;flex-wrap:wrap">'
+            +'<span style="font-size:11px;border:1px solid var(--border2);'
+              +'border-radius:var(--radius);padding:3px 10px;color:var(--text2)">'
+              +esc(_lpLimpiar(cp.formulario.boton||cp.cta||''))+'</span>'
+            +(cp.formulario.gracias
+              ?('<span style="font-size:10.5px;color:var(--text3);line-height:1.5">'
+                +'Despues de enviar: '+esc(_lpLimpiar(cp.formulario.gracias))+'</span>'):'')
+          +'</div>'
+        +'</div>')
+        // Si la mecanica es formulario y el copy no lo trae, es de antes de este
+        // cambio. Se dice: si no, la landing sale con los tres campos de fabrica
+        // y no hay nada que avise que nadie los eligio.
+        : (cfg.mecanica==='formulario'
+          ?('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);'
+            +'font-size:10.5px;color:var(--amberx);line-height:1.55">'
+            +'Este copy no trae formulario, asi que la landing muestra nombre, email y '
+            +'telefono. Reescribi el copy y lo arma.</div>')
+          : ''))
     +'</div>';
   }
   p2+='</div>';
