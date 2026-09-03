@@ -21485,12 +21485,25 @@ function _p360PasosHtml(c, etapa){
     +'<div style="display:flex;gap:14px;flex-wrap:wrap">'
     +pr.map(function(x){
       var col=x.listo?'var(--accent)':(x.n?'var(--amberx)':'var(--redx)');
+      var solo=!x.hijos.length;   // frente de un solo paso: sin hijos que listar
       return '<div style="flex:none;min-width:168px;max-width:230px;'
           +'border-left:2px solid '+col+';padding-left:8px">'
-        +'<div style="font-size:10.5px;color:'+(x.listo?'var(--text3)':'var(--text2)')+';'
-          +'line-height:1.4">'+esc(x.p.t||'')
-          +'<span class="mono" style="color:var(--text3)"> '+x.n+'/'+x.tot+'</span>'
-          +(x.p.a?('<span style="color:var(--text3)"> \u00b7 '+esc(x.p.a)+'</span>'):'')+'</div>'
+        // Si el frente no tiene pasos adentro, el checkbox va en el titulo. Una
+        // fila aparte que decia "hecho" parecia un paso llamado asi.
+        +(solo
+          ? ('<label style="display:flex;gap:5px;align-items:baseline;cursor:pointer">'
+            +'<input type="checkbox"'+(x.listo?' checked':'')+' style="flex:none" '
+            +'onchange="rutaPasoTildar('+c.id+',\''+esc2(etapa)+'\','+x.i+')">'
+            +'<span style="font-size:10.5px;line-height:1.4;color:'
+              +(x.listo?'var(--text3)':'var(--text2)')+';'
+              +(x.listo?'text-decoration:line-through;opacity:.65':'')+'">'
+              +esc(x.p.t||'')
+              +(x.p.a?('<span style="color:var(--text3)"> \u00b7 '+esc(x.p.a)+'</span>'):'')
+            +'</span></label>')
+          : ('<div style="font-size:10.5px;color:'+(x.listo?'var(--text3)':'var(--text2)')+';'
+            +'line-height:1.4">'+esc(x.p.t||'')
+            +'<span class="mono" style="color:var(--text3)"> '+x.n+'/'+x.tot+'</span>'
+            +(x.p.a?('<span style="color:var(--text3)"> \u00b7 '+esc(x.p.a)+'</span>'):'')+'</div>'))
         // Se muestran TODOS, no solo los que faltan. Ocultar los hechos hacia
         // perder la lista de referencia: "1/3" con dos renglones no deja ver
         // cual fue el que ya se hizo.
@@ -21507,13 +21520,7 @@ function _p360PasosHtml(c, etapa){
                 +(y.ok?';text-decoration:line-through;opacity:.65':'')+'">'
                 +esc(y.p.t||'')+'</span></label>';
             }).join('')
-          : ('<label style="display:flex;gap:5px;align-items:baseline;'
-              +'cursor:pointer;padding:1px 0">'
-              +'<input type="checkbox"'+(x.listo?' checked':'')+' style="flex:none" '
-              +'onchange="rutaPasoTildar('+c.id+',\''+esc2(etapa)+'\','+x.i+')">'
-              +'<span style="font-size:10.5px;color:var(--text3)'
-              +(x.listo?';text-decoration:line-through;opacity:.65':'')+'">'
-              +(x.listo?'hecho':'marcarlo hecho')+'</span></label>'))
+          : '')
         +(x.hijos.length>6
           ? ('<div style="font-size:9.5px;color:var(--text3)">y '+(x.hijos.length-6)+' mas</div>')
           : '')
@@ -21919,12 +21926,13 @@ function p360Html(){
         var rs=rutaResumen(d.c, d.et.l);
         if(rs && rs.listo){ txt='Proceso completo'; col='var(--accent)'; }
         else if(rs){
-          // Se nombra el frente mas atrasado y cuantos mas quedan abiertos.
-          // "1 de 9" escondia que hay cuatro cosas distintas trabadas.
-          txt=esc(rs.peor.p.t||'')
-            +'<span style="color:var(--text3)"> '+rs.peor.n+'/'+rs.peor.tot
-            +(rs.abiertos>1?(' \u00b7 +'+(rs.abiertos-1)+' abiertos'):'')+'</span>';
-          if(d.et.estado==='tarde') col='var(--amberx)';
+          // La tarea concreta y de quien es. Ambar si la debe el cliente, rojo
+          // si la debemos nosotros: es el mismo codigo que el resto del panel.
+          col=rs.delCliente?'var(--amberx)':'var(--redx)';
+          txt=esc((rs.tarea&&rs.tarea.t)||rs.peor.p.t||'')
+            +'<span style="color:var(--text3)"> \u00b7 '
+            +(rs.delCliente?'el cliente':(rs.area?esc(rs.area):'nosotros'))
+            +(rs.abiertos>1?(' \u00b7 +'+(rs.abiertos-1)):'')+'</span>';
         }
       }
     }
@@ -22104,9 +22112,16 @@ function rutaResumen(c, etapa){
   if(!pr.length) return null;
   var abiertos=pr.filter(function(x){ return !x.listo; });
   if(!abiertos.length) return {listo:true, n:pr.length, tot:pr.length};
-  // El mas atrasado en proporcion. Si empatan, el primero de la lista.
   var peor=abiertos.slice().sort(function(a,b){ return (a.n/a.tot)-(b.n/b.tot); })[0];
-  return {listo:false, abiertos:abiertos.length, total:pr.length, peor:peor};
+  // La tarea concreta que traba, no el frente. "Montar Landings 0/3" no dice
+  // que hay que hacer; "Crear Landings" si.
+  var tarea=peor.traba ? peor.traba.p : peor.p;
+  // El area define de quien es. Cliente es del cliente; el resto, nuestro. Si
+  // el paso no tiene area, se hereda la del frente.
+  var area=(tarea&&tarea.a)||peor.p.a||'';
+  var delCliente=/^cliente$/i.test(String(area).trim());
+  return {listo:false, abiertos:abiertos.length, total:pr.length, peor:peor,
+          tarea:tarea, area:area, delCliente:delCliente};
 }
 // La regex se arma de las palabras clave en vez de escribirse a mano: nadie va
 // a cargar /(strategy|estrategia)\s*1/i en un formulario, y una regex mal
