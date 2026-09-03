@@ -829,6 +829,13 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .sop-bloq.b-no{background:none;color:var(--text3);border-color:var(--border)}
 .sop-bloq.b-nosotros{background:rgba(78,207,160,.13);color:var(--accent);border-color:rgba(78,207,160,.3)}
 .sop-bloq.b-cliente{background:rgba(240,168,48,.13);color:var(--amberx);border-color:rgba(240,168,48,.32)}
+/* Quien ejecuta el paso. Neutro a proposito: no compite con el pill de frena,
+   que es el que marca urgencia. */
+.sop-quien{flex:none;border:1px solid var(--border);border-radius:99px;padding:2px 8px;
+  font-size:9.5px;background:none;color:var(--text2);white-space:nowrap}
+.sop-quien[disabled]{cursor:default}
+.sop-quien:not([disabled]){cursor:pointer}
+.sop-quien.q-sin{color:var(--text3);border-style:dashed}
 /* Lo que viene despues del freno se apaga, no se deshabilita: a veces hay que
    adelantar algo igual, y bloquear el click seria pelearse con la realidad. */
 .sop-paso.tapado{opacity:.4}
@@ -21606,7 +21613,14 @@ function _p360SubprocesoHtml(c, etapa){
       (b.pasos||[]).forEach(function(p){
         if(fr||!p.bloq) return;
         if(h[_sopIdPaso(bi,p)]) return;
-        fr={p:p, quien:_sopQuien(p.de)};
+        // Si el paso tiene responsable, se nombra. "Trabado en Ashy" acciona
+        // mejor que "trabado en nosotros" cuando el equipo son cinco.
+        var q=_sopQuien(p.de);
+        if(p.quien && p.de!=='cliente'){
+          var nom=_sopQuienNombre(p.quien);
+          if(nom) q={k:q.k, l:nom};
+        }
+        fr={p:p, quien:q};
       });
     });
     var col=fr?(fr.quien.k==='cliente'?'var(--amberx)':'var(--redx)'):'var(--accent)';
@@ -26889,6 +26903,57 @@ function _sopFrenoHtml(s){
       +'</div>'
     +'</div>'
   +'</div>';
+}
+// Quien ejecuta el paso. Es distinto de "de quien depende": el pill de frena
+// dice si el paso lo traba el cliente o nosotros; este dice el nombre propio de
+// quien lo hace. Se guarda el mail, asi que si alguien cambia de nombre en
+// Usuarios el paso lo sigue.
+function _sopQuienNombre(mail){
+  if(!mail) return '';
+  var p=personas().filter(function(x){
+    return String(x.email||'').toLowerCase()===String(mail).toLowerCase(); })[0];
+  return (p&&p.nombre)||mail;
+}
+function sopQuienElegir(id, bi, pi){
+  var l=personas();
+  if(!l.length){ toast('Carga el equipo en Configuracion \u2192 Usuarios'); return; }
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">Quien hace este paso</div>'
+      +'<div class="modal-sub">'+esc(p.t||'Este paso')+'</div>'
+      +'<div style="margin-top:14px">'
+      +l.map(function(x){
+        var sel=(String(p.quien||'').toLowerCase()===String(x.email).toLowerCase());
+        return '<a href="javascript:void(0)" onclick="sopQuienSet(\''+esc(id)+'\','
+            +bi+','+pi+',\''+esc(x.email)+'\')" '
+          +'style="display:flex;gap:10px;align-items:baseline;padding:8px 10px;'
+          +'border:1px solid '+(sel?'var(--accent)':'var(--border)')+';'
+          +'border-radius:var(--radius);margin-bottom:6px;text-decoration:none">'
+          +'<span style="flex:1;font-size:12.5px;color:var(--text)">'+esc(x.nombre||x.email)+'</span>'
+          +(sel?'<span style="flex:none;font-size:10.5px;color:var(--accent)">actual</span>':'')
+        +'</a>';
+      }).join('')
+      +(p.quien
+        ? ('<a href="javascript:void(0)" onclick="sopQuienSet(\''+esc(id)+'\','+bi+','+pi+',\'\')" '
+          +'style="display:block;padding:8px 10px;font-size:11.5px;color:var(--text3);'
+          +'text-decoration:none">Sacar el responsable</a>')
+        : '')
+      +'</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function sopQuienSet(id, bi, pi, mail){
+  var s=_sop(id); if(!s) return;
+  var p=s.bloques[bi].pasos[pi]; if(!p) return;
+  if(mail) p.quien=mail; else delete p.quien;
+  save();
+  closeModal();
+  _sopPintar(id);
 }
 function sopBloq(id, bi, pi){
   var s=_sop(id); if(!s) return;
@@ -32235,7 +32300,11 @@ function _sopExtrasHtml(id, bi, pi, p){
         +'onclick="sopCampoElegir('+id+','+bi+','+pi+')">+ integracion</button>'
       +'<button class="btn btn-sm" style="font-size:10px;padding:2px 9px;border-style:dashed" '
         +'onclick="sopDatoPersona('+id+','+bi+','+pi+')" '
-        +'title="Toma el mail de Meta o el ID de socio de Usuarios">+ de una persona</button>'
+        // Se llamaba "+ de una persona" y se leia como asignar responsable. No
+        // asigna nada: pega el mail de Meta o el ID de socio de alguien del
+        // equipo para tenerlo a mano al ejecutar el paso.
+        +'title="Pega el mail de Meta o el ID de socio de alguien del equipo, para copiarlo aca">'
+        +'+ dato del equipo</button>'
     +'</div>';
   }
   return out;
@@ -32383,6 +32452,14 @@ function _sopHtml(id){
                     +' title="'+(SOP_EDIT?'Sin esto no se puede seguir. Toca para cambiar de quien depende'
                       :(p.bloq?('Sin esto no se puede seguir. Depende de '+q.l.toLowerCase()):''))+'">'
                     +(p.bloq?('Frena \u00b7 '+esc(q.l)):'No frena')
+                    +'</button>'):'')
+                +((p.quien||SOP_EDIT)
+                  ?('<button class="sop-quien'+(p.quien?'':' q-sin')+'"'
+                    +(SOP_EDIT?'':' disabled')
+                    +' onclick="sopQuienElegir('+id+','+bi+','+pi+')"'
+                    +' title="'+(SOP_EDIT?'Quien ejecuta este paso'
+                      :(p.quien?('Lo hace '+esc(_sopQuienNombre(p.quien))):''))+'">'
+                    +(p.quien?esc(_sopQuienNombre(p.quien)):'Quien?')
                     +'</button>'):'')
                 +'<div class="sop-tools">'
                   +'<button onclick="sopMoverPaso('+id+','+bi+','+pi+',-1)"'+(tope0?' disabled':'')
