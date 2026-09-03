@@ -24956,7 +24956,7 @@ function _lpEstado(html, color){
 // fila de numeros se leen como si el cliente tuviera el doble.
 function _lpDedup(ps){
   var vistos={}, out=[];
-  (ps||[]).forEach(function(x){
+  (ps||[]).forEach(function(x,i){
     if(!x) return;
     var n=_lpLimpiar(String(x.n||''));
     if(!n) return;
@@ -24969,7 +24969,9 @@ function _lpDedup(ps){
     var clave=d||n.toLowerCase();
     if(vistos[clave]) return;
     vistos[clave]=1;
-    out.push(x);
+    // Se devuelve la posicion, no el objeto: quien dibuja necesita el indice
+    // original para que los data-c sigan apuntando al dato correcto.
+    out.push(i);
   });
   return out;
 }
@@ -25294,6 +25296,18 @@ async function escribirCopyLanding(clientId){
 
 // El COPY se arma recien al copiar: asi lo que se pega siempre refleja
 // la piel y el tema elegidos ahora, no los de cuando se genero.
+// Pone uno de los titulares alternativos en la pagina. Intercambia en vez de
+// pisar: el que estaba baja a la lista y se puede volver.
+function lpUsarPromesa(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c), pr=((cfg.copy||{}).promesas)||[];
+  if(!Array.isArray(pr)||i<1||i>=pr.length) return;
+  var x=pr[0]; pr[0]=pr[i]; pr[i]=x;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
 function copiarCopyLanding(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.landing) return;
@@ -25753,7 +25767,9 @@ function _lpAtomos(o){
   if(o.bajada) l.push({r:'bajada', casa:'hero'});
   l.push({r:'cta', casa:'hero'});
   if(o.bajoCta) l.push({r:'bajo', casa:'hero'});
-  A(o.pruebaSocial).forEach(function(x,i){ l.push({r:'cifra:'+i, casa:'cifras'}); });
+  // La misma metrica llega dos veces seguido —una como cifra y otra como frase—
+  // y en la fila de numeros se lee como si el cliente tuviera el doble.
+  _lpDedup(A(o.pruebaSocial)).forEach(function(i){ l.push({r:'cifra:'+i, casa:'cifras'}); });
   if(A(o.clientes).length) l.push({r:'clientes', casa:'clientes'});
   A(o.puntos).forEach(function(x,i){ l.push({r:'punto:'+i, casa:'puntos'}); });
   A(o.faq).forEach(function(x,i){ l.push({r:'faq:'+i, casa:'faq'}); });
@@ -26313,91 +26329,56 @@ function landingHtml(c){
       +'aca abajo, o cambiar a otra piel.</div>'
     : '';
 
-  // ── Paso 2 ──────────────────────────────────────────────────
-  // Se esconde si no hay nada que abrir: el paso queda sin sentido y lo unico
-  // que hacia era mostrar un informe vacio explicando que no habia por donde
-  // empezar. Cuando si hay web, la busqueda la encadena solo el paso 1.
+  // El informe del sitio ya no se dibuja en la ficha. Era un reporte que se
+  // leia una vez, la primera, y despues ocupaba media pantalla arriba del paso
+  // que si se usa. Lo unico que sobrevive es lo que puede cambiar una decision,
+  // y va pegado al paso 1, que es donde se decide.
   var hayQueBuscar=_lpHayQueBuscar(c);
-  var badge={alta:'var(--green)',media:'var(--amberx)',baja:'var(--text3)'};
-  var p1=(!hayQueBuscar && !inv) ? '' :
-    ('<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
-      // Sin numero: dejo de ser un paso. La busqueda ocurre dentro del paso 1,
-      // asi que esto es el resultado de esa corrida, no algo que haya que hacer.
-      +'<div style="font-size:12.5px;color:var(--text);flex:1">Lo que encontre en el sitio</div>'
-      +(inv?('<span style="font-size:10px;color:var(--text3)">'+fecha(cfg.investigadoAt)+'</span>'):'')
-      +(hayQueBuscar
-        ? ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-          +'title="Volver a abrir el sitio sin repensar la combinacion" '
-          +'onclick="investigarLanding('+c.id+')">Volver a buscar</button>')
-        : ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
-          +'title="Este cliente ya no tiene web ni links abribles" '
-          +'onclick="lpBorrarInvestigacion('+c.id+')">Borrar</button>'))
-    +'</div>'
-    +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
-      +(hayQueBuscar
-        ? (ctx.links+' links de Material'
-          +(ctx.llamadas?(' &middot; '+ctx.llamadas+' llamada'+(ctx.llamadas===1?'':'s')):'')
-          +(ctx.llamadasFuera?('<span style="color:var(--amberx)"> ('+ctx.llamadasFuera
-            +' no entraron por tama\u00f1o)</span>'):'')
-          +(ctx.docs?(' &middot; '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+' del cliente'):'')
-          +(ctx.docsFuera?('<span style="color:var(--amberx)"> &middot; '+ctx.docsFuera
-            +' no entraron por tama\u00f1o</span>'):'')
-          +' &middot; se abre al elegir la combinacion')
-        : 'Este resultado quedo de una corrida vieja. Hoy el cliente no tiene sitio web ni '
-          +'links que se puedan abrir, asi que no hay nada que buscar.')
-      +'</div>');
-
-  if(inv){
-    var ps=(inv.pruebaSocial||[]), cl=(inv.clientes||[]);
-    p1+=((inv.contradicciones&&inv.contradicciones.length)
-      ?('<div style="background:rgba(186,117,23,.12);border:1px solid var(--amberx);'
-        +'border-radius:var(--radius-md);padding:10px 12px;margin-bottom:12px">'
-        +'<div style="font-size:11.5px;color:var(--amberx);line-height:1.55"><b>No coincide con las llamadas:</b><br>'
-        +inv.contradicciones.map(function(x){return esc(_lpLimpiar(x));}).join('<br>')+'</div></div>'):'')
-    // La prueba social arriba y destacada: es el dato que decide si la
-    // piel Institucional se banca o hay que ir a Simple.
-    +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);'
-      +'padding:10px 12px;margin-bottom:10px">'
-      +'<div style="font-size:10px;color:var(--text3);margin-bottom:7px">Prueba social encontrada</div>'
-      +(ps.length
-        ?('<div style="display:flex;gap:22px;flex-wrap:wrap">'+_lpDedup(ps).map(function(x){
-            return '<div><div style="font-size:1.15rem;font-weight:600;color:var(--text)">'+esc(_lpLimpiar(x.n))+'</div>'
-              +'<div style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(x.l))+'</div></div>';
-          }).join('')+'</div>')
-        // Antes decia "Ninguna" y sacaba la conclusion en la misma linea. Si la
-        // lectura fallo, esa conclusion es falsa y decide la piel igual. Ahora
-        // el veredicto solo sale si ademas no hay clientes y se leyo todo.
-        :((cl.length||((inv.noPude||[]).length))
-          ?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5">Sin metricas.</div>'
-          :('<div style="font-size:11.5px;color:var(--amberx);line-height:1.5">Ninguna. '
-            +'Sin numeros ni nombres de clientes, la piel Institucional queda vacia: '
-            +'conviene Simple. <span style="color:var(--text3)">Si sabes que la web tiene '
-            +'logos o testimonios, volve a buscar antes de decidir.</span></div>')))
-      +(cl.length?('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'
-        +cl.map(function(x){return '<span style="font-size:11px;border:1px solid var(--border);'
-          +'border-radius:var(--radius);padding:3px 8px;color:var(--text2)">'+esc(_lpLimpiar(x))+'</span>';}).join('')
-        +'</div>'):'')
-      // Lo que no se pudo abrir se dice. "No hay prueba social" y "no pude leer
-      // la pagina de precios" son cosas distintas y se veian iguales.
-      +((inv.noPude||[]).length
-        ?('<div style="font-size:11px;color:var(--amberx);line-height:1.5;margin-top:9px;'
-          +'padding-top:9px;border-top:1px solid var(--border)">No pude abrir: '
+  var avisosInv=(function(){
+    var l=[];
+    if(inv){
+      if((inv.contradicciones||[]).length)
+        l.push('<b>No coincide con las llamadas:</b> '
+          +inv.contradicciones.map(function(x){ return esc(_lpLimpiar(x)); }).join(' &middot; '));
+      if((inv.noPude||[]).length)
+        l.push('No pude abrir: '
           +inv.noPude.map(function(x){ return esc(_lpLimpiar(x)); }).join(' &middot; ')
-          +'. Lo que falte de ahi no esta en este informe.</div>'):'')
-    +'</div>'
-    +(inv.hallazgos||[]).map(function(h){
-        return '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">'
-          +'<span style="width:6px;height:6px;border-radius:50%;flex:none;margin-top:7px;'
-            +'background:'+(badge[h.confianza]||'var(--text3)')+'"></span>'
-          +'<span style="flex:1;font-size:12px;line-height:1.5;color:var(--text)">'+esc(_lpLimpiar(h.dato))+'</span>'
-          +'<span style="font-size:10.5px;color:var(--text3);white-space:nowrap">'+esc(_lpLimpiar(h.fuente||''))+'</span>'
-        +'</div>';
-      }).join('');
-  }
-  // El bloque puede no existir: si no hay nada que buscar ni resultado viejo,
-  // p1 quedo vacio y cerrarlo dejaria un div huerfano.
-  if(p1) p1+='</div>';
+          +'. Lo que falte de ahi no esta.');
+      // El veredicto solo sale si ademas se leyo todo: si la lectura fallo,
+      // "no hay prueba social" es falso y decidiria la piel igual.
+      var ps=(inv.pruebaSocial||[]), cl=(inv.clientes||[]);
+      if(!ps.length && !cl.length && !((inv.noPude||[]).length))
+        l.push('No encontre ni numeros ni nombres de clientes: la piel Institucional '
+          +'queda vacia y conviene Simple.');
+      if(!hayQueBuscar)
+        l.push('Lo guardado es de una corrida vieja: hoy el cliente no tiene web ni links '
+          +'que se puedan abrir.');
+    }
+    // La busqueda no se dispara desde ningun otro lado: el boton se queda.
+    var accion = hayQueBuscar
+      ? ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px;flex:none" '
+        +'title="Abre el sitio y los links de Material" '
+        +'onclick="investigarLanding('+c.id+')">'
+        +(inv?'Volver a buscar en el sitio':'Buscar en el sitio')+'</button>')
+      : (inv
+        ? ('<button class="btn btn-sm" style="font-size:11px;padding:3px 9px;flex:none" '
+          +'onclick="lpBorrarInvestigacion('+c.id+')">Borrar lo viejo</button>')
+        : '');
+    if(!l.length && !accion) return '';
+    return '<div style="margin-top:11px;padding-top:11px;border-top:1px solid var(--border);'
+        +'display:flex;align-items:flex-start;gap:11px;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:200px">'
+        +(l.length
+          ? l.map(function(x){
+              return '<div style="font-size:11.5px;color:var(--amberx);line-height:1.55">'
+                +x+'</div>'; }).join('')
+          : ('<div style="font-size:11.5px;color:var(--text3);line-height:1.55">'
+            +(inv?('Sitio leido el '+fecha(cfg.investigadoAt)+'.')
+                 :'El sitio todavia no se leyo.')+'</div>'))
+      +'</div>'
+      +accion
+    +'</div>';
+  })();
 
   // ── Paso 2 ──────────────────────────────────────────────────
   var p2='<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">'
@@ -26415,59 +26396,35 @@ function landingHtml(c){
           :('Podes escribir sin investigar, pero sale sin prueba social ni las palabras del cliente.'))
     +'</div>';
 
+  // La vista previa del copy se saco: era la misma pagina dibujada dos veces, y
+  // la de la ficha no se podia editar. Se edita en la landing, con "Editar el
+  // texto". Queda solo lo que la landing no puede mostrar.
   if(cp){
-    p2+='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px">'
-      +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">'+esc(_lpLimpiar(cp.eyebrow||''))+'</div>'
-      +(cp.promesas||[]).map(function(p,i){
-        return '<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0">'
-          +'<span style="font-size:10px;color:var(--text3);width:14px;flex:none">'+(i+1)+'</span>'
-          +'<span style="font-size:14px;font-weight:600;color:var(--strong);line-height:1.25">'+esc(_lpLimpiar(p))+'</span>'
-        +'</div>';
-      }).join('')
-      +'<div style="font-size:12px;color:var(--text2);line-height:1.55;margin-top:8px">'+esc(_lpLimpiar(cp.bajada||''))+'</div>'
-      +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
-        +'<span style="font-size:11.5px;background:var(--accent);color:var(--on-accent);'
-          +'padding:5px 12px;border-radius:var(--radius)">'+esc(_lpLimpiar(cp.cta||''))+'</span>'
-        +'<span style="font-size:10.5px;color:var(--text3)">'+esc(_lpLimpiar(cp.bajoCta||''))+'</span>'
-      +'</div>'
-      +((cp.puntos||[]).length?('<div style="margin-top:10px">'+cp.puntos.map(function(x){
-        return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '+esc(_lpLimpiar(x))+'</div>';
-      }).join('')+'</div>'):'')
-      // Cada campo con el motivo al lado. Un formulario se discute por lo que
-      // pide de mas, y para discutirlo hay que ver por que se pide cada dato
-      // sin abrir la landing.
-      +((cp.formulario&&(cp.formulario.campos||[]).length)
-        ?('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border)">'
-          +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">'
-            +esc(_lpFormTitulo(cfg.mecanica))+' &middot; '
-            +cp.formulario.campos.length+' campo'+(cp.formulario.campos.length===1?'':'s')+'</div>'
-          +cp.formulario.campos.map(function(f2){
-            return '<div style="display:flex;gap:9px;align-items:baseline;padding:3px 0">'
-              +'<span style="font-size:11.5px;color:var(--text);flex:none">'
-                +esc(_lpLimpiar(f2.l||f2.label||''))+'</span>'
-              +'<span style="font-size:10px;color:var(--text3);flex:none;white-space:nowrap">'
-                +esc(_lpLimpiar(f2.tipo||'texto'))+(f2.req===false?'':' &middot; obligatorio')+'</span>'
-              +'<span style="font-size:10.5px;color:var(--text3);line-height:1.5;flex:1;min-width:0">'
-                +esc(_lpLimpiar(f2.porque||''))+'</span>'
-            +'</div>';
-          }).join('')
-          +'<div style="display:flex;gap:9px;align-items:center;margin-top:9px;flex-wrap:wrap">'
-            +'<span style="font-size:11px;border:1px solid var(--border2);'
-              +'border-radius:var(--radius);padding:3px 10px;color:var(--text2)">'
-              +esc(_lpLimpiar(cp.formulario.boton||cp.cta||''))+'</span>'
-            +(cp.formulario.gracias
-              ?('<span style="font-size:10.5px;color:var(--text3);line-height:1.5">'
-                +'Despues de enviar: '+esc(_lpLimpiar(cp.formulario.gracias))+'</span>'):'')
-          +'</div>'
-        +'</div>')
-        // Si el copy no trae campos es de antes de este cambio. Se dice: si no, la
-        // landing sale con los tres de fabrica y no hay nada que avise que nadie
-        // los eligio.
-        : ('<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);'
-          +'font-size:10.5px;color:var(--amberx);line-height:1.55">'
-          +'Este copy no trae campos, asi que sale con nombre, email y telefono. '
-          +'Reescribi el copy y los arma.</div>'))
-    +'</div>';
+    // Los titulares 2 y 3 no estan en ningun lado: la pagina dibuja el primero
+    // y los otros dos existen para testear. Si no se ven aca, no se ven.
+    var alt=(cp.promesas||[]).slice(1).filter(function(x){ return _lpLimpiar(x); });
+    if(alt.length)
+      p2+='<div style="background:var(--bg2);border:1px solid var(--border);'
+        +'border-radius:var(--radius-md);padding:10px 12px">'
+        +'<div style="font-size:10px;color:var(--text3);margin-bottom:7px">'
+          +'Los otros titulares que escribio, para testear</div>'
+        +alt.map(function(x,i){
+          return '<div style="display:flex;gap:10px;align-items:center;padding:3px 0">'
+            +'<span style="flex:1;font-size:12.5px;color:var(--text2);line-height:1.4">'
+              +esc(_lpLimpiar(x))+'</span>'
+            +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 7px" '
+              +'title="Lo pone en la pagina y manda el actual a la lista" '
+              +'onclick="lpUsarPromesa('+c.id+','+(i+1)+')">Usar</button>'
+          +'</div>';
+        }).join('')
+      +'</div>';
+    // Este si es accionable y no se ve en la pagina: la landing con los tres
+    // campos de fabrica se ve igual de bien que una con los campos pensados.
+    if(!((cp.formulario||{}).campos||[]).length)
+      p2+='<div style="font-size:10.5px;color:var(--amberx);line-height:1.55;margin-top:'
+        +(alt.length?'10':'0')+'px">'
+        +'Este copy no trae campos, asi que sale con nombre, email y telefono. '
+        +'Reescribi el copy y los arma.</div>';
   }
   p2+='</div>';
 
@@ -26503,6 +26460,7 @@ function landingHtml(c){
           return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '
             +esc(_lpLimpiar(x))+'</div>'; }).join('')
       +'</div>'):'')
+    +avisosInv
     +'<div id="lp-reco-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
       +'margin-top:8px;min-height:0"></div>'
   +'</div>';
@@ -26516,7 +26474,7 @@ function landingHtml(c){
     +avisoHw
     +_lpVideoHtml(c, cfg)
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
-    +p1+p2;
+    +p2;
 }
 
 // ---- Formularios ---------------------------------------------------------
