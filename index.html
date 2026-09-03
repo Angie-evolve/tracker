@@ -25559,7 +25559,22 @@ function lpCopySet(clientId, ruta, valor){
 // agarra el bloque que se esta mirando. El orden que se escribe es el mismo:
 // DB.lpEstructura[piel]. Mover una seccion la mueve para todos los clientes con
 // esa piel, y el cartel de la barra lo dice mientras dura el modo.
-var _LP_MOV=null;
+// ---- Mover y redimensionar sobre el preview -----------------------------
+// El drag nativo de HTML5 se veia tosco: dibuja un fantasma del elemento, no
+// deja saber donde va a caer hasta soltarlo, y obligaba a repintar. Esto usa
+// punteros: una guia marca el borde exacto donde entra, el nodo se mueve en el
+// sitio y no se repinta nada.
+var LP_NOMBRE_EL={eyebrow:'Volanta', h1:'Titular', bajada:'Bajada', cta:'Boton',
+                  bajo:'Nota del boton', clientes:'Clientes', mecanica:'Formulario'};
+var LP_LISTA_EL={punto:'Bullet', cifra:'Cifra', faq:'Pregunta'};
+function _lpNombreRef(r){
+  var t=String(r||'').split(':');
+  if(t.length>1) return (LP_LISTA_EL[t[0]]||t[0])+' '+((parseInt(t[1],10)||0)+1);
+  return LP_NOMBRE_EL[r]||r;
+}
+function _lpFraccion(n){
+  return n>=100?'entero':n>=75?'3/4':n>=66?'2/3':n>=50?'1/2':n>=33?'1/3':'1/4';
+}
 function lpMoverToggle(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -25568,14 +25583,6 @@ function lpMoverToggle(clientId){
   if(S._lpMover && S._lpEdit) lpEditToggle(clientId);
   _lpMoverAplicar(clientId);
 }
-function _lpMovLimpiar(d){
-  d.querySelectorAll('.lp-drop').forEach(function(x){ x.classList.remove('lp-drop'); });
-  d.querySelectorAll('.lp-drag').forEach(function(x){ x.classList.remove('lp-drag'); });
-}
-// Se repinta despues de cada movimiento. Los data-c no se rompen —la referencia
-// lleva el indice del dato— pero los contenedores si: dos bullets que quedan
-// pegados tienen que terminar dentro del mismo <ul>, y eso no se arregla
-// moviendo un nodo. Se guarda el scroll para no perder de vista lo movido.
 function _lpMovRepintar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -25587,11 +25594,9 @@ function _lpMovRepintar(clientId){
     try{ f.contentWindow.scrollTo(0,y); }catch(e){}
     _lpAltBind(clientId);
     _lpMoverAplicar(clientId);
-    _lpMovAviso(clientId);
   };
   f.srcdoc=_lpPaginaHtml(c);
 }
-// Vuelve a la estructura de la piel: tira el layout propio del cliente.
 function lpVolverAPiel(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -25603,10 +25608,49 @@ function lpVolverAPiel(clientId){
   if(typeof renderTab==='function') renderTab();
   _lpMovRepintar(clientId);
 }
+function _lpMovAplicarCss(d){
+  if(d.getElementById('lp-mov-css')) return;
+  var st=d.createElement('style');
+  st.id='lp-mov-css';
+  // Sin contornos permanentes: la pagina se veia un plano de arquitecto. El
+  // contorno sale solo bajo el cursor, que es donde el ojo ya esta mirando.
+  st.textContent='.lp-mv [data-mov]{position:relative;'
+      +'transition:flex-basis 140ms cubic-bezier(.23,1,.32,1),opacity 120ms ease-out}'
+    +'.lp-mv [data-mov]:hover{outline:1px solid var(--acento);outline-offset:3px;'
+      +'border-radius:4px;cursor:grab}'
+    +'.lp-mv [data-mov].lp-tomado{opacity:.3;cursor:grabbing;outline:none}'
+    +'.lp-mv [data-sec]{position:relative}'
+    +'.lp-mv [data-sec]::before{content:attr(data-nom);position:absolute;top:2px;left:0;'
+      +'font:500 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
+      +'text-transform:uppercase;color:var(--acento);opacity:0;pointer-events:none;'
+      +'transition:opacity 120ms ease-out}'
+    +'.lp-mv [data-sec]:hover::before{opacity:.75}'
+    +'.lp-mv .fila:empty{min-height:54px}'
+    +'.lp-mv section:has(.fila:empty),.lp-mv .hero:has(.fila:empty){display:block}'
+    +'.lp-mv section:has(.fila:empty) .lp-hueco,.lp-mv .hero:has(.fila:empty) .lp-hueco{'
+      +'display:block;opacity:.45}'
+    // El borde derecho es zona de estirado. La linea aparece al acercarse: un
+    // tirador siempre visible en cada elemento era mas ruido que ayuda.
+    +'.lp-mv .lp-borde{position:absolute;top:0;right:0;width:14px;height:100%;'
+      +'cursor:col-resize}'
+    +'.lp-mv .lp-borde::after{content:"";position:absolute;top:0;right:6px;width:2px;'
+      +'height:100%;background:var(--acento);border-radius:2px;opacity:0;'
+      +'transition:opacity 120ms ease-out}'
+    +'.lp-mv .lp-borde:hover::after,.lp-mv .lp-borde.lp-on::after{opacity:.9}'
+    +'.lp-guia{position:fixed;z-index:99;background:var(--acento);border-radius:2px;'
+      +'pointer-events:none;opacity:0;left:0;top:0;'
+      +'transition:opacity 120ms ease-out,transform 130ms cubic-bezier(.23,1,.32,1)}'
+    +'.lp-chip{position:fixed;z-index:100;left:0;top:0;pointer-events:none;'
+      +'background:var(--acento);color:var(--sobre);border-radius:20px;padding:5px 10px;'
+      +'font:500 11px/1 ui-sans-serif,system-ui,sans-serif;white-space:nowrap;opacity:0;'
+      +'transition:opacity 120ms ease-out}'
+    +'@media(prefers-reduced-motion:reduce){.lp-mv [data-mov],.lp-guia{transition:none}}';
+  d.head.appendChild(st);
+}
 function _lpMoverAplicar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
-  if(!c||!f||!f.contentDocument) return;
+  if(!c||!f||!f.contentDocument||!f.contentDocument.body) return;
   var d=f.contentDocument, on=!!S._lpMover;
   var cfg=_lpCfg(c), piel=(cfg.piel||'institucional');
   var b=document.getElementById('lp-mover-btn');
@@ -25615,242 +25659,230 @@ function _lpMoverAplicar(clientId){
   if(b) b.textContent=on?'Terminar de mover':'Mover';
   if(vb) vb.style.display=(on&&_lpLayoutPropio(c))?'':'none';
   if(m) m.textContent=on
-    ? (_lpLayoutPropio(c)
-        ? 'Arrastra los elementos a donde quieras, o estira el borde derecho para '
-          +'cambiar el ancho. Esta pagina tiene su propio armado y ya no sigue a la '
-          +'piel "'+piel+'".'
-        : 'Arrastra los elementos a donde quieras, o estira el borde derecho para '
-          +'cambiar el ancho. Al primer cambio esta pagina se despega de la piel "'
-          +piel+'".')
+    ? ('Arrastra un elemento a donde quieras, o estira su borde derecho. '
+       +(_lpLayoutPropio(c)
+          ? 'Esta pagina tiene su propio armado.'
+          : 'Al primer cambio se despega de la piel "'+piel+'".'))
     : '';
-  if(d.body) d.body.classList.toggle('lp-mover', on);
-  var st=d.getElementById('lp-mov-css');
-  if(on && !st){
-    st=d.createElement('style'); st.id='lp-mov-css';
-    st.textContent='[data-sec]{position:relative}'
-      +'[data-sec].lp-mov{outline:1px dashed var(--acento);outline-offset:6px;cursor:grab}'
-      +'[data-sec].lp-mov::before{content:attr(data-nom);position:absolute;top:4px;left:0;'
-        +'font:600 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
-        +'text-transform:uppercase;color:var(--acento);opacity:.8;pointer-events:none}'
-      +'[data-mov]{position:relative}'
-      +'[data-mov].lp-mov,[data-fmov].lp-mov{outline:1px dashed var(--acento);'
-        +'outline-offset:3px;cursor:grab}'
-      +'.lp-asa{position:absolute;top:0;right:6px;width:10px;height:100%;'
-        +'cursor:col-resize;background:var(--acento);opacity:.18;border-radius:3px}'
-      +'.lp-asa:hover{opacity:.55}'
-      +'body.lp-mover .lp-vacia{display:block}'
-      +'.lp-drag{opacity:.35}'
-      +'.lp-drop{box-shadow:inset 0 3px 0 0 var(--acento)}';
-    d.head.appendChild(st);
-  }
-  if(!on && st) st.parentNode.removeChild(st);
-
-  var refDe=function(el){ return el.getAttribute('data-mov'); };
-  // Mueve una referencia a donde cayo. Cruzar de seccion esta permitido: es
-  // justamente lo que antes no se podia.
-  var mover=function(origen, destinoRef, destinoSec){
-    var L=_lpLayoutFijar(c);
-    var a=_lpBuscarRef(L, origen);
-    if(!a) return false;
-    L[a.s].it.splice(a.i,1);
-    if(destinoRef){
-      var b2=_lpBuscarRef(L, destinoRef);
-      if(!b2){ L[a.s].it.splice(a.i,0,origen); return false; }
-      // En la misma seccion y bajando, cae despues del destino; en cualquier
-      // otro caso cae en el lugar que ocupaba el destino.
-      var despues=(b2.s===a.s && a.i<b2.i);
-      L[b2.s].it.splice(b2.i+(despues?1:0), 0, origen);
-    }else{
-      var k=-1, i2;
-      for(i2=0;i2<L.length;i2++) if(L[i2].k===destinoSec){ k=i2; break; }
-      if(k<0){ L[a.s].it.splice(a.i,0,origen); return false; }
-      L[k].it.push(origen);
-    }
-    save();
-    return true;
-  };
-
-  // ── Secciones ──────────────────────────────────────────────
+  _lpMovAplicarCss(d);
+  d.body.classList.toggle('lp-mv', on);
   d.querySelectorAll('[data-sec]').forEach(function(el){
-    el.draggable=on;
-    el.classList.toggle('lp-mov', on);
-    if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
     var k=el.getAttribute('data-sec');
     el.setAttribute('data-nom', LP_SECCION_NOMBRE[k]||k);
-    if(el._lpMovBound) return;
-    el._lpMovBound=true;
-    el.addEventListener('dragstart', function(ev){
-      if(!S._lpMover) return;
-      _LP_MOV={tipo:'sec', k:el.getAttribute('data-sec')};
-      el.classList.add('lp-drag');
-      ev.dataTransfer.effectAllowed='move';
-      // Firefox no dispara drop si no se escribio algo en el dataTransfer.
-      try{ ev.dataTransfer.setData('text/plain', _LP_MOV.k); }catch(e){}
-    });
-    el.addEventListener('dragend', function(){ _LP_MOV=null; _lpMovLimpiar(d); });
-    el.addEventListener('dragover', function(ev){
-      var g=_LP_MOV;
-      if(!S._lpMover||!g) return;
-      if(g.tipo==='campo') return;
-      if(g.tipo==='sec' && g.k===el.getAttribute('data-sec')) return;
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect='move';
-      el.classList.add('lp-drop');
-    });
-    el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
-    el.addEventListener('drop', function(ev){
-      var g=_LP_MOV;
-      if(!g||g.tipo==='campo') return;
-      ev.preventDefault();
-      var destino=el.getAttribute('data-sec');
-      _LP_MOV=null; _lpMovLimpiar(d);
-      if(g.tipo==='item'){
-        // Soltar sobre el aire de una seccion mete el elemento al final. Es lo
-        // que hace alcanzable una seccion vacia.
-        if(mover(g.r, null, destino)) _lpMovRepintar(clientId);
-        return;
-      }
-      if(g.k===destino) return;
-      var L=_lpLayoutFijar(c);
-      var i=-1, j=-1, n;
-      for(n=0;n<L.length;n++){ if(L[n].k===g.k) i=n; if(L[n].k===destino) j=n; }
-      if(i<0||j<0) return;
-      _rtMover(L, i, j);
-      save();
-      _lpMovRepintar(clientId);
-    });
   });
-
-  // ── Elementos sueltos, de cualquier seccion a cualquier otra ──
+  // El borde de estirado es un nodo por columna, puesto una sola vez.
   d.querySelectorAll('[data-mov]').forEach(function(el){
-    el.draggable=on;
-    el.classList.toggle('lp-mov', on);
-    if(!on){
-      el.classList.remove('lp-drop'); el.classList.remove('lp-drag');
-      if(el._lpAsa){ el._lpAsa.parentNode.removeChild(el._lpAsa); el._lpAsa=null; }
-      return;
+    var y=el.querySelector(':scope > .lp-borde');
+    if(on && !y){
+      y=d.createElement('span');
+      y.className='lp-borde';
+      y.title='Estira para cambiar el ancho';
+      el.appendChild(y);
+    }else if(!on && y){ y.parentNode.removeChild(y); }
+  });
+  if(!on || d._lpMovListo) return;
+  d._lpMovListo=true;
+
+  var guia=d.createElement('div'); guia.className='lp-guia'; d.body.appendChild(guia);
+  var chip=d.createElement('div'); chip.className='lp-chip'; d.body.appendChild(chip);
+  var verChip=function(txt,x,y2){
+    chip.textContent=txt;
+    chip.style.transform='translate('+(x+16)+'px,'+(y2+16)+'px)';
+    chip.style.opacity='1';
+  };
+  var ocultar=function(){ chip.style.opacity='0'; guia.style.opacity='0'; };
+
+  // ── Estirar el ancho ───────────────────────────────────────
+  var estirar=function(ev, borde){
+    var col=borde.parentNode, fila=col.parentNode;
+    if(!fila) return;
+    ev.preventDefault();
+    borde.classList.add('lp-on');
+    var ancho=fila.clientWidth||1, x0=col.getBoundingClientRect().left;
+    // Saltos fijos: un ancho libre en pixeles no sobrevive a otro monitor.
+    var SALTOS=[25,33,50,66,75,100];
+    var val=parseInt(col.getAttribute('data-an'),10)||100;
+    var mover=function(e){
+      var pct=((e.clientX-x0)/ancho)*100, mejor=SALTOS[0];
+      SALTOS.forEach(function(v){ if(Math.abs(v-pct)<Math.abs(mejor-pct)) mejor=v; });
+      val=mejor;
+      col.style.flexBasis=mejor+'%';
+      col.setAttribute('data-an', mejor);
+      verChip(_lpFraccion(mejor), e.clientX, e.clientY);
+    };
+    var soltar=function(){
+      d.removeEventListener('mousemove',mover);
+      d.removeEventListener('mouseup',soltar);
+      borde.classList.remove('lp-on');
+      ocultar();
+      cfg.anchos=cfg.anchos||{};
+      cfg.anchos[col.getAttribute('data-mov')]=val;
+      save();
+      if(vb) vb.style.display='';
+    };
+    d.addEventListener('mousemove',mover);
+    d.addEventListener('mouseup',soltar);
+  };
+
+  // ── Mover ──────────────────────────────────────────────────
+  var blanco=function(e, nodo, esSec){
+    var bajo=d.elementFromPoint(e.clientX, e.clientY);
+    if(!bajo||!bajo.closest) return null;
+    if(esSec){
+      var sec=bajo.closest('[data-sec]');
+      if(!sec||sec===nodo) return null;
+      var rs=sec.getBoundingClientRect();
+      return {el:sec, sec:true, antes:(e.clientY < rs.top+rs.height/2)};
     }
-    // El tirador del borde derecho cambia el ancho. Los saltos son fijos —un
-    // cuarto, un tercio, media, dos tercios, tres cuartos, entera— porque un
-    // ancho libre en pixeles no sobrevive a un monitor distinto.
-    if(!el._lpAsa){
-      var asa=d.createElement('span');
-      asa.className='lp-asa';
-      asa.title='Arrastra para cambiar el ancho';
-      el.appendChild(asa);
-      el._lpAsa=asa;
-      asa.addEventListener('mousedown', function(ev){
-        ev.preventDefault(); ev.stopPropagation();
-        var fila=el.parentNode;
-        if(!fila) return;
-        var ancho=fila.clientWidth||1;
-        var x0=el.getBoundingClientRect().left;
-        var SALTOS=[25,33,50,66,75,100];
-        var elegido=parseInt(el.getAttribute('data-an'),10)||100;
-        // Mientras se estira no puede estar arrastrandose tambien de lugar.
-        el.draggable=false;
-        var estirar=function(e2){
-          var pct=((e2.clientX-x0)/ancho)*100;
-          var mejor=SALTOS[0];
-          SALTOS.forEach(function(v){
-            if(Math.abs(v-pct)<Math.abs(mejor-pct)) mejor=v;
-          });
-          elegido=mejor;
-          el.style.flexBasis=mejor+'%';
-          el.setAttribute('data-an', mejor);
-        };
-        var soltar=function(){
-          d.removeEventListener('mousemove', estirar);
-          d.removeEventListener('mouseup', soltar);
-          el.draggable=!!S._lpMover;
-          var cf=_lpCfg(c);
-          cf.anchos=cf.anchos||{};
-          cf.anchos[refDe(el)]=elegido;
-          save();
-          _lpMovRepintar(clientId);
-        };
-        d.addEventListener('mousemove', estirar);
-        d.addEventListener('mouseup', soltar);
-      });
+    var col=bajo.closest('[data-mov]');
+    if(col && col!==nodo && !nodo.contains(col)){
+      var r=col.getBoundingClientRect(), fila=col.parentNode;
+      // Si la columna no ocupa la fila entera, el corte es vertical: se decide
+      // por izquierda o derecha. Si la ocupa, arriba o abajo.
+      var lado=fila && r.width < fila.clientWidth*0.92;
+      return {el:col, sec:false, lado:lado,
+              antes: lado ? (e.clientX < r.left+r.width/2) : (e.clientY < r.top+r.height/2)};
     }
-    if(el._lpMovBound) return;
-    el._lpMovBound=true;
-    el.addEventListener('dragstart', function(ev){
-      if(!S._lpMover) return;
-      // Sin esto el drag sube hasta la seccion que lo contiene y termina
-      // moviendose el bloque entero en vez del elemento.
-      ev.stopPropagation();
-      _LP_MOV={tipo:'item', r:refDe(el)};
-      el.classList.add('lp-drag');
-      ev.dataTransfer.effectAllowed='move';
-      try{ ev.dataTransfer.setData('text/plain', _LP_MOV.r); }catch(e){}
-    });
-    el.addEventListener('dragend', function(ev){
-      ev.stopPropagation(); _LP_MOV=null; _lpMovLimpiar(d);
-    });
-    el.addEventListener('dragover', function(ev){
-      var g=_LP_MOV;
-      if(!S._lpMover||!g||g.tipo!=='item'||g.r===refDe(el)) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      ev.dataTransfer.dropEffect='move';
-      el.classList.add('lp-drop');
-    });
-    el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
-    el.addEventListener('drop', function(ev){
-      var g=_LP_MOV;
-      if(!g||g.tipo!=='item') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      var destino=refDe(el);
-      _LP_MOV=null; _lpMovLimpiar(d);
-      if(g.r===destino) return;
-      if(mover(g.r, destino, null)) _lpMovRepintar(clientId);
-    });
+    var f2=bajo.closest('.fila');
+    if(f2 && !f2.children.length) return {el:f2, sec:false, vacia:true};
+    return null;
+  };
+  var pintarGuia=function(t){
+    var r=t.el.getBoundingClientRect();
+    if(t.vacia){
+      guia.style.width=Math.max(40,r.width-8)+'px'; guia.style.height='3px';
+      guia.style.transform='translate('+(r.left+4)+'px,'+(r.top+r.height/2)+'px)';
+    }else if(t.lado){
+      guia.style.width='3px'; guia.style.height=r.height+'px';
+      guia.style.transform='translate('+((t.antes?r.left-6:r.right+3))+'px,'+r.top+'px)';
+    }else{
+      guia.style.width=r.width+'px'; guia.style.height='3px';
+      guia.style.transform='translate('+r.left+'px,'+((t.antes?r.top-6:r.bottom+3))+'px)';
+    }
+    guia.style.opacity='1';
+  };
+  var arrastrar=function(ev, nodo, esSec){
+    ev.preventDefault();
+    var x0=ev.clientX, y0=ev.clientY, vivo=false, dest=null;
+    var mover=function(e){
+      if(!vivo){
+        // Umbral: sin esto un click con la mano temblorosa mueve algo.
+        if(Math.abs(e.clientX-x0)+Math.abs(e.clientY-y0)<5) return;
+        vivo=true;
+        nodo.classList.add('lp-tomado');
+      }
+      verChip(esSec ? (LP_SECCION_NOMBRE[nodo.getAttribute('data-sec')]||'')
+                    : _lpNombreRef(nodo.getAttribute('data-mov')), e.clientX, e.clientY);
+      dest=blanco(e, nodo, esSec);
+      if(dest) pintarGuia(dest); else guia.style.opacity='0';
+      // Autoscroll cerca de los bordes: sin esto no se puede mandar algo del
+      // hero al final de la pagina.
+      var h=(f.contentWindow.innerHeight||600);
+      if(e.clientY<70) f.contentWindow.scrollBy(0,-14);
+      else if(e.clientY>h-70) f.contentWindow.scrollBy(0,14);
+    };
+    var soltar=function(){
+      d.removeEventListener('mousemove',mover);
+      d.removeEventListener('mouseup',soltar);
+      nodo.classList.remove('lp-tomado');
+      ocultar();
+      if(!vivo||!dest) return;
+      var L=_lpLayoutFijar(c), ok=false;
+      if(esSec){
+        var kO=nodo.getAttribute('data-sec'), kD=dest.el.getAttribute('data-sec');
+        var i=-1, j=-1, n;
+        for(n=0;n<L.length;n++){ if(L[n].k===kO) i=n; if(L[n].k===kD) j=n; }
+        if(i>=0&&j>=0&&kO!==kD){
+          var s2=L.splice(i,1)[0];
+          // El indice del destino se recalcula: sacar el de origen pudo correrlo.
+          j=-1;
+          for(n=0;n<L.length;n++) if(L[n].k===kD) j=n;
+          L.splice(j+(dest.antes?0:1),0,s2);
+          ok=true;
+        }
+      }else{
+        var ref=nodo.getAttribute('data-mov');
+        var a=_lpBuscarRef(L, ref);
+        if(a){
+          L[a.s].it.splice(a.i,1);
+          if(dest.vacia){
+            var sk=dest.el.closest('[data-sec]').getAttribute('data-sec');
+            for(var q=0;q<L.length;q++) if(L[q].k===sk){ L[q].it.push(ref); ok=true; }
+            if(!ok) L[a.s].it.splice(a.i,0,ref);
+          }else{
+            var b2=_lpBuscarRef(L, dest.el.getAttribute('data-mov'));
+            if(b2){ L[b2.s].it.splice(b2.i+(dest.antes?0:1),0,ref); ok=true; }
+            else L[a.s].it.splice(a.i,0,ref);
+          }
+        }
+      }
+      if(!ok) return;
+      // El nodo se mueve donde esta. Las referencias llevan el indice del dato,
+      // asi que ningun data-c queda apuntando a otro lado y no hay que repintar:
+      // eso es lo que borraba el parpadeo al soltar.
+      var padre=dest.vacia ? dest.el : dest.el.parentNode;
+      if(dest.vacia) padre.appendChild(nodo);
+      else padre.insertBefore(nodo, dest.antes ? dest.el : dest.el.nextSibling);
+      save();
+      if(vb) vb.style.display='';
+      _lpMovAviso(clientId);
+    };
+    d.addEventListener('mousemove',mover);
+    d.addEventListener('mouseup',soltar);
+  };
+
+  d.addEventListener('mousedown', function(ev){
+    if(!S._lpMover||ev.button!==0||!ev.target.closest) return;
+    var borde=ev.target.closest('.lp-borde');
+    if(borde){ estirar(ev, borde); return; }
+    // Un campo del formulario se ordena entre sus hermanos y nada mas: fuera
+    // del <form> el dato que pide no llega a ningun lado.
+    var campo=ev.target.closest('[data-fmov]');
+    if(campo){ campos(ev, campo); return; }
+    var col=ev.target.closest('[data-mov]');
+    if(col){ arrastrar(ev, col, false); return; }
+    var sec=ev.target.closest('[data-sec]');
+    if(sec) arrastrar(ev, sec, true);
   });
 
-  // ── Campos del formulario: solo entre ellos ────────────────
-  // Un campo fuera del <form> no se envia. Mover uno al hero seria dibujarlo en
-  // un lugar donde el dato que pide no llega a ningun lado.
-  d.querySelectorAll('[data-fmov]').forEach(function(el){
-    el.draggable=on;
-    el.classList.toggle('lp-mov', on);
-    if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
-    if(el._lpMovBound) return;
-    el._lpMovBound=true;
+  // ── Campos del formulario ──────────────────────────────────
+  var campos=function(ev, el){
+    ev.preventDefault();
+    var x0=ev.clientX, y0=ev.clientY, vivo=false, dest=null;
     var idx=function(x){ return parseInt(x.getAttribute('data-fmov'),10); };
-    el.addEventListener('dragstart', function(ev){
-      if(!S._lpMover) return;
-      ev.stopPropagation();
-      _LP_MOV={tipo:'campo', i:idx(el)};
-      el.classList.add('lp-drag');
-      ev.dataTransfer.effectAllowed='move';
-      try{ ev.dataTransfer.setData('text/plain','campo'+idx(el)); }catch(e){}
-    });
-    el.addEventListener('dragend', function(ev){
-      ev.stopPropagation(); _LP_MOV=null; _lpMovLimpiar(d);
-    });
-    el.addEventListener('dragover', function(ev){
-      var g=_LP_MOV;
-      if(!S._lpMover||!g||g.tipo!=='campo'||g.i===idx(el)) return;
-      ev.preventDefault(); ev.stopPropagation();
-      ev.dataTransfer.dropEffect='move';
-      el.classList.add('lp-drop');
-    });
-    el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
-    el.addEventListener('drop', function(ev){
-      var g=_LP_MOV, j=idx(el);
-      if(!g||g.tipo!=='campo') return;
-      ev.preventDefault(); ev.stopPropagation();
-      _LP_MOV=null; _lpMovLimpiar(d);
+    var mover=function(e){
+      if(!vivo){
+        if(Math.abs(e.clientX-x0)+Math.abs(e.clientY-y0)<5) return;
+        vivo=true; el.classList.add('lp-tomado');
+      }
+      verChip('Campo '+(idx(el)+1), e.clientX, e.clientY);
+      var bajo=d.elementFromPoint(e.clientX,e.clientY);
+      var c2=(bajo&&bajo.closest)?bajo.closest('[data-fmov]'):null;
+      dest=(c2&&c2!==el)?c2:null;
+      if(dest){
+        var r=dest.getBoundingClientRect();
+        guia.style.width=r.width+'px'; guia.style.height='3px';
+        guia.style.transform='translate('+r.left+'px,'+r.top+'px)';
+        guia.style.opacity='1';
+      }else guia.style.opacity='0';
+    };
+    var soltar=function(){
+      d.removeEventListener('mousemove',mover);
+      d.removeEventListener('mouseup',soltar);
+      el.classList.remove('lp-tomado');
+      ocultar();
+      if(!vivo||!dest) return;
       var L=((cfg.copy||{}).formulario||{}).campos;
-      if(!Array.isArray(L)||isNaN(g.i)||isNaN(j)||g.i===j) return;
-      if(g.i>=L.length||j>=L.length) return;
-      _rtMover(L, g.i, j);
+      if(!Array.isArray(L)) return;
+      _rtMover(L, idx(el), idx(dest));
       save();
+      // Aca si hay que repintar: los campos se numeran por posicion, y despues
+      // de moverlos los data-c apuntarian al campo de al lado.
       _lpMovRepintar(clientId);
-    });
-  });
+    };
+    d.addEventListener('mousemove',mover);
+    d.addEventListener('mouseup',soltar);
+  };
 }
 function _lpMovAviso(clientId){
   var m=document.getElementById('lp-edit-msg');
@@ -26224,10 +26256,10 @@ function _lpPaginaHtml(c){
     +'button{font:inherit;font-weight:600;background:var(--acento);color:var(--sobre);'
       +'border:0;padding:14px;border-radius:8px;cursor:pointer;font-size:16px}'
     +'.nota{color:var(--tenue);border:1px dashed var(--linea);padding:22px;border-radius:10px}'
-    // La seccion vacia existe en el HTML pero no en la pagina: solo aparece
-    // mientras se esta moviendo, como lugar donde soltar.
-    +'.lp-vacia{display:none}'
-    +'.lp-hueco{margin:0;padding:26px 0;color:var(--tenue);font-size:13px;opacity:.6}'
+    // Una seccion sin nada adentro no existe para el que mira la pagina. El
+    // :has evita tener que redibujar cuando se saca el ultimo elemento.
+    +'section:has(.fila:empty),.hero:has(.fila:empty){display:none}'
+    +'.lp-hueco{display:none;margin:0;padding:22px 0;color:var(--tenue);font-size:13px}'
     // El video va detras de todo, con un velo encima: sin el velo el titulo se
     // pierde en cuanto el plano tiene una zona clara.
     +'.fondo{position:fixed;inset:0;z-index:-2;overflow:hidden}'
@@ -26287,22 +26319,22 @@ function _lpPaginaHtml(c){
           out+='<div class="col" data-mov="'+r+'" data-an="'+an+'" '
             +'style="flex-basis:'+an+'%">'+h+'</div>';
         });
-        return out ? ('<div class="fila">'+out+'</div>') : '';
+        return '<div class="fila">'+out+'</div>';
       };
+      // La fila va siempre, aunque quede vacia: es el lugar donde se suelta algo
+      // para volver a llenar una seccion. Que se vea o no lo decide el CSS con
+      // :has(.fila:empty), asi no hay que repintar para que una seccion
+      // aparezca o desaparezca al mover el ultimo elemento.
       return _lpLayout(c).map(function(sec){
         var dentro=cuerpo(sec.it);
-        // Una seccion vacia no se dibuja en la pagina publicada, pero queda en
-        // el HTML: en modo mover se muestra como zona para soltar algo adentro.
-        // Sin eso, vaciar una seccion la volvia inalcanzable.
-        var vacia=!dentro;
+        var hueco='<p class="lp-hueco">'+E(LP_SECCION_NOMBRE[sec.k]||sec.k)+'</p>';
         if(sec.k==='hero')
-          return '<div class="hero'+(vacia?' lp-vacia':'')+'" data-sec="hero">'
-            +(vacia?'<p class="lp-hueco">Hero</p>':dentro)+'</div>';
+          return '<div class="hero" data-sec="hero">'+dentro+hueco+'</div>';
         var tit=(sec.k==='contacto') ? E(o.cta||'Empecemos') : (LP_TITULO[sec.k]||'');
-        return '<section'+(vacia?' class="lp-vacia"':'')+' data-sec="'+sec.k+'"'
+        return '<section data-sec="'+sec.k+'"'
           +(sec.k==='contacto'?' id="contacto"':'')+'>'
           +(tit?('<h2>'+tit+'</h2>'):'')
-          +(vacia?('<p class="lp-hueco">'+E(LP_SECCION_NOMBRE[sec.k]||sec.k)+'</p>'):dentro)
+          +dentro+hueco
         +'</section>';
       }).join('');
     })()
