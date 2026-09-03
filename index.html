@@ -25291,6 +25291,113 @@ function lpDescargar(clientId){
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
 }
+// La estructura de cada piel, declarada. Antes vivia en condicionales adentro
+// del render, asi que no habia donde leer "que secciones tiene Hollywood" y
+// cada cambio la corria un poco. Aca se lee y se edita en un solo lugar, y el
+// render solo recorre la lista: dos clientes con la misma piel salen iguales.
+var LP_ESTRUCTURA={
+  simple: ['hero', 'contacto'],
+  institucional: ['hero', 'cifras', 'puntos', 'faq', 'contacto'],
+  // Hollywood: el plano de fondo hace el trabajo del hero, asi que el titulo
+  // va corto y la prueba entra temprano, antes de que se vaya el impulso del
+  // video. Los puntos van despues porque explican, y explicar frena.
+  hollywood: ['hero', 'cifras', 'clientes', 'puntos', 'faq', 'contacto']
+};
+var LP_SECCION_NOMBRE={
+  hero:'Hero', cifras:'Cifras', clientes:'Clientes', puntos:'Que incluye',
+  faq:'Preguntas', contacto:'Contacto'
+};
+// La estructura editada se guarda en DB.lpEstructura y pisa a la de fabrica.
+function lpSecciones(piel){
+  var g=(DB.lpEstructura||{})[piel];
+  if(g&&g.length) return g.slice();
+  return (LP_ESTRUCTURA[piel]||LP_ESTRUCTURA.institucional).slice();
+}
+function lpEstructuraModal(piel){
+  piel=piel||'hollywood';
+  var act=lpSecciones(piel);
+  var todas=Object.keys(LP_SECCION_NOMBRE);
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px">'
+      +'<div class="modal-title">Estructura de la piel</div>'
+      +'<div class="modal-sub">El orden de las secciones para <b>'+esc(piel)+'</b>. '
+        +'Vale para todos los clientes con esta piel: por eso siempre sale igual. '
+        +'Una seccion sin contenido no se dibuja aunque este en la lista.</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px">'
+        +Object.keys(LP_ESTRUCTURA).map(function(p){
+          return '<button class="btn btn-sm'+(p===piel?' btn-primary':'')+'" '
+            +'onclick="lpEstructuraModal(\''+p+'\')">'+esc(p)+'</button>'; }).join('')
+      +'</div>'
+      +act.map(function(k,i){
+        return '<div class="rt-fila" draggable="true" '
+          +'ondragstart="lpSecDrag(event,'+i+')" ondragend="rutaDragEnd()" '
+          +'ondragover="rutaDragSobre(event,this)" '
+          +'ondragleave="this.classList.remove(\'rt-drop\')" '
+          +'ondrop="lpSecDrop(event,this,\''+piel+'\','+i+')" '
+          +'style="display:flex;gap:8px;align-items:center;padding:5px 0">'
+          +'<span class="rt-asa" style="flex:none;width:14px;color:var(--text3);cursor:grab;'
+            +'font-size:12px;user-select:none">\u2237</span>'
+          +'<span class="mono" style="flex:none;width:16px;font-size:10px;color:var(--text3);'
+            +'text-align:right">'+(i+1)+'</span>'
+          +'<span style="flex:1;font-size:12.5px;color:var(--text2)">'
+            +esc(LP_SECCION_NOMBRE[k]||k)+'</span>'
+          +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 6px;'
+            +'color:var(--redx)" onclick="lpSecQuitar(\''+piel+'\','+i+')">&times;</button>'
+        +'</div>';
+      }).join('')
+      +(todas.filter(function(k){ return act.indexOf(k)<0; }).length
+        ? ('<div style="margin-top:12px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+          +'<span style="font-size:11px;color:var(--text3)">Agregar:</span>'
+          +todas.filter(function(k){ return act.indexOf(k)<0; }).map(function(k){
+            return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+              +'onclick="lpSecAgregar(\''+piel+'\',\''+k+'\')">'
+              +esc(LP_SECCION_NOMBRE[k]||k)+'</button>'; }).join('')
+        +'</div>')
+        : '')
+      +'<div style="margin-top:14px;display:flex;gap:8px">'
+        +'<button class="btn btn-sm" onclick="lpSecRestaurar(\''+piel+'\')">'
+          +'Volver a la de fabrica</button>'
+      +'</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function _lpEst(piel){
+  DB.lpEstructura=DB.lpEstructura||{};
+  if(!DB.lpEstructura[piel]) DB.lpEstructura[piel]=lpSecciones(piel);
+  return DB.lpEstructura[piel];
+}
+function lpSecDrag(ev, i){
+  _RT_DRAG={tipo:'lpsec', i:i};
+  ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain','s'+i); }catch(e){}
+}
+function lpSecDrop(ev, el, piel, destino){
+  ev.preventDefault();
+  el.classList.remove('rt-drop');
+  var d=_RT_DRAG; _RT_DRAG=null;
+  if(!d||d.tipo!=='lpsec'||d.i===destino) return;
+  _rtMover(_lpEst(piel), d.i, destino);
+  save(); lpEstructuraModal(piel);
+}
+function lpSecQuitar(piel, i){
+  var L=_lpEst(piel); L.splice(i,1);
+  save(); lpEstructuraModal(piel);
+}
+function lpSecAgregar(piel, k){
+  var L=_lpEst(piel);
+  // Contacto siempre al final: es el cierre, y una seccion despues del
+  // formulario deja al lector sin donde ir.
+  var i=L.indexOf('contacto');
+  if(i>=0) L.splice(i,0,k); else L.push(k);
+  save(); lpEstructuraModal(piel);
+}
+function lpSecRestaurar(piel){
+  if(DB.lpEstructura) delete DB.lpEstructura[piel];
+  save(); lpEstructuraModal(piel);
+}
 function _lpPaginaHtml(c){
   var cfg=_lpCfg(c);
   var o=(cfg.copy||{}), inv=(cfg.investigacion||{}), mk=(c.marca||{});
@@ -25314,7 +25421,8 @@ function _lpPaginaHtml(c){
   var A=function(x){ return Array.isArray(x)?x:[]; };
   var promesa=A(o.promesas)[0]||o.bajada||(c.name||'');
   var puntos=A(o.puntos), ps=A(o.pruebaSocial), faq=A(o.faq), clientes=A(o.clientes);
-  var esSimple=(cfg.piel==='simple'), esInst=(cfg.piel==='institucional');
+  // Solo para el ritmo tipografico: la estructura la decide LP_ESTRUCTURA.
+  var esSimple=(cfg.piel==='simple');
   var video=(cfg.piel==='hollywood' && cfg.videoUrl) ? String(cfg.videoUrl) : '';
 
   var cta='<a class="cta" href="#contacto">'+E(o.cta||'Quiero empezar')+'</a>'
@@ -25427,14 +25535,27 @@ function _lpPaginaHtml(c){
     +'<div class="env">'
     +'<header>'+logo+'<a class="cta" style="margin:0;padding:11px 20px;font-size:15px" '
       +'href="#contacto">'+E(o.cta||'Hablemos')+'</a></header>'
-    +'<div class="hero">'+eyebrow+'<h1>'+E(promesa)+'</h1>'
-      +(o.bajada?('<p class="bajada">'+E(o.bajada)+'</p>'):'')
-      +cta+'</div>'
-    +(esSimple ? '' :
-        (bloquePS?seccion('En numeros', bloquePS+bloqueClientes):'')
-       +(bloquePuntos?seccion('Que incluye', bloquePuntos):'')
-       +(esInst&&bloqueFaq?seccion('Preguntas', bloqueFaq):''))
-    +'<section id="contacto"><h2>'+E(o.cta||'Empecemos')+'</h2>'+mecanica+'</section>'
+    // El cuerpo sale de la lista declarada arriba. Agregar o mover una seccion
+    // es editar LP_ESTRUCTURA, no tocar el render: por eso siempre sale igual.
+    +(function(){
+      var partes={
+        hero: function(){
+          return '<div class="hero">'+eyebrow+'<h1>'+E(promesa)+'</h1>'
+            +(o.bajada?('<p class="bajada">'+E(o.bajada)+'</p>'):'')
+            +cta+'</div>';
+        },
+        cifras: function(){ return bloquePS?seccion('En numeros', bloquePS):''; },
+        clientes: function(){ return bloqueClientes?seccion('Quienes ya lo usan', bloqueClientes):''; },
+        puntos: function(){ return bloquePuntos?seccion('Que incluye', bloquePuntos):''; },
+        faq: function(){ return bloqueFaq?seccion('Preguntas', bloqueFaq):''; },
+        contacto: function(){
+          return '<section id="contacto"><h2>'+E(o.cta||'Empecemos')+'</h2>'+mecanica+'</section>';
+        }
+      };
+      return lpSecciones(cfg.piel).map(function(k){
+        return partes[k]?partes[k]():'';
+      }).join('');
+    })()
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
 }
@@ -25565,6 +25686,9 @@ function landingHtml(c){
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
       +'title="Arma la pagina con el COPY y la paleta de la marca, y la abre" '
       +'onclick="lpVer('+c.id+')">Ver la landing</button>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'title="El orden de las secciones de esta piel, igual para todos los clientes" '
+      +'onclick="lpEstructuraModal(\''+esc(cfg.piel||'institucional')+'\')">Estructura</button>'
     +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
       +'onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
   +'</div>';
