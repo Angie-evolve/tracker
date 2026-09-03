@@ -25358,6 +25358,8 @@ function lpVer(clientId){
         +'<span id="lp-edit-msg" style="font-size:11px;color:var(--text3)"></span>'
         +'<button class="btn btn-sm" id="lp-edit-btn" onclick="lpEditToggle('+c.id+')">'
           +'Editar el texto</button>'
+        +'<button class="btn btn-sm" id="lp-mover-btn" onclick="lpMoverToggle('+c.id+')" '
+          +'title="Arrastra las secciones para cambiar el orden">Mover secciones</button>'
         +'<button class="btn btn-sm" onclick="escribirCopyLanding('+c.id+')">Reescribir con IA</button>'
         +'<button class="btn btn-sm" onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
@@ -25375,9 +25377,11 @@ function _lpRefrescarPreview(clientId){
   if(!f) return;
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  S._lpEdit=false;
+  S._lpEdit=false; S._lpMover=false;
   var b=document.getElementById('lp-edit-btn');
   if(b) b.textContent='Editar el texto';
+  var mb=document.getElementById('lp-mover-btn');
+  if(mb) mb.textContent='Mover secciones';
   f.srcdoc=_lpPaginaHtml(c);
 }
 function lpEditToggle(clientId){
@@ -25387,6 +25391,10 @@ function lpEditToggle(clientId){
   var m=document.getElementById('lp-edit-msg');
   if(!c||!f||!f.contentDocument) return;
   S._lpEdit=!S._lpEdit;
+  // Los dos modos escriben sobre los mismos nodos: uno los vuelve editables y
+  // el otro arrastrables. Prendidos juntos el cursor de texto se pelea con el
+  // drag y no se termina ni escribiendo ni moviendo.
+  if(S._lpEdit && S._lpMover){ S._lpMover=false; _lpMoverAplicar(clientId); }
   var d=f.contentDocument;
   d.querySelectorAll('[data-c]').forEach(function(el){
     el.contentEditable=S._lpEdit?'true':'false';
@@ -25428,6 +25436,101 @@ function lpCopySet(clientId, ruta, valor){
   if(m){ m.textContent='Guardado'; setTimeout(function(){
     if(m && S._lpEdit) m.textContent='Toca cualquier texto y escribi. Se guarda al salir del campo.';
   },1200); }
+}
+// ---- Mover las secciones arrastrandolas sobre el propio preview ----------
+// El modal "Estructura" ya hacia esto, pero a un modal de distancia de la
+// pagina: cerrar, buscar el boton, arrastrar a ciegas, volver a abrir. Aca se
+// agarra el bloque que se esta mirando. El orden que se escribe es el mismo:
+// DB.lpEstructura[piel]. Mover una seccion la mueve para todos los clientes con
+// esa piel, y el cartel de la barra lo dice mientras dura el modo.
+var _LP_MOV=null;
+function lpMoverToggle(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var f=document.getElementById('lp-frame');
+  if(!c||!f||!f.contentDocument) return;
+  S._lpMover=!S._lpMover;
+  if(S._lpMover && S._lpEdit) lpEditToggle(clientId);
+  _lpMoverAplicar(clientId);
+}
+function _lpMovLimpiar(d){
+  d.querySelectorAll('.lp-drop').forEach(function(x){ x.classList.remove('lp-drop'); });
+  d.querySelectorAll('.lp-drag').forEach(function(x){ x.classList.remove('lp-drag'); });
+}
+function _lpMoverAplicar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var f=document.getElementById('lp-frame');
+  if(!c||!f||!f.contentDocument) return;
+  var d=f.contentDocument, on=!!S._lpMover;
+  var piel=(_lpCfg(c).piel||'institucional');
+  var b=document.getElementById('lp-mover-btn');
+  var m=document.getElementById('lp-edit-msg');
+  if(b) b.textContent=on?'Terminar de mover':'Mover secciones';
+  if(m) m.textContent=on
+    ? ('Arrastra una seccion sobre otra. El orden es de la piel "'+piel+'": '
+       +'cambia para todos los clientes que la usan.')
+    : '';
+  var st=d.getElementById('lp-mov-css');
+  if(on && !st){
+    st=d.createElement('style'); st.id='lp-mov-css';
+    // El nombre de la seccion se dibuja encima con ::before y data-nom: sin el
+    // cartel, "cifras" y "clientes" son dos bloques de texto parecidos y se
+    // arrastra el equivocado.
+    st.textContent='[data-sec]{position:relative}'
+      +'[data-sec].lp-mov{outline:1px dashed var(--acento);outline-offset:6px;cursor:grab}'
+      +'[data-sec].lp-mov::before{content:attr(data-nom);position:absolute;top:4px;left:0;'
+        +'font:600 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
+        +'text-transform:uppercase;color:var(--acento);opacity:.8;pointer-events:none}'
+      +'[data-sec].lp-drag{opacity:.35}'
+      +'[data-sec].lp-drop{box-shadow:inset 0 3px 0 0 var(--acento)}';
+    d.head.appendChild(st);
+  }
+  if(!on && st) st.parentNode.removeChild(st);
+  d.querySelectorAll('[data-sec]').forEach(function(el){
+    el.draggable=on;
+    el.classList.toggle('lp-mov', on);
+    if(!on){ el.classList.remove('lp-drop'); el.classList.remove('lp-drag'); return; }
+    var k=el.getAttribute('data-sec');
+    el.setAttribute('data-nom', LP_SECCION_NOMBRE[k]||k);
+    if(el._lpMovBound) return;
+    el._lpMovBound=true;
+    el.addEventListener('dragstart', function(ev){
+      if(!S._lpMover) return;
+      _LP_MOV=el.getAttribute('data-sec');
+      el.classList.add('lp-drag');
+      ev.dataTransfer.effectAllowed='move';
+      // Firefox no dispara drop si no se escribio algo en el dataTransfer.
+      try{ ev.dataTransfer.setData('text/plain', _LP_MOV); }catch(e){}
+    });
+    el.addEventListener('dragend', function(){ _LP_MOV=null; _lpMovLimpiar(d); });
+    el.addEventListener('dragover', function(ev){
+      if(!S._lpMover||!_LP_MOV||el.getAttribute('data-sec')===_LP_MOV) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect='move';
+      el.classList.add('lp-drop');
+    });
+    el.addEventListener('dragleave', function(){ el.classList.remove('lp-drop'); });
+    el.addEventListener('drop', function(ev){
+      ev.preventDefault();
+      var origen=_LP_MOV, destino=el.getAttribute('data-sec');
+      _LP_MOV=null; _lpMovLimpiar(d);
+      if(!origen||origen===destino) return;
+      var L=_lpEst(piel);
+      var i=L.indexOf(origen), j=L.indexOf(destino);
+      if(i<0||j<0) return;
+      _rtMover(L, i, j);
+      save();
+      // Se mueve el nodo en vez de repintar el iframe. Repintar servia igual,
+      // pero devolvia el scroll al principio: movias una seccion del final y
+      // perdias de vista lo que acababas de mover.
+      var nodo=d.querySelector('[data-sec="'+origen+'"]');
+      if(nodo) el.parentNode.insertBefore(nodo, i<j ? el.nextSibling : el);
+      var m2=document.getElementById('lp-edit-msg');
+      if(m2){
+        m2.textContent='Guardado';
+        setTimeout(function(){ if(S._lpMover) _lpMoverAplicar(clientId); },1200);
+      }
+    });
+  });
 }
 function lpDescargar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -25706,7 +25809,11 @@ function _lpPaginaHtml(c){
         }
       };
       return lpSecciones(cfg.piel).map(function(k){
-        return partes[k]?partes[k]():'';
+        var h=partes[k]?partes[k]():'';
+        // Cada seccion sale marcada con su clave. Es lo unico que necesita el
+        // preview para saber que bloque agarro el que arrastra: sin esto habria
+        // que adivinar por el texto del h2, que cambia con cada reescritura.
+        return h ? h.replace(/^(<(?:section|div)\b)/, '$1 data-sec="'+k+'"') : '';
       }).join('');
     })()
     +'<footer>'+E(c.name||'')+'</footer>'
