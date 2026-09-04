@@ -6428,18 +6428,24 @@ async function syncFathomFromGmail(silent){
 // apretar el boton, y un cliente nuevo arrancaba sin nada de su historial.
 // Esto la corre sola: un cliente por vuelta, no todos de una, porque cada uno
 // es una consulta a Fathom por cada key del equipo y en tandas se cae.
-// Solo los que se pueden filtrar de verdad. La API de Fathom filtra por
-// dominio del invitado; el mail suelto lo ignora en silencio —
-// calendar_invitees[] no es un parametro que exista— asi que un cliente con
-// Gmail se queda SIN filtro y la consulta devuelve todas las reuniones de la
-// agencia. Eso ya paso: metio llamadas de otros clientes en una ficha.
 function _fathomPendiente(){
   var lista=(DB.clients||[]).filter(function(c){
-    if(c.archivado || c.fathomBuscadoAt) return false;
-    var f=_fathomFiltro(c);
-    return !!(f && f.doms.length);
+    return !c.archivado && !c.fathomBuscadoAt && _fathomFiltro(c);
   });
   return lista.length?lista[0]:null;
+}
+// Una reunion es de este cliente si alguno de sus invitados lo es. La funcion
+// ya filtra, pero se vuelve a chequear aca: una version vieja desplegada
+// devolvia la agenda entera y el tracker la cargaba sin mirar. Si la respuesta
+// no trae invitados es justamente esa version vieja, y entonces solo se acepta
+// lo que el filtro por dominio de la API ya garantiza por su cuenta.
+function _fathomEsDe(f, m){
+  if(!Array.isArray(m.invitados)) return f.doms.length>0;
+  return m.invitados.some(function(x){
+    var mail=String(x||'').trim().toLowerCase();
+    var dom=mail.split('@')[1]||'';
+    return (mail && f.mails.indexOf(mail)>=0) || (dom && f.doms.indexOf(dom)>=0);
+  });
 }
 // La llamada encontrada se carga con el titulo que le puso Fathom. La busqueda
 // a mano lo reescribe con el nombre de la etapa porque la esta importando como
@@ -6482,7 +6488,9 @@ async function _fathomBackfillUno(){
     if(!r.ok||!d||!d.ok) return;
     var ya={};
     (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
-    var nuevas=(d.items||[]).filter(function(m){ return m.url && !ya[m.url]; });
+    var nuevas=(d.items||[]).filter(function(m){
+      return m.url && !ya[m.url] && _fathomEsDe(f, m);
+    });
     if(!nuevas.length) return;
     nuevas.forEach(function(m){ _fathomImportar(c, m); });
     save();
@@ -20941,7 +20949,8 @@ function p360Soltar(ev, el, etapa){
 // busqueda a mano y la automatica: si fueran dos copias, arreglar el filtro en
 // una dejaria a la otra trayendo cualquier cosa.
 function _fathomFiltro(c){
-  var mails=[c.email, c.contactoEmail].filter(Boolean);
+  var mails=[c.email, c.contactoEmail].filter(Boolean)
+    .map(function(m){ return String(m).trim().toLowerCase(); });
   if(!mails.length) return null;
   // Del mail sale el dominio, salvo que sea una casilla personal: filtrar por
   // gmail.com traeria todas las reuniones de todos los clientes.
@@ -20960,14 +20969,6 @@ async function p360Buscar(clientId, etapa){
   if(!url||!sec){ di('Falta configurar el webhook en Integraciones.','var(--amberx)'); return; }
   var f=_fathomFiltro(c);
   if(!f){ di('Este cliente no tiene mail cargado en la ficha.','var(--amberx)'); return; }
-  // Sin dominio propio no hay filtro posible y Fathom devuelve todo. Antes se
-  // buscaba igual y la lista venia llena de reuniones de otros clientes.
-  if(!f.doms.length){
-    di('Este cliente solo tiene un mail personal ('+esc(f.mails.join(', '))+'). '
-      +'Fathom filtra por dominio, asi que la busqueda traeria todas tus reuniones. '
-      +'Carga un mail con el dominio del cliente en la ficha.','var(--amberx)');
-    return;
-  }
   var mails=f.mails, doms=f.doms;
   di('Buscando en Fathom...');
   try{
@@ -20987,6 +20988,12 @@ async function p360Buscar(clientId, etapa){
     // la llamada y la etapa se marca igual.
     var ya={};
     (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
+    items=items.filter(function(m){ return _fathomEsDe(f, m); });
+    if(!items.length){
+      di('Fathom devolvio reuniones, pero ninguna con '+esc(mails.join(', '))
+        +' entre los invitados.','var(--amberx)');
+      return;
+    }
     S._p360Hallazgos={cid:clientId, etapa:etapa, items:items, ya:ya,
                       cuentas:d.cuentas||1, fallos:d.fallos||[]};
     di('');
