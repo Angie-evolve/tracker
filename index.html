@@ -6437,7 +6437,16 @@ function _fathomSenas(c){
   var gen=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
   var doms=mails.map(function(m){ return m.split('@')[1]||''; })
     .filter(function(d){ return d && !gen.test(d+'.'); });
-  return {mails:mails, doms:doms};
+  // El nombre sin espacios ni acentos. Casi ninguna ficha tiene el mail
+  // cargado, pero el dominio del invitado suele SER el nombre del cliente:
+  // dblandit.com es DblandIT, redzeppelin.cl es Red Zeppelin. Comparar contra
+  // eso asigna sin que haya que cargar nada.
+  return {mails:mails, doms:doms, clave:_n(c.name).replace(/[^a-z0-9]/g,'')};
+}
+// La etiqueta principal del dominio: lo de antes del primer punto. Sirve para
+// .com y para .com.ar por igual, que es lo que hay en la libreta.
+function _fathomDomClave(dom){
+  return String(dom||'').split('.')[0].replace(/[^a-z0-9]/g,'');
 }
 function _fathomMatchClient(meeting, fila){
   var mn=_n(meeting);
@@ -6452,10 +6461,17 @@ function _fathomMatchClient(meeting, fila){
   // sabes algo que el invitado no dice.
   var mails=_fathomMails(fila);
   if(!mails.length) return null;
+  // Los genericos no dicen de quien es la reunion: medio equipo tiene gmail.
+  var gen=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
   return DB.clients.find(function(c){
     var s2=_fathomSenas(c);
     return mails.some(function(m){
-      return s2.mails.indexOf(m)>=0 || s2.doms.indexOf(m.split('@')[1]||'')>=0;
+      var dom=m.split('@')[1]||'';
+      if(s2.mails.indexOf(m)>=0) return true;
+      if(dom && s2.doms.indexOf(dom)>=0) return true;
+      // Comparacion exacta contra la etiqueta, no "contiene": con "contiene",
+      // un cliente llamado "Zen" se quedaria con las reuniones de zentenio.com.
+      return !!(dom && s2.clave && !gen.test(dom+'.') && _fathomDomClave(dom)===s2.clave);
     });
   })||null;
 }
