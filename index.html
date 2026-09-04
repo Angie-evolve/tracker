@@ -6428,9 +6428,16 @@ async function syncFathomFromGmail(silent){
 // apretar el boton, y un cliente nuevo arrancaba sin nada de su historial.
 // Esto la corre sola: un cliente por vuelta, no todos de una, porque cada uno
 // es una consulta a Fathom por cada key del equipo y en tandas se cae.
+// Solo los que se pueden filtrar de verdad. La API de Fathom filtra por
+// dominio del invitado; el mail suelto lo ignora en silencio —
+// calendar_invitees[] no es un parametro que exista— asi que un cliente con
+// Gmail se queda SIN filtro y la consulta devuelve todas las reuniones de la
+// agencia. Eso ya paso: metio llamadas de otros clientes en una ficha.
 function _fathomPendiente(){
   var lista=(DB.clients||[]).filter(function(c){
-    return !c.archivado && !c.fathomBuscadoAt && _fathomFiltro(c);
+    if(c.archivado || c.fathomBuscadoAt) return false;
+    var f=_fathomFiltro(c);
+    return !!(f && f.doms.length);
   });
   return lista.length?lista[0]:null;
 }
@@ -20953,6 +20960,14 @@ async function p360Buscar(clientId, etapa){
   if(!url||!sec){ di('Falta configurar el webhook en Integraciones.','var(--amberx)'); return; }
   var f=_fathomFiltro(c);
   if(!f){ di('Este cliente no tiene mail cargado en la ficha.','var(--amberx)'); return; }
+  // Sin dominio propio no hay filtro posible y Fathom devuelve todo. Antes se
+  // buscaba igual y la lista venia llena de reuniones de otros clientes.
+  if(!f.doms.length){
+    di('Este cliente solo tiene un mail personal ('+esc(f.mails.join(', '))+'). '
+      +'Fathom filtra por dominio, asi que la busqueda traeria todas tus reuniones. '
+      +'Carga un mail con el dominio del cliente en la ficha.','var(--amberx)');
+    return;
+  }
   var mails=f.mails, doms=f.doms;
   di('Buscando en Fathom...');
   try{
