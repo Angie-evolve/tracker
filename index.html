@@ -498,6 +498,18 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
   padding:8px 13px;font-size:12px;font-weight:500;cursor:pointer;font-family:var(--font)}
 .as-send:disabled{opacity:.45;cursor:default}
 @media(max-width:560px){ .as-panel{right:12px;left:12px;width:auto;bottom:70px} }
+/* El resumen de una llamada. pre-wrap conserva los saltos que trae el markdown
+   sin tener que armar parrafos: el texto ya viene con su ritmo. */
+.fc-res{margin-top:8px;font-size:11.5px;color:var(--text2);line-height:1.65;
+  white-space:pre-wrap;word-wrap:break-word;max-width:82ch}
+.fc-res b{color:var(--text);font-weight:500}
+.fc-res b.fc-h{display:inline-block;margin-top:10px;color:var(--strong);font-weight:600}
+/* La cita no compite con el texto: es del tamano de una nota al pie y solo se
+   pinta al pasar por encima. */
+.fc-cita{font-size:10px;color:var(--text3);text-decoration:none;
+  border:0.5px solid var(--border2);border-radius:4px;padding:0 4px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.fc-cita:hover{color:var(--accent);border-color:rgba(78,207,160,0.45)}
 .cp-q{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer;transition:border-color .15s}
 .cp-q:hover{border-color:var(--border2)}
 .cp-q.cp-qnow{border-color:rgba(78,207,160,0.4)}
@@ -35084,6 +35096,43 @@ function bdActivar(){
   _bdAplicarVista();
 }
 
+// mm:ss desde los segundos que trae la cita. El resumen de Fathom apunta a un
+// momento exacto de la grabacion y ese numero es lo unico util de esa URL.
+function _fcMin(seg){
+  var m=Math.floor(seg/60), r=Math.round(seg%60);
+  return m+':'+(r<10?'0':'')+r;
+}
+// El resumen viene en markdown y con una cita por afirmacion. Pintado crudo se
+// ve la URL entera en el medio de cada frase, tres veces por renglon, y no hay
+// forma de leerlo. Se procesa lo minimo: negritas, titulos, y la cita como una
+// marca chica con el minuto.
+function _fcResumen(t){
+  var s=String(t||''), links=[];
+  // Los links salen primero: traen parentesis que romperian todo lo demas.
+  s=s.replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g,function(_,txt,url){
+    links.push({t:txt,u:url});
+    return '\u0001'+(links.length-1)+'\u0001';
+  });
+  s=esc(s);
+  // Fathom manda todo el resumen en un solo renglon: titulos y vinetas van
+  // pegados en el medio de la linea. Sin cortarlo primero, cualquier regla
+  // anclada al principio de linea solo agarra la primera.
+  s=s.replace(/\s*(#{2,4}\s)/g,'\n$1')
+     .replace(/\s+-\s+(?=\*\*|\u0001)/g,'\n- ')
+     .replace(/^\n+/,'');
+  s=s.replace(/^#{2,4}\s*([^\u0001\n]*)/gm,'<b class="fc-h">$1</b>\n');
+  // Los links vuelven antes que las negritas: el texto de la cita las trae
+  // adentro —[**Nueva estrategia:** ...]— y si se reinsertara despues, esas
+  // negritas nunca se procesarian.
+  s=s.replace(/\u0001(\d+)\u0001/g,function(_,i){
+    var l=links[i]||{};
+    var m=/[?&]timestamp=(\d+(?:\.\d+)?)/.exec(l.u||'');
+    return esc(l.t||'')
+      +' <a href="'+esc(l.u||'')+'" target="_blank" rel="noopener" class="fc-cita" '
+      +'title="Ver este momento en la grabacion">'+(m?_fcMin(parseFloat(m[1])):'ver')+'</a>';
+  });
+  return s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+}
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">Cargar llamada</button>';
@@ -35153,8 +35202,7 @@ function fathomCallsHTML(c){
         +'<button class="btn btn-sm" onclick="borrarLlamada('+c.id+',\''+cl.id+'\')" '
           +'style="font-size:11px;padding:3px 9px;color:var(--text3)">Borrar</button>'
       +'</div>'
-      +(cl.summary?('<div style="margin-top:8px;font-size:11.5px;color:var(--text2);line-height:1.55">'
-        +esc(cl.summary)+'</div>'):'')
+      +(cl.summary?('<div class="fc-res">'+_fcResumen(cl.summary)+'</div>'):'')
       +'</div>';
   });
   if(calls.length>3){
