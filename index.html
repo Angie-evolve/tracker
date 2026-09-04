@@ -6203,7 +6203,7 @@ async function fathomWebhookSync(silent){
     if(!c){ sinCliente.push(f); return; }
     c.fathomCalls=c.fathomCalls||[];
     var id='fw-'+f.recording_id;
-    if(c.fathomCalls.some(function(x){ return x.id===id; })){ marcar.push(f.recording_id); return; }
+    if(_fathomYaEsta(c, f.recording_id, f.url)){ marcar.push(f.recording_id); return; }
     var items=(f.action_items||[]).map(function(it){
       return (it&&(it.description||it.texto||it.text))||String(it||''); }).filter(Boolean);
     c.fathomCalls.unshift({
@@ -6464,6 +6464,19 @@ async function fathomAsignar(recId, clientId){
 // Los mails de los que estuvieron en la reunion. Es el dato que el titulo no
 // tiene: quien titula escribe como quiere —"Dblanit" por "DblandIT", o
 // "Impromptu meeting"— pero el invitado es siempre el mismo.
+// La misma grabacion entra por dos puertas —el webhook y la busqueda hacia
+// atras— y cada una le pone su propio prefijo al id: fw- y fathom-. Comparar
+// ids enteros no la reconocia, y quedaba dos veces en la ficha con dos titulos
+// distintos. Se compara el id sin prefijo, y tambien la url.
+function _fathomYaEsta(c, recId, url){
+  var rid=String(recId||'').trim();
+  var u=String(url||'').trim();
+  return (c.fathomCalls||[]).some(function(x){
+    if(u && x.url && String(x.url).trim()===u) return true;
+    if(!rid) return false;
+    return String(x.id||'').replace(/^(fw|fathom)-/,'')===rid;
+  });
+}
 function _fathomMails(fila){
   var ps=(fila&&(fila.participantes||fila.calendar_invitees))||[];
   if(!Array.isArray(ps)) return [];
@@ -6697,10 +6710,8 @@ async function _fathomBackfillUno(){
        body:JSON.stringify({emails:f.mails, dominios:f.doms, transcripcion:true})});
     var d=null; try{ d=await r.json(); }catch(e){}
     if(!r.ok||!d||!d.ok) return;
-    var ya={};
-    (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
     var nuevas=(d.items||[]).filter(function(m){
-      return m.url && !ya[m.url] && _fathomEsDe(f, m);
+      return m.url && !_fathomYaEsta(c, m.recording_id, m.url) && _fathomEsDe(f, m);
     });
     if(!nuevas.length) return;
     nuevas.forEach(function(m){ _fathomImportar(c, m); });
@@ -21620,7 +21631,9 @@ async function p360Buscar(clientId, etapa){
     // la llamada y la etapa se marca igual.
     var ya={};
     (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
-    items=items.filter(function(m){ return _fathomEsDe(f, m); });
+    items=items.filter(function(m){
+      return _fathomEsDe(f, m) && !_fathomYaEsta(c, m.recording_id, m.url);
+    });
     if(!items.length){
       di('Fathom devolvio reuniones, pero ninguna con '+esc(mails.join(', '))
         +' entre los invitados.','var(--amberx)');
