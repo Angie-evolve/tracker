@@ -410,6 +410,23 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
   font-size:10px;cursor:pointer;opacity:0;transition:opacity .15s;font-family:var(--font)}
 .cp-cell:hover .cp-ghost{opacity:1}
 .cp-ghost:hover{color:var(--accent);border-color:rgba(78,207,160,0.45)}
+/* Tira de dias. Solo se abre el mes que tiene rodaje: el resto del ano sigue
+   en meses, que es la escala en la que se piensa el contenido. Filmar es lo
+   unico que necesita fecha exacta, porque hay que reservar y coordinar. */
+.cp-dias{display:flex;flex-direction:column;gap:0;border:1px solid var(--border);
+  border-radius:var(--radius-lg);background:var(--bg2);margin-bottom:10px;overflow:hidden}
+.cp-dias-cab{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 14px;background:var(--bg3);border-bottom:1px solid var(--border)}
+.cp-dias-tit{font-size:10px;letter-spacing:0.07em;text-transform:uppercase;color:var(--text3)}
+.cp-dias-tit b{color:var(--text2);font-weight:500}
+.cp-dias-fila{display:flex;gap:2px;padding:9px 12px;overflow-x:auto}
+.cp-d{flex:1;min-width:19px;text-align:center;font-size:9px;color:var(--text3);
+  padding:5px 0;border-radius:4px;font-variant-numeric:tabular-nums}
+.cp-d.finde{opacity:.4}
+.cp-d.rod{background:var(--violeta,#a78bfa);color:#0d0d0d;font-weight:600;opacity:1}
+/* El dia con una pieza asignada lleva un punto: es lo que conecta la jornada
+   con lo que sale de ella. */
+.cp-d.conp{box-shadow:inset 0 -3px 0 rgba(13,13,13,.45)}
 .cp-q{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer;transition:border-color .15s}
 .cp-q:hover{border-color:var(--border2)}
 .cp-q.cp-qnow{border-color:rgba(78,207,160,0.4)}
@@ -17815,6 +17832,12 @@ const CP_EJES_BASE=[
   {n:'Oferta directa', c:'#f07050'}
 ];
 function _cpId(){return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function _cpDiasMes(m,y){ return new Date(y,m+1,0).getDate(); }
+// El rodaje de un mes, si lo hay. Se busca por mes porque es lo que la grilla
+// sabe: la pieza vive en un mes y de ahi cuelga su jornada.
+function _cpRodajeDe(pl,m){
+  return (pl.rodajes||[]).filter(function(r){ return r.m===m; })[0]||null;
+}
 function cpEstado(k){return CP_ESTADOS.find(function(e){return e.k===k;})||CP_ESTADOS[0];}
 function cpAnio(){ return S.mercadoYear||(S.mercadoYear=new Date().getFullYear()); }
 function cpCambiarAnio(d){ S.mercadoYear=cpAnio()+d; _refrescarMercado(); }
@@ -17831,9 +17854,19 @@ function getContentPlan(c){
 }
 function getPlanAnio(c,y){
   var cp=getContentPlan(c); var k=String(y||cpAnio());
-  if(!cp.years[k]) cp.years[k]={qs:['','','',''], piezas:[]};
+  if(!cp.years[k]) cp.years[k]={qs:['','','',''], piezas:[], rodajes:[]};
   if(!Array.isArray(cp.years[k].qs)) cp.years[k].qs=['','','',''];
   if(!Array.isArray(cp.years[k].piezas)) cp.years[k].piezas=[];
+  if(!Array.isArray(cp.years[k].rodajes)) cp.years[k].rodajes=[];
+  // Un rodaje fuera de rango dibujaria una tira rota. Se acomoda en vez de
+  // desaparecer: el dato que cargaste sigue ahi, corregido.
+  cp.years[k].rodajes.forEach(function(r){
+    var m=parseInt(r.m,10); r.m=(isNaN(m)||m<0||m>11)?0:m;
+    var ult=_cpDiasMes(r.m, parseInt(k,10));
+    var a=parseInt(r.d1,10)||1, b=parseInt(r.d2,10)||a;
+    r.d1=Math.min(Math.max(a,1),ult);
+    r.d2=Math.min(Math.max(b,r.d1),ult);
+  });
   // Red de seguridad: una pieza con un eje que ya no existe no se dibujaria en
   // ningun carril y quedaria invisible. La devolvemos al primer eje.
   cp.years[k].piezas.forEach(function(p){
@@ -17843,6 +17876,107 @@ function getPlanAnio(c,y){
   return cp.years[k];
 }
 function _cpCli(){ return DB.clients.find(function(x){return x.id===S.clientId;}); }
+
+// --- Rodajes ---
+// Un rodaje por mes y no varios: con dos viajes en el mismo mes la tira se
+// vuelve ilegible y la pieza deja de saber a cual pertenece. Si algun dia hace
+// falta, el dato ya es una lista y aguanta.
+function abrirRodajes(){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c), y=cpAnio();
+  var rs=(pl.rodajes||[]).slice().sort(function(a,b){ return a.m-b.m; });
+  var libres=[]; for(var m=0;m<12;m++) if(!_cpRodajeDe(pl,m)) libres.push(m);
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px;width:92%">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px">'
+      +'<span style="font-size:15px;font-weight:600;color:var(--strong)">Rodajes</span>'
+      +'<span style="font-size:11px;color:var(--text3)">'+y+'</span></div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:13px">'
+      +'Los dias que se filma. El mes que tenga uno se abre en su tira de dias arriba del calendario.</div>'
+    +(rs.length
+      ? '<div style="display:flex;flex-direction:column;gap:7px;margin-bottom:13px">'
+        +rs.map(function(r){
+          return '<div style="display:flex;align-items:center;gap:10px;background:var(--bg3);'
+            +'border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px">'
+            +'<div style="flex:1;min-width:0">'
+              +'<div style="font-size:12.5px;color:var(--text)">'+esc(r.lugar||'Sin destino')+'</div>'
+              +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'+CP_MESES[r.m]+' &middot; '
+                +(r.d2>r.d1?(r.d1+'&ndash;'+r.d2):String(r.d1))+'</div></div>'
+            +'<button class="btn btn-sm" style="padding:3px 9px;font-size:10.5px" '
+              +'onclick="abrirRodaje(\''+r.id+'\')">Editar</button></div>';
+        }).join('')+'</div>'
+      : '<div style="font-size:12px;color:var(--text3);margin-bottom:13px">Todavia no cargaste ninguno.</div>')
+    +'<div class="modal-footer">'
+      +(libres.length
+        ? '<button class="btn btn-primary" onclick="abrirRodaje(null)">Agregar rodaje</button>'
+        : '<span style="font-size:11px;color:var(--text3)">Todos los meses ya tienen rodaje.</span>')
+      +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+    +'</div></div></div>';
+}
+function abrirRodaje(id){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c), y=cpAnio(), nuevo=!id;
+  var r=nuevo?null:(pl.rodajes||[]).find(function(x){return x.id===id;});
+  if(!nuevo&&!r) return;
+  var mDef=r?r.m:(function(){ for(var m=0;m<12;m++) if(!_cpRodajeDe(pl,m)) return m; return 0; })();
+  var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
+  var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:92%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:13px">'
+      +(nuevo?'Nuevo rodaje':'Editar rodaje')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:11px">'
+      +'<div><div style="'+lbl+'">Donde</div>'
+        +'<input id="rd-l" value="'+esc(r?(r.lugar||''):'')+'" placeholder="Sudeste Asiatico, estudio, casa del cliente" style="'+inp+'"></div>'
+      +'<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:9px">'
+        +'<div><div style="'+lbl+'">Mes</div><select id="rd-m" style="'+inp+'">'
+          +CP_MESES.map(function(n,i){
+            // Un mes que ya tiene rodaje no se ofrece, salvo que sea el propio.
+            var ocupado=_cpRodajeDe(pl,i)&&(!r||_cpRodajeDe(pl,i).id!==r.id);
+            return ocupado?'':'<option value="'+i+'"'+(i===mDef?' selected':'')+'>'+n+'</option>';
+          }).join('')+'</select></div>'
+        +'<div><div style="'+lbl+'">Del dia</div>'
+          +'<input id="rd-a" type="number" min="1" max="31" value="'+(r?r.d1:1)+'" style="'+inp+'"></div>'
+        +'<div><div style="'+lbl+'">Al dia</div>'
+          +'<input id="rd-b" type="number" min="1" max="31" value="'+(r?r.d2:1)+'" style="'+inp+'"></div>'
+      +'</div></div>'
+    +'<div class="modal-footer">'
+      +(nuevo?'':'<button class="btn" style="color:var(--redx)" onclick="borrarRodaje(\''+r.id+'\')">Borrar</button>')
+      +'<button class="btn" onclick="abrirRodajes()">Volver</button>'
+      +'<button class="btn btn-primary" onclick="guardarRodaje('+(nuevo?'null':"'"+r.id+"'")+')">Guardar</button>'
+    +'</div></div></div>';
+}
+function guardarRodaje(id){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  var m=parseInt((document.getElementById('rd-m')||{}).value,10)||0;
+  var a=parseInt((document.getElementById('rd-a')||{}).value,10)||1;
+  var b=parseInt((document.getElementById('rd-b')||{}).value,10)||a;
+  var lugar=String((document.getElementById('rd-l')||{}).value||'').trim();
+  // Al reves se acomoda solo: escribir 22 y 12 es un error de tipeo, no una
+  // intencion, y rebotarlo con un cartel seria peor que arreglarlo.
+  if(b<a){ var t=a; a=b; b=t; }
+  var r=id?(pl.rodajes||[]).find(function(x){return x.id===id;}):null;
+  if(r){ r.m=m; r.d1=a; r.d2=b; r.lugar=lugar; }
+  else { pl.rodajes.push({id:_cpId(),m:m,d1:a,d2:b,lugar:lugar}); }
+  save();
+  closeModal();
+  _refrescarMercado();
+}
+function borrarRodaje(id){
+  var c=_cpCli(); if(!c) return;
+  var pl=getPlanAnio(c);
+  // Las piezas de ese mes pierden el dia: sin jornada, el dia no significa nada
+  // y quedaria un numero suelto en el chip.
+  var r=(pl.rodajes||[]).find(function(x){return x.id===id;});
+  if(r) pl.piezas.forEach(function(p){ if(p.m===r.m) delete p.d; });
+  pl.rodajes=(pl.rodajes||[]).filter(function(x){return x.id!==id;});
+  save();
+  closeModal();
+  _refrescarMercado();
+}
 
 // --- Piezas ---
 function abrirPieza(id,mes,ejeId){
@@ -17881,6 +18015,22 @@ function abrirPieza(id,mes,ejeId){
           +CP_ESTADOS.map(function(e){return '<option value="'+e.k+'"'+(e.k===p.s?' selected':'')+'>'+e.n+'</option>';}).join('')
         +'</select></div>'
       +'</div>'
+      +(function(){
+        var rd=_cpRodajeDe(pl,p.m);
+        if(!rd) return '<div style="font-size:11px;color:var(--text3);line-height:1.5">'
+          +'No hay rodaje cargado en '+CP_MESES[p.m]+'. Cargalo en <b style="color:var(--text2);font-weight:500">Rodajes</b> '
+          +'y despues vas a poder elegir que dia se graba esta pieza.</div>';
+        var op='';
+        for(var d=rd.d1;d<=rd.d2;d++){
+          var wd=new Date(cpAnio(),rd.m,d).getDay();
+          op+='<option value="'+d+'"'+(String(p.d||'')===String(d)?' selected':'')+'>'
+            +d+' de '+CP_MESES[rd.m]+' &middot; '+['dom','lun','mar','mie','jue','vie','sab'][wd]+'</option>';
+        }
+        return '<div><div style="'+lbl+'">Dia de grabacion'
+          +'<span style="color:var(--text3)"> &middot; '+esc(rd.lugar||CP_MESES[rd.m])+'</span></div>'
+          +'<select id="cp-d" style="'+inp+'">'
+          +'<option value="">Sin dia asignado</option>'+op+'</select></div>';
+      })()
       +'<div><div style="'+lbl+'">Link (opcional)</div>'
         +'<input id="cp-link" value="'+esc(p.link||'')+'" placeholder="guion, drive, post publicado" style="'+inp+'"></div>'
     +'</div>'
@@ -17899,6 +18049,11 @@ function guardarPieza(id){
   var t=(v('cp-t')||'').trim();
   if(!t){ toast('Falta el titulo de la pieza','red'); return; }
   var datos={t:t, e:v('cp-e'), f:v('cp-f'), m:parseInt(v('cp-m'),10)||0, s:v('cp-s'), link:(v('cp-link')||'').trim()};
+  // El dia pertenece al rodaje de SU mes. Si moviste la pieza a otro mes, el dia
+  // elegido era del mes anterior y ya no quiere decir nada.
+  var _rd=_cpRodajeDe(pl,datos.m);
+  var _d=parseInt(v('cp-d'),10);
+  datos.d=(_rd&&_d>=_rd.d1&&_d<=_rd.d2)?_d:undefined;
   if(!id){ datos.id=_cpId(); pl.piezas.push(datos); }
   else{
     var p=pl.piezas.find(function(x){return x.id===id;});
@@ -18028,6 +18183,7 @@ function calendarioContenidoHtml(c){
       +'<span style="font-size:12.5px;color:var(--text);min-width:38px;text-align:center">'+y+'</span>'
       +'<button class="btn btn-sm" style="padding:5px 9px" onclick="cpCambiarAnio(1)" title="Año siguiente">&rsaquo;</button>'
       +'<button class="btn btn-sm" style="margin-left:6px" onclick="abrirEjes()">Ejes</button>'
+      +'<button class="btn btn-sm" onclick="abrirRodajes()">Rodajes</button>'
       +'<button class="btn btn-sm btn-primary" onclick="abrirPieza(null,null,null)">Agregar pieza</button>'
     +'</div></div>';
 
@@ -18046,6 +18202,37 @@ function calendarioContenidoHtml(c){
   }
   h+='</div>';
 
+  // Una tira por mes con rodaje. Ordenadas por mes para que se lean como el
+  // ano y no como el orden en que se cargaron.
+  (pl.rodajes||[]).slice().sort(function(a,b){ return a.m-b.m; }).forEach(function(r){
+    var ult=_cpDiasMes(r.m,y);
+    // Los dias que ya tienen una pieza asignada se marcan: es lo que conecta la
+    // jornada con lo que produce.
+    var conP={};
+    pl.piezas.forEach(function(p){ if(p.m===r.m&&p.d) conP[p.d]=(conP[p.d]||0)+1; });
+    var nP=pl.piezas.filter(function(p){ return p.m===r.m&&p.d; }).length;
+    h+='<div class="cp-dias"><div class="cp-dias-cab">'
+      +'<div class="cp-dias-tit">'+CP_MESES[r.m]+' '+y
+        +(r.lugar?(' &middot; <b>'+esc(r.lugar)+'</b>'):'')+'</div>'
+      +'<div style="display:flex;align-items:center;gap:10px">'
+        +'<span style="font-size:10.5px;color:var(--text3)">'
+          +(r.d2>r.d1?(r.d1+'&ndash;'+r.d2+' &middot; '+(r.d2-r.d1+1)+' dias'):(r.d1+' &middot; 1 dia'))
+          +(nP?(' &middot; '+nP+' pieza'+(nP===1?'':'s')):' &middot; sin piezas asignadas')+'</span>'
+        +'<button class="btn btn-sm" style="padding:3px 8px;font-size:10.5px" '
+          +'onclick="abrirRodaje(\''+r.id+'\')">Editar</button>'
+      +'</div></div>'
+      +'<div class="cp-dias-fila">';
+    for(var d=1;d<=ult;d++){
+      var wd=new Date(y,r.m,d).getDay();
+      var dentro=(d>=r.d1&&d<=r.d2);
+      h+='<span class="cp-d'+(dentro?' rod':'')+((wd===0||wd===6)?' finde':'')
+        +((dentro&&conP[d])?' conp':'')+'"'
+        +((dentro&&conP[d])?(' title="'+conP[d]+' pieza'+(conP[d]===1?'':'s')+' de este dia"'):'')
+        +'>'+d+'</span>';
+    }
+    h+='</div></div>';
+  });
+
   // Carriles
   h+='<div class="cp-wrap"><div class="cp-inner"><div class="cp-head"><div>Eje de comunicacion</div>';
   for(var i=0;i<12;i++) h+='<div'+(i===mesHoy?' class="cp-now"':'')+'>'+CP_MESC[i]+'</div>';
@@ -18059,9 +18246,11 @@ function calendarioContenidoHtml(c){
       h+='<div class="cp-cell">';
       pz.forEach(function(p){
         var st=cpEstado(p.s);
+        var _rd=_cpRodajeDe(pl,m);
         h+='<button class="cp-blk" style="background:'+e.c+';opacity:'+(p.s==='idea'?'0.4':'0.92')+'" '
-          +'onclick="abrirPieza(\''+p.id+'\')" title="'+esc(p.t)+' &#10;'+esc(p.f)+' &middot; '+st.n+'">'
-          +esc(String(p.f||'').slice(0,3))+'</button>';
+          +'onclick="abrirPieza(\''+p.id+'\')" title="'+esc(p.t)+' &#10;'+esc(p.f)+' &middot; '+st.n
+          +(p.d?(' &middot; se graba el '+p.d):(_rd?' &middot; hay rodaje este mes, sin dia asignado':''))+'">'
+          +esc(String(p.f||'').slice(0,3))+(p.d?(' &middot; '+p.d):'')+'</button>';
       });
       h+='<button class="cp-ghost" onclick="abrirPieza(null,'+m+',\''+e.id+'\')" title="Sumar pieza en '+CP_MESES[m]+'">+</button>';
       h+='</div>';
