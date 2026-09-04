@@ -6084,7 +6084,11 @@ async function fathomWebhookSync(silent){
       +' sin cliente: asignalas en Integraciones.','amber');
     else toast('Sin llamadas nuevas.');
   }
-  return {added:added, sinCliente:sinCliente.length};
+  return {added:added, sinCliente:sinCliente.length,
+          clientes:Object.keys(tocados).map(function(cid){
+            var c2=DB.clients.find(function(x){ return String(x.id)===String(cid); });
+            return c2?c2.name:'';
+          }).filter(Boolean)};
 }
 // La pantalla que explica como conectarlo, con la URL ya armada para copiar.
 function fathomHookModal(){
@@ -6420,12 +6424,51 @@ async function syncFathomFromGmail(silent){
   return {added:added, clients:Object.keys(clientesTocados).length};
 }
 // Auto-sync en segundo plano al abrir la app (maximo una vez cada 10 min).
+// Cuantas llamadas entraron sin que las vieras, para marcar el titulo de la
+// pestana: si el aviso salta con la pestana en segundo plano, el toast se
+// pierde y uno vuelve sin enterarse de nada.
+var _fathomPend=0, _fathomTituloBase='';
+function _fathomTitulo(){
+  if(!_fathomTituloBase) _fathomTituloBase=document.title.replace(/^\(\d+\)\s*/,'');
+  document.title=_fathomPend ? ('('+_fathomPend+') '+_fathomTituloBase) : _fathomTituloBase;
+}
+function _fathomVisto(){
+  if(!_fathomPend) return;
+  _fathomPend=0; _fathomTitulo();
+}
+// La sincronizacion cargaba la llamada en silencio: aparecia en la ficha y uno
+// se enteraba de casualidad al entrar. Avisar es la mitad del trabajo.
+function _fathomAvisar(r){
+  var n=r.added;
+  var quienes=(r.clientes||[]).slice(0,3).join(', ');
+  toast(n+' llamada'+(n===1?'':'s')+' nueva'+(n===1?'':'s')
+        +(quienes?(' \u00b7 '+quienes):'')
+        +((r.clientes||[]).length>3?' y mas':''));
+  if(document.hidden){ _fathomPend+=n; _fathomTitulo(); }
+  try{
+    if(typeof renderSidebar==='function') renderSidebar();
+    if(S.view==='tickets' && typeof showTickets==='function') showTickets();
+  }catch(e){}
+}
+// Corria una sola vez, 1,5s despues de abrir. Una llamada que termina mientras
+// trabajas no aparecia hasta recargar, que es justo cuando no vas a recargar.
+var _fathomLatido=null;
+function fathomVigilar(){
+  if(_fathomLatido) return;
+  _fathomLatido=setInterval(autoSyncFathom, 4*60*1000);
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden) return;
+    _fathomVisto();
+    autoSyncFathom();
+  });
+}
 function autoSyncFathom(){
   // El webhook corre siempre que este configurado, aunque no haya proxy de
   // Gmail: son dos caminos independientes y el nuevo no depende del viejo.
   if((localStorage.getItem('evold-fathom-hook')||'').trim()){
     fathomWebhookSync(true).then(function(r){
       try{ localStorage.setItem('evold-fathom-hook-pend', String((r&&r.sinCliente)||0)); }catch(e){}
+      if(r&&r.added) _fathomAvisar(r);
     }).catch(function(e){ console.warn('[fathom webhook]', e); });
   }
   if(!fathomProxyUrl()) return;
@@ -43336,7 +43379,7 @@ async function arrancarConSesion(){
   // Un link de revision en la URL manda mas que la posicion guardada: si te
   // mandaron ahi desde el mail, ahi tenes que terminar.
   try{ rvAbrirDesdeLink(); }catch(e){}
-  try{ setTimeout(autoSyncFathom, 1500); }catch(e){}
+  try{ setTimeout(autoSyncFathom, 1500); fathomVigilar(); }catch(e){}
 }
 
 (function iniciar(){
