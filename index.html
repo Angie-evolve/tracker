@@ -427,6 +427,37 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 /* El dia con una pieza asignada lleva un punto: es lo que conecta la jornada
    con lo que sale de ella. */
 .cp-d.conp{box-shadow:inset 0 -3px 0 rgba(13,13,13,.45)}
+/* Calendario para elegir el rango del rodaje. Antes eran tres campos —mes, del
+   dia, al dia— y habia que saber de memoria en que dia de la semana cae cada
+   numero, que es justo lo que uno mira para armar un viaje. */
+.rd-cal{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3);
+  padding:10px 12px 12px}
+.rd-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.rd-mes{font-size:12.5px;color:var(--text);font-weight:500}
+.rd-nav button{background:transparent;border:1px solid var(--border2);color:var(--text2);
+  border-radius:6px;width:24px;height:24px;cursor:pointer;font-size:13px;line-height:1;
+  font-family:var(--font)}
+.rd-nav button:hover:not(:disabled){color:var(--text);border-color:var(--text3)}
+.rd-nav button:disabled{opacity:.3;cursor:default}
+.rd-sem,.rd-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.rd-sem div{text-align:center;font-size:9px;color:var(--text3);text-transform:uppercase;
+  letter-spacing:0.05em;padding-bottom:4px}
+.rd-d{height:30px;display:flex;align-items:center;justify-content:center;font-size:11.5px;
+  border-radius:6px;cursor:pointer;color:var(--text2);background:transparent;border:0;
+  font-family:var(--font);font-variant-numeric:tabular-nums;transition:background .12s}
+.rd-d:hover{background:var(--bg4);color:var(--text)}
+.rd-d.vacio{cursor:default;background:transparent}
+.rd-d.finde{color:var(--text3)}
+/* El rango: puntas llenas y el medio tenue, para que se lea como un tramo y no
+   como dias sueltos elegidos de a uno. */
+.rd-d.medio{background:rgba(167,139,250,.16);color:var(--text);border-radius:0}
+.rd-d.punta{background:#a78bfa;color:#0d0d0d;font-weight:600}
+.rd-d.ini{border-radius:6px 0 0 6px}
+.rd-d.fin{border-radius:0 6px 6px 0}
+.rd-d.sola{border-radius:6px}
+.rd-d.ocupado{opacity:.25;cursor:default;text-decoration:line-through}
+.rd-pie{font-size:11px;color:var(--text3);margin-top:9px;line-height:1.5}
+.rd-pie b{color:var(--text2);font-weight:500}
 .cp-q{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer;transition:border-color .15s}
 .cp-q:hover{border-color:var(--border2)}
 .cp-q.cp-qnow{border-color:rgba(78,207,160,0.4)}
@@ -17914,53 +17945,121 @@ function abrirRodajes(){
       +'<button class="btn" onclick="closeModal()">Cerrar</button>'
     +'</div></div></div>';
 }
+// Lo que se esta editando mientras el modal esta abierto. Vive afuera porque el
+// calendario se redibuja en cada clic y el estado no puede vivir en el DOM que
+// se va a reemplazar.
+var _rdSel=null;
 function abrirRodaje(id){
   var c=_cpCli(); if(!c) return;
-  var pl=getPlanAnio(c), y=cpAnio(), nuevo=!id;
+  var pl=getPlanAnio(c), nuevo=!id;
   var r=nuevo?null:(pl.rodajes||[]).find(function(x){return x.id===id;});
   if(!nuevo&&!r) return;
   var mDef=r?r.m:(function(){ for(var m=0;m<12;m++) if(!_cpRodajeDe(pl,m)) return m; return 0; })();
+  _rdSel={id:id||null, m:mDef, d1:r?r.d1:null, d2:r?r.d2:null,
+          lugar:r?(r.lugar||''):''};
+  _rdPintar();
+}
+// El mes se puede mover, pero no a uno que ya tenga otro rodaje: es un rodaje
+// por mes, y llegar hasta ahi para que Guardar lo rechace seria peor.
+function _rdMesOcupado(m){
+  var c=_cpCli(); if(!c) return false;
+  var o=_cpRodajeDe(getPlanAnio(c),m);
+  return !!(o && o.id!==_rdSel.id);
+}
+function rdMes(d){
+  var m=_rdSel.m;
+  for(var i=0;i<12;i++){
+    m=m+d;
+    if(m<0||m>11) return;
+    if(!_rdMesOcupado(m)){ _rdSel.m=m; _rdSel.d1=null; _rdSel.d2=null; _rdGuardarLugar(); _rdPintar(); return; }
+  }
+}
+// Primer clic abre el rango, segundo lo cierra, tercero vuelve a empezar. Sin
+// esto habria que acertar el orden, y un viaje se elige de punta a punta.
+function rdDia(d){
+  if(_rdSel.d1===null || _rdSel.d2!==null){ _rdSel.d1=d; _rdSel.d2=null; }
+  else if(d<_rdSel.d1){ _rdSel.d2=_rdSel.d1; _rdSel.d1=d; }
+  else { _rdSel.d2=d; }
+  _rdGuardarLugar();
+  _rdPintar();
+}
+function _rdGuardarLugar(){
+  var el=document.getElementById('rd-l');
+  if(el) _rdSel.lugar=el.value;
+}
+function _rdPintar(){
+  var c=_cpCli(); if(!c||!_rdSel) return;
+  var y=cpAnio(), m=_rdSel.m, ult=_cpDiasMes(m,y);
   var inp='padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:var(--font);width:100%;box-sizing:border-box';
   var lbl='font-size:11px;color:var(--text3);margin-bottom:4px';
+  var a=_rdSel.d1, b=_rdSel.d2!==null?_rdSel.d2:_rdSel.d1;
+  // Lunes primero: es como se lee un calendario aca, y el fin de semana queda
+  // junto al final de la semana en vez de partido.
+  var off=(new Date(y,m,1).getDay()+6)%7;
+  var celdas='';
+  for(var i=0;i<off;i++) celdas+='<span class="rd-d vacio"></span>';
+  for(var d=1;d<=ult;d++){
+    var wd=new Date(y,m,d).getDay();
+    var cls='rd-d'+((wd===0||wd===6)?' finde':'');
+    if(a!==null){
+      if(d===a&&d===b) cls+=' punta sola';
+      else if(d===a) cls+=' punta ini';
+      else if(d===b) cls+=' punta fin';
+      else if(d>a&&d<b) cls+=' medio';
+    }
+    celdas+='<button type="button" class="'+cls+'" onclick="rdDia('+d+')">'+d+'</button>';
+  }
+  var dias=(a!==null)?(b-a+1):0;
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:520px;width:92%">'
+    +'<div class="modal" style="max-width:420px;width:92%">'
     +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:13px">'
-      +(nuevo?'Nuevo rodaje':'Editar rodaje')+'</div>'
+      +(_rdSel.id?'Editar rodaje':'Nuevo rodaje')+'</div>'
     +'<div style="display:flex;flex-direction:column;gap:11px">'
       +'<div><div style="'+lbl+'">Donde</div>'
-        +'<input id="rd-l" value="'+esc(r?(r.lugar||''):'')+'" placeholder="Sudeste Asiatico, estudio, casa del cliente" style="'+inp+'"></div>'
-      +'<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:9px">'
-        +'<div><div style="'+lbl+'">Mes</div><select id="rd-m" style="'+inp+'">'
-          +CP_MESES.map(function(n,i){
-            // Un mes que ya tiene rodaje no se ofrece, salvo que sea el propio.
-            var ocupado=_cpRodajeDe(pl,i)&&(!r||_cpRodajeDe(pl,i).id!==r.id);
-            return ocupado?'':'<option value="'+i+'"'+(i===mDef?' selected':'')+'>'+n+'</option>';
-          }).join('')+'</select></div>'
-        +'<div><div style="'+lbl+'">Del dia</div>'
-          +'<input id="rd-a" type="number" min="1" max="31" value="'+(r?r.d1:1)+'" style="'+inp+'"></div>'
-        +'<div><div style="'+lbl+'">Al dia</div>'
-          +'<input id="rd-b" type="number" min="1" max="31" value="'+(r?r.d2:1)+'" style="'+inp+'"></div>'
-      +'</div></div>'
+        +'<input id="rd-l" value="'+esc(_rdSel.lugar||'')+'" '
+        +'placeholder="Sudeste Asiatico, estudio, casa del cliente" style="'+inp+'"></div>'
+      +'<div class="rd-cal">'
+        +'<div class="rd-nav">'
+          +'<button type="button" onclick="rdMes(-1)"'+(m===0?' disabled':'')+'>&lsaquo;</button>'
+          +'<span class="rd-mes">'+CP_MESES[m]+' '+y+'</span>'
+          +'<button type="button" onclick="rdMes(1)"'+(m===11?' disabled':'')+'>&rsaquo;</button>'
+        +'</div>'
+        +'<div class="rd-sem"><div>lun</div><div>mar</div><div>mie</div><div>jue</div>'
+          +'<div>vie</div><div>sab</div><div>dom</div></div>'
+        +'<div class="rd-grid">'+celdas+'</div>'
+        +'<div class="rd-pie">'
+          +(a===null ? 'Toca el primer dia de rodaje.'
+            : (_rdSel.d2===null ? '<b>'+a+' de '+CP_MESES[m]+'</b> &middot; toca el ultimo dia, o guarda asi para un solo dia.'
+              : '<b>'+a+' al '+b+' de '+CP_MESES[m]+'</b> &middot; '+dias+' dia'+(dias===1?'':'s')))
+        +'</div>'
+      +'</div>'
+    +'</div>'
     +'<div class="modal-footer">'
-      +(nuevo?'':'<button class="btn" style="color:var(--redx)" onclick="borrarRodaje(\''+r.id+'\')">Borrar</button>')
+      +(_rdSel.id?('<button class="btn" style="color:var(--redx)" onclick="borrarRodaje(\''+_rdSel.id+'\')">Borrar</button>'):'')
       +'<button class="btn" onclick="abrirRodajes()">Volver</button>'
-      +'<button class="btn btn-primary" onclick="guardarRodaje('+(nuevo?'null':"'"+r.id+"'")+')">Guardar</button>'
+      +'<button class="btn btn-primary" onclick="guardarRodaje()">Guardar</button>'
     +'</div></div></div>';
 }
-function guardarRodaje(id){
-  var c=_cpCli(); if(!c) return;
+function guardarRodaje(){
+  var c=_cpCli(); if(!c||!_rdSel) return;
+  if(_rdSel.d1===null){ toast('Elegi al menos un dia en el calendario','red'); return; }
+  _rdGuardarLugar();
   var pl=getPlanAnio(c);
-  var m=parseInt((document.getElementById('rd-m')||{}).value,10)||0;
-  var a=parseInt((document.getElementById('rd-a')||{}).value,10)||1;
-  var b=parseInt((document.getElementById('rd-b')||{}).value,10)||a;
-  var lugar=String((document.getElementById('rd-l')||{}).value||'').trim();
-  // Al reves se acomoda solo: escribir 22 y 12 es un error de tipeo, no una
-  // intencion, y rebotarlo con un cartel seria peor que arreglarlo.
-  if(b<a){ var t=a; a=b; b=t; }
-  var r=id?(pl.rodajes||[]).find(function(x){return x.id===id;}):null;
-  if(r){ r.m=m; r.d1=a; r.d2=b; r.lugar=lugar; }
-  else { pl.rodajes.push({id:_cpId(),m:m,d1:a,d2:b,lugar:lugar}); }
+  var a=_rdSel.d1, b=(_rdSel.d2!==null)?_rdSel.d2:_rdSel.d1;
+  var lugar=String(_rdSel.lugar||'').trim();
+  var r=_rdSel.id?(pl.rodajes||[]).find(function(x){return x.id===_rdSel.id;}):null;
+  if(r){
+    // Si el rodaje se mudo de mes, los dias que tenian las piezas eran de la
+    // jornada vieja y no significan nada en la nueva.
+    if(r.m!==_rdSel.m) pl.piezas.forEach(function(p){ if(p.m===r.m) delete p.d; });
+    r.m=_rdSel.m; r.d1=a; r.d2=b; r.lugar=lugar;
+  }
+  else { pl.rodajes.push({id:_cpId(),m:_rdSel.m,d1:a,d2:b,lugar:lugar}); }
+  // Una pieza que quedo fuera del rango nuevo pierde el dia: el rodaje se
+  // acorto y ese dia ya no se filma.
+  pl.piezas.forEach(function(p){ if(p.m===_rdSel.m&&p.d&&(p.d<a||p.d>b)) delete p.d; });
+  _rdSel=null;
   save();
   closeModal();
   _refrescarMercado();
