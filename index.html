@@ -25390,10 +25390,9 @@ function lpVer(clientId){
         +'border-bottom:1px solid var(--border);flex:none;flex-wrap:wrap">'
         +'<div style="font-size:13px;color:var(--strong);flex:1">'+esc(c.name||'')+'</div>'
         +'<span id="lp-edit-msg" style="font-size:11px;color:var(--text3)"></span>'
-        +'<button class="btn btn-sm" id="lp-edit-btn" onclick="lpEditToggle('+c.id+')">'
-          +'Editar el texto</button>'
-        +'<button class="btn btn-sm" id="lp-mover-btn" onclick="lpMoverToggle('+c.id+')" '
-          +'title="Arrastra secciones enteras o elementos sueltos">Mover</button>'
+        +'<button class="btn btn-sm" id="lp-edit-btn" onclick="lpEditToggle('+c.id+')" '
+          +'title="Escribi encima, arrastra para mover, estira el borde para el ancho">'
+          +'Editar</button>'
         +'<button class="btn btn-sm" id="lp-piel-btn" style="display:none" '
           +'title="Descarta el armado propio de esta pagina" '
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
@@ -25435,9 +25434,7 @@ function _lpRefrescarPreview(clientId){
   if(!c) return;
   S._lpEdit=false; S._lpMover=false;
   var b=document.getElementById('lp-edit-btn');
-  if(b) b.textContent='Editar el texto';
-  var mb=document.getElementById('lp-mover-btn');
-  if(mb) mb.textContent='Mover';
+  if(b) b.textContent='Editar';
   f.onload=function(){ f.onload=null; _lpAltBind(clientId); };
   f.srcdoc=_lpPaginaHtml(c);
 }
@@ -25450,6 +25447,24 @@ function _lpAltBind(clientId){
   // Marca que esto es el preview y no el archivo bajado: lo que es andamiaje se
   // ve aca y desaparece en el HTML que se publica.
   if(d.body) d.body.classList.add('lp-armando');
+  if(!d._lpSecBound){
+    d._lpSecBound=true;
+    d.addEventListener('click', function(ev){
+      if(!ev.target||!ev.target.closest) return;
+      var b=ev.target.closest('[data-ocultar],[data-mostrar]');
+      if(!b) return;
+      ev.preventDefault(); ev.stopPropagation();
+      var c2=DB.clients.find(function(x){return x.id===clientId;});
+      if(!c2) return;
+      var cfg2=_lpCfg(c2), k=b.getAttribute('data-ocultar');
+      cfg2.ocultas=cfg2.ocultas||{};
+      if(k) cfg2.ocultas[k]=true;
+      else delete cfg2.ocultas[b.getAttribute('data-mostrar')];
+      save();
+      if(typeof renderTab==='function') renderTab();
+      _lpMovRepintar(clientId);
+    });
+  }
   d.querySelectorAll('[data-alt]').forEach(function(el){
     if(el._lpAltBound) return;
     el._lpAltBound=true;
@@ -25528,10 +25543,12 @@ function lpEditToggle(clientId){
   var m=document.getElementById('lp-edit-msg');
   if(!c||!f||!f.contentDocument) return;
   S._lpEdit=!S._lpEdit;
-  // Los dos modos escriben sobre los mismos nodos: uno los vuelve editables y
-  // el otro arrastrables. Prendidos juntos el cursor de texto se pelea con el
-  // drag y no se termina ni escribiendo ni moviendo.
-  if(S._lpEdit && S._lpMover){ S._lpMover=false; _lpMoverAplicar(clientId); }
+  // Un solo modo: escribir y mover son la misma tarea de armar la pagina, y
+  // tener que acordarse de en cual estabas era el paso de mas. Conviven porque
+  // el arrastre no toma el gesto hasta pasar el umbral: antes de eso el clic
+  // es del cursor de texto.
+  S._lpMover=S._lpEdit;
+  _lpMoverAplicar(clientId);
   var d=f.contentDocument;
   d.querySelectorAll('[data-c]').forEach(function(el){
     el.contentEditable=S._lpEdit?'true':'false';
@@ -25550,7 +25567,7 @@ function lpEditToggle(clientId){
       });
     }
   });
-  if(b) b.textContent=S._lpEdit?'Terminar de editar':'Editar el texto';
+  if(b) b.textContent=S._lpEdit?'Terminar de editar':'Editar';
   if(m) m.textContent=S._lpEdit?'Toca cualquier texto y escribi. Se guarda al salir del campo.':'';
 }
 // Escribe un valor del COPY por su ruta: "promesas.0", "faq.2.q", "bajada".
@@ -25596,14 +25613,6 @@ function _lpNombreRef(r){
 function _lpFraccion(n){
   return n>=100?'entero':n>=75?'3/4':n>=66?'2/3':n>=50?'1/2':n>=33?'1/3':'1/4';
 }
-function lpMoverToggle(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  var f=document.getElementById('lp-frame');
-  if(!c||!f||!f.contentDocument) return;
-  S._lpMover=!S._lpMover;
-  if(S._lpMover && S._lpEdit) lpEditToggle(clientId);
-  _lpMoverAplicar(clientId);
-}
 function _lpMovRepintar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -25622,9 +25631,10 @@ function lpVolverAPiel(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
-  if(!Array.isArray(cfg.layout) && !cfg.anchos) return;
+  if(!Array.isArray(cfg.layout) && !cfg.anchos && !_lpOcultas(c).length) return;
   delete cfg.layout;
   delete cfg.anchos;
+  delete cfg.ocultas;
   save();
   if(typeof renderTab==='function') renderTab();
   _lpMovRepintar(clientId);
@@ -25674,10 +25684,8 @@ function _lpMoverAplicar(clientId){
   if(!c||!f||!f.contentDocument||!f.contentDocument.body) return;
   var d=f.contentDocument, on=!!S._lpMover;
   var cfg=_lpCfg(c), piel=(cfg.piel||'institucional');
-  var b=document.getElementById('lp-mover-btn');
   var m=document.getElementById('lp-edit-msg');
   var vb=document.getElementById('lp-piel-btn');
-  if(b) b.textContent=on?'Terminar de mover':'Mover';
   if(vb) vb.style.display=(on&&_lpLayoutPropio(c))?'':'none';
   if(m) m.textContent=on
     ? ('Arrastra un elemento a donde quieras, o estira su borde derecho. '
@@ -25791,15 +25799,21 @@ function _lpMoverAplicar(clientId){
     guia.style.opacity='1';
   };
   var arrastrar=function(ev, nodo, esSec){
-    ev.preventDefault();
     var x0=ev.clientX, y0=ev.clientY, vivo=false, dest=null;
     var mover=function(e){
       if(!vivo){
         // Umbral: sin esto un click con la mano temblorosa mueve algo.
         if(Math.abs(e.clientX-x0)+Math.abs(e.clientY-y0)<5) return;
         vivo=true;
+        // Recien aca el gesto pasa a ser un arrastre. Hasta este punto el clic
+        // era del cursor de texto; si se lo quitaramos en el mousedown no se
+        // podria escribir con el mismo modo prendido.
+        e.preventDefault();
+        var sel=f.contentWindow.getSelection&&f.contentWindow.getSelection();
+        if(sel&&sel.removeAllRanges) sel.removeAllRanges();
         nodo.classList.add('lp-tomado');
       }
+      e.preventDefault();
       verChip(esSec ? (LP_SECCION_NOMBRE[nodo.getAttribute('data-sec')]||'')
                     : _lpNombreRef(nodo.getAttribute('data-mov')), e.clientX, e.clientY);
       dest=blanco(e, nodo, esSec);
@@ -25877,6 +25891,7 @@ function _lpMoverAplicar(clientId){
 
   d.addEventListener('mousedown', function(ev){
     if(!S._lpMover||ev.button!==0||!ev.target.closest) return;
+    if(ev.target.closest('[data-ocultar],[data-mostrar]')) return;
     var borde=ev.target.closest('.lp-borde');
     if(borde){ estirar(ev, borde); return; }
     // Un campo del formulario se ordena entre sus hermanos y nada mas: fuera
@@ -26035,7 +26050,15 @@ function _lpLadoVivo(fila){
 }
 function _lpLayoutPropio(c){
   var cfg=_lpCfg(c)||{};
-  return Array.isArray(cfg.layout) || !!cfg.anchos;
+  return Array.isArray(cfg.layout) || !!cfg.anchos || !!_lpOcultas(c).length;
+}
+// Las secciones apagadas. Se guardan por clave y no se toca el copy: apagar y
+// volver a prender tiene que devolver la seccion igual a como estaba, si no es
+// un borrado con otro nombre.
+function _lpOcultas(c){
+  var o=(_lpCfg(c)||{}).ocultas;
+  return (o&&typeof o==='object')
+    ? Object.keys(o).filter(function(k){ return o[k]; }) : [];
 }
 // El layout es una vista sobre el COPY, no una copia: se reconcilia cada vez
 // que se lee. Sin esto, reescribir el copy con un bullet menos dejaba una
@@ -26249,7 +26272,7 @@ function _lpPaginaHtml(c){
     if(t.indexOf('url')>=0||t.indexOf('web')>=0||t.indexOf('sitio')>=0) return 'url';
     return 'text';
   };
-  var _lpFormHtml=function(){
+  var _lpFormHtml=function(sinGracias){
     var fo=(o.formulario&&typeof o.formulario==='object')?o.formulario:{};
     var campos=Array.isArray(fo.campos)?fo.campos.filter(function(x){ return x&&(x.l||x.label); }):[];
     // Sin formulario escrito quedan los tres de siempre. Un copy de antes de
@@ -26277,12 +26300,77 @@ function _lpPaginaHtml(c){
     // El mensaje de gracias no se muestra hasta que se envia: en la pagina
     // siempre visible parece un error de maquetado. Asi se le puede mostrar al
     // cliente el circuito entero desde el preview.
-    +(gracias?('<p class="nota" id="lp-gracias" hidden data-c="formulario.gracias">'
+    +((gracias&&!sinGracias)?('<p class="nota" id="lp-gracias" hidden data-c="formulario.gracias">'
         +E(gracias)+'</p>'
       +'<script>(function(){var f=document.getElementById("lp-form"),'
         +'g=document.getElementById("lp-gracias");if(!f||!g)return;'
         +'f.addEventListener("submit",function(e){e.preventDefault();'
         +'f.hidden=true;g.hidden=false;});})();<\/script>'):'');
+  };
+  // El quiz dentro de la pagina: una pregunta por vez y se pasa con un toque.
+  // Las preguntas viven en c.quiz, no en el copy, asi que no son editables en
+  // linea: se arman en su propia pestana y aca solo se dibujan.
+  var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')
+    ? c.quiz.preguntas : null;
+  var qPreg=(qz&&Array.isArray(qz.preguntas))?qz.preguntas:[];
+  var _lpQuizHtml=function(){
+    var g=(qz.gate&&typeof qz.gate==='object')?qz.gate:{};
+    // Donde cae el gate lo decidio quien armo el quiz: antes captura mas y peor,
+    // despues captura menos y mejor. Aca solo se respeta.
+    var pos = g.momento==='antes' ? 0
+      : g.momento==='medio'
+        ? Math.max(0, Math.min(qPreg.length, parseInt(g.despuesDePregunta,10)||0))
+        : qPreg.length;
+    var pasos=qPreg.map(function(q,i){
+      return '<div class="qp">'
+        +'<p class="qnum">Pregunta '+(i+1)+' de '+qPreg.length+'</p>'
+        +'<h3 class="qq">'+E(q.pregunta||'')+'</h3>'
+        +'<div class="qops">'
+        +(Array.isArray(q.opciones)?q.opciones:[]).map(function(op){
+            return '<button type="button" class="qop" data-pts="'
+              +(parseInt(op.puntos,10)||0)+'">'+E(op.texto||'')+'</button>';
+          }).join('')
+        +'</div></div>';
+    });
+    pasos.splice(pos,0,'<div class="qp">'
+      +(g.porque?('<p class="qnum">'+E(_lpLimpiar?_lpLimpiar(g.porque):g.porque)+'</p>'):'')
+      +_lpFormHtml(true)+'</div>');
+    var ent=(qz.entregable&&typeof qz.entregable==='object')?qz.entregable:{};
+    // El texto de gracias sale del copy, no del quiz: es el mismo que usa el
+    // formulario suelto y se edita en un solo lugar.
+    var gr=String(((o.formulario&&o.formulario.gracias)||''));
+    pasos.push('<div class="qp" data-fin>'
+      +'<h3 class="qq" id="lp-nivel">'+E(ent.que||'Listo')+'</h3>'
+      +(gr?('<p class="bajada" data-c="formulario.gracias">'+E(gr)+'</p>'):'')
+      +'</div>');
+    // El puntaje se acumula igual aunque no haya niveles cargados: es lo que
+    // convierte las respuestas en el resultado que se prometio antes de
+    // empezar.
+    var niveles=Array.isArray(qz.niveles)?qz.niveles:[];
+    return '<div class="quiz" id="lp-quiz">'
+      +'<div class="qbar"><i></i></div>'
+      +pasos.join('')
+      +'</div>'
+      +'<script>(function(){'
+      +'var q=document.getElementById("lp-quiz");if(!q)return;'
+      +'var ps=q.querySelectorAll(".qp"),b=q.querySelector(".qbar i"),i=0,pts=0;'
+      +'var NIV='+JSON.stringify(niveles.map(function(n){
+          var r=String(n.rango||'').split('-');
+          return {a:parseInt(r[0],10)||0, b:parseInt(r[1],10)||0, n:String(n.nombre||'')};
+        }))+';'
+      +'var ver=function(n){for(var k=0;k<ps.length;k++)'
+        +'ps[k].className="qp"+(k===n?" on":"");'
+        +'if(b)b.style.width=Math.round((n/(ps.length-1))*100)+"%";i=n;'
+        +'if(ps[n].hasAttribute("data-fin")){var t=document.getElementById("lp-nivel");'
+        +'for(var j=0;j<NIV.length;j++)if(pts>=NIV[j].a&&pts<=NIV[j].b&&NIV[j].n&&t)'
+        +'{t.textContent=NIV[j].n;break;}}};'
+      +'q.addEventListener("click",function(e){'
+        +'var o=e.target&&e.target.closest?e.target.closest(".qop"):null;if(!o)return;'
+        +'pts+=parseInt(o.getAttribute("data-pts"),10)||0;'
+        +'if(i<ps.length-1)ver(i+1);});'
+      +'var f=q.querySelector("form");'
+      +'if(f)f.addEventListener("submit",function(e){e.preventDefault();ver(ps.length-1);});'
+      +'ver(0);})();<\/script>';
   };
   // El calendario todavia no existe cuando se arma la pagina: la nota avisa que
   // va a ocupar ese lugar. Le habla al que arma, no al que visita, asi que se
@@ -26294,7 +26382,11 @@ function _lpPaginaHtml(c){
   var mecanica = cfg.mecanica==='calendario'
     ? ('<p class="nota armado">Aca va el embed del calendario de GHL. Estos son los '
        +'datos que pide antes de confirmar el turno.</p>'+_lpFormHtml())
-    : _lpFormHtml();
+    : cfg.mecanica==='quiz'
+      ? (qPreg.length ? _lpQuizHtml()
+        : ('<p class="nota armado">Todavia no armaste las preguntas: se arman en la '
+           +'pestana Quiz. Hasta entonces va el formulario solo.</p>'+_lpFormHtml()))
+      : _lpFormHtml();
 
   return '<!doctype html><html lang="es"><head><meta charset="utf-8">'
     +'<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -26365,6 +26457,39 @@ function _lpPaginaHtml(c){
     +'.lp-hueco{display:none;margin:0;padding:22px 0;color:var(--tenue);font-size:13px}'
     // Lo que solo existe mientras se arma. El preview se marca a si mismo.
     +'.armado{display:none}body.lp-armando .armado{display:block}'
+    // La cruz se ancla arriba a la derecha de su seccion y no empuja nada: si
+    // ocupara lugar en el flujo, el preview dejaria de mostrar la pagina que
+    // se baja.
+    +'section,.hero{position:relative}'
+    +'.lp-x{position:absolute;top:10px;right:0;z-index:5;font:inherit;font-size:12px;'
+      +'padding:4px 10px;border-radius:6px;border:1px solid var(--linea);'
+      +'background:var(--panel);color:var(--tenue);cursor:pointer;width:auto}'
+    +'.lp-x:hover{color:var(--texto)}'
+    +'.lp-vueltas{padding:18px 0 40px;color:var(--tenue);font-size:13px;'
+      +'display:flex;align-items:center;gap:8px;flex-wrap:wrap}'
+    +'.lp-vueltas button{font:inherit;font-size:12px;padding:4px 10px;width:auto;'
+      +'border-radius:6px;border:1px dashed var(--linea);background:transparent;'
+      +'color:var(--tenue);cursor:pointer}'
+    +'.lp-vueltas button:hover{color:var(--texto);border-style:solid}'
+    // El quiz: una pregunta por pantalla. Las opciones son objetivos de toque,
+    // no items de lista, asi que van a 15px de alto minimo y ocupan la fila.
+    +'.quiz{max-width:520px}'
+    +'.qbar{height:3px;background:var(--linea);border-radius:2px;overflow:hidden}'
+    +'.qbar i{display:block;height:100%;width:0;background:var(--acento);'
+      +'transition:width .18s cubic-bezier(.23,1,.32,1)}'
+    +'.qp{display:none;padding-top:26px}.qp.on{display:block}'
+    +'.qnum{margin:0 0 8px;font-size:13px;color:var(--tenue)}'
+    +'.qq{margin:0 0 20px;font-size:clamp(20px,2.6vw,26px);font-weight:600;'
+      +'letter-spacing:-0.02em;line-height:1.25}'
+    +'.qops{display:grid;gap:10px}'
+    +'.qop{font:inherit;font-size:16px;text-align:left;width:100%;padding:15px 18px;'
+      +'border-radius:10px;border:1px solid var(--linea);background:var(--panel);'
+      +'color:var(--texto);cursor:pointer;font-weight:400;'
+      +'transition:border-color .12s cubic-bezier(.23,1,.32,1),'
+      +'background .12s cubic-bezier(.23,1,.32,1)}'
+    // Sin contorno permanente: la afordancia aparece abajo del cursor.
+    +'.qop:hover{border-color:var(--acento);background:var(--fondo)}'
+    +'@media(prefers-reduced-motion:reduce){.qbar i,.qop{transition:none}}'
     // El video va detras de todo, con un velo encima: sin el velo el titulo se
     // pierde en cuanto el plano tiene una zona clara.
     +'.fondo{position:fixed;inset:0;z-index:-2;overflow:hidden}'
@@ -26453,18 +26578,37 @@ function _lpPaginaHtml(c){
       // para volver a llenar una seccion. Que se vea o no lo decide el CSS con
       // :has(.fila:empty), asi no hay que repintar para que una seccion
       // aparezca o desaparezca al mover el ultimo elemento.
-      return _lpLayout(c).map(function(sec){
+      var apagada={};
+      _lpOcultas(c).forEach(function(k){ apagada[k]=true; });
+      // La cruz vive dentro de la seccion y solo se ve mientras se arma, igual
+      // que el resto del andamiaje.
+      var cruz=function(k){
+        return '<button type="button" class="armado lp-x" data-ocultar="'+k+'" '
+          +'title="Ocultar esta seccion">Ocultar</button>';
+      };
+      var partes=_lpLayout(c).filter(function(sec){ return !apagada[sec.k]; })
+        .map(function(sec){
         var dentro=cuerpo(sec.it);
         var hueco='<p class="lp-hueco">'+E(LP_SECCION_NOMBRE[sec.k]||sec.k)+'</p>';
         if(sec.k==='hero')
-          return '<div class="hero" data-sec="hero">'+dentro+hueco+'</div>';
+          return '<div class="hero" data-sec="hero">'+cruz('hero')+dentro+hueco+'</div>';
         var tit=(sec.k==='contacto') ? E(o.cta||'Empecemos') : (LP_TITULO[sec.k]||'');
         return '<section data-sec="'+sec.k+'"'
           +(sec.k==='contacto'?' id="contacto"':'')+'>'
+          +cruz(sec.k)
           +(tit?('<h2>'+tit+'</h2>'):'')
           +dentro+hueco
         +'</section>';
       }).join('');
+      // Una seccion apagada no deja rastro en la pagina: si no hubiera de donde
+      // volver a prenderla, ocultar seria borrar.
+      var vueltas=_lpOcultas(c);
+      if(vueltas.length) partes+='<div class="armado lp-vueltas">Ocultas: '
+        +vueltas.map(function(k){
+          return '<button type="button" data-mostrar="'+k+'">'
+            +E(LP_SECCION_NOMBRE[k]||k)+'</button>';
+        }).join('')+'</div>';
+      return partes;
     })()
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
