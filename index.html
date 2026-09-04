@@ -6116,7 +6116,7 @@ async function fathomWebhookSync(silent){
     var c=null;
     // Si alguien ya la asigno a mano desde el tracker, se respeta.
     if(f.cliente_id) c=DB.clients.find(function(x){ return String(x.id)===String(f.cliente_id); });
-    if(!c) c=_fathomMatchClient(f.titulo||'');
+    if(!c) c=_fathomMatchClient(f.titulo||'', f);
     if(!c){ sinCliente.push(f); return; }
     c.fathomCalls=c.fathomCalls||[];
     var id='fw-'+f.recording_id;
@@ -6312,7 +6312,7 @@ async function fathomSinClienteModal(){
   var filas=[];
   try{ filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=recibida_at.desc&limit=40')||[]; }
   catch(e){ toast('No pude leerlas: '+e.message,'red'); return; }
-  var pend=filas.filter(function(f){ return !_fathomMatchClient(f.titulo||''); });
+  var pend=filas.filter(function(f){ return !_fathomMatchClient(f.titulo||'', f); });
   var cls=(DB.clients||[]).filter(function(c){ return !c.archived; })
     .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
   document.getElementById('modal-root').innerHTML=
@@ -6378,14 +6378,46 @@ async function fathomAsignar(recId, clientId){
   toast('Asignada a '+(c.name||'')+(kw?(' \u00b7 aprendi "'+kw+'"'):'')+'.');
 }
 
-function _fathomMatchClient(meeting){
+// Los mails de los que estuvieron en la reunion. Es el dato que el titulo no
+// tiene: quien titula escribe como quiere —"Dblanit" por "DblandIT", o
+// "Impromptu meeting"— pero el invitado es siempre el mismo.
+function _fathomMails(fila){
+  var ps=(fila&&(fila.participantes||fila.calendar_invitees))||[];
+  if(!Array.isArray(ps)) return [];
+  return ps.map(function(x){
+    var m=(x&&(x.email||x.mail))||(typeof x==='string'?x:'');
+    return String(m||'').trim().toLowerCase();
+  }).filter(function(m){ return m.indexOf('@')>0; });
+}
+// Que le corresponde a un cliente: sus mails y su dominio, salvo los genericos.
+// gmail.com lo comparte medio mundo y asignaria cualquier reunion.
+function _fathomSenas(c){
+  var mails=[c.email,c.contactoEmail].filter(Boolean)
+    .map(function(m){ return String(m).trim().toLowerCase(); });
+  var gen=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
+  var doms=mails.map(function(m){ return m.split('@')[1]||''; })
+    .filter(function(d){ return d && !gen.test(d+'.'); });
+  return {mails:mails, doms:doms};
+}
+function _fathomMatchClient(meeting, fila){
   var mn=_n(meeting);
-  if(!mn) return null;
-  var byKw=DB.clients.find(function(c){
+  var byKw=mn&&DB.clients.find(function(c){
     return (c.fathomKeywords||[]).some(function(k){ return k && mn.indexOf(_n(k))>=0; });
   });
   if(byKw) return byKw;
-  return DB.clients.find(function(c){ return _n(c.name) && mn.indexOf(_n(c.name))>=0; })||null;
+  var byName=mn&&DB.clients.find(function(c){ return _n(c.name) && mn.indexOf(_n(c.name))>=0; });
+  if(byName) return byName;
+  // Ultimo recurso y el mas confiable de los tres: quien estuvo en la llamada.
+  // Va al final igual, porque si escribiste una palabra clave a mano esa gana:
+  // sabes algo que el invitado no dice.
+  var mails=_fathomMails(fila);
+  if(!mails.length) return null;
+  return DB.clients.find(function(c){
+    var s2=_fathomSenas(c);
+    return mails.some(function(m){
+      return s2.mails.indexOf(m)>=0 || s2.doms.indexOf(m.split('@')[1]||'')>=0;
+    });
+  })||null;
 }
 function _fathomUpsertMilestone(c, cl){
   if(!c.milestones) c.milestones=[];
