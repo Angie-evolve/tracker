@@ -665,6 +665,28 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .vh-row>span:first-child{font-size:12.5px;color:var(--text2)}
 .vh-val{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13.5px;color:var(--strong)}
 .vh-val.zero{color:var(--text3)}
+/* Los cinco costos son un embudo: cada etapa cuesta mas que la anterior porque
+   sobreviven menos. La barra lo muestra sin que haya que dividir de cabeza, y
+   la cantidad de abajo dice de donde sale cada numero. Apilados en columna eso
+   no se leia: eran seis cifras sueltas. */
+.vh-costs{display:flex;align-items:flex-end;overflow-x:auto;padding-top:6px}
+.vh-costs .vh-inv{flex:none;align-self:stretch;display:flex;flex-direction:column;
+  justify-content:flex-end;gap:4px;padding-right:18px;margin-right:18px;
+  border-right:1px solid var(--border2)}
+.vh-costs .vh-p{flex:1;min-width:98px;padding:0 9px;display:flex;flex-direction:column;gap:5px}
+.vh-costs .vh-p:first-of-type{padding-left:0}
+.vh-costs .vh-val{font-size:15px;font-weight:600;letter-spacing:-0.01em}
+.vh-costs .vh-inv .vh-val{font-size:20px;color:var(--accent)}
+.vh-k{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;
+  white-space:nowrap}
+.vh-n{font-size:10.5px;color:var(--text3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.vh-bar{height:44px;display:flex;align-items:flex-end}
+.vh-bar i{display:block;width:100%;border-radius:3px 3px 0 0;background:var(--accent);
+  background:linear-gradient(to top,color-mix(in srgb,var(--accent) 18%,transparent),var(--accent))}
+/* Vacia no se esconde: una etapa sin datos tiene que ocupar su lugar, o el
+   embudo miente sobre donde se corta. */
+.vh-bar.vacia i{height:3px;background:repeating-linear-gradient(45deg,
+  var(--bg3),var(--bg3) 4px,transparent 4px,transparent 8px)}
 
 /* ===== Matriz mensual (pie de Bottom of Funnel) ===== */
 .mm{margin-top:26px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
@@ -39666,7 +39688,6 @@ function renderVentasTab(c, el){
       vhRow('Time to cierre',avgTimeToClose!=null?avgTimeToClose+' dias':null)
     ])
     +'</div>';
-  const vhCost=function(l,v){return '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px">'+l+'</div><span class="vh-val'+((v==null)?' zero':'')+'">'+(v==null?'&mdash;':v)+'</span></div>';};
   var _costosHtml='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
     +'<div class="vh-label" style="border:0;padding:0">Costos'
       +(spendSource==='live'
@@ -39703,13 +39724,32 @@ function renderVentasTab(c, el){
     if(typeof avgTimeToClose==='number'&&avgTimeToClose>0) _vals.ttc=avgTimeToClose;
     captureRecords(c,_vals);
   }
+  // Las barras se miden contra el costo mas alto, que es siempre el ultimo con
+  // datos: asi la altura dice cuanto se encarece cada etapa respecto del cierre.
+  var _emb=[{l:'Agenda',n:cAg,u:'agendas'},
+            {l:'En vivo',n:cViva,u:'llamadas'},
+            {l:'Calificada',n:cCalif,u:'calificadas'},
+            {l:'Presentacion',n:cPres,u:'presentaciones'},
+            {l:'CAC',n:cWon,u:'ventas'}];
+  _emb.forEach(function(x){ x.v=costoNum(x.n); });
+  var _embMax=Math.max.apply(null,_emb.map(function(x){ return x.v||0; }))||0;
   _costosHtml+='<div class="vh-costs">'
-    +vhCost('Inversion',accSpentAll!=null?money(accSpentAll):null)
-    +vhCost('Costo por agenda',costo(cAg))
-    +vhCost('Costo por llamada en vivo',costo(cViva))
-    +vhCost('Costo por calificada',costo(cCalif))
-    +vhCost('Costo por presentacion',costo(cPres))
-    +vhCost('CAC',costo(cWon))
+    +'<div class="vh-inv"><div class="vh-k">Inversion</div>'
+      +'<span class="vh-val'+(accSpentAll==null?' zero':'')+'">'
+      +(accSpentAll!=null?money(accSpentAll):'&mdash;')+'</span></div>'
+    +_emb.map(function(x){
+        // Piso de 4%: una etapa barata con una cara al lado quedaba en una
+        // barra invisible y parecia que no tenia dato.
+        var alt=(x.v&&_embMax)?Math.max(4,Math.round(x.v/_embMax*100)):0;
+        return '<div class="vh-p">'
+          +'<div class="vh-bar'+(alt?'':' vacia')+'">'
+            +(alt?('<i style="height:'+alt+'%"></i>'):'<i></i>')+'</div>'
+          +'<span class="vh-val'+(x.v?'':' zero')+'">'
+            +(x.v?money(x.v):'&mdash;')+'</span>'
+          +'<div class="vh-k">'+x.l+'</div>'
+          +'<div class="vh-n">'+(x.n?(x.n+' '+x.u):('sin '+x.u))+'</div>'
+        +'</div>';
+      }).join('')
     +'</div>';
   html=html.replace('<!--COSTOS-->', _costosHtml);
   html+=(timeToCierreNeedsSetup?'<div style="font-size:11px;color:var(--text3);margin:0 0 16px">Time to cierre necesita que el Apps Script tambien mande la fecha de actualizacion (updatedAt) de cada oportunidad - avisame si queres que te arme ese cambio.</div>':'');
