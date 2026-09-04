@@ -1168,26 +1168,48 @@ const LS_KEY = 'evold-v1';
 // da cientos de MB con la misma idea: copia local para abrir rapido y poder
 // trabajar sin conexion. Supabase sigue siendo la fuente de verdad.
 var _IDB_DB='evold', _IDB_STORE='kv', _idbConn=null;
+var _idbUltimoError='';
 function _idb(){
   if(_idbConn) return _idbConn;
   _idbConn=new Promise(function(res,rej){
     if(!window.indexedDB) return rej(new Error('sin IndexedDB'));
     var r=indexedDB.open(_IDB_DB,1);
     r.onupgradeneeded=function(){ r.result.createObjectStore(_IDB_STORE); };
-    r.onsuccess=function(){ res(r.result); };
+    r.onsuccess=function(){
+      var db=r.result;
+      // El navegador cierra la conexion por su cuenta: otra pestana pidiendo
+      // otra version, o el sistema liberando memoria. Con la conexion muerta
+      // cacheada, cada guardado cae a localStorage y ahi si hay 5 MB.
+      db.onclose=function(){ _idbConn=null; };
+      db.onversionchange=function(){ try{ db.close(); }catch(e){} _idbConn=null; };
+      res(db);
+    };
     r.onerror=function(){ rej(r.error||new Error('no pude abrir IndexedDB')); };
   });
+  // Una promesa rechazada tambien se cachea, y eso condena a la app a
+  // localStorage para siempre aunque el proximo intento fuera a funcionar.
+  _idbConn.catch(function(){ _idbConn=null; });
   return _idbConn;
 }
-function idbGuardar(clave, valor){
+function idbGuardar(clave, valor, _reintento){
   return _idb().then(function(db){
     return new Promise(function(res,rej){
-      var t=db.transaction(_IDB_STORE,'readwrite');
+      var t;
+      // Con la conexion cerrada esto tira InvalidStateError de forma sincrona,
+      // fuera de la promesa: sin el try, el error escapa y no se reintenta.
+      try{ t=db.transaction(_IDB_STORE,'readwrite'); }
+      catch(e){ return rej(e); }
       t.objectStore(_IDB_STORE).put(valor, clave);
       t.oncomplete=function(){ res(true); };
       t.onerror=function(){ rej(t.error); };
       t.onabort=function(){ rej(t.error||new Error('transaccion abortada')); };
     });
+  }).catch(function(e){
+    // Un reintento con conexion nueva. Si la conexion estaba muerta esto la
+    // revive; si vuelve a fallar, el problema es otro y hay que avisarlo.
+    if(_reintento) throw e;
+    _idbConn=null;
+    return idbGuardar(clave, valor, true);
   });
 }
 function idbLeer(clave){
@@ -1206,7 +1228,10 @@ function _guardarLocal(obj){
   return idbGuardar(LS_KEY, obj).catch(function(e){
     // Si IndexedDB no esta disponible (modo privado de algunos navegadores),
     // se cae a localStorage con el limite de siempre.
-    console.warn('IndexedDB no disponible, uso localStorage:', e&&e.message);
+    // El motivo se guarda: es lo unico que explica por que aparece el aviso de
+    // espacio, y sin esto solo quedaba en la consola de quien estuviera mirando.
+    _idbUltimoError=(e&&(e.name?(e.name+': '):'')+(e.message||''))||'desconocido';
+    console.warn('IndexedDB no disponible, uso localStorage:', _idbUltimoError);
     localStorage.setItem(LS_KEY, JSON.stringify(obj));
     return false;
   });
@@ -1741,6 +1766,12 @@ function _avisarEspacio(e){
            +'Si recargas antes de que suban, perdes lo ultimo que hiciste. ')
          :'Cuando se llena, el tracker deja de guardar en este navegador y solo sube a Supabase. ')
       +'Estas usando <b>'+d.total.toFixed(2)+' MB</b> y el limite ronda los 5 MB.</div>'
+    +(_idbUltimoError
+      ? ('<div style="font-size:11.5px;color:var(--amberx);line-height:1.6;margin:-6px 0 12px">'
+         +'Ese limite es el del plan B. El almacenamiento grande de este navegador '
+         +'(IndexedDB, cientos de MB) fallo con: <b>'+esc(_idbUltimoError)+'</b>. '
+         +'Mientras siga fallando vas a volver a quedarte sin espacio aunque borres.</div>')
+      : '')
     +'<div style="height:7px;background:var(--bg3);border-radius:99px;overflow:hidden;margin-bottom:14px">'
       +'<div style="height:100%;width:'+Math.min(100,Math.round(d.total/5*100))+'%;background:'
       +(d.total/5>=0.85?'var(--redx)':(d.total/5>=0.6?'var(--amberx)':'var(--green)'))+'"></div></div>'
