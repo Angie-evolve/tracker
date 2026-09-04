@@ -458,6 +458,46 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .rd-d.ocupado{opacity:.25;cursor:default;text-decoration:line-through}
 .rd-pie{font-size:11px;color:var(--text3);margin-top:9px;line-height:1.5}
 .rd-pie b{color:var(--text2);font-weight:500}
+/* Asistente. Va fijo abajo a la derecha y fuera de #main-content, que se
+   redibuja entero en cada cambio de pantalla: adentro se perderia la
+   conversacion a mitad de una pregunta. */
+.as-btn{position:fixed;right:20px;bottom:20px;z-index:60;width:44px;height:44px;
+  border-radius:50%;border:1px solid var(--border2);background:var(--bg3);color:var(--text2);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 30px rgba(0,0,0,0.45);transition:color .15s,border-color .15s}
+.as-btn:hover{color:var(--accent);border-color:rgba(78,207,160,0.45)}
+.as-panel{position:fixed;right:20px;bottom:74px;z-index:60;width:390px;max-width:calc(100vw - 40px);
+  height:520px;max-height:calc(100vh - 120px);background:var(--bg2);
+  border:1px solid var(--border2);border-radius:var(--radius-lg);
+  box-shadow:0 20px 60px rgba(0,0,0,0.55);display:flex;flex-direction:column;overflow:hidden}
+.as-cab{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:11px 14px;border-bottom:1px solid var(--border);background:var(--bg3);flex:none}
+.as-tit{font-size:12.5px;color:var(--text);font-weight:500}
+.as-sub{font-size:10.5px;color:var(--text3);margin-top:1px}
+.as-x{background:transparent;border:0;color:var(--text3);cursor:pointer;font-size:16px;
+  line-height:1;padding:2px 4px;font-family:var(--font)}
+.as-x:hover{color:var(--text)}
+.as-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
+.as-m{font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-wrap:break-word}
+.as-m.yo{align-self:flex-end;max-width:85%;background:var(--bg4);color:var(--text);
+  padding:8px 11px;border-radius:12px 12px 3px 12px}
+.as-m.el{color:var(--text2)}
+.as-m.el b{color:var(--text);font-weight:500}
+.as-vacio{color:var(--text3);font-size:12px;line-height:1.65}
+.as-ej{display:block;width:100%;text-align:left;background:transparent;color:var(--text2);
+  border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-top:6px;
+  font-size:11.5px;font-family:var(--font);cursor:pointer}
+.as-ej:hover{border-color:var(--border2);color:var(--text)}
+.as-pie{flex:none;border-top:1px solid var(--border);padding:10px 12px;display:flex;gap:8px;
+  align-items:flex-end;background:var(--bg2)}
+.as-in{flex:1;resize:none;min-height:34px;max-height:110px;background:var(--bg3);
+  border:1px solid var(--border2);border-radius:9px;color:var(--text);font-family:var(--font);
+  font-size:12.5px;padding:8px 10px;outline:none;line-height:1.45}
+.as-in:focus{border-color:rgba(78,207,160,0.45)}
+.as-send{flex:none;background:var(--accent);color:var(--on-accent);border:0;border-radius:9px;
+  padding:8px 13px;font-size:12px;font-weight:500;cursor:pointer;font-family:var(--font)}
+.as-send:disabled{opacity:.45;cursor:default}
+@media(max-width:560px){ .as-panel{right:12px;left:12px;width:auto;bottom:70px} }
 .cp-q{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;cursor:pointer;transition:border-color .15s}
 .cp-q:hover{border-color:var(--border2)}
 .cp-q.cp-qnow{border-color:rgba(78,207,160,0.4)}
@@ -17949,6 +17989,187 @@ function getPlanAnio(c,y){
   return cp.years[k];
 }
 function _cpCli(){ return DB.clients.find(function(x){return x.id===S.clientId;}); }
+
+// ---- Asistente ---------------------------------------------------------
+// Contesta sobre lo que hay en la app. No inventa: si el dato no esta en el
+// contexto que se le manda, lo dice. Todo lo que sabe sale de DB, que es lo
+// mismo que ves en pantalla.
+function _asCortar(t,n){
+  t=String(t||'').replace(/\s+/g,' ').trim();
+  return t.length>n?(t.slice(0,n)+'...'):t;
+}
+function _asTareas(c){
+  return (c.tasks||[]).filter(function(t){ return !t.done; });
+}
+// Una linea por cliente. Alcanza para "quien esta en riesgo" o "quien no tiene
+// responsable" sin mandar la ficha entera de cada uno.
+function _asLineaCliente(c){
+  var ab=_asTareas(c).length;
+  var lls=(c.fathomCalls||[]).length;
+  var ult=(c.fathomCalls||[])[0];
+  var gasto=(c.conversionLines||[]).reduce(function(a,l){
+    var n=Number((l.metrics||{}).adSpent); return a+(isNaN(n)?0:n);
+  },0);
+  return '- '+c.name
+    +(c.archived?' [archivado]':'')
+    +(c.responsable?(' | responsable: '+c.responsable):' | sin responsable')
+    +' | tareas abiertas: '+ab
+    +' | llamadas: '+lls+(ult&&ult.date?(' (ultima '+ult.date+')'):'')
+    +(gasto>0?(' | invertido: USD '+gasto.toFixed(0)):'');
+}
+// La ficha del cliente que se esta mirando. Es la unica que va completa: es de
+// la que se pregunta el 90% de las veces.
+function _asFicha(c){
+  var out=['=== CLIENTE ABIERTO: '+c.name+' ==='];
+  if(c.responsable) out.push('Responsable: '+c.responsable);
+  if(c.industry) out.push('Industria: '+c.industry);
+  if(c.email) out.push('Contacto: '+c.email);
+  var tas=_asTareas(c);
+  out.push('TAREAS ABIERTAS ('+tas.length+'):');
+  tas.slice(0,25).forEach(function(t){
+    out.push('  - '+_asCortar(t.title||t.t||'sin titulo',110)
+      +(t.estado?(' [estado: '+t.estado+']'):'')
+      +(t.owner?(' [de: '+t.owner+']'):'')
+      +(t.due?(' [vence: '+t.due+']'):''));
+  });
+  if(!tas.length) out.push('  (ninguna)');
+  var lls=(c.fathomCalls||[]).slice(0,10);
+  out.push('ULTIMAS LLAMADAS ('+(c.fathomCalls||[]).length+' en total):');
+  lls.forEach(function(l){
+    out.push('  - '+(l.date||'')+' '+_asCortar(l.title||'',80)
+      +(l.duration?(' ('+l.duration+')'):'')
+      +(l.summary?('\n    resumen: '+_asCortar(l.summary,320)):''));
+  });
+  if(!lls.length) out.push('  (ninguna)');
+  (c.conversionLines||[]).slice(0,4).forEach(function(l){
+    var m=l.metrics||{};
+    out.push('LINEA DE CONVERSION '+(l.name||'')+(l.live?' [activa]':'')
+      +': invertido '+(m.adSpent||0)+', registros '+(m.registros||0)+', sql '+(m.sql||0)
+      +(m.cpm?(', cpm '+m.cpm):'')+(m.cpc?(', cpc '+m.cpc):''));
+    (l.metaCampaigns||[]).slice(0,10).forEach(function(mc){
+      out.push('  campana: '+_asCortar(mc.name||'',70)+' ['+(mc.status||'')+']');
+    });
+  });
+  var cfg=(c.landing||{});
+  if(cfg.piel) out.push('LANDING: piel '+cfg.piel+', mecanica '+(cfg.mecanica||'')
+    +(cfg.copy&&cfg.copy.promesas?(', titular: '+_asCortar(cfg.copy.promesas[0],90)):''));
+  var cp=(c.contentPlan&&c.contentPlan.years)||{};
+  Object.keys(cp).forEach(function(y){
+    var pl=cp[y];
+    out.push('CONTENIDO '+y+': '+((pl.piezas||[]).length)+' piezas, '
+      +((pl.rodajes||[]).length)+' rodajes'
+      +((pl.rodajes||[]).length?(' ('+pl.rodajes.map(function(r){
+          return (CP_MESES[r.m]||'')+' '+r.d1+'-'+r.d2+(r.lugar?(' '+r.lugar):'');
+        }).join('; ')+')'):''));
+  });
+  return out.join('\n');
+}
+function _asContexto(){
+  var hoy=new Date().toLocaleDateString('es-AR');
+  var cli=DB.clients.find(function(x){return x.id===S.clientId;});
+  var vivos=(DB.clients||[]).filter(function(c){ return !c.archived; });
+  var partes=['Hoy es '+hoy+'.',
+    '=== TODOS LOS CLIENTES ('+vivos.length+' activos) ===',
+    vivos.slice(0,40).map(_asLineaCliente).join('\n')];
+  if(cli) partes.push(_asFicha(cli));
+  else partes.push('(No hay ningun cliente abierto en pantalla ahora.)');
+  return partes.join('\n\n');
+}
+function _asMontar(){
+  if(document.getElementById('as-btn')) return;
+  var b=document.createElement('button');
+  b.id='as-btn'; b.className='as-btn'; b.title='Preguntar sobre la app';
+  b.setAttribute('aria-label','Asistente');
+  b.innerHTML='<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    +'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+    +'<path d="M21 11.5a8.4 8.4 0 01-9 8.4 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0112 3a8.4 8.4 0 019 8.5z"/></svg>';
+  b.onclick=asToggle;
+  document.body.appendChild(b);
+}
+function asToggle(){
+  var p=document.getElementById('as-panel');
+  if(p){ p.remove(); return; }
+  S._asMsgs=S._asMsgs||[];
+  asPintar();
+  setTimeout(function(){ var i=document.getElementById('as-in'); if(i) i.focus(); },60);
+}
+function asPintar(pensando){
+  var p=document.getElementById('as-panel');
+  if(!p){ p=document.createElement('div'); p.id='as-panel'; p.className='as-panel';
+    document.body.appendChild(p); }
+  var cli=DB.clients.find(function(x){return x.id===S.clientId;});
+  var msgs=S._asMsgs||[];
+  var cuerpo=msgs.length
+    ? msgs.map(function(m){
+        return '<div class="as-m '+(m.role==='user'?'yo':'el')+'">'+esc(m.content)+'</div>';
+      }).join('')
+      +(pensando?'<div class="as-m el" style="color:var(--text3)">Pensando...</div>':'')
+    : '<div class="as-vacio">Pregunta lo que quieras sobre lo que hay cargado: clientes, '
+      +'tareas, llamadas, campanas, landings.'
+      +'<button class="as-ej" onclick="asEjemplo(this)">Que tareas abiertas hay y de quien son</button>'
+      +'<button class="as-ej" onclick="asEjemplo(this)">Que clientes no tienen responsable</button>'
+      +(cli?('<button class="as-ej" onclick="asEjemplo(this)">Resumime la ultima llamada de '+esc(cli.name)+'</button>'):'')
+      +'</div>';
+  p.innerHTML=''
+    +'<div class="as-cab"><div>'
+      +'<div class="as-tit">Asistente</div>'
+      +'<div class="as-sub">'+(cli?('Mirando '+esc(cli.name)):'Todos los clientes')+'</div>'
+    +'</div><button class="as-x" onclick="asToggle()" aria-label="Cerrar">&times;</button></div>'
+    +'<div class="as-msgs" id="as-msgs">'+cuerpo+'</div>'
+    +'<div class="as-pie">'
+      +'<textarea class="as-in" id="as-in" rows="1" placeholder="Preguntame algo..." '
+        +'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();asEnviar();}"></textarea>'
+      +'<button class="as-send" onclick="asEnviar()"'+(pensando?' disabled':'')+'>Enviar</button>'
+    +'</div>';
+  var m=document.getElementById('as-msgs'); if(m) m.scrollTop=m.scrollHeight;
+}
+function asEjemplo(b){
+  var i=document.getElementById('as-in');
+  if(i){ i.value=b.textContent; i.focus(); }
+}
+async function asEnviar(){
+  var i=document.getElementById('as-in');
+  var q=String((i||{}).value||'').trim();
+  if(!q) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){
+    S._asMsgs=(S._asMsgs||[]).concat([{role:'assistant',
+      content:'Falta cargar tu API key de Anthropic. Esta en el menu de los tres puntos, "API key".'}]);
+    asPintar(); return;
+  }
+  S._asMsgs=(S._asMsgs||[]).concat([{role:'user',content:q}]);
+  if(i) i.value='';
+  asPintar(true);
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({
+        model:'claude-sonnet-5', max_tokens:1200,
+        system:'Sos el asistente del tracker de EVOLVE, una agencia. Contestas sobre los '
+          +'datos que te paso abajo y NADA MAS: si algo no esta ahi, decilo en una linea en '
+          +'vez de suponerlo. Se breve y concreto, en castellano rioplatense. Cuando cuentes '
+          +'cosas, dalas en lista corta. No repitas la pregunta.\n\n'
+          +'DATOS DEL TRACKER:\n'+_asContexto(),
+        // Se manda la conversacion entera: sin esto, "y de ese cliente?" no
+        // tiene a que referirse y contesta cualquier cosa.
+        messages:(S._asMsgs||[]).slice(-12).map(function(m){
+          return {role:m.role,content:m.content};
+        })
+      })
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||d.error.type||'error de la API');
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('').trim();
+    S._asMsgs=(S._asMsgs||[]).concat([{role:'assistant',
+      content:txt||'No pude armar una respuesta.'}]);
+  }catch(e){
+    S._asMsgs=(S._asMsgs||[]).concat([{role:'assistant',content:'No pude responder: '+e.message}]);
+  }
+  asPintar();
+}
 
 // --- Rodajes ---
 // Un rodaje por mes y no varios: con dos viajes en el mismo mes la tira se
@@ -43850,7 +44071,7 @@ async function arrancarConSesion(){
   // Un link de revision en la URL manda mas que la posicion guardada: si te
   // mandaron ahi desde el mail, ahi tenes que terminar.
   try{ rvAbrirDesdeLink(); }catch(e){}
-  try{ setTimeout(autoSyncFathom, 1500); fathomVigilar(); }catch(e){}
+  try{ setTimeout(autoSyncFathom, 1500); fathomVigilar(); _asMontar(); }catch(e){}
 }
 
 (function iniciar(){
