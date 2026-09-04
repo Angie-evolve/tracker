@@ -25381,7 +25381,7 @@ function _lpAcento(pal, fallback){
 function lpVer(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  S._lpEdit=false;
+  S._lpEdit=false; S._lpMovil=false;
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" style="padding:0" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:none;width:96vw;height:94vh;padding:0;display:flex;'
@@ -25398,14 +25398,32 @@ function lpVer(clientId){
           +'title="Descarta el armado propio de esta pagina" '
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
         +'<button class="btn btn-sm" onclick="escribirCopyLanding('+c.id+')">Reescribir con IA</button>'
+        +'<button class="btn btn-sm" id="lp-movil-btn" onclick="lpMovilToggle()" '
+          +'title="Muestra la pagina al ancho de un telefono">M\u00f3vil</button>'
         +'<button class="btn btn-sm" onclick="lpDescargar('+c.id+')">Bajar el HTML</button>'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
       +'</div>'
-      +'<iframe id="lp-frame" style="flex:1;border:0;width:100%;background:#fff"></iframe>'
+      +'<div id="lp-viewport" style="flex:1;display:flex;justify-content:center;'
+        +'overflow:hidden;background:var(--bg2)">'
+        +'<iframe id="lp-frame" style="flex:1;border:0;width:100%;background:#fff"></iframe>'
+      +'</div>'
     +'</div></div>';
   var f=document.getElementById('lp-frame');
   f.onload=function(){ f.onload=null; _lpAltBind(clientId); };
   f.srcdoc=_lpPaginaHtml(c);
+}
+// El ancho del iframe es el viewport que ve la pagina de adentro: achicarlo
+// dispara la media query de 640px de verdad, sin repintar y sin perder lo que
+// se estaba editando o moviendo. Escalar con transform mentia: la pagina seguia
+// creyendo que tenia el ancho entero.
+function lpMovilToggle(){
+  var f=document.getElementById('lp-frame'), b=document.getElementById('lp-movil-btn');
+  if(!f) return;
+  S._lpMovil=!S._lpMovil;
+  f.style.flex=S._lpMovil?'none':'1';
+  f.style.width=S._lpMovil?'390px':'100%';
+  f.style.maxWidth='100%';
+  if(b) b.textContent=S._lpMovil?'Escritorio':'M\u00f3vil';
 }
 // Prende y apaga la edicion sobre el iframe ya renderizado.
 // Repinta el iframe si esta abierto. Se usa al reescribir el copy desde el
@@ -25711,6 +25729,7 @@ function _lpMoverAplicar(clientId){
       val=mejor;
       col.style.flexBasis=mejor+'%';
       col.setAttribute('data-an', mejor);
+      _lpLadoVivo(fila);
       verChip(_lpFraccion(mejor), e.clientX, e.clientY);
     };
     var soltar=function(){
@@ -25742,9 +25761,16 @@ function _lpMoverAplicar(clientId){
       var r=col.getBoundingClientRect(), fila=col.parentNode;
       // Si la columna no ocupa la fila entera, el corte es vertical: se decide
       // por izquierda o derecha. Si la ocupa, arriba o abajo.
-      var lado=fila && r.width < fila.clientWidth*0.92;
-      return {el:col, sec:false, lado:lado,
-              antes: lado ? (e.clientX < r.left+r.width/2) : (e.clientY < r.top+r.height/2)};
+      var lado=!!(fila && r.width < fila.clientWidth*0.92);
+      // Un elemento de ancho entero tambien admite algo al costado, pero habia
+      // que pedirlo de alguna forma: contra los bordes el corte es vertical, en
+      // el medio sigue siendo arriba o abajo. Sin esto no habia gesto para
+      // poner el formulario al lado del titulo, porque el titulo ocupa la fila.
+      var costado=!lado && (e.clientX < r.left+r.width*0.3
+                            || e.clientX > r.right-r.width*0.3);
+      return {el:col, sec:false, lado:(lado||costado), costado:costado,
+              antes: (lado||costado) ? (e.clientX < r.left+r.width/2)
+                                     : (e.clientY < r.top+r.height/2)};
     }
     var f2=bajo.closest('.fila');
     if(f2 && !f2.children.length) return {el:f2, sec:false, vacia:true};
@@ -25823,9 +25849,24 @@ function _lpMoverAplicar(clientId){
       // El nodo se mueve donde esta. Las referencias llevan el indice del dato,
       // asi que ningun data-c queda apuntando a otro lado y no hay que repintar:
       // eso es lo que borraba el parpadeo al soltar.
+      // Un elemento que se suelta al costado no puede seguir ocupando la fila
+      // entera. La mitad es el unico reparto que no obliga a elegir: desde ahi
+      // se estira a 33 o a 66 si hace falta.
+      if(dest.costado){
+        var rf=nodo.getAttribute('data-mov');
+        if(rf && (parseInt(nodo.getAttribute('data-an'),10)||100)>=100){
+          nodo.setAttribute('data-an',50);
+          nodo.style.flexBasis='50%';
+          cfg.anchos=cfg.anchos||{};
+          cfg.anchos[rf]=50;
+        }
+      }
       var padre=dest.vacia ? dest.el : dest.el.parentNode;
+      var origen=nodo.parentNode;
       if(dest.vacia) padre.appendChild(nodo);
       else padre.insertBefore(nodo, dest.antes ? dest.el : dest.el.nextSibling);
+      if(origen!==padre) _lpLadoVivo(origen);
+      _lpLadoVivo(padre);
       save();
       if(vb) vb.style.display='';
       _lpMovAviso(clientId);
@@ -25944,6 +25985,53 @@ function _lpAtomos(o){
   A(o.faq).forEach(function(x,i){ l.push({r:'faq:'+i, casa:'faq'}); });
   l.push({r:'mecanica', casa:'contacto'});
   return l;
+}
+// Una fila donde todo ocupa el ancho entero menos un solo elemento no se lee
+// como dos filas: se lee como texto con algo al costado. Ese elemento pasa a
+// ser columna lateral y el resto se apila a su izquierda. Es lo que permite
+// dejar el formulario al lado del titulo en vez de debajo.
+// Con dos o mas angostos no hay costado que valga: son columnas comunes y la
+// fila se reparte como siempre.
+function _lpLado(cols){
+  var angosto=null, enteros=0, i;
+  for(i=0;i<cols.length;i++){
+    if(cols[i].an>=100){ enteros++; }
+    else if(angosto){ return null; }
+    else { angosto=cols[i]; }
+  }
+  return (angosto && enteros) ? angosto : null;
+}
+// El mismo criterio de _lpLado pero sobre el preview ya dibujado. El render
+// arma la grilla una sola vez; sin esto, estirar el formulario no lo manda al
+// costado hasta volver a abrir la vista, que es cuando el que arma ya se
+// convencio de que no se podia.
+function _lpLadoVivo(fila){
+  if(!fila||!fila.classList) return;
+  var cols=[].slice.call(fila.children).filter(function(el){
+    return el.classList && el.classList.contains('col');
+  });
+  var datos=cols.map(function(el){
+    return {an:parseInt(el.getAttribute('data-an'),10)||100, el:el};
+  });
+  var lado=_lpLado(datos), izq=!!(lado && datos.length && datos[0]===lado);
+  cols.forEach(function(el){
+    el.classList.remove('col-lado'); el.classList.remove('col-txt');
+    el.style.gridColumn=''; el.style.gridRow='';
+  });
+  fila.classList.toggle('fila-lado', !!lado);
+  fila.classList.toggle('lado-izq', !!lado && izq);
+  fila.style.gridTemplateColumns=''; fila.style.gridTemplateRows='';
+  if(!lado) return;
+  datos.forEach(function(x){
+    var esLado=(x===lado);
+    x.el.style.gridColumn=esLado?(izq?'1':'2'):(izq?'2':'1');
+    x.el.classList.add(esLado?'col-lado':'col-txt');
+    if(esLado) x.el.style.gridRow='1/-1';
+  });
+  fila.style.gridTemplateColumns=izq
+    ? (lado.an+'% '+(100-lado.an)+'%')
+    : ((100-lado.an)+'% '+lado.an+'%');
+  fila.style.gridTemplateRows='repeat('+(datos.length-1)+',auto) 1fr';
 }
 function _lpLayoutPropio(c){
   var cfg=_lpCfg(c)||{};
@@ -26196,19 +26284,17 @@ function _lpPaginaHtml(c){
         +'f.addEventListener("submit",function(e){e.preventDefault();'
         +'f.hidden=true;g.hidden=false;});})();<\/script>'):'');
   };
-  // Con calendario y con quiz los campos van igual: cambia donde caen, no que
-  // existan. La nota dice cual de los dos casos es, para que la maqueta no se
-  // lea como si el formulario estuviera suelto en el medio.
-  // La nota es andamiaje: dice donde va a ir el quiz o el calendario que
-  // todavia no existe. Le habla al que arma, no al que visita, asi que se ve en
-  // el preview y no en el archivo que se baja.
+  // El calendario todavia no existe cuando se arma la pagina: la nota avisa que
+  // va a ocupar ese lugar. Le habla al que arma, no al que visita, asi que se
+  // ve en el preview y no en el archivo que se baja.
+  // El quiz no lleva nota. Los campos que se ven son literalmente los que pide
+  // al final de las preguntas, asi que el cartel no explicaba nada que no
+  // estuviera ahi abajo, y encima empujaba al formulario fuera del primer golpe
+  // de vista.
   var mecanica = cfg.mecanica==='calendario'
     ? ('<p class="nota armado">Aca va el embed del calendario de GHL. Estos son los '
        +'datos que pide antes de confirmar el turno.</p>'+_lpFormHtml())
-    : cfg.mecanica==='quiz'
-      ? ('<p class="nota armado">Aca va el quiz. Califica antes de pedir el dato: estos '
-         +'campos son el gate, al final de las preguntas.</p>'+_lpFormHtml())
-      : _lpFormHtml();
+    : _lpFormHtml();
 
   return '<!doctype html><html lang="es"><head><meta charset="utf-8">'
     +'<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -26244,6 +26330,17 @@ function _lpPaginaHtml(c){
     // de los porcentajes, que es lo que pasa con gap.
     +'.fila{display:flex;flex-wrap:wrap;align-items:flex-start}'
     +'.col{box-sizing:border-box;min-width:0;padding-right:28px}'
+    // La columna lateral no se puede hacer con flex: envolver manda al elemento
+    // angosto a la linea de abajo. Con grilla el texto ocupa la columna 1 fila
+    // por fila y el angosto la columna 2 de punta a punta.
+    +'.fila-lado{display:grid;align-items:start}'
+    // La ultima fila es 1fr y esta vacia a proposito: se come el sobrante
+    // cuando el formulario es mas alto que el texto. Sin ella ese alto de mas
+    // se reparte entre las filas del texto y separa el titulo de la bajada.
+    +'.fila-lado>.col{padding-right:0}'
+    +'.fila-lado>.col-txt{padding-right:28px}'
+    +'.fila-lado.lado-izq>.col-txt{padding-right:0}'
+    +'.fila-lado.lado-izq>.col-lado{padding-right:28px}'
     // Las cifras van sobre una linea, no en tarjetas: son datos, no productos.
     +'.cifra b{display:block;font-size:40px;font-weight:650;letter-spacing:-0.03em;'
       +'color:var(--acento);line-height:1.1}'
@@ -26281,7 +26378,8 @@ function _lpPaginaHtml(c){
       +'.cifra b{font-size:32px}'
       // La mayoria entra desde el anuncio en el telefono: ahi no hay dos
       // columnas que valgan, cualquier ancho guardado vuelve a fila entera.
-      +'.col{flex-basis:100%!important;padding-right:0}}'
+      +'.col{flex-basis:100%!important;padding-right:0}'
+      +'.fila-lado{display:block}}'
     +'</style></head><body>'
     // playsinline y muted son obligatorios para que iOS reproduzca solo. El
     // video se oculta si prefiere menos movimiento.
@@ -26318,16 +26416,38 @@ function _lpPaginaHtml(c){
             +'<p class="a" data-c="faq.'+i+'.a">'+E(faq[i].a||'')+'</p></div>';
         return '';
       };
+      // Se dibuja en dos pasadas. Para saber si hay columna lateral hay que
+      // mirar la fila entera, y eso no se puede mientras se escribe la primera
+      // celda.
       var cuerpo=function(items){
-        var out='';
+        var cols=[];
         items.forEach(function(r){
           var h=dib(r);
           if(!h) return;
-          var an=anchoDe(r);
-          out+='<div class="col" data-mov="'+r+'" data-an="'+an+'" '
-            +'style="flex-basis:'+an+'%">'+h+'</div>';
+          cols.push({r:r, h:h, an:anchoDe(r)});
         });
-        return '<div class="fila">'+out+'</div>';
+        // De que lado cae lo decide el orden, que es exactamente lo que cambia
+        // al soltarlo antes o despues del titulo. Guardar el lado aparte seria
+        // un segundo estado diciendo lo mismo, y se desincronizan.
+        var lado=_lpLado(cols), izq=!!(lado && cols[0]===lado), out='';
+        cols.forEach(function(x){
+          var esLado=(lado && x===lado);
+          out+='<div class="col'+(lado?(esLado?' col-lado':' col-txt'):'')+'" '
+            +'data-mov="'+x.r+'" data-an="'+x.an+'" style="flex-basis:'+x.an+'%'
+            // grid-row explicito: la celda lateral arranca arriba de todo y
+            // llega hasta el final, sin importar cuantos elementos tenga al
+            // lado.
+            +(esLado?(';grid-column:'+(izq?1:2)+';grid-row:1/-1'):'')
+            +(lado&&!esLado?(';grid-column:'+(izq?2:1)):'')+'">'+x.h+'</div>';
+        });
+        var est=lado
+          ? (' style="grid-template-columns:'
+             +(izq?(lado.an+'% '+(100-lado.an)+'%')
+                  :((100-lado.an)+'% '+lado.an+'%'))
+             +';grid-template-rows:repeat('+(cols.length-1)+',auto) 1fr"')
+          : '';
+        return '<div class="fila'+(lado?(' fila-lado'+(izq?' lado-izq':'')):'')+'"'
+          +est+'>'+out+'</div>';
       };
       // La fila va siempre, aunque quede vacia: es el lugar donde se suelta algo
       // para volver a llenar una seccion. Que se vea o no lo decide el CSS con
