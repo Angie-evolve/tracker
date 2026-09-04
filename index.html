@@ -6424,6 +6424,64 @@ async function syncFathomFromGmail(silent){
   return {added:added, clients:Object.keys(clientesTocados).length};
 }
 // Auto-sync en segundo plano al abrir la app (maximo una vez cada 10 min).
+// La busqueda hacia atras existia pero habia que ir cliente por cliente a
+// apretar el boton, y un cliente nuevo arrancaba sin nada de su historial.
+// Esto la corre sola: un cliente por vuelta, no todos de una, porque cada uno
+// es una consulta a Fathom por cada key del equipo y en tandas se cae.
+function _fathomPendiente(){
+  var lista=(DB.clients||[]).filter(function(c){
+    return !c.archivado && !c.fathomBuscadoAt && _fathomFiltro(c);
+  });
+  return lista.length?lista[0]:null;
+}
+// La llamada encontrada se carga con el titulo que le puso Fathom. La busqueda
+// a mano lo reescribe con el nombre de la etapa porque la esta importando como
+// esa etapa; aca no hay etapa que suponer.
+function _fathomImportar(c, m){
+  var f=m.fecha?new Date(m.fecha):new Date();
+  c.fathomCalls=c.fathomCalls||[];
+  c.fathomCalls.unshift({
+    id:'fathom-'+(m.recording_id||Date.now()),
+    title:m.title||'Llamada',
+    tituloFathom:m.title||'',
+    date:('0'+f.getDate()).slice(-2)+'/'+('0'+(f.getMonth()+1)).slice(-2)+'/'+f.getFullYear(),
+    duration:m.duracion||'', sentiment:'satisfecho',
+    summary:m.resumen||'',
+    actionItems:(m.action_items||[]).map(function(a){
+      return (a&&(a.description||a.texto||a.text))||String(a||''); }).filter(Boolean),
+    riskFlags:[],
+    initials:(c.name||'?').split(' ').map(function(w){return w[0];}).join('')
+      .substring(0,2).toUpperCase(),
+    _cid:c.id, importada:true, url:m.url||'', transcript:m.transcripcion||''
+  });
+}
+async function _fathomBackfillUno(){
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec) return;
+  var c=_fathomPendiente();
+  if(!c) return;
+  var f=_fathomFiltro(c);
+  // Se marca antes de pedir, no despues: si la consulta falla y se reintentara
+  // en cada vuelta, un cliente sin reuniones en Fathom quedaria golpeando la
+  // API cada cuatro minutos para siempre.
+  c.fathomBuscadoAt=new Date().toISOString();
+  save();
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({emails:f.mails, dominios:f.doms, transcripcion:true})});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok) return;
+    var ya={};
+    (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
+    var nuevas=(d.items||[]).filter(function(m){ return m.url && !ya[m.url]; });
+    if(!nuevas.length) return;
+    nuevas.forEach(function(m){ _fathomImportar(c, m); });
+    save();
+    _fathomAvisar({added:nuevas.length, clientes:[c.name]});
+  }catch(e){ console.warn('[fathom backfill]', e); }
+}
 // Cuantas llamadas entraron sin que las vieras, para marcar el titulo de la
 // pestana: si el aviso salta con la pestana en segundo plano, el toast se
 // pierde y uno vuelve sin enterarse de nada.
@@ -6476,6 +6534,8 @@ function autoSyncFathom(){
         localStorage.setItem('evold-fathom-sync-at', String(Date.now()));
       }catch(e){}
       if(r&&r.added) _fathomAvisar(r);
+      // Despues del webhook, y de a uno: el historial es lo que menos apura.
+      _fathomBackfillUno();
     }).catch(function(e){ console.warn('[fathom webhook]', e); });
   }
 }
@@ -20870,6 +20930,19 @@ function p360Soltar(ev, el, etapa){
 // Buscar en Fathom las reuniones de este cliente. El webhook solo trae lo
 // nuevo; esto es para lo viejo. Filtra por el mail del contacto y por el
 // dominio, que agarra al resto de su equipo.
+// Con que mails y dominios se le pregunta a Fathom por un cliente. Lo usan la
+// busqueda a mano y la automatica: si fueran dos copias, arreglar el filtro en
+// una dejaria a la otra trayendo cualquier cosa.
+function _fathomFiltro(c){
+  var mails=[c.email, c.contactoEmail].filter(Boolean);
+  if(!mails.length) return null;
+  // Del mail sale el dominio, salvo que sea una casilla personal: filtrar por
+  // gmail.com traeria todas las reuniones de todos los clientes.
+  var genericos=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
+  var doms=mails.map(function(m){ return String(m).split('@')[1]||''; })
+    .filter(function(d){ return d && !genericos.test(d+'.'); });
+  return {mails:mails, doms:doms};
+}
 async function p360Buscar(clientId, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -20878,13 +20951,9 @@ async function p360Buscar(clientId, etapa){
   var est=document.getElementById('p3-buscar-estado');
   var di=function(t,col){ if(est){ est.innerHTML=t; est.style.color=col||'var(--text3)'; } };
   if(!url||!sec){ di('Falta configurar el webhook en Integraciones.','var(--amberx)'); return; }
-  var mails=[c.email, c.contactoEmail].filter(Boolean);
-  // Del mail sale el dominio, salvo que sea una casilla personal: filtrar por
-  // gmail.com traeria todas las reuniones de todos los clientes.
-  var genericos=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
-  var doms=mails.map(function(m){ return String(m).split('@')[1]||''; })
-    .filter(function(d){ return d && !genericos.test(d+'.'); });
-  if(!mails.length){ di('Este cliente no tiene mail cargado en la ficha.','var(--amberx)'); return; }
+  var f=_fathomFiltro(c);
+  if(!f){ di('Este cliente no tiene mail cargado en la ficha.','var(--amberx)'); return; }
+  var mails=f.mails, doms=f.doms;
   di('Buscando en Fathom...');
   try{
     var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
