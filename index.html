@@ -22904,6 +22904,17 @@ function _mkPuntajeLogo(nombre, w, h){
   // header de una landing.
   if(/favicon|apple-touch|android-chrome|mstile|maskable|touch-icon|app-icon/i.test(base)) p-=120;
   if(/^(icons?|favicons?)$/i.test(carp)) p-=60;
+  // Las hojas de un brief o de una presentacion entran al zip como una imagen
+  // mas. No las delata el nombre, asi que las delata la forma: verticales, con
+  // proporcion de papel y grandes. Sin esto le ganaban a un logo horizontal
+  // justamente por ser mas parecidas a un cuadrado, que es lo que premia la
+  // regla de abajo.
+  if(/brief|manual|gu[ií]a|guide|presentaci[oó]n|deck|slide|p[aá]gina|page|hoja|portada|mockup/i.test(base))
+    p-=70;
+  if(w&&h&&h>w && Math.max(w,h)>=900){
+    var vert=h/w;
+    if(vert>=1.2 && vert<=1.6) p-=70;            // A4 es 1.41, carta 1.29
+  }
   if(w&&h){
     var rel=Math.min(w,h)/Math.max(w,h);
     p+=rel*15;                                   // cuanto mas cuadrada, mejor
@@ -22995,12 +23006,20 @@ function _mkEstado(t,col){
 }
 // Analiza un archivo ya subido del material. Se baja del bucket, se abre y se
 // saca la paleta y el logo.
+// El zip de la ultima lectura, en memoria. Cambiar de logo volvia a pedir una
+// URL firmada y a bajar el archivo entero cada vez, y eso es la mitad de lo que
+// tardaba. Vive lo que vive la pestana.
+var _mkZipCache=null;
 async function marcaLeerDeMaterial(clientId, id, forzarLogo){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var m=(c.material||[]).filter(function(x){return x.id===id;})[0];
   if(!m||!m.path){ toast('Eso no es un archivo subido.','amber'); return; }
   if(!SB.token){ toast('Entra con tu cuenta.','amber'); return; }
+  if(_mkZipCache && _mkZipCache.id===id && _mkZipCache.blob){
+    await marcaAnalizarBlob(clientId, _mkZipCache.blob, m.archivo||m.label, forzarLogo, id);
+    return;
+  }
   _mkEstado('Bajando '+esc(m.archivo||m.label)+'...');
   try{
     var fr=await fetch(SB_URL+'/storage/v1/object/sign/'+(m.bucket||MAT_BUCKET)+'/'+encodeURI(m.path),{
@@ -23012,6 +23031,7 @@ async function marcaLeerDeMaterial(clientId, id, forzarLogo){
     var firmada=fd.signedURL||fd.signedUrl;
     if(!fr.ok||!firmada){ _mkEstado('No pude bajarlo: '+((fd&&fd.message)||fr.status),'var(--redx)'); return; }
     var blob=await (await fetch(SB_URL+'/storage/v1'+firmada)).blob();
+    _mkZipCache={id:id, blob:blob};
     await marcaAnalizarBlob(clientId, blob, m.archivo||m.label, forzarLogo, id);
   }catch(e){
     _mkEstado('No pude leerlo: '+e.message,'var(--redx)');
@@ -23080,7 +23100,15 @@ async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
 
     _mkEstado('Leyendo '+imgs.length+' imagen'+(imgs.length===1?'':'es')+'...');
     var todos={}, mejor=null, mejorP=-1e9;
+    // Cuando ya elegiste cual es el logo, lo unico que falta es incrustar esa
+    // imagen. Medir los pixeles de las doce y rehacer las miniaturas era la
+    // otra mitad de lo que tardaba en cambiar.
+    var soloLogo=!!forzarLogo;
     for(var j=0;j<imgs.length;j++){
+      if(soloLogo){
+        if(imgs[j].nombre===forzarLogo) mejor=imgs[j];
+        continue;
+      }
       var px=await _mkPixeles(imgs[j].blob);
       var w=px?px.w:0, h=px?px.h:0;
       // Si elegiste un logo a mano, gana sin discusion: viste el zip y sabes
@@ -23104,6 +23132,7 @@ async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
     })).slice(0,6);
 
     c.marca=c.marca||{};
+    if(!soloLogo){
     c.marca.colores=paleta;
     c.marca.de=nombre||'';
     c.marca.at=new Date().toISOString();
@@ -23118,8 +23147,13 @@ async function marcaAnalizarBlob(clientId, blob, nombre, forzarLogo, matId){
     c.marca.imagenes=minis;
     c.marca.matId=matId||c.marca.matId||null;
     if(_txtZip) c.marca.texto=_txtZip;
+    }
     // El logo va como data URL: la landing queda autocontenida y no depende de
     // un link firmado que vence en una hora.
+    if(soloLogo && !mejor){
+      _mkEstado('No encontre "'+esc(forzarLogo)+'" en el archivo.','var(--amberx)');
+      return;
+    }
     if(mejor){
       c.marca.logo=await _mkLogoDataUrl(mejor.blob);
       c.marca.logoNombre=mejor.nombre
