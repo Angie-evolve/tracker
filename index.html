@@ -26024,6 +26024,56 @@ function lpSet(clientId, campo, valor){
   if(typeof renderTab==='function') renderTab();
 }
 
+// Los campos del formulario, desde la ficha. El layout es una vista sobre el
+// COPY, asi que agregar o sacar uno se reconcilia solo: no hay que tocar
+// cfg.layout ni los anchos.
+function _lpCampos(c, crear){
+  var cfg=_lpCfg(c);
+  if(!cfg.copy) return null;
+  if(!cfg.copy.formulario||typeof cfg.copy.formulario!=='object'){
+    if(!crear) return null;
+    cfg.copy.formulario={campos:[],boton:cfg.copy.cta||'Enviar',gracias:''};
+  }
+  if(!Array.isArray(cfg.copy.formulario.campos)){
+    if(!crear) return null;
+    cfg.copy.formulario.campos=[];
+  }
+  return cfg.copy.formulario.campos;
+}
+function lpCampoSet(clientId, i, clave, valor){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var L=_lpCampos(c,false);
+  if(!L||!L[i]) return;
+  // req llega como texto desde el onclick del boton: sin esto, 'false' entra
+  // como cadena y el campo queda obligatorio igual.
+  if(clave==='req') valor=(valor===true||valor==='true');
+  L[i][clave]=valor;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
+function lpCampoAgregar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var L=_lpCampos(c,true);
+  if(!L) return;
+  L.push({l:'Nombre',tipo:'texto',req:true,porque:''});
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
+function lpCampoBorrar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var L=_lpCampos(c,false);
+  if(!L||!L[i]) return;
+  L.splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
+
 // Hollywood necesita que el negocio se vea. Sin material visual la pieza
 // termina siendo un stock generico y resta en vez de sumar.
 function _lpHollywoodViable(c){
@@ -27971,6 +28021,69 @@ function landingHtml(c){
     +'</div>';
   })();
 
+  // Los campos venian con el copy y solo se podian tocar entrando al preview y
+  // clickeando encima de cada etiqueta. Quien recien escribio el copy quiere
+  // ver que datos va a pedir sin abrir nada.
+  var bloqueCampos=(function(){
+    var o=cfg.copy;
+    if(!o) return '';
+    var fo=(o.formulario&&typeof o.formulario==='object')?o.formulario:null;
+    var L=(fo&&Array.isArray(fo.campos))?fo.campos:[];
+    var titulo = cfg.mecanica==='calendario' ? 'Los datos que pide el calendario'
+      : cfg.mecanica==='quiz' ? 'Los datos del gate'
+      : 'Los campos del formulario';
+    // El gate del quiz no se ve hasta que hay preguntas, y el calendario los
+    // pide adentro del iframe de GHL: sin decirlo, parece que no se usan.
+    var donde = cfg.mecanica==='calendario'
+        ? 'Van antes de confirmar el turno.'
+      : cfg.mecanica==='quiz'
+        ? 'Van en el gate, despues de las preguntas.'
+      : 'Van en el formulario del hero.';
+    var chico='font-size:11.5px;font-family:var(--font);background:var(--bg3);color:var(--text);'
+      +'border:1px solid var(--border2);border-radius:var(--radius);padding:5px 7px';
+    var filas=L.map(function(cp2,i){
+      var t=String(cp2.tipo||'texto');
+      // El redactor escribe el tipo en castellano y a veces con otra palabra
+      // ("mail", "whatsapp"): si no esta en la lista se agrega, o el select lo
+      // pisaria con "texto" al primer cambio de cualquier otro campo.
+      var tipos=['texto','email','tel','numero','url','texto largo'];
+      if(tipos.indexOf(t)<0) tipos.unshift(t);
+      return '<div style="display:flex;gap:7px;align-items:center;padding:5px 0">'
+        +'<input value="'+esc(cp2.l||cp2.label||'')+'" '
+          +'onchange="lpCampoSet('+c.id+','+i+',\'l\',this.value)" '
+          +'style="'+chico+';flex:1;min-width:0">'
+        +'<select onchange="lpCampoSet('+c.id+','+i+',\'tipo\',this.value)" '
+          +'style="'+chico+';width:110px;flex:none">'
+          +tipos.map(function(k){ return '<option value="'+esc(k)+'"'
+            +(k===t?' selected':'')+'>'+esc(k)+'</option>'; }).join('')
+        +'</select>'
+        +'<button onclick="lpCampoSet('+c.id+','+i+',\'req\','+(cp2.req===false?'true':'false')+')" '
+          +'title="Si es obligatorio" style="'+chico+';flex:none;cursor:pointer;'
+          +'color:'+(cp2.req===false?'var(--text3)':'var(--accent)')+'">'
+          +(cp2.req===false?'opcional':'obligatorio')+'</button>'
+        +'<button onclick="lpCampoBorrar('+c.id+','+i+')" title="Sacar el campo" '
+          +'style="'+chico+';flex:none;cursor:pointer;color:var(--text3);padding:5px 9px">'
+          +'\u00d7</button>'
+      +'</div>'
+      // El porque lo escribio el redactor: es el argumento de por que ese dato
+      // vale el abandono que cuesta. Sirve al momento de decidir si sacarlo.
+      +(cp2.porque?('<div style="font-size:11px;color:var(--text3);line-height:1.5;'
+        +'margin:-2px 0 4px;padding-left:2px">'+esc(_lpLimpiar(cp2.porque))+'</div>'):'');
+    }).join('');
+    return '<div style="margin-bottom:16px">'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:7px">'+titulo+'</div>'
+      +(L.length
+        ? ('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+            +donde+' Cada campo de mas se paga en abandono.</div>'+filas)
+        : ('<div style="font-size:11.5px;color:var(--amberx);line-height:1.6;max-width:74ch;'
+            +'margin-bottom:8px">El copy no trajo campos. Podes reescribirlo o agregarlos '
+            +'a mano.</div>'))
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+        +'<button class="btn btn-sm" onclick="lpCampoAgregar('+c.id+')">Agregar un campo</button>'
+      +'</div>'
+    +'</div>';
+  })();
+
   var ctx=_lpContextoInterno(c);
   var inv=cfg.investigacion, cp=cfg.copy;
   var fecha=function(d){ return d?new Date(d).toLocaleDateString('es-AR'):''; };
@@ -28122,6 +28235,7 @@ function landingHtml(c){
     +reco
     +opciones('Mecanica', LP_MECANICAS, 'mecanica', null, rr.porqueMecanica, rr.mecanica)
     +bloqueQuiz
+    +bloqueCampos
     +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)}, rr.porquePiel, rr.piel)
     +opciones('Tema', LP_TEMAS, 'tema', null, rr.porqueTema, rr.tema)
     +avisoHw
