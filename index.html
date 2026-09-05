@@ -22898,15 +22898,20 @@ async function citasBuscar(clientId, callado){
 // Una cita de la agenda de la agencia puede ser de cualquier cliente: se
 // reconoce por el nombre en el titulo, que es como se nombran ("Goltia <> ...",
 // "Sebastian Biagioni & Martin").
-function _citaEsDe(c, titulo){
-  var t=_n(String(titulo||''));
-  var n=_n(String(c.name||''));
-  if(!n) return false;
-  // Con el nombre entero primero; si no, con la primera palabra, que alcanza
-  // para "Sebastian Biagioni" cuando la tarjeta dice solo "Sebastian".
-  if(t.indexOf(n)>=0) return true;
-  var pal=n.split(/\s+/)[0];
-  return pal.length>=4 && t.indexOf(pal)>=0;
+function _citaEsDe(c, titulo, con){
+  var t=_n(String(titulo||'')+' '+String(con||''));
+  // El nombre del cliente sirve cuando es una persona. Cuando es una empresa el
+  // turno suele estar a nombre del contacto, asi que tambien se prueba con el
+  // contacto cargado y con la parte de adelante de su mail.
+  var cand=[String(c.name||''), String(c.contacto||''),
+            String(c.contactoEmail||c.email||'').split('@')[0].replace(/[._-]+/g,' ')];
+  return cand.some(function(v){
+    var n=_n(String(v||''));
+    if(n.length<4) return false;
+    if(t.indexOf(n)>=0) return true;
+    // Una palabra sola alcanza si es larga: "Biagioni" en "Sebastian Biagioni".
+    return n.split(/\s+/).some(function(w){ return w.length>=5 && t.indexOf(w)>=0; });
+  });
 }
 // Para que etapa es. Si el titulo la nombra, esa. Si no, la primera que tenga
 // pendiente el paso de agendar: es la reunion que se estaba esperando.
@@ -22926,6 +22931,10 @@ function _citaEtapaPara(c, titulo){
   return out;
 }
 function _citasAplicar(c, eventos, callado, totalAgenda){
+  // La agenda entera queda en memoria: es lo que permite mostrar las citas que
+  // no se pudieron enganchar y asignarlas de un clic, en vez de dejar la
+  // busqueda en cero sin salida.
+  S._citasAgenda=eventos||[];
   var previas=_citasDe(c);
   c.citas={};
   c.citasSinEtapa=[];
@@ -22934,7 +22943,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
   eventos.forEach(function(ev){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
-    if(!_citaEsDe(c, ev.titulo)) return;
+    if(!_citaEsDe(c, ev.titulo, ev.con)) return;
     var et=_citaEtapaPara(c, ev.titulo);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
@@ -22981,6 +22990,22 @@ function _citasDecir(clientId, t, col){
   if(typeof toast==='function') toast(String(t).replace(/<[^>]+>/g,''));
 }
 // Asigna a mano una cita que el titulo no dejo reconocer.
+// Igual que citasAsignar pero tomando de la agenda completa, no de las que ya
+// se habian atado a este cliente.
+function citasAsignarAgenda(clientId, idx, etapa){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!etapa) return;
+  var ev=(S._citasAgenda||[])[idx];
+  if(!ev) return;
+  c.citas=c.citas||{};
+  c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
+                  deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
+  c.rutaAgenda=c.rutaAgenda||{};
+  c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
+}
 function citasAsignar(clientId, idx, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!etapa) return;
@@ -23039,6 +23064,34 @@ function _citasHtml(c){
     +(claves.length?claves.map(linea).join(''):'')
     // Enganchar por el titulo falla cuando la cita se llamo de otra forma. En
     // vez de perderlas, se ofrecen para asignar en un clic.
+    // Las de la agenda que no se pudieron atar a NINGUN cliente. Enganchar por
+    // nombre falla seguido: la empresa se llama de una forma y el turno esta a
+    // nombre de la persona, o al reves.
+    +(function(){
+      var ag=(S._citasAgenda||[]).map(function(ev,i){ return {ev:ev, i:i}; })
+        .filter(function(x){
+          if(String(x.ev.estado||'')==='cancelled') return false;
+          return !(DB.clients||[]).some(function(y){
+            return _citaEsDe(y, x.ev.titulo, x.ev.con); });
+        }).slice(0,8);
+      if(!ag.length) return '';
+      return '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:0.06em;margin:10px 0 4px">De la agenda, sin cliente reconocido</div>'
+        +ag.map(function(x){
+          return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+            +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);'
+              +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+              +esc(x.ev.titulo||'sin titulo')+' \u00b7 '+esc(_citaFechaAR(x.ev.inicio))
+              +(x.ev.con?(' \u00b7 '+esc(x.ev.con)):'')+'</span>'
+            +'<select onchange="citasAsignarAgenda('+c.id+','+x.i+',this.value)" '
+              +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
+              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+              +'font-family:var(--font)">'
+              +'<option value="">Es de este cliente, etapa...</option>'+ops
+            +'</select>'
+          +'</div>';
+        }).join('');
+    })()
     +(sueltas.length
       ? ('<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
           +'letter-spacing:0.06em;margin:8px 0 4px">Sin etapa reconocida</div>'
