@@ -28317,7 +28317,7 @@ function _lpPaginaHtml(c){
   // pasan por la funcion, que es la que tiene el token.
   var fnBase=String((DB.agencia&&DB.agencia.ghlFn)||_lpCalFn().url||'').trim();
   var propio = (cfg.mecanica==='calendario' && cfg.calendarioPropio && calId)
-    ? _lpReservaHtml(c, cfg, pregPost, fnBase, String(cfg.landingId||''))
+    ? _lpReservaHtml(c, cfg, pregPost, fnBase, String(cfg.landingId||''), calUrl)
     : '';
   var mecanica = cfg.mecanica==='calendario'
     ? (propio || ((antes?postHtml+calEmbed2:calEmbed+postHtml)+(calId?'':_lpFormHtml())))
@@ -29324,14 +29324,25 @@ function _lpAntesHtml(preg, calUrl, calId){
 //
 // El orden es el que pidio: horario, datos, preguntas. La cita se crea apenas
 // estan los datos: el que abandona en las preguntas ya tiene el turno tomado.
-function _lpReservaHtml(c, cfg, preg, fnBase, landingId){
+function _lpReservaHtml(c, cfg, preg, fnBase, landingId, calUrl){
   if(!fnBase || !landingId) return '';
   var titulo=String((cfg.copy||{}).ctaCalendario||'') || 'Elegí el día y la hora';
   var g=(cfg.gracias||{});
   var waNum=String(g.wa||'').replace(/[^0-9]/g,'');
   var waUrl=waNum ? ('https://wa.me/'+waNum+'?text='+encodeURIComponent(String(g.waMsg||''))) : '';
 
-  return '<div class="rv" id="rv">'
+  // La red por si la funcion no contesta. El iframe nace con data-src y sin
+  // src: asi no carga nada de GHL mientras no haga falta, pero si la funcion
+  // se cae el lead reserva igual. Sin esto, un rato de Supabase abajo es un
+  // embudo que no toma turnos.
+  var red=calUrl
+    ? ('<div id="rv-fb" hidden><iframe data-src="'+esc(calUrl)+'" scrolling="no" '
+      +'style="width:100%;height:760px;border:none;overflow:hidden" '
+      +'title="Agenda tu turno"></iframe></div>')
+    : '';
+
+  return red
+  +'<div class="rv" id="rv">'
     +'<div class="rv-t" id="rv-t">'+esc(titulo)+'</div>'
     +'<div class="rv-s" id="rv-s">Buscando los horarios libres...</div>'
     +'<div class="rv-bar" id="rv-bar"></div>'
@@ -29430,15 +29441,34 @@ function _lpReservaHtml(c, cfg, preg, fnBase, landingId){
     +'function traer(){'
       +'var hoy=new Date();var desde=hoy.getTime();'
       +'var hasta=desde+21*86400000;'
+      // Ocho segundos sin respuesta es una funcion caida, no una lenta: a esa
+      // altura el visitante ya se esta yendo.
+      +'var tarde=setTimeout(function(){malo("");},8000);'
       +'pedir("slots",{desde:desde,hasta:hasta}).then(function(r){'
+        +'clearTimeout(tarde);'
         +'if(!r||!r.ok){malo(r&&r.error||"No pude traer los horarios.");return;}'
         +'st.dias=r.dias||{};'
         +'var f=Object.keys(st.dias).filter(function(k){return (st.dias[k]||[]).length;}).sort();'
         +'if(!f.length){malo("No hay horarios libres en las próximas tres semanas.");return;}'
         +'st.fecha=f[0];pinta();'
-      +'}).catch(function(){malo("No pude traer los horarios.");});'
+      +'}).catch(function(){clearTimeout(tarde);malo("No pude traer los horarios.");});'
+    +'}'
+    // Si no se pueden pintar horarios, el visitante no tiene por que enterarse
+    // de por que: se le da el widget de GHL y reserva igual. El diseno se
+    // pierde; el turno no.
+    +'function alWidget(){'
+      +'var f=el("rv-fb");if(!f)return false;'
+      +'var i=f.querySelector("iframe");'
+      +'if(i&&!i.getAttribute("src"))i.setAttribute("src",i.getAttribute("data-src")||"");'
+      +'f.hidden=false;'
+      +'var p=el("rv");if(p)p.hidden=true;'
+      // El script de GHL es el que le da el alto real al iframe.
+      +'var sc=document.createElement("script");'
+      +'sc.src="https://link.msgsndr.com/js/form_embed.js";document.body.appendChild(sc);'
+      +'return true;'
     +'}'
     +'function malo(t){'
+      +'if(alWidget())return;'
       +'el("rv-s").textContent="";'
       +'el("rv-cuerpo").innerHTML="<p class=\'rv-err\'></p>";'
       +'el("rv-cuerpo").querySelector(".rv-err").textContent=t;'
