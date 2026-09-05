@@ -6556,7 +6556,13 @@ function _p360EtapaProspecto(c){
   var cols=rutaColumnas();
   if(!cols.length) return null;
   var n=(c.fathomCalls||[]).length;
-  var i=_p360Pago(c) ? 2 : (n>=2 ? 1 : 0);
+  // Si la arrastraste a una columna, esa manda. La regla automatica mira si en
+  // la transcripcion se habla de pago, y eso no siempre pasa aunque el lead
+  // haya confirmado que avanza: quien escucho la llamada sabe mas.
+  var i=(typeof c.prospectoEtapa==='number')
+    ? c.prospectoEtapa
+    : (_p360Pago(c) ? 2 : (n>=2 ? 1 : 0));
+  if(i<0) i=0;
   if(i>cols.length-1) i=cols.length-1;
   return {l:cols[i].l, i:i, total:cols.length, estado:'hecho', hechas:i+1};
 }
@@ -21924,12 +21930,39 @@ function p360Cargar(clientId, etapa, esDoc){
   // efecto de lo que acabas de cargar.
   p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
 }
+// Borra una tarjeta de prospecto. Solo prospectos: un cliente de verdad tiene
+// facturacion, tickets y material colgando, y eso no se borra desde un tablero.
+function p360BorrarProspecto(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!esProspecto(c)) return;
+  var n=(c.fathomCalls||[]).length;
+  if(!confirm('Borrar el prospecto "'+(c.name||'')+'"'
+    +(n?(n===1?' y su llamada guardada':(' y sus '+n+' llamadas guardadas')):'')+'?\n\n'
+    +'Si vuelve a aparecer una llamada con ese mail, la tarjeta se crea de nuevo.')) return;
+  DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
+  if(S.p360Abierto===clientId) S.p360Abierto=null;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast('Prospecto borrado');
+}
 function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var RD=rutaDef();
   var idx=RD.map(function(e){return e.l;}).indexOf(etapa);
   if(idx<0) return;
+  // Un prospecto no tiene ruta que reescribir: no hay pasos ni entregables
+  // detras. Mover la tarjeta es solo decir en que instancia esta.
+  if(esProspecto(c)){
+    var cols=rutaColumnas();
+    var j=cols.map(function(e){return e.l;}).indexOf(etapa);
+    if(j<0) return;
+    c.prospectoEtapa=j;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast(c.name+' \u2192 '+etapa);
+    return;
+  }
   S._p360Destino=etapa;
   var calls=(c.fathomCalls||[]);
   var actual=_p360Etapa(c);
@@ -23014,7 +23047,17 @@ function p360Html(){
         +'ondragend="p360FinArrastre()" '
         +'onclick="p360Abrir('+d.c.id+')" '
         +'title="'+esc(d.c.name||'')+' \u2014 tocala para ver en que quedo, o arrastrala a otra etapa">'
-      +'<div class="p3n">'+esc(d.c.name||'')+'</div>'
+      +'<div class="p3n">'+esc(d.c.name||'')
+        // Una tarjeta de prospecto se crea sola desde una llamada: una prueba,
+        // un mail mal leido o alguien del equipo abren una que no va. Si no se
+        // puede borrar, queda para siempre ocupando una columna.
+        +(esProspecto(d.c)
+          ? ('<button onclick="event.stopPropagation();p360BorrarProspecto('+d.c.id+')" '
+            +'title="Borrar este prospecto" aria-label="Borrar" '
+            +'style="float:right;border:0;background:none;color:var(--text3);cursor:pointer;'
+            +'font-size:14px;line-height:1;padding:0 2px">\u00d7</button>')
+          : '')
+      +'</div>'
       +(d.prod?('<div class="p3p">'+esc(d.prod)+'</div>'):'')
       +'<div class="p3b" style="color:'+col+'">'+txt+'</div>'
     +'</div>';
