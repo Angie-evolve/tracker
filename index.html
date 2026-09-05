@@ -28306,7 +28306,7 @@ function _lpPaginaHtml(c){
        +'?accion=respuestas') : '';
   var destino = (cfg.destinoRespuestas==='funcion' && fnPub) ? fnPub : hook;
   var postHtml = antes
-    ? _lpAntesHtml(pregPost, calUrl, calId)
+    ? _lpAntesHtml(pregPost, calUrl, calId, !!cfg.calendarioGate)
     : ((calId && pregPost.length && destino)
         ? _lpPostHtml(pregPost, destino, (cfg.destinoRespuestas==='funcion')?String(cfg.landingId||''):'')
         : '');
@@ -29251,7 +29251,7 @@ function _lpClaveDe(t){
 // abre con todo en la URL: los datos de contacto en los campos que GHL ya
 // prellena, y las respuestas en los campos ocultos del formulario.
 // No lleva token, no llama a ninguna API y no depende de ningun servidor.
-function _lpAntesHtml(preg, calUrl, calId){
+function _lpAntesHtml(preg, calUrl, calId, conGate){
   var E=function(t){ return String(t===null||t===undefined?'':t)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   return '<div id="evx-antes">'
@@ -29277,16 +29277,17 @@ function _lpAntesHtml(preg, calUrl, calId){
         +'c.innerHTML=p.ops.map(function(o,j){return "<button type=\'button\' class=\'qop\' data-j=\'"+j+"\'>"+o+"</button>";}).join("");'
         +'Array.prototype.forEach.call(c.querySelectorAll(".qop"),function(b){'
           +'b.addEventListener("click",function(){resp[p.k]=p.ops[+b.getAttribute("data-j")];'
-          +'i++;i<P.length?pinta():gate();});});'
+          +'i++;i<P.length?pinta():cerrar();});});'
       +'}else{'
         +'c.innerHTML="<input id=\'evx-in\' placeholder=\'Tu respuesta\'>"'
           +'+"<button type=\'button\' class=\'qop\' id=\'evx-ok\'>Seguir</button>";'
         +'el("evx-ok").addEventListener("click",function(){'
-          +'resp[p.k]=(el("evx-in")||{}).value||"";i++;i<P.length?pinta():gate();});'
+          +'resp[p.k]=(el("evx-in")||{}).value||"";i++;i<P.length?pinta():cerrar();});'
       +'}'
     +'}'
     // El gate propio: los mismos tres datos que pide GHL, pero con nuestro
     // diseno y sin los textos largos de advertencia.
+    +'function cerrar(){ CON_GATE?gate():abrir(); }'
     +'function gate(){'
       +'el("evx-paso").textContent="Ultimo paso";'
       +'el("evx-q").textContent="\u00bfA d\u00f3nde te confirmamos el turno?";'
@@ -29299,11 +29300,13 @@ function _lpAntesHtml(preg, calUrl, calId){
     +'}'
     +'function abrir(){'
       +'var n=(el("g-n")||{}).value||"",t=(el("g-t")||{}).value||"",m=(el("g-m")||{}).value||"";'
-      +'if(!m||m.indexOf("@")<0){el("g-m").focus();return;}'
+      +'if(CON_GATE&&(!m||m.indexOf("@")<0)){el("g-m").focus();return;}'
       +'var q=[];'
-      +'q.push("full_name="+encodeURIComponent(n));'
-      +'q.push("phone="+encodeURIComponent(t));'
-      +'q.push("email="+encodeURIComponent(m));'
+      +'if(CON_GATE){'
+        +'q.push("full_name="+encodeURIComponent(n));'
+        +'q.push("phone="+encodeURIComponent(t));'
+        +'q.push("email="+encodeURIComponent(m));'
+      +'}'
       // Las respuestas van con la clave del campo oculto del formulario.
       +'for(var k in resp)q.push(encodeURIComponent(k)+"="+encodeURIComponent(resp[k]));'
       +'var cal=el("cal-wrap");'
@@ -29312,7 +29315,8 @@ function _lpAntesHtml(preg, calUrl, calId){
       +'caja.hidden=true;'
       +'if(cal){cal.hidden=false;cal.scrollIntoView({behavior:"smooth",block:"center"});}'
     +'}'
-    +'if(P.length)pinta();else gate();'
+    +'var CON_GATE='+JSON.stringify(!!conGate)+';'
+    +'if(P.length)pinta();else if(CON_GATE)gate();else abrir();'
   +'})();<\/script>';
 }
 // El calendario con nuestro diseno. El widget de GHL entra en un iframe con su
@@ -29858,7 +29862,51 @@ function _lpCalHtml(c, cfg){
           +'</a>'
           +(preg.length?(' \u00b7 '+preg.length+' que salen '
             +((c.quiz&&c.quiz.preguntas)?'del quiz':'de los campos')):'')+'</div>'
-        +(preg.length
+        // Con las preguntas antes no hace falta webhook ni funcion: las
+        // respuestas viajan en la URL. Lo unico que hay que hacer una vez es
+        // crear los campos ocultos en el formulario de GHL con estas claves.
+        +((preg.length && (cfg.calendarioOrden||'antes')==='antes')
+          ? ('<div style="border:1px solid var(--border);border-radius:var(--radius);'
+              +'padding:10px 12px;margin-top:6px;background:var(--bg3)">'
+            +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;'
+              +'margin-bottom:8px">'
+              +'<span style="font-size:11px;color:var(--text3);flex:1;min-width:150px">'
+                +'Campos ocultos a crear en el formulario del calendario</span>'
+              +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+                +'onclick="lpClavesCopiar('+c.id+')">Copiar la lista</button>'
+            +'</div>'
+            +preg.map(function(q){
+              return '<div style="display:flex;gap:9px;align-items:baseline;'
+                +'font-size:11px;line-height:1.6">'
+                +'<code style="flex:none;color:var(--accent);font-family:var(--font-mono,monospace)">'
+                  +esc(q.k)+'</code>'
+                +'<span style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;'
+                  +'white-space:nowrap">'+esc(_lpLimpiar(q.q))+'</span>'
+              +'</div>';
+            }).join('')
+            +'<div style="font-size:10.5px;color:var(--text3);margin-top:7px;line-height:1.55">'
+              +'En GHL: el campo va oculto y su <b>Query Key</b> tiene que ser exactamente '
+              +'esa clave. La landing las manda en la URL y GHL las guarda al reservar.'
+            +'</div>'
+            // El gate propio no captura nada en este flujo: solo prellena lo
+            // que GHL vuelve a mostrar igual. Es una pantalla de mas.
+            +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;'
+              +'margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">'
+              +'<span style="font-size:11px;color:var(--text3)">Antes del calendario</span>'
+              +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+                +'onclick="lpCalGate('+c.id+')">'
+                +(cfg.calendarioGate?'pedir tambien los datos':'solo las preguntas')+'</button>'
+              +'<span style="font-size:10.5px;color:var(--text3);flex:1;min-width:200px;'
+                +'line-height:1.5">'
+                +(cfg.calendarioGate
+                  ? 'Pide nombre, mail y telefono, y despues GHL los muestra otra vez. '
+                    +'Es una pantalla de mas sin nada a cambio.'
+                  : 'El lead escribe sus datos una sola vez, en el formulario de GHL.')
+              +'</span>'
+            +'</div>'
+          +'</div>')
+          : '')
+        +((preg.length && (cfg.calendarioOrden||'antes')!=='antes')
           ? ('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
             +'<input id="lp-hook" value="'+esc(hook)+'" '
               +'placeholder="URL del Inbound Webhook de la subcuenta" '
@@ -29881,11 +29929,13 @@ function _lpCalHtml(c, cfg){
           +'<div style="font-size:10.5px;color:'+(hook?'var(--text3)':'var(--amberx)')+';'
             +'margin-top:5px;line-height:1.5">'
             +(hook
-              ? 'Solo hace falta si las preguntas van DESPUES del horario.'
-              : 'Solo hace falta si las preguntas van despues del horario.')
+              ? 'Con las preguntas despues, las respuestas necesitan a donde ir.'
+              : 'Sin esto las respuestas de despues del horario no llegan a ningun lado.')
           +'</div>')
+          : '')
+        +(preg.length ? ''
           : '<div style="font-size:10.5px;color:var(--text3)">Arma el quiz o agrega campos '
-            +'para que haya algo que preguntar despues de reservar.</div>')
+            +'para que haya algo que preguntar.</div>')
       +'</div>';
     })()
     +'<div id="lp-cal-est" style="font-size:11px;color:var(--text3);margin-top:6px;min-height:14px">'
@@ -30014,6 +30064,26 @@ function _lpCalCss(c){
     +'  background:'+g(0.04)+'!important;color:'+T+'!important;\n'
     +'  border:1px solid '+g(0.14)+'!important}\n'
     +'.appointment_widgets--revamp--inner ::placeholder{color:'+T+'66!important}\n'
+    // La tipografia es lo que mas delata que el calendario es de otro lado. El
+    // iframe es otro documento, asi que inherit no sirve: hay que nombrar la
+    // familia. Si Inter no esta cargada adentro cae a Helvetica, que se parece
+    // mucho mas a la landing que la que trae GHL de fabrica.
+    +'#appointment_widgets--revamp,.appointment_widgets--revamp--inner,\n'
+    +'.appointment_widgets--revamp--inner :is(h1,h2,h3,h4,h5,p,label,span,div,li,\n'
+    +'  button,input,select,textarea,td,th){\n'
+    +'  font-family:"Inter","Helvetica Neue",Helvetica,Arial,sans-serif!important}\n'
+    // Las etiquetas largas del formulario entran a tamano de texto corrido y
+    // el formulario se lee como un contrato. Bajarlas es lo que mas ordena.
+    +'.appointment_widgets--revamp--inner label{\n'
+    +'  font-size:13.5px!important;font-weight:500!important;line-height:1.5!important;\n'
+    +'  color:'+T+'!important}\n'
+    +'.appointment_widgets--revamp--inner :is(input,select,textarea){\n'
+    +'  border-radius:10px!important;padding:11px 13px!important}\n'
+    // El boton de reservar con el color de la marca y el peso de un CTA.
+    +'.appointment_widgets--revamp--inner :is(button[type="submit"],.btn-primary,\n'
+    +'  .widgets-submit-btn,.appointment-widgets-btn-primary){\n'
+    +'  background:'+A+'!important;border-color:'+A+'!important;color:#fff!important;\n'
+    +'  border-radius:10px!important;font-weight:600!important}\n'
     +'</style>\n';
 }
 function lpCalTema(clientId){
@@ -30039,6 +30109,31 @@ function lpCalColores(clientId){
   navigator.clipboard.writeText('Primario: '+col.acento+'\nFondo: '+col.fondo
     +'\nTema: '+(col.oscuro?'oscuro':'claro')).then(function(){
     toast('Colores copiados');
+  },function(){ toast('No pude copiar','amber'); });
+}
+function lpCalGate(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  cfg.calendarioGate=!cfg.calendarioGate;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
+// La lista para armar los campos ocultos en GHL de una sentada, sin volver a
+// la pantalla a copiar clave por clave.
+function lpClavesCopiar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var preg=_lpPregDespues(c);
+  var txt='Campos ocultos del formulario de '+(c.name||'')+'\n'
+    +'Cada uno: tipo texto, oculto, y Query Key exactamente como dice la clave.\n\n'
+    +preg.map(function(q){
+      return q.k+'   '+_lpLimpiar(q.q)
+        +((q.ops||[]).length?('\n     respuestas posibles: '+q.ops.join(' / ')):'');
+    }).join('\n');
+  navigator.clipboard.writeText(txt).then(function(){
+    toast('Lista copiada \u00b7 '+preg.length+' campo'+(preg.length===1?'':'s'));
   },function(){ toast('No pude copiar','amber'); });
 }
 function lpCalPropio(clientId){
