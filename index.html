@@ -27575,9 +27575,19 @@ function _lpPaginaHtml(c){
   // al final de las preguntas, asi que el cartel no explicaba nada que no
   // estuviera ahi abajo, y encima empujaba al formulario fuera del primer golpe
   // de vista.
+  // El embed es el oficial de GHL: el iframe mas su form_embed.js, que es lo
+  // que lo hace crecer al alto real del calendario. Sin el script queda una
+  // ventanita con scroll adentro.
+  var calId=String(cfg.calendarioId||'').trim();
+  var calEmbed = calId
+    ? ('<iframe src="'+E(GHL_BOOKING+calId)+'" id="cal-'+E(calId)+'" scrolling="no" '
+        +'style="width:100%;min-height:700px;border:none;overflow:hidden" '
+        +'title="Agenda tu turno"></iframe>'
+      +'<script src="https://link.msgsndr.com/js/form_embed.js"><\/script>')
+    : '<p class="nota armado">Todavia no elegiste el calendario: se elige en la pestana '
+      +'Landing. Hasta entonces va el formulario solo.</p>';
   var mecanica = cfg.mecanica==='calendario'
-    ? ('<p class="nota armado">Aca va el embed del calendario de GHL. Estos son los '
-       +'datos que pide antes de confirmar el turno.</p>'+_lpFormHtml())
+    ? (calEmbed+(calId?'':_lpFormHtml()))
     : cfg.mecanica==='quiz'
       ? (qPreg.length ? _lpQuizHtml()
         : ('<p class="nota armado">Todavia no armaste las preguntas: se arman en la '
@@ -27809,6 +27819,117 @@ function _lpPaginaHtml(c){
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
 }
+// ---- Calendario de GHL (mecanica calendario) ----------------------------
+// El embed de GHL es el id del calendario metido en una URL fija. El id no se
+// ve en ningun lado de la interfaz de GHL salvo entrando a Compartir, asi que
+// se trae por API: la subcuenta ya esta conectada para Oportunidades.
+var GHL_BOOKING='https://api.leadconnectorhq.com/widget/booking/';
+function _lpCalHtml(c, cfg){
+  if(cfg.mecanica!=='calendario') return '';
+  var lista=(cfg.calendarios||[]);
+  var id=String(cfg.calendarioId||'').trim();
+  var nom=String(cfg.calendarioNombre||'');
+  var g=(c.ghl||{});
+  var conectado=!!(g.token&&g.locationId);
+  var est='font-size:11.5px;padding:6px 9px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font)';
+  return '<div style="margin-bottom:16px">'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:7px">El calendario</div>'
+    +'<div style="font-size:11.5px;color:'+(id?'var(--text3)':'var(--amberx)')+';line-height:1.6;'
+      +'max-width:74ch;margin-bottom:8px">'
+      +(id
+        ? ('La landing embebe '+esc(nom||id)+'.')
+        : 'Sin calendario elegido la pagina sale sin el embed y hay que pegarlo a mano en GHL.')
+      +'</div>'
+    +(lista.length
+      ? ('<select onchange="lpCalElegir('+c.id+',this.value)" '
+          +'style="'+est+';width:100%;max-width:420px;margin-bottom:8px">'
+          +'<option value="">Elegi un calendario</option>'
+          +lista.map(function(x){
+            return '<option value="'+esc(x.id)+'"'+(x.id===id?' selected':'')+'>'
+              +esc(x.nombre||x.id)+'</option>'; }).join('')
+        +'</select>')
+      : '')
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +(conectado
+        ? ('<button class="btn btn-sm" onclick="lpCalTraer('+c.id+')">'
+            +(lista.length?'Actualizar la lista':'Traer los de la subcuenta')+'</button>')
+        : '')
+      // El id a mano nunca sobra: sirve si el token no tiene el scope, si el
+      // calendario es de otra subcuenta, o mientras el script no este al dia.
+      +'<input id="lp-cal-id" placeholder="o pega el ID del calendario" value="'+esc(id)+'" '
+        +'style="'+est+';flex:1;min-width:200px">'
+      +'<button class="btn btn-sm" onclick="lpCalIdGuardar('+c.id+')">Guardar</button>'
+    +'</div>'
+    +'<div id="lp-cal-est" style="font-size:11px;color:var(--text3);margin-top:6px;min-height:14px">'
+      +(conectado?'':'Este cliente no tiene la subcuenta de GHL conectada, asi que la lista '
+        +'no se puede traer: pega el ID a mano.')+'</div>'
+  +'</div>';
+}
+function _lpCalDecir(t,col){
+  var e=document.getElementById('lp-cal-est');
+  if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
+}
+async function lpCalTraer(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var g=(c.ghl||{});
+  var proxy=getGhlProxy();
+  if(!proxy.url){ _lpCalDecir('Falta configurar el proxy de GHL en Integraciones.','var(--amberx)'); return; }
+  if(!g.token||!g.locationId){ _lpCalDecir('Falta el token o el locationId del cliente.','var(--amberx)'); return; }
+  _lpCalDecir('Buscando los calendarios...');
+  try{
+    var r=await proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+      +'&action=calendars&token='+encodeURIComponent(g.token)
+      +'&location='+encodeURIComponent(g.locationId)).then(function(x){ return x.json(); });
+    if(!r||!r.ok){
+      var m=String((r&&r.error)||'sin respuesta');
+      // El script viejo no conoce la accion: decirlo con todas las letras, o
+      // parece que el cliente no tiene calendarios.
+      if(/accion desconocida|unknown action/i.test(m))
+        _lpCalDecir('Tu script de GHL todavia no tiene la accion "calendars". Pega el ID a mano '
+          +'mientras tanto.','var(--amberx)');
+      else if(/scope|401|403/i.test(m))
+        _lpCalDecir('El token del cliente no tiene el scope calendars.readonly.','var(--redx)');
+      else _lpCalDecir('GHL respondio: '+esc(m),'var(--redx)');
+      return;
+    }
+    var L=(r.calendarios||r.calendars||[]).map(function(x){
+      return {id:String(x.id||''), nombre:String(x.nombre||x.name||x.id||'')};
+    }).filter(function(x){ return x.id; });
+    if(!L.length){ _lpCalDecir('La subcuenta no tiene calendarios cargados.','var(--amberx)'); return; }
+    _lpCfg(c).calendarios=L;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    _lpCalDecir(L.length+' calendario(s). Elegi cual va en la landing.','var(--accent)');
+  }catch(e){ _lpCalDecir('Error de red: '+esc(e.message),'var(--redx)'); }
+}
+function _lpCalSet(c, id, nombre){
+  var cfg=_lpCfg(c);
+  cfg.calendarioId=String(id||'').trim();
+  cfg.calendarioNombre=String(nombre||'');
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(c.id);
+}
+function lpCalElegir(clientId, id){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var x=((_lpCfg(c).calendarios||[]).filter(function(y){ return y.id===id; })[0])||{};
+  _lpCalSet(c, id, x.nombre||'');
+}
+function lpCalIdGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('lp-cal-id');
+  var v=String((e||{}).value||'').trim();
+  // Si pego el embed entero en vez del id, sacarlo de ahi en vez de rechazarlo.
+  var m=v.match(/widget\/booking\/([A-Za-z0-9_-]+)/);
+  if(m) v=m[1];
+  var x=((_lpCfg(c).calendarios||[]).filter(function(y){ return y.id===v; })[0])||{};
+  _lpCalSet(c, v, x.nombre||'');
+}
+
 // ---- Video de fondo (piel Hollywood) ------------------------------------
 // Seedance 2.5 en Higgsfield. Los valores salen de la spec del modelo, no de
 // memoria: modo t2v, 4 a 30 segundos, hasta 1080p, y generate_audio viene en
@@ -28035,7 +28156,9 @@ function landingHtml(c){
     // El gate del quiz no se ve hasta que hay preguntas, y el calendario los
     // pide adentro del iframe de GHL: sin decirlo, parece que no se usan.
     var donde = cfg.mecanica==='calendario'
-        ? 'Van antes de confirmar el turno.'
+        // Con el embed puesto, los campos los pide el widget de GHL: estos son
+        // la especificacion de que configurar alla, no lo que dibuja la pagina.
+        ? 'Son los que hay que configurar en el calendario de GHL.'
       : cfg.mecanica==='quiz'
         ? 'Van en el gate, despues de las preguntas.'
       : 'Van en el formulario del hero.';
@@ -28236,6 +28359,7 @@ function landingHtml(c){
     +opciones('Mecanica', LP_MECANICAS, 'mecanica', null, rr.porqueMecanica, rr.mecanica)
     +bloqueQuiz
     +bloqueCampos
+    +_lpCalHtml(c, cfg)
     +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)}, rr.porquePiel, rr.piel)
     +opciones('Tema', LP_TEMAS, 'tema', null, rr.porqueTema, rr.tema)
     +avisoHw
