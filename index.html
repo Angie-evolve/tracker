@@ -27156,6 +27156,11 @@ function lpVer(clientId){
         +'<button class="btn btn-sm" id="lp-edit-btn" onclick="lpEditToggle('+c.id+')" '
           +'title="Escribi encima, arrastra para mover, estira el borde para el ancho">'
           +'Editar</button>'
+        // Vive en la barra y no encima del elemento: sobre un bullet de 20px
+        // no entra, y aca esta siempre en el mismo lugar.
+        +'<button class="btn btn-sm" id="lp-sel-btn" style="display:none" '
+          +'title="Oculta lo que tengas seleccionado. Se puede volver a mostrar." '
+          +'onclick="lpSelBorrar('+c.id+')"></button>'
         +'<button class="btn btn-sm" id="lp-piel-btn" style="display:none" '
           +'title="Descarta el armado propio de esta pagina" '
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
@@ -27261,14 +27266,16 @@ function _lpAltBind(clientId){
     d._lpSecBound=true;
     d.addEventListener('click', function(ev){
       if(!ev.target||!ev.target.closest) return;
-      var b=ev.target.closest('[data-ocultar],[data-mostrar]');
+      var b=ev.target.closest('[data-ocultar],[data-mostrar],[data-mostrar-it]');
       if(!b) return;
       ev.preventDefault(); ev.stopPropagation();
       var c2=DB.clients.find(function(x){return x.id===clientId;});
       if(!c2) return;
       var cfg2=_lpCfg(c2), k=b.getAttribute('data-ocultar');
       cfg2.ocultas=cfg2.ocultas||{};
+      var mit=b.getAttribute('data-mostrar-it');
       if(k) cfg2.ocultas[k]=true;
+      else if(mit){ if(cfg2.ocultasIt) delete cfg2.ocultasIt[mit]; }
       else delete cfg2.ocultas[b.getAttribute('data-mostrar')];
       save();
       if(typeof renderTab==='function') renderTab();
@@ -27534,6 +27541,7 @@ function lpVolverAPiel(clientId){
   delete cfg.layout;
   delete cfg.anchosMovil;
   delete cfg.ordenMovil;
+  delete cfg.ordenSecMovil;
   delete cfg.anchos;
   delete cfg.ocultas;
   save();
@@ -27551,6 +27559,10 @@ function _lpMovAplicarCss(d){
     +'.lp-mv [data-mov]:hover{outline:1px solid var(--acento);outline-offset:3px;'
       +'border-radius:4px;cursor:grab}'
     +'.lp-mv [data-mov].lp-tomado{opacity:.3;cursor:grabbing;outline:none}'
+    // La seleccion se ve distinta del hover: el hover dice "esto se agarra",
+    // la seleccion dice "sobre esto actua el boton de arriba".
+    +'.lp-mv .lp-sel{outline:2px solid var(--acento)!important;outline-offset:3px;'
+      +'border-radius:4px}'
     +'.lp-mv [data-sec]{position:relative}'
     +'.lp-mv [data-sec]::before{content:attr(data-nom);position:absolute;top:2px;left:0;'
       +'font:500 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;'
@@ -27579,6 +27591,33 @@ function _lpMovAplicarCss(d){
     +'@media(prefers-reduced-motion:reduce){.lp-mv [data-mov],.lp-guia{transition:none}}';
   d.head.appendChild(st);
 }
+// Refresca el boton de borrar segun lo que este seleccionado.
+function _lpSelBarra(){
+  var b=document.getElementById('lp-sel-btn');
+  if(!b) return;
+  var sel=S._lpSel;
+  if(!sel||!S._lpMover){ b.style.display='none'; return; }
+  b.style.display='';
+  b.textContent='\u2715  '+String(sel.n||sel.k).slice(0,28);
+}
+function lpSelBorrar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var sel=S._lpSel;
+  if(!c||!sel) return;
+  var cfg=_lpCfg(c);
+  if(sel.it){
+    cfg.ocultasIt=cfg.ocultasIt||{};
+    cfg.ocultasIt[sel.k]=true;
+  }else{
+    cfg.ocultas=cfg.ocultas||{};
+    cfg.ocultas[sel.k]=true;
+  }
+  S._lpSel=null;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpMovRepintar(clientId);
+  _lpSelBarra();
+}
 function _lpMoverAplicar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   var f=document.getElementById('lp-frame');
@@ -27591,6 +27630,9 @@ function _lpMoverAplicar(clientId){
   if(m) m.textContent=on ? _lpPista(c, piel) : '';
   _lpMovAplicarCss(d);
   d.body.classList.toggle('lp-mv', on);
+  if(!on) S._lpSel=null;
+  if(d._lpPintarSel) d._lpPintarSel();
+  _lpSelBarra();
   d.querySelectorAll('[data-sec]').forEach(function(el){
     var k=el.getAttribute('data-sec');
     el.setAttribute('data-nom', LP_SECCION_NOMBRE[k]||k);
@@ -27750,11 +27792,48 @@ function _lpMoverAplicar(clientId){
       // En movil el orden es propio, y se resuelve con flex order sobre los
       // hermanos de la fila. Mover el nodo cambiaria tambien el escritorio:
       // el HTML es uno solo para las dos vistas.
+      if(S._lpMovil && esSec){
+        var cont=nodo.parentNode;
+        if(!dest.el || dest.el.parentNode!==cont) return;
+        var ordS=function(x){
+          var v3=parseInt(f.contentWindow.getComputedStyle(x).order||'0',10);
+          return isNaN(v3)?0:v3;
+        };
+        var secs=Array.prototype.filter.call(cont.children, function(x){
+          return x.getAttribute && x.getAttribute('data-sec');
+        });
+        var posS={};
+        secs.forEach(function(x,k){ posS[x.getAttribute('data-sec')]=k; });
+        secs.sort(function(a,b){
+          var oa=ordS(a), ob=ordS(b);
+          if(oa!==ob) return oa-ob;
+          return posS[a.getAttribute('data-sec')]-posS[b.getAttribute('data-sec')];
+        });
+        var iOs=secs.indexOf(nodo);
+        if(iOs<0) return;
+        secs.splice(iOs,1);
+        var iDs=secs.indexOf(dest.el);
+        if(iDs<0) return;
+        secs.splice(iDs+(dest.antes?0:1),0,nodo);
+        cfg.ordenSecMovil=cfg.ordenSecMovil||{};
+        secs.forEach(function(x,k){
+          cfg.ordenSecMovil[x.getAttribute('data-sec')]=k+1;
+        });
+        pintarMovil();
+        save();
+        if(vb) vb.style.display='';
+        _lpMovAviso(clientId);
+        return;
+      }
       if(S._lpMovil && !esSec){
         var fila=nodo.parentNode;
         if(!dest.el || dest.vacia || dest.el.parentNode!==fila){
-          verChip('En m\u00f3vil se reordena dentro de la secci\u00f3n',
-                  ev.clientX, ev.clientY);
+          var solo=(Array.prototype.filter.call(fila.children,function(x){
+            return x.getAttribute&&x.getAttribute('data-mov'); }).length<2);
+          verChip(solo
+            ? 'Est\u00e1 solo en su secci\u00f3n: arrastr\u00e1 la secci\u00f3n entera'
+            : 'En m\u00f3vil se reordena dentro de la secci\u00f3n',
+            ev.clientX, ev.clientY);
           setTimeout(ocultar, 1400);
           return;
         }
@@ -27849,9 +27928,38 @@ function _lpMoverAplicar(clientId){
     d.addEventListener('mouseup',soltar);
   };
 
+  // Un clic selecciona. El boton de borrar vive arriba, en la barra, y no
+  // sobre el elemento: encima de un bullet de 20px no entra, y en la barra
+  // esta siempre en el mismo lugar.
+  var pintarSel=function(){
+    d.querySelectorAll('.lp-sel').forEach(function(x){ x.classList.remove('lp-sel'); });
+    if(!S._lpSel) return;
+    var q=S._lpSel.it
+      ? '[data-mov="'+S._lpSel.k.replace(/"/g,'\\"')+'"]'
+      : '[data-sec="'+S._lpSel.k+'"]';
+    var el=d.querySelector(q);
+    if(el) el.classList.add('lp-sel');
+  };
+  d._lpPintarSel=pintarSel;
+  d.addEventListener('click', function(ev){
+    if(!S._lpMover||!ev.target.closest) return;
+    if(ev.target.closest('[data-ocultar],[data-mostrar],[data-mostrar-it],.lp-borde')) return;
+    var col=ev.target.closest('[data-mov]');
+    var sec=col?null:ev.target.closest('[data-sec]');
+    if(col) S._lpSel={k:col.getAttribute('data-mov'), it:true,
+                      n:_lpNombreRef(col.getAttribute('data-mov'))};
+    else if(sec) S._lpSel={k:sec.getAttribute('data-sec'), it:false,
+                      n:LP_SECCION_NOMBRE[sec.getAttribute('data-sec')]
+                        ||sec.getAttribute('data-sec')};
+    else S._lpSel=null;
+    pintarSel();
+    _lpSelBarra();
+  });
+  pintarSel();
+
   d.addEventListener('mousedown', function(ev){
     if(!S._lpMover||ev.button!==0||!ev.target.closest) return;
-    if(ev.target.closest('[data-ocultar],[data-mostrar]')) return;
+    if(ev.target.closest('[data-ocultar],[data-mostrar],[data-mostrar-it]')) return;
     var borde=ev.target.closest('.lp-borde');
     if(borde){ estirar(ev, borde); return; }
     // Un campo del formulario se ordena entre sus hermanos y nada mas: fuera
@@ -28030,13 +28138,21 @@ function _lpLadoVivo(fila){
 function _lpLayoutPropio(c){
   var cfg=_lpCfg(c)||{};
   return Array.isArray(cfg.layout) || !!cfg.anchos || !!cfg.anchosMovil
-    || !!cfg.ordenMovil || !!_lpOcultas(c).length;
+    || !!cfg.ordenMovil || !!cfg.ordenSecMovil || !!cfg.ocultasIt
+    || !!_lpOcultas(c).length;
 }
 // Las secciones apagadas. Se guardan por clave y no se toca el copy: apagar y
 // volver a prender tiene que devolver la seccion igual a como estaba, si no es
 // un borrado con otro nombre.
 function _lpOcultas(c){
   var o=(_lpCfg(c)||{}).ocultas;
+  return (o&&typeof o==='object')
+    ? Object.keys(o).filter(function(k){ return o[k]; }) : [];
+}
+// Lo mismo pero para un elemento suelto. Ocultar tiene que poder deshacerse:
+// si no, es un borrado con otro nombre y el copy queda mutilado sin aviso.
+function _lpOcultasIt(c){
+  var o=(_lpCfg(c)||{}).ocultasIt;
   return (o&&typeof o==='object')
     ? Object.keys(o).filter(function(k){ return o[k]; }) : [];
 }
@@ -28207,6 +28323,17 @@ function _lpMovilCss(cfg){
   Object.keys(O).forEach(function(r){
     reglas.push('.col[data-mov="'+q(r)+'"]{order:'+(parseInt(O[r],10)||0)+'}');
   });
+  // Un elemento solo en su seccion no tiene contra que reordenarse: lo que hay
+  // que mover ahi es la seccion entera. Para eso el contenedor pasa a ser
+  // columna flex, solo en movil y solo si hay algo movido.
+  var SS=(cfg.ordenSecMovil&&typeof cfg.ordenSecMovil==='object')?cfg.ordenSecMovil:{};
+  var claves=Object.keys(SS);
+  if(claves.length){
+    reglas.push('.env{display:flex;flex-direction:column}');
+    claves.forEach(function(k){
+      reglas.push('.env [data-sec="'+q(k)+'"]{order:'+(parseInt(SS[k],10)||0)+'}');
+    });
+  }
   return reglas.length ? '@media(max-width:640px){'+reglas.join('')+'}' : '';
 }
 function _lpColores(c){
@@ -28586,7 +28713,11 @@ function _lpPaginaHtml(c){
       // La mayoria entra desde el anuncio en el telefono: ahi no hay dos
       // columnas que valgan, cualquier ancho guardado vuelve a fila entera.
       +'.col{flex-basis:100%!important;padding-right:0}'
-      +'.fila-lado{display:block}}'
+      // Con display:block los hijos son cajas de bloque y flex order deja de
+      // existir: por eso en movil no se podia bajar el calendario. Columna
+      // flex apila igual y ademas deja reordenar.
+      +'.fila-lado{display:flex;flex-direction:column}'
+      +'.fila-lado>.col{grid-column:auto!important;grid-row:auto!important}}'
     // Lo que se toco en la vista movil pisa a esa regla general. Va aparte y
     // despues, para que el 100% siga siendo el default de todo lo no tocado.
     +_lpMovilCss(cfg)
@@ -28641,9 +28772,12 @@ function _lpPaginaHtml(c){
       // Se dibuja en dos pasadas. Para saber si hay columna lateral hay que
       // mirar la fila entera, y eso no se puede mientras se escribe la primera
       // celda.
+      var itApagado={};
+      _lpOcultasIt(c).forEach(function(r){ itApagado[r]=true; });
       var cuerpo=function(items){
         var cols=[];
         items.forEach(function(r){
+          if(itApagado[r]) return;
           var h=dib(r);
           if(!h) return;
           cols.push({r:r, h:h, an:anchoDe(r)});
@@ -28717,11 +28851,15 @@ function _lpPaginaHtml(c){
       }).join('');
       // Una seccion apagada no deja rastro en la pagina: si no hubiera de donde
       // volver a prenderla, ocultar seria borrar.
-      var vueltas=_lpOcultas(c);
+      var vueltas=_lpOcultas(c).map(function(k){
+        return {k:k, n:LP_SECCION_NOMBRE[k]||k, it:false};
+      }).concat(_lpOcultasIt(c).map(function(r){
+        return {k:r, n:_lpNombreRef(r), it:true};
+      }));
       if(vueltas.length) partes+='<div class="armado lp-vueltas">Ocultas: '
-        +vueltas.map(function(k){
-          return '<button type="button" data-mostrar="'+k+'">'
-            +E(LP_SECCION_NOMBRE[k]||k)+'</button>';
+        +vueltas.map(function(x){
+          return '<button type="button" data-mostrar'+(x.it?'-it':'')+'="'+E(x.k)+'">'
+            +E(x.n)+'</button>';
         }).join('')+'</div>';
       return partes;
     })()
