@@ -27911,6 +27911,80 @@ function _lpPaginaHtml(c){
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
 }
+// ---- Publicar -----------------------------------------------------------
+// La pagina se podia ver y copiar, pero para que alguien la abriera habia que
+// subirla a algun lado a mano. Se publica en el mismo Supabase donde ya vive
+// el material: un bucket publico y un link estable por cliente.
+var LP_BUCKET='landings';
+function _lpSlug(c){
+  return String(c.name||'landing').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || ('cliente-'+c.id);
+}
+function _lpPubHtml(c, cfg){
+  var u=String(cfg.publicadaUrl||'');
+  if(!u) return '';
+  var cuando=cfg.publicadaAt?new Date(cfg.publicadaAt).toLocaleString('es-AR'):'';
+  return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">'
+    +'<div style="font-size:12.5px;color:var(--text2);margin-bottom:8px">Publicada</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +'<a href="'+esc(u)+'" target="_blank" rel="noopener" '
+        +'style="flex:1;min-width:220px;font-size:11.5px;color:var(--accent);'
+        +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(u)+'</a>'
+      +'<button class="btn btn-sm" onclick="lpPubCopiar('+c.id+')">Copiar el link</button>'
+    +'</div>'
+    // Sin la fecha no se sabe si el link tiene los ultimos cambios o los de
+    // hace una semana, que es la unica pregunta que importa aca.
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:5px">'
+      +(cuando?('Con los cambios del '+esc(cuando)+'. '):'')
+      +'Cada vez que publiques se actualiza el mismo link.</div>'
+  +'</div>';
+}
+function lpPubCopiar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  navigator.clipboard.writeText(String(_lpCfg(c).publicadaUrl||'')).then(function(){
+    toast('Link copiado');
+  },function(){ toast('No pude copiar','amber'); });
+}
+async function lpPublicar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!SB.token){ toast('Entra con tu cuenta para publicar.','amber'); return; }
+  var cfg=_lpCfg(c);
+  if(!cfg.copy){ toast('Primero escribi el copy.','amber'); return; }
+  var ruta=_lpSlug(c)+'.html';
+  _lpEstado('Publicando...');
+  try{
+    var html=_lpPaginaHtml(c);
+    // x-upsert para que republicar pise el archivo y el link no cambie nunca:
+    // un link distinto por version es un link que alguien ya mando y quedo mal.
+    var r=await fetch(SB_URL+'/storage/v1/object/'+LP_BUCKET+'/'+encodeURI(ruta),{
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
+                'x-upsert':'true',
+                'Content-Type':'text/html; charset=utf-8',
+                'Cache-Control':'max-age=60' },
+      body:html
+    });
+    if(!r.ok){
+      var t=await r.text();
+      if(/Bucket not found/i.test(t))
+        _lpEstado('Falta crear el bucket publico "'+LP_BUCKET+'" en Supabase \u2192 Storage.','var(--redx)');
+      else if(r.status===403||/row-level security|Unauthorized/i.test(t))
+        _lpEstado('El bucket existe pero no te deja escribir: faltan las policies.','var(--redx)');
+      else _lpEstado('No pude publicarla: '+esc(t),'var(--redx)');
+      return;
+    }
+    cfg.publicadaUrl=SB_URL+'/storage/v1/object/public/'+LP_BUCKET+'/'+encodeURI(ruta);
+    cfg.publicadaAt=new Date().toISOString();
+    save();
+    if(typeof renderTab==='function') renderTab();
+    _lpEstado('Publicada. El link esta arriba de la isla.','var(--accent)');
+    toast('Landing publicada \u00b7 '+Math.round(html.length/1024)+' KB');
+  }catch(e){ _lpEstado('No pude publicarla: '+esc(e.message),'var(--redx)'); }
+}
+
 // ---- CSS propio ---------------------------------------------------------
 // Ultimo recurso a proposito: casi todo se resuelve moviendo y estirando. Pero
 // cuando falta una sola cosa —una tipografia, un color de un boton— no tener
@@ -28288,6 +28362,8 @@ function landingHtml(c){
         'Arma la pagina con el COPY y la paleta de la marca, y la abre', true)
       +btnDock('Copiar el HTML','lpCopiarHtml('+c.id+')',
         'Copia la pagina entera al portapapeles, lista para pegar')
+      +btnDock((cfg.publicadaUrl?'Volver a publicar':'Publicar'),'lpPublicar('+c.id+')',
+        'Sube la pagina a tu Supabase y te deja un link para mandar')
     +'</div>'
   +'</div>';
 
@@ -28577,6 +28653,7 @@ function landingHtml(c){
     +avisoHw
     +_lpVideoHtml(c, cfg)
     +_lpCssHtml(c, cfg)
+    +_lpPubHtml(c, cfg)
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +p2+dock;
 }
