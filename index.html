@@ -26654,7 +26654,6 @@ function lpVer(clientId){
         +'<button class="btn btn-sm" id="lp-piel-btn" style="display:none" '
           +'title="Descarta el armado propio de esta pagina" '
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
-        +'<button class="btn btn-sm" onclick="escribirCopyLanding('+c.id+')">Reescribir con IA</button>'
         +'<button class="btn btn-sm" id="lp-movil-btn" onclick="lpMovilToggle()" '
           +'title="Muestra la pagina al ancho de un telefono">M\u00f3vil</button>'
         +'<button class="btn btn-sm" onclick="lpCopiarHtml('+c.id+')">Copiar el HTML</button>'
@@ -26743,6 +26742,84 @@ function _lpAltBind(clientId){
       lpAlternar(clientId, el.getAttribute('data-alt'));
     });
   });
+  // Reescribir todo el copy para cambiar un titular era desproporcionado: se
+  // perdian los otros textos que ya estaban bien. Aca el doble clic pide
+  // opciones de ESE texto y las cicla, con el original siempre a una vuelta.
+  d.querySelectorAll('[data-c]').forEach(function(el){
+    if(el._lpOptBound || el.hasAttribute('data-alt')) return;
+    el._lpOptBound=true;
+    el.title='Doble clic para probar otra version';
+    el.addEventListener('dblclick', function(ev){
+      if(S._lpEdit) return;
+      ev.preventDefault();
+      lpOtraVersion(clientId, el.getAttribute('data-c'), el);
+    });
+  });
+}
+// Que es cada texto, para que las opciones no salgan genericas: un titular y
+// una nota bajo el boton no se escriben igual.
+function _lpQueEs(ruta){
+  if(/^promesas/.test(ruta)) return 'el titular principal de la pagina, corto y concreto';
+  if(ruta==='eyebrow') return 'la linea corta que va arriba del titular, dice para quien es';
+  if(ruta==='bajada') return 'la bajada: dos lineas que explican como se cumple la promesa';
+  if(ruta==='cta'||ruta==='ctaBarra') return 'el texto de un boton, en verbo';
+  if(ruta==='bajoCta') return 'la linea bajo el boton, saca el miedo a hacer clic';
+  if(/^puntos/.test(ruta)) return 'un bullet de una linea de lo que incluye';
+  if(/^contacto\.titulo/.test(ruta)) return 'el titulo de la seccion donde se agenda';
+  if(/^contacto\.bajada/.test(ruta)) return 'una linea que explica que pasa despues de agendar';
+  if(/^formulario\.campos/.test(ruta)) return 'la etiqueta de un campo de formulario';
+  if(/^formulario\.boton/.test(ruta)) return 'el texto del boton del formulario, en verbo';
+  if(/^formulario\.gracias/.test(ruta)) return 'el mensaje que se ve despues de enviar';
+  return 'un texto de la pagina';
+}
+var _LP_OPCIONES=3;
+async function lpOtraVersion(clientId, ruta, el){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!ruta) return;
+  var cfg=_lpCfg(c);
+  cfg.alts=cfg.alts||{};
+  var st=cfg.alts[ruta];
+  var poner=function(){
+    var v = st.i===0 ? st.orig : (st.opts[st.i-1]||st.orig);
+    lpCopySet(clientId, ruta, v);
+    // Se escribe sobre el elemento en vez de repintar: repintar pierde el
+    // scroll y te saca de donde estabas mirando.
+    if(el) el.textContent=v;
+    _lpAltMsg(st.i===0 ? 'Volvio el original' : ('Version '+st.i+' de '+st.opts.length));
+  };
+  if(st && (st.opts||[]).length){
+    st.i=(st.i+1)%(st.opts.length+1);
+    poner();
+    save();
+    return;
+  }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ _lpAltMsg('Falta la clave de Anthropic.'); return; }
+  var actual=el?String(el.textContent||'').trim():'';
+  _lpAltMsg('Buscando otras versiones...');
+  try{
+    var ctx=_lpContextoInterno(c);
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:700,
+      messages:[{role:'user',content:
+        'Sos director creativo. Reescribi UN texto de la landing de "'+(c.name||'')+'".\n\n'
+        +'QUE ES: '+_lpQueEs(ruta)+'.\n'
+        +'COMO ESTA HOY: "'+actual+'"\n\n'
+        +'Dame '+_LP_OPCIONES+' versiones distintas entre si, del mismo largo o mas cortas, '
+        +'en castellano rioplatense, con las palabras del cliente y sin superlativos. '
+        +'Que cada una pruebe un angulo distinto, no la misma idea con otras palabras. '
+        +'Nunca inventes numeros ni nombres.\n\n'
+        +'Devolve SOLO este JSON: {"opciones":["","",""]}\n\n'
+        +'CONTEXTO DEL CLIENTE:\n'+String(ctx.texto||'').slice(0,12000)}]
+    });
+    var opts=(o&&o.opciones||[]).map(function(x){ return String(x||'').trim(); })
+      .filter(function(x){ return x && x!==actual; });
+    if(!opts.length){ _lpAltMsg('No se le ocurrio nada distinto.'); return; }
+    cfg.alts[ruta]=st={orig:actual, opts:opts, i:0};
+    st.i=1;
+    poner();
+    save();
+  }catch(e){ _lpAltMsg('No pude: '+e.message); }
 }
 function _lpAltMsg(t){
   var m=document.getElementById('lp-edit-msg');
