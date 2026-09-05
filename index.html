@@ -28908,6 +28908,31 @@ function _lpCalHtml(c, cfg){
         +'style="'+est+';flex:1;min-width:200px">'
       +'<button class="btn btn-sm" onclick="lpCalIdGuardar('+c.id+')">Guardar</button>'
     +'</div>'
+    // El formulario que se muestra despues de elegir el horario. Armarlo no se
+    // puede por API, pero elegir cual va en este calendario si, y es lo que
+    // evita entrar a GHL por cada cliente.
+    +(id
+      ? ('<div style="margin-top:10px">'
+        +'<div style="font-size:11px;color:var(--text3);margin-bottom:5px">'
+          +'El formulario que pide despues de elegir el horario</div>'
+        +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          +((cfg.formularios||[]).length
+            ? ('<select onchange="lpFormAsignar('+c.id+',this.value)" '
+              +'style="'+est+';flex:1;min-width:200px">'
+              +'<option value="">Sin formulario</option>'
+              +(cfg.formularios||[]).map(function(f){
+                return '<option value="'+esc(f.id)+'"'
+                  +(f.id===String(cfg.formularioId||'')?' selected':'')+'>'
+                  +esc(f.nombre||f.id)+'</option>'; }).join('')
+            +'</select>')
+            : '')
+          +'<button class="btn btn-sm" onclick="lpFormTraer('+c.id+')">'
+            +((cfg.formularios||[]).length?'Actualizar':'Traer los formularios')+'</button>'
+        +'</div>'
+        +'<div id="lp-form-msg" style="font-size:11px;color:var(--text3);margin-top:5px;'
+          +'min-height:14px"></div>'
+      +'</div>')
+      : '')
     +'<div id="lp-cal-est" style="font-size:11px;color:var(--text3);margin-top:6px;min-height:14px">'
       +(!conectado
         ? 'Este cliente no tiene la subcuenta de GHL conectada, asi que la lista '
@@ -29060,6 +29085,59 @@ function lpCalColores(clientId){
     +'\nTema: '+(col.oscuro?'oscuro':'claro')).then(function(){
     toast('Colores copiados');
   },function(){ toast('No pude copiar','amber'); });
+}
+function _lpFormDecir(t,col){
+  var e=document.getElementById('lp-form-msg');
+  if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; return; }
+  if(typeof toast==='function') toast(String(t).replace(/<[^>]+>/g,''));
+}
+function _lpGhlCtx(c){
+  var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
+  var ctx=_citasCtx();
+  return { token:g?g.token:ctx.token, location:g?g.locationId:ctx.location };
+}
+async function lpFormTraer(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var fn=_lpCalFn(), k=_lpGhlCtx(c);
+  if(!fn.url){ _lpFormDecir('Falta conectar la funcion de GHL.','var(--amberx)'); return; }
+  if(!k.token||!k.location){ _lpFormDecir('Falta la subcuenta de GHL.','var(--amberx)'); return; }
+  _lpFormDecir('Buscando los formularios...');
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=formularios',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:k.token, location:k.location})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ _lpFormDecir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return; }
+    var L=(r.formularios||[]);
+    if(!L.length){ _lpFormDecir('La subcuenta no tiene formularios cargados.','var(--amberx)'); return; }
+    _lpCfg(c).formularios=L;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    _lpFormDecir(L.length+' formulario(s). Elegi cual pide el calendario.','var(--accent)');
+  }catch(e){ _lpFormDecir('Error de red: '+esc(e.message),'var(--redx)'); }
+}
+async function lpFormAsignar(clientId, formId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c), fn=_lpCalFn(), k=_lpGhlCtx(c);
+  if(!cfg.calendarioId){ _lpFormDecir('Primero elegi el calendario.','var(--amberx)'); return; }
+  _lpFormDecir('Asignando...');
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=asignar',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:k.token, location:k.location,
+                            calendario:cfg.calendarioId, formulario:formId||''})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ _lpFormDecir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return; }
+    cfg.formularioId=formId||'';
+    save();
+    var nom=((cfg.formularios||[]).filter(function(f){ return f.id===formId; })[0]||{}).nombre;
+    _lpFormDecir(formId?('Listo: el calendario ahora pide "'+esc(nom||formId)+'".')
+                       :'El calendario quedo sin formulario.','var(--accent)');
+  }catch(e){ _lpFormDecir('Error de red: '+esc(e.message),'var(--redx)'); }
 }
 function _lpCalDecir(t,col){
   var e=document.getElementById('lp-cal-est');
