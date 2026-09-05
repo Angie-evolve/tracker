@@ -22898,18 +22898,35 @@ async function citasBuscar(clientId, callado){
 // Una cita de la agenda de la agencia puede ser de cualquier cliente: se
 // reconoce por el nombre en el titulo, que es como se nombran ("Goltia <> ...",
 // "Sebastian Biagioni & Martin").
-function _citaEsDe(c, titulo, con){
+// A que cliente pertenece una cita. Por mail primero, que es exacto: el titulo
+// depende de como lo escribio quien agendo, y ahi el nombre de la empresa y el
+// de la persona casi nunca coinciden. El mismo criterio que usa Fathom.
+function _citaEsDe(c, titulo, con, mail){
+  var m=String(mail||'').trim().toLowerCase();
+  if(m){
+    var mios=[c.email, c.contactoEmail].filter(Boolean)
+      .map(function(x){ return String(x).trim().toLowerCase(); });
+    if(mios.indexOf(m)>=0) return true;
+    // Por dominio: cualquiera del equipo del cliente cuenta, salvo casillas
+    // personales, donde el dominio no dice nada.
+    var gen=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
+    var dom=m.split('@')[1]||'';
+    if(dom && !gen.test(dom+'.')){
+      if(mios.some(function(x){ return (x.split('@')[1]||'')===dom; })) return true;
+      // Y contra el nombre del cliente: "goltia.com" para "Goltia".
+      var clave=dom.split('.')[0];
+      if(clave.length>=4 && _n(String(c.name||'')).replace(/[^a-z0-9]/g,'')
+          .indexOf(clave)>=0) return true;
+    }
+  }
+  // Sin mail, el titulo. Es lo que queda para las citas sin contacto cargado.
   var t=_n(String(titulo||'')+' '+String(con||''));
-  // El nombre del cliente sirve cuando es una persona. Cuando es una empresa el
-  // turno suele estar a nombre del contacto, asi que tambien se prueba con el
-  // contacto cargado y con la parte de adelante de su mail.
   var cand=[String(c.name||''), String(c.contacto||''),
             String(c.contactoEmail||c.email||'').split('@')[0].replace(/[._-]+/g,' ')];
   return cand.some(function(v){
     var n=_n(String(v||''));
     if(n.length<4) return false;
     if(t.indexOf(n)>=0) return true;
-    // Una palabra sola alcanza si es larga: "Biagioni" en "Sebastian Biagioni".
     return n.split(/\s+/).some(function(w){ return w.length>=5 && t.indexOf(w)>=0; });
   });
 }
@@ -22943,7 +22960,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
   eventos.forEach(function(ev){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
-    if(!_citaEsDe(c, ev.titulo, ev.con)) return;
+    if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
     var et=_citaEtapaPara(c, ev.titulo);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
@@ -23088,11 +23105,12 @@ function _citasHtml(c){
               +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
               +esc(x.ev.titulo||'sin titulo')+' \u00b7 '+esc(_citaFechaAR(x.ev.inicio))
               +(x.ev.con?(' \u00b7 '+esc(x.ev.con)):'')
+              +(x.ev.mail?('<span style="color:var(--text3)"> '+esc(x.ev.mail)+'</span>'):'')
               // De quien la dio por suya el reconocimiento automatico: es lo que
               // explica por que no cayo en el cliente que uno esperaba.
               +(function(){
                 var d=(DB.clients||[]).filter(function(y){
-                  return _citaEsDe(y, x.ev.titulo, x.ev.con); })[0];
+                  return _citaEsDe(y, x.ev.titulo, x.ev.con, x.ev.mail); })[0];
                 return d ? ('<span style="color:var(--text3)"> \u00b7 '+esc(d.name||'')
                   +'</span>') : '';
               })()+'</span>'
@@ -28804,7 +28822,9 @@ function _lpCalHtml(c, cfg){
         +'fondo <span class="mono" style="color:var(--text2)">'+esc(col.fondo)+'</span>. '
         +'<a href="javascript:void(0)" onclick="lpCalColores('+c.id+')" '
         +'style="color:var(--accent)">Copiar los dos</a>'
-        +'</div>';
+        +' \u00b7 <a href="javascript:void(0)" onclick="lpCalCssCopiar('+c.id+')" '
+        +'style="color:var(--accent)" title="Va en Widget appearance &rarr; Insert custom '
+        +'code. Ya incluye los dos colores.">Copiar el CSS</a></div>';
     })()
     +(lista.length
       ? ('<select onchange="lpCalElegir('+c.id+',this.value)" '
@@ -28902,33 +28922,49 @@ async function lpCalFnGuardar(){
     toast('GHL conectado por Supabase');
   }catch(err){ decir('No se pudo conectar: '+esc(err.message),'var(--redx)'); }
 }
-// SIN USAR. Pisar estas variables deja el widget ilegible: hay superficies
-// anidadas que siguen blancas y textos que quedan oscuros sobre oscuro. Se
-// probo en produccion y hubo que revertirlo. Queda como punto de partida, pero
-// no se ofrece hasta verificar el resultado contra el widget corriendo.
-// Los campos Primary color y Background color de GHL hacen el trabajo sin esto.
+// El CSS que deja el widget de reservas de GHL con la paleta de la landing.
+// Cada selector se probo contra el widget corriendo: GHL trae el texto clavado
+// en #101828 en varios lugares y superficies que siguen blancas por fuera de
+// sus variables, asi que con pisar las variables no alcanza.
+// Incluye el color primario y el fondo, asi que no hace falta ademas cargar los
+// campos Primary color y Background color: con pegar esto alcanza.
 function _lpCalCss(c){
   var k=_lpColores(c);
-  // El alfa va en hex de dos digitos, que es como las escribe el propio widget.
-  var a=function(hex, aa){ return String(hex)+aa; };
-  // Va envuelto en <style>: el campo de GHL se llama "Insert custom code" y
-  // espera HTML, no CSS pelado. Pegar CSS suelto ahi no hace nada.
+  var A=k.acento, F=k.fondo, T=k.texto;
   return '<style>\n'
     +':root{\n'
-    +'  --appointment_widgets-primary-color: '+k.acento+';\n'
-    +'  --appointment_widgets-light-primary-color: '+a(k.acento,'1f')+';\n'
-    +'  --appointment_widgets-background-color: '+k.fondo+';\n'
-    +'  --appointment_widgets-text-color: '+k.texto+';\n'
-    +'  --appointment_widgets-light-text-color: '+a(k.texto,'99')+';\n'
-    +'  --appointment_widgets-border-color: '+a(k.texto,'1a')+';\n'
-    +'  --appointment_widgets-blur-color: '+a(k.fondo,'b3')+';\n'
+    +'  --appointment_widgets-primary-color:'+A+';\n'
+    +'  --appointment_widgets-light-primary-color:'+A+'26;\n'
+    +'  --appointment_widgets-background-color:'+F+';\n'
+    +'  --appointment_widgets-text-color:'+T+';\n'
+    +'  --appointment_widgets-light-text-color:'+T+'99;\n'
+    +'  --appointment_widgets-border-color:'+T+'1f;\n'
+    +'  --appointment_widgets-blur-color:'+F+'b3;\n'
+    // Los grises son de la libreria y se usan en bordes y textos secundarios.
+    +'  --gray-50:'+_lpMezcla(F,T,0.06)+';--gray-100:'+_lpMezcla(F,T,0.10)+';\n'
+    +'  --gray-200:'+_lpMezcla(F,T,0.18)+';--gray-300:'+_lpMezcla(F,T,0.26)+';\n'
+    +'  --gray-500:'+_lpMezcla(F,T,0.60)+';--gray-600:'+_lpMezcla(F,T,0.72)+';\n'
+    +'  --gray-700:'+_lpMezcla(F,T,0.85)+';--gray-900:'+T+';\n'
     +'}\n'
-    // La tarjeta del widget trae su propio blanco por fuera de las variables.
-    +'.appointment_widgets--revamp--inner,\n'
-    +'.appointment_widgets--revamp--container{\n'
-    +'  background: '+k.fondo+';\n'
-    +'  color: '+k.texto+';\n'
-    +'}\n'
+    +'.appointment_widgets--revamp--inner,.appointment_widgets--revamp--container,\n'
+    +'.appointment-widgets-service-booking-info,.custom-form,\n'
+    +'.appointment_widgets--revamp--info-container,.widgets-step-1-container{\n'
+    +'  background:'+F+'!important;border-color:'+T+'1f!important}\n'
+    +'.appointment_widgets--revamp--inner :is(h1,h2,h3,h4,h5,p,label,li,td,th,strong,b,small),\n'
+    +'.widgets--service-name,.label-select-date,.booking-info-value,\n'
+    +'.vdpHeadCellContent,.vdpCellContent{color:'+T+'!important}\n'
+    +'.appointment_widgets--revamp--booking-info{color:'+T+'b3!important}\n'
+    +'.vdpCell.disabled .vdpCellContent,.vdpCell.outOfRange .vdpCellContent{\n'
+    +'  color:'+T+'40!important}\n'
+    +'.vdpCell.selectable.selected .vdpCellContent{background:'+A+'!important;color:#fff!important}\n'
+    +'.widgets-time-slot,.widgets-time-slot.btn,button.widgets-time-slot{\n'
+    +'  background:'+_lpMezcla(F,T,0.06)+'!important;color:'+T+'!important;\n'
+    +'  border:1px solid '+T+'2b!important}\n'
+    +'.widgets-time-slot:hover{border-color:'+A+'!important}\n'
+    +'.appointment_widgets--revamp--inner :is(input,select,textarea){\n'
+    +'  background:'+_lpMezcla(F,T,0.06)+'!important;color:'+T+'!important;\n'
+    +'  border-color:'+T+'2b!important}\n'
+    +'.appointment_widgets--revamp--inner ::placeholder{color:'+T+'66!important}\n'
     +'</style>\n';
 }
 function lpCalCssCopiar(clientId){
