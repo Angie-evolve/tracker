@@ -28305,10 +28305,18 @@ function _lpPaginaHtml(c){
     ? (String((DB.agencia&&DB.agencia.ghlFn)||_lpCalFn().url||'').trim()
        +'?accion=respuestas') : '';
   var destino = (cfg.destinoRespuestas==='funcion' && fnPub) ? fnPub : hook;
+  // Con las preguntas despues hay tres destinos posibles, y el formulario de
+  // GHL es el unico gratis que no depende de ningun servidor nuestro.
+  var formPost=String(cfg.formPostUrl||'').trim();
   var postHtml = antes
     ? _lpAntesHtml(pregPost, calUrl, calId, !!cfg.calendarioGate)
-    : ((calId && pregPost.length && destino)
-        ? _lpPostHtml(pregPost, destino, (cfg.destinoRespuestas==='funcion')?String(cfg.landingId||''):'')
+    : (calId
+        ? ((cfg.destinoRespuestas==='formGhl' && formPost)
+            ? _lpFormGhlHtml(formPost)
+            : ((pregPost.length && destino)
+                ? _lpPostHtml(pregPost, destino,
+                    (cfg.destinoRespuestas==='funcion')?String(cfg.landingId||''):'')
+                : ''))
         : '');
   // Con las preguntas antes, el calendario nace oculto: lo destapa el script
   // cuando ya tiene las respuestas para ponerle en la URL.
@@ -29698,6 +29706,75 @@ function _lpPostHtml(preg, hook, landingId){
     +'});'
   +'})();<\/script>';
 }
+// Las preguntas DESPUES del horario, sin servidor y sin token: un formulario
+// nativo de GHL embebido en la misma pagina. Es el mismo canal gratis que usa
+// el formulario del calendario —GHL recibe el submit en su propio dominio y lo
+// guarda en el contacto— pero disponible en cualquier momento, no solo al
+// reservar. Es lo que hace que un quiz pueda guardar respuestas sin calendario.
+//
+// El contacto se ata por el mail: el widget de reservas lo avisa por
+// postMessage al reservar, y ese mail entra prellenado en el formulario. GHL
+// hace match por mail y las respuestas caen en el mismo contacto que la cita.
+function _lpFormGhlHtml(formUrl){
+  if(!formUrl) return '';
+  return '<div id="evx-fg" hidden>'
+    +'<p class="eyebrow" id="evx-fg-paso">Ultimo paso</p>'
+    +'<h2 id="evx-fg-t" style="margin:0 0 8px">Contanos un poco mas</h2>'
+    +'<p class="bajo" id="evx-fg-b">Ya reservamos tu turno. Esto nos ayuda a preparar la llamada.</p>'
+    +'<div id="evx-fg-caja" style="margin-top:16px"></div>'
+  +'</div>'
+  +'<script>(function(){'
+    +'var URL='+JSON.stringify(String(formUrl))+';'
+    +'var caja=document.getElementById("evx-fg");'
+    +'var cal=document.getElementById("cal-wrap");'
+    +'var abierto=false;'
+    // La atribucion tambien entra al formulario: si el form tiene los campos
+    // ocultos con esas claves, quedan pegados al contacto.
+    +'var UTM=(function(){'
+      +'var q=new URLSearchParams(location.search),o={};'
+      +'["utm_source","utm_medium","utm_campaign","utm_content","utm_term",'
+      +'"utm_adset","utm_ad","fbclid","gclid","ttclid"].forEach(function(k){'
+        +'var v=q.get(k);'
+        +'if(v){try{sessionStorage.setItem("evx_"+k,v)}catch(e){}}'
+        +'else{try{v=sessionStorage.getItem("evx_"+k)}catch(e){}}'
+        +'if(v)o[k]=v;});'
+      +'return o;})();'
+    +'function leer(d){try{'
+      +'if(!d||!d.length)return null;'
+      +'if(String(d[0]).indexOf("set-sticky-contacts")<0)return null;'
+      +'var o=JSON.parse(d[2]||"{}");'
+      +'return {email:o.email||"",nombre:o.full_name||"",telefono:o.phone||""};'
+    +'}catch(e){return null}}'
+    +'function abrir(q){'
+      +'if(abierto)return;abierto=true;'
+      +'var p=[];'
+      // Los mismos nombres que ya usa el widget de reservas para prellenar.
+      +'if(q.nombre)p.push("full_name="+encodeURIComponent(q.nombre));'
+      +'if(q.email)p.push("email="+encodeURIComponent(q.email));'
+      +'if(q.telefono)p.push("phone="+encodeURIComponent(q.telefono));'
+      +'for(var k in UTM)p.push(encodeURIComponent(k)+"="+encodeURIComponent(UTM[k]));'
+      +'var src=URL+(URL.indexOf("?")>=0?"&":"?")+p.join("&");'
+      +'var i=document.createElement("iframe");'
+      +'i.setAttribute("src",src);'
+      +'i.setAttribute("scrolling","no");'
+      +'i.setAttribute("title","Unas preguntas mas");'
+      +'i.style.cssText="width:100%;height:620px;border:none;overflow:hidden";'
+      +'document.getElementById("evx-fg-caja").appendChild(i);'
+      // El script de GHL le da el alto real al iframe.
+      +'var sc=document.createElement("script");'
+      +'sc.src="https://link.msgsndr.com/js/form_embed.js";document.body.appendChild(sc);'
+      +'if(cal)cal.style.display="none";'
+      +'caja.hidden=false;'
+      +'caja.scrollIntoView({behavior:"smooth",block:"start"});'
+    +'}'
+    +'window.addEventListener("message",function(ev){'
+      +'var o=String(ev.origin||"");'
+      +'if(!/(leadconnector|msgsndr|gohighlevel)/i.test(o))return;'
+      +'var q=leer(ev.data);'
+      +'if(q&&q.email)abrir(q);'
+    +'});'
+  +'})();<\/script>';
+}
 function _lpCalHtml(c, cfg){
   if(cfg.mecanica!=='calendario') return '';
   var lista=(cfg.calendarios||[]);
@@ -29920,7 +29997,8 @@ function _lpCalHtml(c, cfg){
           +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">'
             +'<span style="font-size:11px;color:var(--text3)">Mandar a</span>'
             +'<button class="btn btn-sm" onclick="lpDestinoResp('+c.id+')">'
-              +((cfg.destinoRespuestas==='funcion')?'tu edge function':'el webhook de GHL')+'</button>'
+              +({formGhl:'un formulario de GHL', funcion:'tu edge function',
+                 webhook:'el webhook de GHL'}[cfg.destinoRespuestas||'formGhl'])+'</button>'
             +((cfg.destinoRespuestas==='funcion')
               ? ('<input id="lp-landing-id" value="'+esc(cfg.landingId||'')+'" '
                 +'placeholder="id de la landing, ej: albet" '
@@ -29928,6 +30006,24 @@ function _lpCalHtml(c, cfg){
                 +'<button class="btn btn-sm" onclick="lpLandingIdGuardar('+c.id+')">Guardar</button>')
               : '')
           +'</div>'
+          +(((cfg.destinoRespuestas||'formGhl')==='formGhl')
+            ? ('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">'
+                +'<input id="lp-formpost" value="'+esc(cfg.formPostUrl||'')+'" '
+                  +'placeholder="pega el codigo de Embed del formulario de GHL" '
+                  +'style="'+est+';flex:1;min-width:240px">'
+                +'<button class="btn btn-sm" onclick="lpFormPostGuardar('+c.id+')">Guardar</button>'
+              +'</div>'
+              +'<div style="font-size:10.5px;line-height:1.55;margin-top:5px;max-width:74ch;color:'
+                +(cfg.formPostUrl?'var(--text3)':'var(--amberx)')+'">'
+                +(cfg.formPostUrl
+                  ? 'Aparece solo cuando reservan, con el mail ya puesto. GHL hace match por '
+                    +'mail y las respuestas caen en el mismo contacto que la cita. Las preguntas '
+                    +'las armas en el formulario de GHL, no aca.'
+                  : 'Arma el formulario con las preguntas en GHL \u2192 Sites \u2192 Forms, y '
+                    +'pega aca su codigo de Embed. Es el unico canal gratis que guarda solo, '
+                    +'sin webhook y sin servidor.')
+              +'</div>')
+            : '')
           +'<div style="font-size:10.5px;color:'+(hook?'var(--text3)':'var(--amberx)')+';'
             +'margin-top:5px;line-height:1.5">'
             +(hook
@@ -30151,13 +30247,38 @@ function lpDestinoResp(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
-  cfg.destinoRespuestas=(cfg.destinoRespuestas==='funcion')?'webhook':'funcion';
+  // Tres destinos, en orden de conveniencia: el formulario de GHL primero,
+  // que es el unico gratis que ademas no depende de ningun servidor nuestro.
+  var orden=['formGhl','webhook','funcion'];
+  var i=orden.indexOf(cfg.destinoRespuestas||'formGhl');
+  cfg.destinoRespuestas=orden[(i+1)%orden.length];
   save();
   if(typeof renderTab==='function') renderTab();
   _lpRefrescarPreview(clientId);
-  toast(cfg.destinoRespuestas==='funcion'
-    ? 'A tu funcion: gratis, y no guarda nada, le escribe a GHL.'
-    : 'Al webhook de GHL: sin depender de vos, cobra por ejecucion.');
+  toast({formGhl:'A un formulario de GHL: gratis y sin servidor. Lo guarda GHL sola.',
+         webhook:'Al webhook de GHL: sin depender de vos, cobra por ejecucion.',
+         funcion:'A tu funcion: gratis, y no guarda nada, le escribe a GHL.'
+        }[cfg.destinoRespuestas]);
+}
+// El embed del formulario, igual que con el calendario: se pega el codigo que
+// da GHL y se saca la URL. Adivinar el dominio del widget salio mal una vez.
+function lpFormPostGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('lp-formpost');
+  var v=String((e||{}).value||'').trim();
+  var m=v.match(/src=["']([^"']+)["']/i);
+  var url=m?m[1]:v;
+  // Sin el src limpio no sirve: mejor decirlo que guardar cualquier cosa.
+  if(url && !/^https?:\/\//i.test(url)){
+    toast('Peg\u00e1 el c\u00f3digo de Embed del formulario, o su URL completa','amber');
+    return;
+  }
+  _lpCfg(c).formPostUrl=url.split('#')[0];
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast(url?'Formulario guardado':'Formulario borrado');
 }
 function lpLandingIdGuardar(clientId, cual){
   var c=DB.clients.find(function(x){return x.id===clientId;});
