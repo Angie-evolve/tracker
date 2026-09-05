@@ -28298,9 +28298,18 @@ function _lpPaginaHtml(c){
   // ejecucion, pero deja el horario primero.
   var orden=(cfg.calendarioOrden||'antes');
   var antes=(calId && pregPost.length && orden==='antes');
+  // Con las preguntas despues hay dos destinos: el Inbound Webhook de GHL, que
+  // cobra por ejecucion, o la edge function, que es gratis. La funcion no
+  // guarda nada: le escribe al contacto en GHL y contesta.
+  var fnPub=String(cfg.landingId||'').trim()
+    ? (String((DB.agencia&&DB.agencia.ghlFn)||_lpCalFn().url||'').trim()
+       +'?accion=respuestas') : '';
+  var destino = (cfg.destinoRespuestas==='funcion' && fnPub) ? fnPub : hook;
   var postHtml = antes
     ? _lpAntesHtml(pregPost, calUrl, calId)
-    : ((calId && pregPost.length && hook) ? _lpPostHtml(pregPost, hook) : '');
+    : ((calId && pregPost.length && destino)
+        ? _lpPostHtml(pregPost, destino, (cfg.destinoRespuestas==='funcion')?String(cfg.landingId||''):'')
+        : '');
   // Con las preguntas antes, el calendario nace oculto: lo destapa el script
   // cuando ya tiene las respuestas para ponerle en la URL.
   var calEmbed2 = antes ? calEmbed.replace('id="cal-wrap"','id="cal-wrap" hidden') : calEmbed;
@@ -28935,7 +28944,7 @@ function _lpAntesHtml(preg, calUrl, calId){
     +'if(P.length)pinta();else gate();'
   +'})();<\/script>';
 }
-function _lpPostHtml(preg, hook){
+function _lpPostHtml(preg, hook, landingId){
   var E=function(t){ return String(t===null||t===undefined?'':t)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   return '<div id="evx-post" hidden>'
@@ -28947,6 +28956,7 @@ function _lpPostHtml(preg, hook){
   +'<script>(function(){'
     +'var P='+JSON.stringify(preg)+';'
     +'var HOOK='+JSON.stringify(hook)+';'
+    +'var LANDING='+JSON.stringify(landingId||'')+';'
     +'var caja=document.getElementById("evx-post");'
     +'var cal=document.getElementById("cal-wrap");'
     +'var i=0,quien=null;'
@@ -28987,6 +28997,9 @@ function _lpPostHtml(preg, hook){
       +'var cuerpo={email:quien.email,nombre:quien.nombre,telefono:quien.telefono,'
         +'respondidas:Object.keys(resp).length,total:P.length,'
         +'completo:Object.keys(resp).length>=P.length};'
+      // La funcion necesita saber de que landing viene para buscar el token.
+      // El webhook no: la URL misma ya identifica al cliente.
+      +'if(LANDING)cuerpo.landing=LANDING;'
       +'for(var u in UTM)cuerpo[u]=UTM[u];'
       +'for(var k in resp)cuerpo[k]=resp[k];'
       // keepalive: el navegador lo manda igual aunque la pestana se este yendo.
@@ -29175,6 +29188,19 @@ function _lpCalHtml(c, cfg){
               +'style="'+est+';flex:1;min-width:240px">'
             +'<button class="btn btn-sm" onclick="lpHookGuardar('+c.id+')">Guardar</button>'
           +'</div>'
+          // El otro destino posible: la edge function, que es gratis y tampoco
+          // guarda nada. Necesita un id de landing para saber que token usar.
+          +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">'
+            +'<span style="font-size:11px;color:var(--text3)">Mandar a</span>'
+            +'<button class="btn btn-sm" onclick="lpDestinoResp('+c.id+')">'
+              +((cfg.destinoRespuestas==='funcion')?'tu edge function':'el webhook de GHL')+'</button>'
+            +((cfg.destinoRespuestas==='funcion')
+              ? ('<input id="lp-landing-id" value="'+esc(cfg.landingId||'')+'" '
+                +'placeholder="id de la landing, ej: albet" '
+                +'style="'+est+';width:190px">'
+                +'<button class="btn btn-sm" onclick="lpLandingIdGuardar('+c.id+')">Guardar</button>')
+              : '')
+          +'</div>'
           +'<div style="font-size:10.5px;color:'+(hook?'var(--text3)':'var(--amberx)')+';'
             +'margin-top:5px;line-height:1.5">'
             +(hook
@@ -29337,6 +29363,29 @@ function lpCalColores(clientId){
     +'\nTema: '+(col.oscuro?'oscuro':'claro')).then(function(){
     toast('Colores copiados');
   },function(){ toast('No pude copiar','amber'); });
+}
+function lpDestinoResp(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  cfg.destinoRespuestas=(cfg.destinoRespuestas==='funcion')?'webhook':'funcion';
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast(cfg.destinoRespuestas==='funcion'
+    ? 'A tu funcion: gratis, y no guarda nada, le escribe a GHL.'
+    : 'Al webhook de GHL: sin depender de vos, cobra por ejecucion.');
+}
+function lpLandingIdGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('lp-landing-id');
+  var v=String((e||{}).value||'').trim().toLowerCase().replace(/[^a-z0-9-]/g,'');
+  _lpCfg(c).landingId=v;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast(v?('Id de landing: '+v+'. Cargala en la tabla landings de Supabase.'):'Id borrado');
 }
 function lpOrdenPreg(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
