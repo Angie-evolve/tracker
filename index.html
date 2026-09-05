@@ -28904,7 +28904,11 @@ function _lpCssAcotado(css){
         else if(css.charAt(j)==='}'){ prof--; if(!prof) break; }
       }
       var dentro=css.slice(llave+1, j);
-      out+=cab+'{'+_lpCssAcotado(dentro)+'}';
+      // Adentro de @keyframes no hay selectores sino pasos —from, to, 60%—, y
+      // acotarlos deja la animacion invalida. La animacion entonces no existe,
+      // y todo lo que arrancaba en opacity:0 esperandola se queda invisible:
+      // eso vaciaba de textos la pagina pegada en GHL.
+      out+=cab+'{'+(/^@(-[a-z]+-)?keyframes/i.test(cab) ? dentro : _lpCssAcotado(dentro))+'}';
       i=j+1;
     }else{
       var cierre=css.indexOf('}', llave);
@@ -29123,12 +29127,17 @@ function _lpGraciasHtml(c){
       +'color:var(--tenue);display:flex;align-items:center;justify-content:space-between;'
       +'gap:14px;flex-wrap:wrap}'
     +'footer .logo{height:22px}footer .marca{font-size:14px}'
-    +'@keyframes ent{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}'
-    +'@keyframes pop{0%{opacity:0;transform:scale(.6)}60%{transform:scale(1.06)}'
+    // Los nombres van con prefijo: la pagina de GHL donde se pega puede tener
+    // sus propios @keyframes, y dos animaciones con el mismo nombre se pisan.
+    +'@keyframes evxEnt{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}'
+    +'@keyframes evxPop{0%{opacity:0;transform:scale(.6)}60%{transform:scale(1.06)}'
       +'100%{opacity:1;transform:scale(1)}}'
-    +'.an{opacity:0;animation:ent .55s cubic-bezier(.22,1,.36,1) forwards}'
-    +'.ico{animation:pop .6s cubic-bezier(.34,1.56,.64,1) both}'
-    +'@media(prefers-reduced-motion:reduce){.an,.ico{animation:none;opacity:1;transform:none}}'
+    // El opacity:0 vive en el keyframe y no en la regla. Asi, si la animacion
+    // no llega a correr —CSS filtrado, nombre pisado, lo que sea— el texto se
+    // ve igual. Al reves, un solo problema deja la pagina en blanco.
+    +'.an{animation:evxEnt .55s cubic-bezier(.22,1,.36,1) both}'
+    +'.ico{animation:evxPop .6s cubic-bezier(.34,1.56,.64,1) both}'
+    +'@media(prefers-reduced-motion:reduce){.an,.ico{animation:none}}'
     +'@media(max-width:640px){.paso{padding:16px 16px;gap:13px}main{padding-bottom:9vh}}'
     +'</style></head><body>'
     +'<header class="env">'+logo+'</header>'
@@ -30142,7 +30151,13 @@ function _lpCalHtml(c, cfg){
         +(((cfg.calendarioTema||'claro')==='claro')?'claro':'oscuro')+'</a>'
         +' \u00b7 <a href="javascript:void(0)" onclick="lpCalCssCopiar('+c.id+')" '
         +'style="color:var(--accent)" title="Va en Widget appearance &rarr; Insert custom '
-        +'code. Ya incluye los dos colores.">Copiar el CSS</a></div>';
+        +'code. Ya incluye los dos colores.">Copiar el CSS del calendario</a>'
+        // El formulario se pega en otro lado y necesita otras reglas, pero sale
+        // de la misma paleta: cambiar el tema los mueve a los dos.
+        +' \u00b7 <a href="javascript:void(0)" onclick="lpFormCssCopiar('+c.id+')" '
+        +'style="color:var(--accent)" title="Va en el form builder de GHL, en el campo '
+        +'de CSS personalizado. Misma paleta que el calendario.">'
+        +'Copiar el CSS del formulario</a></div>';
     })()
     +(lista.length
       ? ('<select onchange="lpCalElegir('+c.id+',this.value)" '
@@ -30423,16 +30438,63 @@ async function lpCalFnGuardar(){
 // sus variables, asi que con pisar las variables no alcanza.
 // Incluye el color primario y el fondo, asi que no hace falta ademas cargar los
 // campos Primary color y Background color: con pegar esto alcanza.
-function _lpCalCss(c){
+// La paleta del widget, compartida por el calendario y el formulario: si cada
+// uno la calculara por su lado, cambiar el tema dejaria uno de los dos viejo.
+function _lpCalPaleta(c){
   var cfg=_lpCfg(c), k=_lpColores(c);
   // Por defecto al reves del tema de la pagina: un calendario claro sobre un
   // hero oscuro se lee como una tarjeta y se nota, que es lo que se busca.
   // Del mismo color se funde con el fondo y parece parte de la foto.
   var claro=(cfg.calendarioTema||'claro')==='claro';
-  var A=k.acento;
   var F=claro ? '#FFFFFF' : k.fondo;
   var T=claro ? '#14141A' : k.texto;
-  var g=function(pp){ return _lpMezcla(F,T,pp); };
+  return { claro:claro, A:k.acento, F:F, T:T,
+           sobre:_lpContraste(k.acento),
+           g:function(pp){ return _lpMezcla(F,T,pp); } };
+}
+// El mismo diseno para el formulario de GHL. Va aparte del calendario porque
+// se pega en otro lado —el form builder, no el calendario— y porque el
+// formulario no tiene las clases del widget de reservas.
+//
+// Se apoya en las etiquetas (input, label, button) y no en los nombres de
+// clase de GHL: los del calendario los verifique mirando el widget en vivo,
+// pero al formulario no lo pude abrir desde aca, y una clase inventada no
+// pinta nada. Por etiqueta anda igual y no depende de como lo llamen adentro.
+function _lpFormCss(c){
+  var k=_lpCalPaleta(c), A=k.A, F=k.F, T=k.T, g=k.g;
+  return '<style>\n'
+    +':root,body,.form-builder--wrapper,.ghl-form,.hl-app{\n'
+    +'  --primary-color:'+A+';--form-bg-color:'+F+';--form-text-color:'+T+';\n'
+    +'  background:'+F+'!important;color:'+T+'!important;\n'
+    +'  font-family:"Inter","Helvetica Neue",Helvetica,Arial,sans-serif!important}\n'
+    +'body,form,.form-builder--wrapper{border:0!important;box-shadow:none!important}\n'
+    // Las etiquetas largas entran a tamano de texto corrido y el formulario se
+    // lee como un contrato. Es lo que mas lo ordena.
+    +'label,.form-label,legend{color:'+T+'!important;font-size:13.5px!important;\n'
+    +'  font-weight:500!important;line-height:1.5!important}\n'
+    +'h1,h2,h3,h4,p,span,div,li{color:'+T+'!important}\n'
+    +'input,select,textarea{background:'+g(0.04)+'!important;color:'+T+'!important;\n'
+    +'  border:1px solid '+g(0.14)+'!important;border-radius:10px!important;\n'
+    +'  padding:11px 13px!important;font-size:15px!important;\n'
+    +'  font-family:inherit!important}\n'
+    +'input:focus,select:focus,textarea:focus{border-color:'+A+'!important;\n'
+    +'  outline:2px solid '+A+'40!important;outline-offset:1px}\n'
+    +'::placeholder{color:'+T+'66!important}\n'
+    // accent-color pinta el punto del radio y el tilde del checkbox sin tener
+    // que adivinar como los arma GHL.
+    +'input[type="radio"],input[type="checkbox"]{accent-color:'+A+'!important;\n'
+    +'  width:18px!important;height:18px!important;padding:0!important}\n'
+    +'button,input[type="submit"],.ghl-btn,.form-btn{background:'+A+'!important;\n'
+    +'  color:'+k.sobre+'!important;border:0!important;border-radius:10px!important;\n'
+    +'  font-weight:600!important;font-size:16px!important;padding:14px 24px!important;\n'
+    +'  font-family:inherit!important}\n'
+    +'button:hover,input[type="submit"]:hover{filter:brightness(1.07)}\n'
+    +'hr,.divider{display:none!important}\n'
+    +'</style>\n';
+}
+function _lpCalCss(c){
+  var k=_lpCalPaleta(c);
+  var A=k.A, F=k.F, T=k.T, g=k.g;
   return '<style>\n'
     +':root,#appointment_widgets--revamp,.hl-app,.appointment_widgets--revamp--inner{\n'
     +'  --appointment_widgets-primary-color:'+A+';\n'
@@ -30510,6 +30572,13 @@ function lpCalCssCopiar(clientId){
   if(!c) return;
   navigator.clipboard.writeText(_lpCalCss(c)).then(function(){
     toast('CSS del calendario copiado');
+  },function(){ toast('No pude copiar','amber'); });
+}
+function lpFormCssCopiar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  navigator.clipboard.writeText(_lpFormCss(c)).then(function(){
+    toast('CSS del formulario copiado \u00b7 pegalo en el form builder de GHL');
   },function(){ toast('No pude copiar','amber'); });
 }
 function lpCalColores(clientId){
