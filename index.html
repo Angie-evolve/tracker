@@ -28313,8 +28313,14 @@ function _lpPaginaHtml(c){
   // Con las preguntas antes, el calendario nace oculto: lo destapa el script
   // cuando ya tiene las respuestas para ponerle en la URL.
   var calEmbed2 = antes ? calEmbed.replace('id="cal-wrap"','id="cal-wrap" hidden') : calEmbed;
+  // Con el calendario propio no va nada del widget: los horarios y la reserva
+  // pasan por la funcion, que es la que tiene el token.
+  var fnBase=String((DB.agencia&&DB.agencia.ghlFn)||_lpCalFn().url||'').trim();
+  var propio = (cfg.mecanica==='calendario' && cfg.calendarioPropio && calId)
+    ? _lpReservaHtml(c, cfg, pregPost, fnBase, String(cfg.landingId||''))
+    : '';
   var mecanica = cfg.mecanica==='calendario'
-    ? ((antes?postHtml+calEmbed2:calEmbed+postHtml)+(calId?'':_lpFormHtml()))
+    ? (propio || ((antes?postHtml+calEmbed2:calEmbed+postHtml)+(calId?'':_lpFormHtml())))
     : cfg.mecanica==='quiz'
       ? (qPreg.length ? _lpQuizHtml()
         : ('<p class="nota armado">Todavia no armaste las preguntas: se arman en la '
@@ -29283,7 +29289,7 @@ function _lpAntesHtml(preg, calUrl, calId){
     // diseno y sin los textos largos de advertencia.
     +'function gate(){'
       +'el("evx-paso").textContent="Ultimo paso";'
-      +'el("evx-q").textContent="\u00bfA donde te confirmamos el turno?";'
+      +'el("evx-q").textContent="\u00bfA d\u00f3nde te confirmamos el turno?";'
       +'el("evx-ops").innerHTML="<input id=\'g-n\' placeholder=\'Tu nombre\'>"'
         +'+"<input id=\'g-t\' placeholder=\'Tu WhatsApp\'>"'
         +'+"<input id=\'g-m\' type=\'email\' placeholder=\'Tu mail\'>"'
@@ -29307,6 +29313,248 @@ function _lpAntesHtml(preg, calUrl, calId){
       +'if(cal){cal.hidden=false;cal.scrollIntoView({behavior:"smooth",block:"center"});}'
     +'}'
     +'if(P.length)pinta();else gate();'
+  +'})();<\/script>';
+}
+// El calendario con nuestro diseno. El widget de GHL entra en un iframe con su
+// propia tipografia, su propio formulario y sus propios textos: aunque se le
+// pegue CSS sigue leyendose como otra pagina, y encima vuelve a pedir nombre,
+// telefono y mail que el lead ya escribio. Aca los horarios y la reserva pasan
+// por la edge function —que tiene el token del lado del servidor— y la pagina
+// solo dibuja. La cita se crea igual en GHL, con contacto y todo.
+//
+// El orden es el que pidio: horario, datos, preguntas. La cita se crea apenas
+// estan los datos: el que abandona en las preguntas ya tiene el turno tomado.
+function _lpReservaHtml(c, cfg, preg, fnBase, landingId){
+  if(!fnBase || !landingId) return '';
+  var titulo=String((cfg.copy||{}).ctaCalendario||'') || 'Elegí el día y la hora';
+  var g=(cfg.gracias||{});
+  var waNum=String(g.wa||'').replace(/[^0-9]/g,'');
+  var waUrl=waNum ? ('https://wa.me/'+waNum+'?text='+encodeURIComponent(String(g.waMsg||''))) : '';
+
+  return '<div class="rv" id="rv">'
+    +'<div class="rv-t" id="rv-t">'+esc(titulo)+'</div>'
+    +'<div class="rv-s" id="rv-s">Buscando los horarios libres...</div>'
+    +'<div class="rv-bar" id="rv-bar"></div>'
+    +'<div id="rv-cuerpo"></div>'
+    +'<div class="rv-pie" id="rv-pie"></div>'
+  +'</div>'
+  +'<style>'
+    +'.rv{background:var(--panel);border:1px solid var(--linea);border-radius:14px;'
+      +'padding:24px;max-width:560px}'
+    +'.rv-t{font-size:21px;font-weight:600;letter-spacing:-0.01em}'
+    +'.rv-s{font-size:13.5px;color:var(--tenue);margin-top:4px;min-height:20px}'
+    +'.rv-bar{display:flex;gap:6px;margin:18px 0 20px}'
+    +'.rv-bar i{flex:1;height:3px;border-radius:2px;background:var(--linea)}'
+    +'.rv-bar i.on{background:var(--acento)}'
+    // Los dias van en una fila que se arrastra: en el telefono una grilla de
+    // catorce dias empuja los horarios abajo del pliegue.
+    +'.rv-dias{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:16px;'
+      +'scrollbar-width:thin}'
+    +'.rv-dia{flex:none;min-width:74px;text-align:center;padding:10px 6px;border-radius:10px;'
+      +'border:1px solid var(--linea);background:transparent;cursor:pointer;color:inherit;'
+      +'font-family:inherit}'
+    +'.rv-dia small{display:block;font-size:11px;color:var(--tenue);text-transform:uppercase;'
+      +'letter-spacing:.06em}'
+    +'.rv-dia b{display:block;font-size:19px;font-weight:600;margin-top:2px}'
+    +'.rv-dia.on{background:var(--acento);border-color:var(--acento);color:var(--sobre)}'
+    +'.rv-dia.on small{color:var(--sobre)}'
+    +'.rv-horas{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}'
+    +'.rv-hora{padding:11px 6px;border-radius:10px;border:1px solid var(--linea);'
+      +'background:transparent;color:inherit;cursor:pointer;font-size:14.5px;font-weight:500;'
+      +'font-family:inherit;font-variant-numeric:tabular-nums}'
+    +'.rv-hora:hover{border-color:var(--acento)}'
+    +'.rv input{width:100%;padding:12px 14px;border-radius:10px;font-size:15px;'
+      +'font-family:inherit;margin-bottom:9px;border:1px solid var(--linea);'
+      +'background:var(--fondo);color:var(--texto)}'
+    +'.rv-ok{width:100%;padding:14px;border-radius:10px;border:0;cursor:pointer;'
+      +'background:var(--acento);color:var(--sobre);font-size:16px;font-weight:600;'
+      +'font-family:inherit}'
+    +'.rv-ok[disabled]{opacity:.6;cursor:default}'
+    +'.rv-pie{margin-top:14px;display:flex;align-items:center;gap:12px;min-height:18px}'
+    +'.rv-volver{background:none;border:0;color:var(--tenue);font-size:13px;cursor:pointer;'
+      +'font-family:inherit;padding:0;text-decoration:underline}'
+    +'.rv-err{font-size:13px;color:#E0733A;line-height:1.5}'
+    +'.rv-tick{width:50px;height:50px;border-radius:50%;background:var(--acento);'
+      +'color:var(--sobre);display:flex;align-items:center;justify-content:center;'
+      +'font-size:25px;margin:8px auto 14px}'
+    +'.rv-wa{display:flex;align-items:center;justify-content:center;gap:9px;'
+      +'background:#25D366;color:#0B1F12;text-decoration:none;font-weight:600;'
+      +'padding:13px 20px;border-radius:10px;margin-top:14px}'
+    +'@media(max-width:640px){.rv{padding:18px}.rv-horas{grid-template-columns:repeat(2,1fr)}}'
+  +'</style>'
+  +'<script>(function(){'
+    +'var FN='+JSON.stringify(String(fnBase))+';'
+    +'var LANDING='+JSON.stringify(String(landingId))+';'
+    +'var P='+JSON.stringify(preg||[])+';'
+    +'var WA='+JSON.stringify(waUrl)+';'
+    +'var WAT='+JSON.stringify(String(g.waBoton||'Confirmar por WhatsApp'))+';'
+    +'var DIAS=["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];'
+    +'var MES=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];'
+    +'var el=function(i){return document.getElementById(i);};'
+    +'var st={dias:{},fecha:null,slot:null,paso:0,resp:{},datos:null};'
+    // La atribucion viaja con el lead igual que en el flujo con widget: si la
+    // primera visita trajo utm y despues vuelve por otro lado, sigue atribuido.
+    +'var UTM=(function(){'
+      +'var q=new URLSearchParams(location.search),o={};'
+      +'["utm_source","utm_medium","utm_campaign","utm_content","utm_term",'
+      +'"utm_adset","utm_ad","fbclid","gclid","ttclid"].forEach(function(k){'
+        +'var v=q.get(k);'
+        +'if(v){try{sessionStorage.setItem("evx_"+k,v)}catch(e){}}'
+        +'else{try{v=sessionStorage.getItem("evx_"+k)}catch(e){}}'
+        +'if(v)o[k]=v;});'
+      +'o.pagina=location.href.split("#")[0];'
+      +'if(document.referrer)o.referrer=document.referrer;'
+      +'return o;})();'
+    +'function pedir(accion,cuerpo){'
+      +'cuerpo.landing=LANDING;'
+      +'return fetch(FN+(FN.indexOf("?")>=0?"&":"?")+"accion="+accion,'
+        +'{method:"POST",headers:{"Content-Type":"application/json"},'
+         +'body:JSON.stringify(cuerpo)}).then(function(r){return r.json();});'
+    +'}'
+    +'function barra(){'
+      +'var n=P.length?3:2;var h="";'
+      +'for(var i=0;i<n;i++)h+="<i class=\'"+(i<=st.paso?"on":"")+"\'></i>";'
+      +'el("rv-bar").innerHTML=h;'
+    +'}'
+    +'function fechaTxt(f){'
+      // Se arma con los numeros del texto, no con Date(cadena): parsear
+      // "2026-09-08" como fecha la corre un dia segun la zona del visitante.
+      +'var p=f.split("-");'
+      +'var d=new Date(+p[0],+p[1]-1,+p[2]);'
+      +'return DIAS[d.getDay()]+" "+(+p[2])+" de "+MES[+p[1]-1];'
+    +'}'
+    // El horario viene con el huso del calendario adentro de la cadena, asi que
+    // los caracteres 11 a 16 ya son la hora que va a ver el cliente. Convertirlo
+    // con Date lo pasaria al huso del visitante, que es otro dato.
+    +'function horaTxt(s){return s.slice(11,16);}'
+    +'function traer(){'
+      +'var hoy=new Date();var desde=hoy.getTime();'
+      +'var hasta=desde+21*86400000;'
+      +'pedir("slots",{desde:desde,hasta:hasta}).then(function(r){'
+        +'if(!r||!r.ok){malo(r&&r.error||"No pude traer los horarios.");return;}'
+        +'st.dias=r.dias||{};'
+        +'var f=Object.keys(st.dias).filter(function(k){return (st.dias[k]||[]).length;}).sort();'
+        +'if(!f.length){malo("No hay horarios libres en las próximas tres semanas.");return;}'
+        +'st.fecha=f[0];pinta();'
+      +'}).catch(function(){malo("No pude traer los horarios.");});'
+    +'}'
+    +'function malo(t){'
+      +'el("rv-s").textContent="";'
+      +'el("rv-cuerpo").innerHTML="<p class=\'rv-err\'></p>";'
+      +'el("rv-cuerpo").querySelector(".rv-err").textContent=t;'
+    +'}'
+    +'function pintaHorarios(){'
+      +'var fechas=Object.keys(st.dias).filter(function(k){return (st.dias[k]||[]).length;}).sort();'
+      +'el("rv-s").textContent=fechaTxt(st.fecha);'
+      +'var h="<div class=\'rv-dias\'>"+fechas.map(function(f){'
+        +'var p=f.split("-");var d=new Date(+p[0],+p[1]-1,+p[2]);'
+        +'return "<button type=\'button\' class=\'rv-dia"+(f===st.fecha?" on":"")'
+          +"+\"' data-f='\"+f+\"'><small>\"+DIAS[d.getDay()].slice(0,3)+\"</small><b>\"+(+p[2])+\"</b></button>\";"
+      +'}).join("")+"</div>";'
+      +'h+="<div class=\'rv-horas\'>"+(st.dias[st.fecha]||[]).map(function(s){'
+        +'return "<button type=\'button\' class=\'rv-hora\' data-s=\'"+s+"\'>"+horaTxt(s)+"</button>";'
+      +'}).join("")+"</div>";'
+      +'el("rv-cuerpo").innerHTML=h;'
+      +'Array.prototype.forEach.call(el("rv-cuerpo").querySelectorAll(".rv-dia"),function(b){'
+        +'b.addEventListener("click",function(){st.fecha=b.getAttribute("data-f");pintaHorarios();});});'
+      +'Array.prototype.forEach.call(el("rv-cuerpo").querySelectorAll(".rv-hora"),function(b){'
+        +'b.addEventListener("click",function(){st.slot=b.getAttribute("data-s");st.paso=1;pinta();});});'
+    +'}'
+    +'function pintaDatos(){'
+      +'el("rv-t").textContent="¿A dónde te confirmamos el turno?";'
+      +'el("rv-s").textContent=fechaTxt(st.fecha)+" · "+horaTxt(st.slot)+" h";'
+      +'el("rv-cuerpo").innerHTML="<input id=\'rv-n\' placeholder=\'Tu nombre\' autocomplete=\'name\'>"'
+        +'+"<input id=\'rv-tel\' placeholder=\'Tu WhatsApp\' autocomplete=\'tel\'>"'
+        +'+"<input id=\'rv-m\' type=\'email\' placeholder=\'Tu mail\' autocomplete=\'email\'>"'
+        +'+"<button type=\'button\' class=\'rv-ok\' id=\'rv-go\'>Confirmar el turno</button>"'
+        +'+"<p class=\'rv-err\' id=\'rv-e\'></p>";'
+      +'el("rv-pie").innerHTML="<button type=\'button\' class=\'rv-volver\' id=\'rv-back\'>Cambiar el horario</button>";'
+      +'el("rv-back").addEventListener("click",function(){st.paso=0;pinta();});'
+      +'el("rv-go").addEventListener("click",reservar);'
+    +'}'
+    +'function reservar(){'
+      +'var n=(el("rv-n")||{}).value||"",t=(el("rv-tel")||{}).value||"",m=(el("rv-m")||{}).value||"";'
+      +'var e=el("rv-e");'
+      +'if(!m||m.indexOf("@")<0){e.textContent="Falta un mail válido.";el("rv-m").focus();return;}'
+      +'if(!n.trim()){e.textContent="Falta tu nombre.";el("rv-n").focus();return;}'
+      +'e.textContent="";'
+      +'var b=el("rv-go");b.disabled=true;b.textContent="Reservando...";'
+      +'st.datos={nombre:n,telefono:t,email:m};'
+      +'var cuerpo={nombre:n,telefono:t,email:m,inicio:st.slot};'
+      +'for(var u in UTM)cuerpo[u]=UTM[u];'
+      +'pedir("reservar",cuerpo).then(function(r){'
+        +'if(r&&r.ok){st.paso=2;pinta();return;}'
+        +'b.disabled=false;b.textContent="Confirmar el turno";'
+        // Que se ocupe entre que se pinto y se apreto es lo unico que la pagina
+        // puede arreglar sola: se vuelven a pedir los horarios.
+        +'if(r&&r.ocupado){e.textContent="Ese horario se acaba de ocupar. Te traigo los que quedan.";'
+          +'setTimeout(function(){st.paso=0;st.slot=null;el("rv-s").textContent="Actualizando...";traer();},1400);return;}'
+        +'e.textContent=(r&&r.error)||"No pude reservar. Probá de nuevo en un momento.";'
+      +'}).catch(function(){'
+        +'b.disabled=false;b.textContent="Confirmar el turno";'
+        +'e.textContent="Se cortó la conexión. Probá de nuevo.";});'
+    +'}'
+    // Las respuestas se acumulan y salen en UNA llamada, al terminar o al irse:
+    // una por pregunta multiplica el costo y no agrega nada.
+    +'var mandado=false;'
+    +'function mandar(){'
+      +'if(mandado||!st.datos)return;'
+      +'if(!Object.keys(st.resp).length)return;'
+      +'mandado=true;'
+      +'var cuerpo={email:st.datos.email,nombre:st.datos.nombre,telefono:st.datos.telefono,'
+        +'landing:LANDING,respondidas:Object.keys(st.resp).length,total:P.length,'
+        +'completo:Object.keys(st.resp).length>=P.length};'
+      +'for(var u in UTM)cuerpo[u]=UTM[u];'
+      +'for(var k in st.resp)cuerpo[k]=st.resp[k];'
+      +'try{fetch(FN+(FN.indexOf("?")>=0?"&":"?")+"accion=respuestas",'
+        +'{method:"POST",headers:{"Content-Type":"application/json"},'
+         +'body:JSON.stringify(cuerpo),keepalive:true}).catch(function(){});}catch(e){}'
+    +'}'
+    +'window.addEventListener("pagehide",mandar);'
+    +'document.addEventListener("visibilitychange",function(){'
+      +'if(document.visibilityState==="hidden")mandar();});'
+    +'var qi=0;'
+    +'function pintaPreg(){'
+      +'if(!P.length||qi>=P.length){listo();return;}'
+      +'var p=P[qi];'
+      +'el("rv-t").textContent=p.q;'
+      +'el("rv-s").textContent="Pregunta "+(qi+1)+" de "+P.length;'
+      +'var c=el("rv-cuerpo");'
+      +'if(p.ops&&p.ops.length){'
+        +'c.innerHTML="<div class=\'qops\'>"+p.ops.map(function(o,j){'
+          +'return "<button type=\'button\' class=\'qop\' data-j=\'"+j+"\'>"+o+"</button>";'
+        +'}).join("")+"</div>";'
+        +'Array.prototype.forEach.call(c.querySelectorAll(".qop"),function(b){'
+          +'b.addEventListener("click",function(){'
+            +'st.resp[p.k]=p.ops[+b.getAttribute("data-j")];qi++;pintaPreg();});});'
+      +'}else{'
+        +'c.innerHTML="<input id=\'rv-q\' placeholder=\'Tu respuesta\'>"'
+          +'+"<button type=\'button\' class=\'rv-ok\' id=\'rv-qok\'>Seguir</button>";'
+        +'el("rv-qok").addEventListener("click",function(){'
+          +'st.resp[p.k]=(el("rv-q")||{}).value||"";qi++;pintaPreg();});'
+      +'}'
+      +'el("rv-pie").innerHTML="";'
+    +'}'
+    +'function listo(){'
+      +'mandar();'
+      +'el("rv-t").textContent="";el("rv-s").textContent="";'
+      +'el("rv-bar").innerHTML="";'
+      +'var h="<div style=\'text-align:center\'><div class=\'rv-tick\'>✓</div>"'
+        +'+"<div style=\'font-size:20px;font-weight:600\'>Turno confirmado</div>"'
+        +'+"<p style=\'font-size:14px;color:var(--tenue);margin:8px 0 0\'>"'
+        +'+fechaTxt(st.fecha)+", "+horaTxt(st.slot)+" h. Te llega la confirmación por mail.</p>";'
+      +'if(WA)h+="<a class=\'rv-wa\' href=\'"+WA+"\' target=\'_blank\' rel=\'noopener\'>"+WAT+"</a>";'
+      +'el("rv-cuerpo").innerHTML=h+"</div>";'
+      +'el("rv-pie").innerHTML="";'
+    +'}'
+    +'function pinta(){'
+      +'barra();'
+      +'el("rv-pie").innerHTML="";'
+      +'if(st.paso===0){el("rv-t").textContent='+JSON.stringify(titulo)+';pintaHorarios();return;}'
+      +'if(st.paso===1){pintaDatos();return;}'
+      +'if(P.length){qi=0;pintaPreg();}else{listo();}'
+    +'}'
+    +'barra();traer();'
   +'})();<\/script>';
 }
 function _lpPostHtml(preg, hook, landingId){
@@ -29530,6 +29778,40 @@ function _lpCalHtml(c, cfg){
           +'min-height:14px"></div>'
       +'</div>')
       : '')
+    // El widget de GHL o el nuestro. Con el nuestro la cita se crea igual en
+    // GHL, pero los horarios y la reserva pasan por la funcion: el diseno, el
+    // orden y el formulario son de la pagina, y el lead escribe sus datos una
+    // sola vez en vez de dos.
+    +(function(){
+      if(!id) return '';
+      var propio=!!cfg.calendarioPropio;
+      var falta=!String(cfg.landingId||'').trim();
+      return '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+        +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          +'<span style="font-size:11px;color:var(--text3)">El calendario</span>'
+          +'<button class="btn btn-sm'+(propio?' btn-primary':'')+'" '
+            +'onclick="lpCalPropio('+c.id+')">'
+            +(propio?'con nuestro diseno':'widget de GHL')+'</button>'
+          +(propio&&falta
+            ? ('<input id="lp-landing-id2" value="" placeholder="id de la landing, ej: albet" '
+               +'style="'+est+';width:190px">'
+               +'<button class="btn btn-sm" onclick="lpLandingIdGuardar('+c.id+',\'lp-landing-id2\')">'
+               +'Guardar</button>')
+            : '')
+        +'</div>'
+        +'<div style="font-size:10.5px;color:'+((propio&&falta)?'var(--amberx)':'var(--text3)')
+          +';margin-top:5px;line-height:1.55;max-width:74ch">'
+          +(propio
+            ? (falta
+              ? 'Falta el id de la landing: es lo que le dice a la funcion que token y que '
+                +'calendario usar. Tiene que existir la fila en la tabla landings.'
+              : 'Horario, datos y preguntas en la pagina, con tu tipografia. La cita se crea '
+                +'en GHL igual que ahora. El token no viaja: lo pone la funcion.')
+            : 'El iframe de GHL, con su diseno y su formulario. El lead vuelve a escribir '
+              +'nombre, telefono y mail.')
+        +'</div>'
+      +'</div>';
+    })()
     // Las preguntas de despues necesitan a donde mandar las respuestas. Es la
     // URL del Inbound Webhook del workflow de esa subcuenta: publica por
     // diseno, no da acceso a nada mas que a disparar ese workflow.
@@ -29729,6 +30011,15 @@ function lpCalColores(clientId){
     toast('Colores copiados');
   },function(){ toast('No pude copiar','amber'); });
 }
+function lpCalPropio(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  cfg.calendarioPropio=!cfg.calendarioPropio;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
 function lpDestinoResp(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -29741,10 +30032,12 @@ function lpDestinoResp(clientId){
     ? 'A tu funcion: gratis, y no guarda nada, le escribe a GHL.'
     : 'Al webhook de GHL: sin depender de vos, cobra por ejecucion.');
 }
-function lpLandingIdGuardar(clientId){
+function lpLandingIdGuardar(clientId, cual){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var e=document.getElementById('lp-landing-id');
+  // El mismo id se puede cargar desde dos lugares de la ficha: el destino de
+  // las respuestas y el calendario propio. Se pasa cual de los dos input leer.
+  var e=document.getElementById(cual||'lp-landing-id');
   var v=String((e||{}).value||'').trim().toLowerCase().replace(/[^a-z0-9-]/g,'');
   _lpCfg(c).landingId=v;
   save();
