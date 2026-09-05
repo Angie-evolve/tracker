@@ -26565,16 +26565,12 @@ function _lpCampos(c, crear){
 async function lpCamposAGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  // Las que manda la landing son las de _lpPregDespues: si hay quiz, las del
-  // quiz. Crear las del copy dejaba en GHL campos que nadie llenaba nunca.
-  var preg=_lpPregDespues(c);
-  var L=preg.length
-    ? preg.map(function(q){
-        return {l:_lpLimpiar(q.q), tipo:((q.ops||[]).length?'opcion':'texto'),
-                req:false, ops:(q.ops||[]), k:q.k};
-      })
-    : (_lpCampos(c,false)||[]);
-  if(!L.length) return;
+  // Siempre la misma plantilla: es lo que hace que el formulario se arme una
+  // vez y sirva para todos. Nombrarlos con el texto de cada pregunta ataba el
+  // formulario a un cliente y obligaba a rehacerlo por cada uno.
+  var L=LP_CAMPOS_GHL.map(function(x){
+    return {l:x.l, tipo:x.tipo, req:false, k:x.k};
+  });
   var fn=_lpCalFn();
   var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
   var ctx=_citasCtx();
@@ -26588,7 +26584,8 @@ async function lpCamposAGhl(clientId){
   if(!confirm('Crear en GHL '+L.length+' campo'+(L.length===1?'':'s')+' para '
     +(c.name||'este cliente')+'?\n\n'
     +L.map(function(x){ return '\u00b7 '+(x.l||''); }).join('\n')
-    +'\n\nQuedan en una carpeta "EVOLVE tracker". Los que ya existan no se duplican.')) return;
+    +'\n\nSon los mismos para todos tus clientes: el formulario se arma una vez '
+    +'y se clona. Los que ya existan no se duplican.')) return;
   decir('Creando...');
   try{
     var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
@@ -29242,6 +29239,26 @@ var GHL_BOOKING='https://api.leadconnectorhq.com/widget/booking/';
 // armado —son las que ya pensaste, con sus opciones— y si no, de los campos
 // del formulario que GHL no pregunta en su gate (nombre, mail y telefono ya
 // los pidio el widget: repetirlos es la forma mas rapida de perder al lead).
+// Los campos ocultos del formulario de GHL. Son SIEMPRE estos, para todos los
+// clientes: como no se ven, no hace falta que se llamen como la pregunta, y
+// asi el mismo formulario sirve para todas las subcuentas y viaja en el
+// snapshot. El texto de las preguntas vive en la landing, que es nuestra.
+//
+// Son de texto y no desplegables por lo mismo: las opciones cambian por
+// cliente y volverian el campo especifico de uno.
+var LP_CAMPOS_GHL=(function(){
+  var L=[];
+  for(var i=1;i<=6;i++) L.push({l:'Respuesta '+i, k:'p'+i, tipo:'texto',
+    porque:'La respuesta '+i+' del cuestionario de la landing'});
+  // Sin esto, en la ficha del contacto se lee "Respuesta 1: Entre 4 y 9" y no
+  // se sabe cual era la pregunta. Aca entra el texto completo.
+  L.push({l:'Respuestas (resumen)', k:'resumen', tipo:'texto largo',
+    porque:'Las preguntas con su respuesta, para leerlas de un vistazo'});
+  ['utm_ad','utm_campaign','utm_source'].forEach(function(u){
+    L.push({l:u, k:u, tipo:'texto', porque:'De donde vino el lead'});
+  });
+  return L;
+})();
 function _lpPregDespues(c){
   var cfg=_lpCfg(c);
   var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')?c.quiz.preguntas:null;
@@ -29344,6 +29361,11 @@ function _lpAntesHtml(preg, calUrl, calId, conGate){
       +'for(var k in resp)q.push(encodeURIComponent(k)+"="+encodeURIComponent(resp[k]));'
       // Y la atribucion igual: el campo oculto se llama como el parametro.
       +'for(var u in UTM)q.push(encodeURIComponent(u)+"="+encodeURIComponent(UTM[u]));'
+      // Los campos p1..p6 son genericos para que el formulario sirva en todas
+      // las subcuentas, asi que el texto de la pregunta viaja aparte. Se corta
+      // porque entra en una URL y hay limite.
+      +'var res=P.map(function(p){return p.q+": "+(resp[p.k]||"");}).join(" | ");'
+      +'q.push("resumen="+encodeURIComponent(res.slice(0,900)));'
       +'var cal=el("cal-wrap");'
       +'var ifr=cal?cal.querySelector("iframe"):null;'
       +'if(ifr)ifr.src=CAL+(CAL.indexOf("?")>=0?"&":"?")+q.join("&");'
@@ -30253,14 +30275,19 @@ function lpClavesCopiar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var preg=_lpPregDespues(c);
-  var txt='Campos ocultos del formulario de '+(c.name||'')+'\n'
-    +'Cada uno: tipo texto, oculto, y Query Key exactamente como dice la clave.\n\n'
-    +preg.map(function(q){
-      return q.k+'   '+_lpLimpiar(q.q)
-        +((q.ops||[]).length?('\n     respuestas posibles: '+q.ops.join(' / ')):'');
-    }).join('\n');
+  var txt='Campos ocultos del formulario del calendario\n'
+    +'Son los MISMOS para todos los clientes: se arma una vez y se clona.\n'
+    +'Cada uno: oculto, y con la Query Key exactamente como dice la clave.\n\n'
+    +LP_CAMPOS_GHL.map(function(x){
+      return x.k+'   '+x.l+'   ('+x.tipo+')';
+    }).join('\n')
+    // El mapeo si es de este cliente: dice que pregunta cae en cada clave.
+    +(preg.length
+      ? ('\n\nEn '+(c.name||'este cliente')+', cada clave lleva:\n'
+        +preg.map(function(q){ return q.k+'   '+_lpLimpiar(q.q); }).join('\n'))
+      : '');
   navigator.clipboard.writeText(txt).then(function(){
-    toast('Lista copiada \u00b7 '+preg.length+' campo'+(preg.length===1?'':'s'));
+    toast('Lista copiada \u00b7 '+LP_CAMPOS_GHL.length+' campos');
   },function(){ toast('No pude copiar','amber'); });
 }
 function lpCalPropio(clientId){
