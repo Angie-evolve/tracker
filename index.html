@@ -26548,6 +26548,47 @@ function _lpCampos(c, crear){
   }
   return cfg.copy.formulario.campos;
 }
+// Crea en la subcuenta de GHL los campos definidos aca. El formulario no se
+// puede crear por API —Forms es de solo lectura— pero con los campos ya
+// creados armarlo es arrastrar en vez de tipear.
+async function lpCamposAGhl(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var L=_lpCampos(c,false)||[];
+  if(!L.length) return;
+  var fn=_lpCalFn();
+  var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
+  var ctx=_citasCtx();
+  var token=g?g.token:ctx.token, location=g?g.locationId:ctx.location;
+  var e=document.getElementById('lp-campos-msg');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
+                             else if(typeof toast==='function') toast(String(t).replace(/<[^>]+>/g,'')); };
+  if(!fn.url){ decir('Falta conectar la funcion de GHL.','var(--amberx)'); return; }
+  if(!token||!location){ decir('Falta la subcuenta de GHL.','var(--amberx)'); return; }
+  // Crea cosas en la cuenta del cliente: se pregunta antes.
+  if(!confirm('Crear en GHL '+L.length+' campo'+(L.length===1?'':'s')+' para '
+    +(c.name||'este cliente')+'?\n\n'
+    +L.map(function(x){ return '\u00b7 '+(x.l||''); }).join('\n')
+    +'\n\nQuedan en una carpeta "EVOLVE tracker". Los que ya existan no se duplican.')) return;
+  decir('Creando...');
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=campos',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:token, location:location,
+         campos:L.map(function(x){ return {l:x.l||x.label||'', tipo:x.tipo||'', req:x.req!==false}; })})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ decir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return; }
+    var p=[];
+    if((r.creados||[]).length) p.push(r.creados.length+' creado'+(r.creados.length===1?'':'s'));
+    if((r.existentes||[]).length) p.push((r.existentes||[]).length+' ya estaban');
+    if((r.errores||[]).length) p.push((r.errores||[]).length+' con error');
+    decir(p.join(' \u00b7 ')+((r.errores||[]).length
+      ? ('<br><span style="color:var(--amberx)">'+esc(r.errores.join(' | ')).slice(0,240)+'</span>')
+      : ' \u00b7 ya los podes arrastrar en el formulario del calendario'),
+      (r.errores||[]).length?'var(--amberx)':'var(--accent)');
+  }catch(err){ decir('Error de red: '+esc(err.message),'var(--redx)'); }
+}
 function lpCampoSet(clientId, i, clave, valor){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -29413,7 +29454,16 @@ function landingHtml(c){
             +'a mano.</div>'))
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
         +'<button class="btn btn-sm" onclick="lpCampoAgregar('+c.id+')">Agregar un campo</button>'
+        // Crear los campos en GHL evita tipearlos de nuevo en su armador de
+        // formularios. El formulario en si no se puede crear por API.
+        +(L.length
+          ? ('<button class="btn btn-sm" onclick="lpCamposAGhl('+c.id+')" '
+            +'title="Los crea en la subcuenta para armar el formulario del calendario">'
+            +'Crearlos en GHL</button>')
+          : '')
       +'</div>'
+      +'<div id="lp-campos-msg" style="font-size:11px;color:var(--text3);margin-top:6px;'
+        +'min-height:14px"></div>'
     +'</div>';
   })();
 
