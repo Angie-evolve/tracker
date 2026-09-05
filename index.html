@@ -27159,7 +27159,7 @@ function lpVer(clientId){
         +'<button class="btn btn-sm" id="lp-piel-btn" style="display:none" '
           +'title="Descarta el armado propio de esta pagina" '
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
-        +'<button class="btn btn-sm" id="lp-movil-btn" onclick="lpMovilToggle()" '
+        +'<button class="btn btn-sm" id="lp-movil-btn" onclick="lpMovilToggle('+c.id+')" '
           +'title="Muestra la pagina al ancho de un telefono">M\u00f3vil</button>'
         +'<button class="btn btn-sm" onclick="lpCopiarHtml('+c.id+')" '
           +'title="La pagina entera, como archivo .html suelto">Copiar el HTML</button>'
@@ -27199,7 +27199,7 @@ function lpVer(clientId){
 // dispara la media query de 640px de verdad, sin repintar y sin perder lo que
 // se estaba editando o moviendo. Escalar con transform mentia: la pagina seguia
 // creyendo que tenia el ancho entero.
-function lpMovilToggle(){
+function lpMovilToggle(clientId){
   var f=document.getElementById('lp-frame'), b=document.getElementById('lp-movil-btn');
   if(!f) return;
   S._lpMovil=!S._lpMovil;
@@ -27207,6 +27207,32 @@ function lpMovilToggle(){
   f.style.width=S._lpMovil?'390px':'100%';
   f.style.maxWidth='100%';
   if(b) b.textContent=S._lpMovil?'Escritorio':'M\u00f3vil';
+  var m=document.getElementById('lp-edit-msg');
+  if(m) m.textContent=S._lpMovil
+    ? 'Vista m\u00f3vil: el ancho y el orden que toques valen solo aca'
+    : '';
+  // Se repinta al cambiar de vista: editando en movil quedan flex-basis y
+  // order puestos a mano sobre el nodo, y en escritorio mentirian.
+  var c=(clientId!==undefined) ? DB.clients.find(function(x){return x.id===clientId;}) : null;
+  if(c){
+    var mover=S._lpMover, edit=S._lpEdit;
+    f.onload=function(){
+      f.onload=null;
+      _lpAltBind(clientId);
+      // El modo en el que estaba se conserva: si no, cambiar de vista apaga
+      // la edicion y hay que volver a prenderla en cada ida y vuelta.
+      // lpEditToggle invierte el estado, asi que se parte del contrario para
+      // que lo deje donde estaba, con los binds y el cartel incluidos.
+      S._lpEdit=!edit; S._lpMover=!mover;
+      lpEditToggle(clientId);
+      if(S._lpMovil){
+        var m2=document.getElementById('lp-edit-msg');
+        if(m2) m2.textContent='Vista m\u00f3vil: el ancho y el orden que toques '
+          +'valen solo aca';
+      }
+    };
+    f.srcdoc=_lpPaginaHtml(c);
+  }
 }
 // Prende y apaga la edicion sobre el iframe ya renderizado.
 // Repinta el iframe si esta abierto. Se usa al reescribir el copy desde el
@@ -27503,8 +27529,11 @@ function lpVolverAPiel(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c);
-  if(!Array.isArray(cfg.layout) && !cfg.anchos && !_lpOcultas(c).length) return;
+  if(!Array.isArray(cfg.layout) && !cfg.anchos && !cfg.anchosMovil
+     && !cfg.ordenMovil && !_lpOcultas(c).length) return;
   delete cfg.layout;
+  delete cfg.anchosMovil;
+  delete cfg.ordenMovil;
   delete cfg.anchos;
   delete cfg.ocultas;
   save();
@@ -27579,6 +27608,17 @@ function _lpMoverAplicar(clientId){
   if(!on || d._lpMovListo) return;
   d._lpMovListo=true;
 
+  // Lo que se toca en la vista movil se pinta con la misma hoja que va a salir
+  // en la pagina: asi el preview no puede mentir, y no hay que pelearle a la
+  // media query con estilos en linea.
+  var hojaMovil=d.getElementById('lp-movil-vivo');
+  if(!hojaMovil){
+    hojaMovil=d.createElement('style');
+    hojaMovil.id='lp-movil-vivo';
+    (d.head||d.documentElement).appendChild(hojaMovil);
+  }
+  var pintarMovil=function(){ hojaMovil.textContent=_lpMovilCss(cfg); };
+  pintarMovil();
   var guia=d.createElement('div'); guia.className='lp-guia'; d.body.appendChild(guia);
   var chip=d.createElement('div'); chip.className='lp-chip'; d.body.appendChild(chip);
   var verChip=function(txt,x,y2){
@@ -27602,7 +27642,13 @@ function _lpMoverAplicar(clientId){
       var pct=((e.clientX-x0)/ancho)*100, mejor=SALTOS[0];
       SALTOS.forEach(function(v){ if(Math.abs(v-pct)<Math.abs(mejor-pct)) mejor=v; });
       val=mejor;
-      col.style.flexBasis=mejor+'%';
+      if(S._lpMovil){
+        cfg.anchosMovil=cfg.anchosMovil||{};
+        cfg.anchosMovil[col.getAttribute('data-mov')]=mejor;
+        pintarMovil();
+      }else{
+        col.style.flexBasis=mejor+'%';
+      }
       col.setAttribute('data-an', mejor);
       _lpLadoVivo(fila);
       verChip(_lpFraccion(mejor), e.clientX, e.clientY);
@@ -27612,8 +27658,12 @@ function _lpMoverAplicar(clientId){
       d.removeEventListener('mouseup',soltar);
       borde.classList.remove('lp-on');
       ocultar();
-      cfg.anchos=cfg.anchos||{};
-      cfg.anchos[col.getAttribute('data-mov')]=val;
+      // En la vista movil los anchos son otros: en el telefono casi todo va a
+      // fila entera, y lo que se pone en dos columnas ahi rara vez coincide
+      // con lo que conviene en escritorio.
+      var mapa=S._lpMovil ? 'anchosMovil' : 'anchos';
+      cfg[mapa]=cfg[mapa]||{};
+      cfg[mapa][col.getAttribute('data-mov')]=val;
       save();
       if(vb) vb.style.display='';
     };
@@ -27697,6 +27747,49 @@ function _lpMoverAplicar(clientId){
       nodo.classList.remove('lp-tomado');
       ocultar();
       if(!vivo||!dest) return;
+      // En movil el orden es propio, y se resuelve con flex order sobre los
+      // hermanos de la fila. Mover el nodo cambiaria tambien el escritorio:
+      // el HTML es uno solo para las dos vistas.
+      if(S._lpMovil && !esSec){
+        var fila=nodo.parentNode;
+        if(!dest.el || dest.vacia || dest.el.parentNode!==fila){
+          verChip('En m\u00f3vil se reordena dentro de la secci\u00f3n',
+                  ev.clientX, ev.clientY);
+          setTimeout(ocultar, 1400);
+          return;
+        }
+        var ord=function(x){
+          var v2=parseInt(f.contentWindow.getComputedStyle(x).order||'0',10);
+          return isNaN(v2)?0:v2;
+        };
+        var hijos=Array.prototype.filter.call(fila.children, function(x){
+          return x.getAttribute && x.getAttribute('data-mov');
+        });
+        var pos={};
+        hijos.forEach(function(x,k){ pos[x.getAttribute('data-mov')]=k; });
+        // El orden visual de ahora: el que dice flex order, y a igualdad el
+        // del HTML. Sin esto un segundo arrastre parte del orden equivocado.
+        hijos.sort(function(a,b){
+          var oa=ord(a), ob=ord(b);
+          if(oa!==ob) return oa-ob;
+          return pos[a.getAttribute('data-mov')]-pos[b.getAttribute('data-mov')];
+        });
+        var iO=hijos.indexOf(nodo);
+        if(iO<0) return;
+        hijos.splice(iO,1);
+        var iD=hijos.indexOf(dest.el);
+        if(iD<0) return;
+        hijos.splice(iD+(dest.antes?0:1),0,nodo);
+        cfg.ordenMovil=cfg.ordenMovil||{};
+        hijos.forEach(function(x,k){
+          cfg.ordenMovil[x.getAttribute('data-mov')]=k+1;
+        });
+        pintarMovil();
+        save();
+        if(vb) vb.style.display='';
+        _lpMovAviso(clientId);
+        return;
+      }
       var L=_lpLayoutFijar(c), ok=false;
       if(esSec){
         var kO=nodo.getAttribute('data-sec'), kD=dest.el.getAttribute('data-sec');
@@ -27936,7 +28029,8 @@ function _lpLadoVivo(fila){
 }
 function _lpLayoutPropio(c){
   var cfg=_lpCfg(c)||{};
-  return Array.isArray(cfg.layout) || !!cfg.anchos || !!_lpOcultas(c).length;
+  return Array.isArray(cfg.layout) || !!cfg.anchos || !!cfg.anchosMovil
+    || !!cfg.ordenMovil || !!_lpOcultas(c).length;
 }
 // Las secciones apagadas. Se guardan por clave y no se toca el copy: apagar y
 // volver a prender tiene que devolver la seccion igual a como estaba, si no es
@@ -28089,6 +28183,32 @@ function lpSecRestaurar(piel){
 // Los dos colores que definen la pagina. Se sacan aparte porque el widget de
 // GHL se configura del otro lado y hay que poder decir cuales pegar: sin esto
 // el calendario queda blanco arriba de una landing oscura.
+// Los anchos y el orden propios de la vista movil. El telefono no es el
+// escritorio angosto: ahi el calendario suele ir arriba del texto, y dos
+// columnas que en desktop conviven, apiladas cambian de prioridad. Por eso son
+// dos juegos de valores y no uno solo.
+//
+// El orden se hace con flex order y no moviendo nodos: el HTML es uno solo, y
+// mover el nodo cambiaria tambien el escritorio.
+function _lpMovilCss(cfg){
+  var A=(cfg.anchosMovil&&typeof cfg.anchosMovil==='object')?cfg.anchosMovil:{};
+  var O=(cfg.ordenMovil&&typeof cfg.ordenMovil==='object')?cfg.ordenMovil:{};
+  var q=function(r){ return String(r).replace(/"/g,'\\"'); };
+  var reglas=[];
+  Object.keys(A).forEach(function(r){
+    var v=parseInt(A[r],10)||100;
+    // flex-basis solo no le gana a la regla general de la media query, pero
+    // max-width si acota el ancho real. Medido en el navegador, no supuesto:
+    // van los dos.
+    reglas.push('.col[data-mov="'+q(r)+'"]{flex:0 0 '+v+'%!important;'
+      +'max-width:'+v+'%!important;'
+      +'padding-right:'+(v<100?'14px':'0')+'}');
+  });
+  Object.keys(O).forEach(function(r){
+    reglas.push('.col[data-mov="'+q(r)+'"]{order:'+(parseInt(O[r],10)||0)+'}');
+  });
+  return reglas.length ? '@media(max-width:640px){'+reglas.join('')+'}' : '';
+}
 function _lpColores(c){
   var cfg=_lpCfg(c), pal=((c.marca||{}).colores||[]);
   var oscuro=(cfg.tema!=='claro');
@@ -28467,6 +28587,9 @@ function _lpPaginaHtml(c){
       // columnas que valgan, cualquier ancho guardado vuelve a fila entera.
       +'.col{flex-basis:100%!important;padding-right:0}'
       +'.fila-lado{display:block}}'
+    // Lo que se toco en la vista movil pisa a esa regla general. Va aparte y
+    // despues, para que el 100% siga siendo el default de todo lo no tocado.
+    +_lpMovilCss(cfg)
     // Va ultimo a proposito: lo que escriba el cliente pisa a lo de la
     // plantilla sin necesidad de !important. Se limpia </style> porque cerrar
     // la etiqueta desde aca romperia el resto de la pagina.
