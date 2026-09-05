@@ -26666,7 +26666,11 @@ function lpVer(clientId){
           +'onclick="lpVolverAPiel('+c.id+')">Volver a la piel</button>'
         +'<button class="btn btn-sm" id="lp-movil-btn" onclick="lpMovilToggle()" '
           +'title="Muestra la pagina al ancho de un telefono">M\u00f3vil</button>'
-        +'<button class="btn btn-sm" onclick="lpCopiarHtml('+c.id+')">Copiar el HTML</button>'
+        +'<button class="btn btn-sm" onclick="lpCopiarHtml('+c.id+')" '
+          +'title="La pagina entera, como archivo .html suelto">Copiar el HTML</button>'
+        +'<button class="btn btn-sm" onclick="lpCopiarGhl('+c.id+')" '
+          +'title="El mismo diseno como fragmento, para pegar en un elemento de codigo de GHL">'
+          +'Copiar para GHL</button>'
         // Publicar se decide mirando la pagina, no leyendo la ficha: por eso el
         // boton va aca tambien y no solo en la isla de abajo.
         // El toast dura dos segundos y medio y sale en la otra punta de la
@@ -27771,12 +27775,10 @@ function _lpPaginaHtml(c){
   // ventanita con scroll adentro.
   var calId=String(cfg.calendarioId||'').trim();
   var calEmbed = calId
-    // El cartel solo se ve mientras se arma. GHL manda X-Frame-Options, asi que
-    // adentro del preview el iframe queda en blanco y parecia que el calendario
-    // no se habia puesto: el embed anda igual en la pagina publicada.
-    ? ('<p class="nota armado">Calendario '+E(cfg.calendarioNombre||calId)
-        +'. Aca no se ve porque GHL no deja mostrarse dentro de otra pagina '
-        +'mientras se arma; en la pagina publicada aparece.</p>'
+    // El cartel solo se ve mientras se arma: dice cual calendario es, que en el
+    // iframe no se lee. No afirma nada sobre si carga o no: el preview hereda
+    // el origen de la app, asi que el embed se comporta igual que publicado.
+    ? ('<p class="nota armado">Calendario: '+E(cfg.calendarioNombre||calId)+'</p>'
       +'<iframe src="'+E(GHL_BOOKING+calId)+'" id="cal-'+E(calId)+'" scrolling="no" '
         +'style="width:100%;min-height:700px;border:none;overflow:hidden" '
         +'title="Agenda tu turno"></iframe>'
@@ -28037,6 +28039,77 @@ function _lpPaginaHtml(c){
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
 }
+// ---- Salida para pegar en GHL -------------------------------------------
+// El elemento de codigo de GHL espera un fragmento para meter DENTRO de una
+// pagina que ya existe: descarta <head>, y con el se va toda la hoja de
+// estilos. Por eso pegar la pagina entera dejaba el texto sin diseno, sin
+// fondo y sin calendario. Aca sale el mismo diseno como fragmento.
+//
+// El CSS ademas se acota a un contenedor: nuestras reglas usan selectores
+// sueltos (body, h1, section) que en una pagina ajena le pisarian el diseno a
+// todo lo demas.
+var LP_GHL_CAJA='evx-lp';
+function _lpCssAcotado(css){
+  var out='';
+  var i=0, n=css.length;
+  var prefijo=function(sel){
+    return sel.split(',').map(function(s2){
+      s2=s2.trim();
+      if(!s2) return '';
+      // :root y body son el contenedor: ahi viven las variables y la tipografia.
+      if(s2===':root'||s2==='body') return '.'+LP_GHL_CAJA;
+      if(s2.indexOf('body')===0) return '.'+LP_GHL_CAJA+s2.slice(4);
+      return '.'+LP_GHL_CAJA+' '+s2;
+    }).filter(Boolean).join(',');
+  };
+  while(i<n){
+    var llave=css.indexOf('{', i);
+    if(llave<0){ break; }
+    var cab=css.slice(i, llave).trim();
+    if(cab.charAt(0)==='@'){
+      // Un bloque con reglas adentro: se acotan las de adentro, no el @media.
+      var prof=0, j=llave;
+      for(; j<n; j++){
+        if(css.charAt(j)==='{') prof++;
+        else if(css.charAt(j)==='}'){ prof--; if(!prof) break; }
+      }
+      var dentro=css.slice(llave+1, j);
+      out+=cab+'{'+_lpCssAcotado(dentro)+'}';
+      i=j+1;
+    }else{
+      var cierre=css.indexOf('}', llave);
+      if(cierre<0) break;
+      out+=prefijo(cab)+'{'+css.slice(llave+1, cierre)+'}';
+      i=cierre+1;
+    }
+  }
+  return out;
+}
+function _lpFragmentoGhl(c){
+  var html=_lpPaginaHtml(c);
+  var css='';
+  html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, function(_m, cuerpo){ css+=cuerpo; return ''; });
+  var m=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  var cuerpo=m?m[1]:html;
+  // Las hojas ya extraidas se sacan del cuerpo: si no, van dos veces.
+  cuerpo=cuerpo.replace(/<style[^>]*>[\s\S]*?<\/style>/gi,'');
+  return '<div class="'+LP_GHL_CAJA+'">'
+    +'<style>'+_lpCssAcotado(css)+'</style>'
+    +cuerpo
+  +'</div>';
+}
+async function lpCopiarGhl(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var frag=_lpFragmentoGhl(c);
+  try{
+    await navigator.clipboard.writeText(frag);
+    _lpEstado('Copiado para GHL ('+Math.round(frag.length/1024)+' KB). Pegalo en un '
+      +'elemento de codigo de la pagina.','var(--accent)');
+    toast('Listo para pegar en GHL');
+  }catch(e){ _lpEstado('No pude copiar al portapapeles.','var(--amberx)'); }
+}
+
 // ---- Publicar -----------------------------------------------------------
 // La pagina se podia ver y copiar, pero para que alguien la abriera habia que
 // subirla a algun lado a mano. Se publica en el mismo Supabase donde ya vive
