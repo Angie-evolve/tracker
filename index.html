@@ -2880,7 +2880,42 @@ function toggleShowArchived(){ S.showArchived=!S.showArchived; showOverview(); }
 // recorran sin cambios, pero no es un cliente: queda fuera de metricas,
 // facturacion y de todo lo que cuente cartera.
 function esAgencia(c){ return !!(c&&c.esAgencia); }
-function activeClients(){ return DB.clients.filter(function(c){return !c.archived && !esAgencia(c);}); }
+// Un prospecto es alguien con quien joela ya tuvo una llamada pero que todavia
+// no es cliente. Vive como cliente para que el tablero lo mueva por las mismas
+// etapas, pero queda fuera de metricas y facturacion igual que la agencia:
+// contarlo como cartera antes de que pague inflaria todos los numeros.
+function esProspecto(c){ return !!(c&&c.prospecto); }
+function activeClients(){ return DB.clients.filter(function(c){return !c.archived && !esAgencia(c) && !esProspecto(c);}); }
+// Quien prospecta. Sus llamadas con alguien de afuera abren tarjeta; las de
+// cualquier otro, no, o cada daily interna crearia un prospecto.
+function _fathomComerciales(){
+  var v=DB.comerciales;
+  if(!Array.isArray(v)||!v.length) return ['joela@theflowingcode.com'];
+  return v.map(function(x){ return String(x).trim().toLowerCase(); });
+}
+// El equipo: las personas cargadas mas los dominios corporativos que usen.
+// Sirve para saber quien es "de afuera" en una reunion.
+function _fathomEquipo(){
+  var mails={}, doms={};
+  var gen=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
+  (DB.personas||[]).concat(_fathomComerciales().map(function(e){return {email:e};}))
+    .forEach(function(pn){
+      var m=String((pn&&pn.email)||'').trim().toLowerCase();
+      if(!m) return;
+      mails[m]=1;
+      var d=m.split('@')[1]||'';
+      if(d && !gen.test(d+'.')) doms[d]=1;
+    });
+  return {mails:mails, doms:doms};
+}
+// Los invitados que no son del equipo. Si no hay ninguno la reunion es interna
+// y no hay prospecto que crear.
+function _fathomDeAfuera(fila){
+  var eq=_fathomEquipo();
+  return _fathomMails(fila).filter(function(m){
+    return !eq.mails[m] && !eq.doms[m.split('@')[1]||''];
+  });
+}
 // La ficha de la agencia, creada la primera vez que se le asigna una tarea.
 function clienteAgencia(crear){
   var c=(DB.clients||[]).find(esAgencia);
@@ -6212,6 +6247,10 @@ async function fathomWebhookSync(silent){
     // Si alguien ya la asigno a mano desde el tracker, se respeta.
     if(f.cliente_id) c=DB.clients.find(function(x){ return String(x.id)===String(f.cliente_id); });
     if(!c) c=_fathomMatchClient(f.titulo||'', f);
+    // Ningun cliente la reconoce. Si la grabo alguien que prospecta y habia
+    // gente de afuera, es un lead: abre su tarjeta en el tablero en vez de
+    // quedar en el limbo esperando que alguien la asigne a mano.
+    if(!c) c=_fathomProspectoDe(f);
     if(!c){ sinCliente.push(f); return; }
     c.fathomCalls=c.fathomCalls||[];
     var id='fw-'+f.recording_id;
@@ -6480,6 +6519,61 @@ async function fathomAsignar(recId, clientId){
 // atras— y cada una le pone su propio prefijo al id: fw- y fathom-. Comparar
 // ids enteros no la reconocia, y quedaba dos veces en la ficha con dos titulos
 // distintos. Se compara el id sin prefijo, y tambien la url.
+// El nombre del prospecto sale de quien vino de afuera. Si el invitado no trae
+// nombre se usa la parte de antes del arroba, que igual es reconocible.
+function _fathomNombreDe(fila, mail){
+  var ps=(fila&&(fila.participantes||fila.calendar_invitees))||[];
+  var n='';
+  if(Array.isArray(ps)) ps.forEach(function(x){
+    var m=String((x&&(x.email||x.mail))||'').trim().toLowerCase();
+    if(m===mail && x && x.name) n=String(x.name).trim();
+  });
+  if(n) return n;
+  var loc=String(mail||'').split('@')[0]
+    .replace(/[._-]+/g,' ').replace(/\s*\d+\s*$/,'').trim();
+  return loc.replace(/\b\w/g,function(l){ return l.toUpperCase(); }) || mail;
+}
+// Lo que dice el lead cuando ya decidio. Se busca en la transcripcion, no en
+// el resumen: el resumen lo escribe la IA y suaviza, la transcripcion trae la
+// frase textual.
+var P360_PAGO=/(\bse[nñ]a\b|\btransferi|\bya te (paso|mando) el pago|\bhago el (pago|deposito)|\bmando la transferencia|\bacepto la propuesta|\bavancemos\b|\barrancamos\b|\bcerramos\b)/i;
+function _p360Pago(c){
+  return (c.fathomCalls||[]).some(function(l){
+    return P360_PAGO.test(String(l.transcript||''));
+  });
+}
+// Donde cae un prospecto. Por posicion y no por nombre: la ruta se edita y las
+// etiquetas de las columnas no son las del default.
+function _p360EtapaProspecto(c){
+  var cols=rutaColumnas();
+  if(!cols.length) return null;
+  var n=(c.fathomCalls||[]).length;
+  var i=_p360Pago(c) ? 2 : (n>=2 ? 1 : 0);
+  if(i>cols.length-1) i=cols.length-1;
+  return {l:cols[i].l, i:i, total:cols.length, estado:'hecho', hechas:i+1};
+}
+// Busca o abre el prospecto de una llamada suelta. Devuelve null cuando no
+// corresponde crear nada, que es la mayoria de las veces.
+function _fathomProspectoDe(fila){
+  var grabo=String((fila&&fila.grabo_mail)||'').trim().toLowerCase();
+  if(_fathomComerciales().indexOf(grabo)<0) return null;
+  var afuera=_fathomDeAfuera(fila);
+  if(!afuera.length) return null;
+  var mail=afuera[0];
+  // Si ya se abrio una tarjeta por este mail, la llamada se suma a esa: dos
+  // llamadas con la misma persona son el mismo lead avanzando, no dos leads.
+  var ya=(DB.clients||[]).find(function(x){
+    return esProspecto(x) && String(x.email||'').toLowerCase()===mail;
+  });
+  if(ya) return ya;
+  var nom=_fathomNombreDe(fila, mail);
+  var c={ id:Date.now()+Math.floor(Math.random()*1000),
+    name:nom, email:mail, prospecto:true, archived:true,
+    avatar:nom.split(' ').map(function(w){return w[0]||'';}).join('').slice(0,2).toUpperCase(),
+    altaAt:new Date().toISOString(), tasks:[], fathomCalls:[] };
+  DB.clients.push(c);
+  return c;
+}
 function _fathomYaEsta(c, recId, url){
   var rid=String(recId||'').trim();
   var u=String(url||'').trim();
@@ -21596,6 +21690,7 @@ function _p360SopsHtml(){
 }
 // Etapa actual: la primera de la ruta que todavia no esta hecha.
 function _p360Etapa(c){
+  if(esProspecto(c)) return _p360EtapaProspecto(c);
   var r=[];
   try{ r=_ruta(c)||[]; }catch(e){ return null; }
   var fijas=r.filter(function(x){ return !x.manual; });
@@ -22739,7 +22834,9 @@ function _p360SinProdHtml(datos, sel){
   +'</div>';
 }
 function p360Html(){
-  var cls=(DB.clients||[]).filter(function(c){ return !c.archived; });
+  // Los prospectos entran aca y en ningun otro lado: el tablero es
+  // justamente donde tienen que verse avanzar.
+  var cls=(DB.clients||[]).filter(function(c){ return !c.archived || esProspecto(c); });
   if(!cls.length) return _torreVacio('Panel 360','Todavia no hay clientes activos.');
 
   var datos=cls.map(function(c){
