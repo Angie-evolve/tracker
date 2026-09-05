@@ -27862,9 +27862,75 @@ function _lpCalHtml(c, cfg){
       +'<button class="btn btn-sm" onclick="lpCalIdGuardar('+c.id+')">Guardar</button>'
     +'</div>'
     +'<div id="lp-cal-est" style="font-size:11px;color:var(--text3);margin-top:6px;min-height:14px">'
-      +(conectado?'':'Este cliente no tiene la subcuenta de GHL conectada, asi que la lista '
-        +'no se puede traer: pega el ID a mano.')+'</div>'
+      +(!conectado
+        ? 'Este cliente no tiene la subcuenta de GHL conectada, asi que la lista '
+          +'no se puede traer: pega el ID a mano.'
+        : ((_lpCalFn().url||getGhlProxy().url)
+          ? ''
+          : ('Para traer la lista falta conectar GHL: '
+            +'<a href="#" onclick="lpCalFnModal();return false" '
+            +'style="color:var(--accent)">configurar la funcion de Supabase</a>.')))
+      +'</div>'
   +'</div>';
+}
+// La funcion de Supabase, igual que la de Fathom: URL y secreto en el
+// navegador. Se prefiere a la de Apps Script porque no hay que volver a
+// desplegar un script cada vez que se agrega una accion.
+function _lpCalFn(){
+  return { url:(localStorage.getItem('evold-ghl-fn')||'').trim(),
+           sec:(localStorage.getItem('evold-ghl-fn-sec')||'').trim() };
+}
+function lpCalFnModal(){
+  var a=_lpCalFn();
+  var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:760px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Conectar GHL por Supabase</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+        +'De la edge function "ghl". El token de cada cliente sigue viviendo en su ficha: '
+        +'la funcion solo hace de puente, porque el navegador no puede llamar a GHL directo.</div>'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.06em;margin-bottom:4px">URL de la funcion</div>'
+      +'<input id="gf-url" style="'+est+'" value="'+esc(a.url)+'" '
+        +'placeholder="https://xxxx.supabase.co/functions/v1/ghl">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.06em;margin:12px 0 4px">Secreto</div>'
+      +'<input id="gf-sec" style="'+est+'" value="'+esc(a.sec)+'" '
+        +'placeholder="El mismo que pusiste en la variable SECRETO">'
+      +'<div id="gf-est" style="font-size:11.5px;margin-top:12px;min-height:18px;color:var(--text3)"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="lpCalFnGuardar()">Probar y guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+async function lpCalFnGuardar(){
+  var u=String((document.getElementById('gf-url')||{}).value||'').trim();
+  var sec=String((document.getElementById('gf-sec')||{}).value||'').trim();
+  var e=document.getElementById('gf-est');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  if(!u){ decir('Falta la URL.','var(--redx)'); return; }
+  // Se prueba antes de guardar: enterarse de que el secreto estaba mal recien
+  // cuando falla el boton de traer es peor que esperar dos segundos aca.
+  decir('Probando...');
+  try{
+    var r=await fetch(u+(u.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=ping');
+    var d=null; try{ d=await r.json(); }catch(pe){}
+    if(!d||!d.ok){
+      decir(r.status===401?'El secreto no coincide con el de la funcion.'
+        :('La funcion respondio: '+esc((d&&d.error)||('HTTP '+r.status))),'var(--redx)');
+      return;
+    }
+    localStorage.setItem('evold-ghl-fn',u);
+    localStorage.setItem('evold-ghl-fn-sec',sec);
+    closeModal();
+    if(typeof renderTab==='function') renderTab();
+    toast('GHL conectado por Supabase');
+  }catch(err){ decir('No se pudo conectar: '+esc(err.message),'var(--redx)'); }
 }
 function _lpCalDecir(t,col){
   var e=document.getElementById('lp-cal-est');
@@ -27874,21 +27940,35 @@ async function lpCalTraer(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var g=(c.ghl||{});
+  var fn=_lpCalFn();
   var proxy=getGhlProxy();
-  if(!proxy.url){ _lpCalDecir('Falta configurar el proxy de GHL en Integraciones.','var(--amberx)'); return; }
+  if(!fn.url&&!proxy.url){
+    _lpCalDecir('Conecta la funcion de Supabase para poder traer la lista.','var(--amberx)'); return; }
   if(!g.token||!g.locationId){ _lpCalDecir('Falta el token o el locationId del cliente.','var(--amberx)'); return; }
   _lpCalDecir('Buscando los calendarios...');
   try{
-    var r=await proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
-      +'&action=calendars&token='+encodeURIComponent(g.token)
-      +'&location='+encodeURIComponent(g.locationId)).then(function(x){ return x.json(); });
+    var r;
+    if(fn.url){
+      r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+        +'&accion=calendarios',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({token:g.token, location:g.locationId})})
+        .then(function(x){ return x.json(); });
+    }else{
+      // El Apps Script sigue sirviendo para quien ya le agrego la accion.
+      r=await proxyFetch(proxy.url+'?secret='+encodeURIComponent(proxy.secret)
+        +'&action=calendars&token='+encodeURIComponent(g.token)
+        +'&location='+encodeURIComponent(g.locationId)).then(function(x){ return x.json(); });
+    }
     if(!r||!r.ok){
       var m=String((r&&r.error)||'sin respuesta');
       // El script viejo no conoce la accion: decirlo con todas las letras, o
       // parece que el cliente no tiene calendarios.
       if(/accion desconocida|unknown action/i.test(m))
-        _lpCalDecir('Tu script de GHL todavia no tiene la accion "calendars". Pega el ID a mano '
-          +'mientras tanto.','var(--amberx)');
+        _lpCalDecir(fn.url
+          ? 'La funcion no reconoce la accion: revisa que sea la version nueva.'
+          : 'Tu script de GHL todavia no tiene la accion "calendars". Pega el ID a mano '
+            +'mientras tanto.','var(--amberx)');
       else if(/scope|401|403/i.test(m))
         _lpCalDecir('El token del cliente no tiene el scope calendars.readonly.','var(--redx)');
       else _lpCalDecir('GHL respondio: '+esc(m),'var(--redx)');
