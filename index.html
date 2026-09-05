@@ -23820,14 +23820,31 @@ async function matSubirArchivo(clientId, input){
     }
     var l=String((document.getElementById('mat-label')||{}).value||'').trim();
     c.material=c.material||[];
-    c.material.unshift({id:Date.now(), label:l||f.name, archivo:f.name,
-                        bucket:MAT_BUCKET, path:path, tam:f.size,
-                        at:new Date().toISOString()});
+    var reg={id:Date.now(), label:l||f.name, archivo:f.name,
+             bucket:MAT_BUCKET, path:path, tam:f.size,
+             at:new Date().toISOString()};
+    c.material.unshift(reg);
+    // Se sube y se lee en el mismo gesto. Antes el archivo entraba al prompt
+    // solo por su nombre: se cargaba prueba social entera y el copy seguia sin
+    // un solo numero, sin ninguna senal de que no se habia leido.
+    var leido='';
+    try{
+      var res=await _archivoATexto(f, function(t){ decir(t); });
+      if(res.texto){
+        docs(c).unshift({ titulo:(l||f.name).replace(/\.[^.]+$/,''),
+                          texto:res.texto.slice(0,_DOC_MAX), uso:'todo',
+                          desdeMaterial:reg.id, at:new Date().toISOString() });
+        reg.leido=res.texto.length;
+        leido=' y leido ('+_docKb(res.texto.length)+' caracteres)';
+      }else{
+        reg.noLeido=res.error||'no se pudo leer';
+      }
+    }catch(e){ reg.noLeido=e.message; }
     save();
     decir('');
     matCerrar();
     if(typeof renderTab==='function') renderTab();
-    toast(f.name+' subido');
+    toast(f.name+' subido'+leido);
   }catch(e){
     decir('No pude subirlo: '+e.message,'var(--redx)');
   }
@@ -24082,6 +24099,42 @@ function _mkEstado(t,col){
 // URL firmada y a bajar el archivo entero cada vez, y eso es la mitad de lo que
 // tardaba. Vive lo que vive la pestana.
 var _mkZipCache=null;
+// Baja un archivo ya subido y le saca el texto, para que entre en los prompts
+// igual que un documento de Contexto.
+async function matLeer(clientId, id){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var m=(c.material||[]).filter(function(x){return x.id===id;})[0];
+  if(!m||!m.path){ toast('Eso no es un archivo subido.','amber'); return; }
+  if(!SB.token){ toast('Entra con tu cuenta para leerlo.','amber'); return; }
+  toast('Bajando '+(m.archivo||m.label)+'...');
+  try{
+    var fr=await fetch(SB_URL+'/storage/v1/object/sign/'+(m.bucket||MAT_BUCKET)+'/'+encodeURI(m.path),{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify({expiresIn:600})
+    });
+    var fd=await fr.json();
+    var firmada=fd.signedURL||fd.signedUrl;
+    if(!fr.ok||!firmada){ toast('No pude bajarlo: '+((fd&&fd.message)||fr.status),'red'); return; }
+    var blob=await (await fetch(SB_URL+'/storage/v1'+firmada)).blob();
+    // Los lectores miran la extension, asi que el nombre tiene que viajar.
+    var f=new File([blob], m.archivo||m.label||'archivo', {type:blob.type});
+    var res=await _archivoATexto(f, function(t){ toast(t); });
+    if(res.error){ m.noLeido=res.error; save(); if(typeof renderTab==='function') renderTab();
+      toast('No pude leerlo: '+res.error,'amber'); return; }
+    // Si ya se habia leido antes, se reemplaza en vez de duplicarse.
+    var L=docs(c);
+    for(var i=L.length-1;i>=0;i--) if(L[i].desdeMaterial===id) L.splice(i,1);
+    L.unshift({ titulo:String(m.label||m.archivo||'').replace(/\.[^.]+$/,''),
+                texto:res.texto.slice(0,_DOC_MAX), uso:'todo',
+                desdeMaterial:id, at:new Date().toISOString() });
+    m.leido=res.texto.length; delete m.noLeido;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Leido: '+_docKb(res.texto.length)+' caracteres. Ya entra en los prompts.');
+  }catch(e){ toast('No pude leerlo: '+e.message,'red'); }
+}
 async function marcaLeerDeMaterial(clientId, id, forzarLogo){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -24971,6 +25024,16 @@ function materialHtml(c){
         +'color:var(--text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
         +esc(l)+'<span style="color:var(--text3)"> &middot; '+esc(_matDominio(u)||u)+'</span></a>')
         :('<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text3)">'+esc(l)+'</span>')))
+      // Los archivos subidos antes de que Material leyera nunca entraron al
+      // prompt. El boton los lee sin tener que volver a subirlos.
+      +((arch&&id)?(arch.leido
+        ? ('<span style="font-size:10.5px;color:var(--accent);white-space:nowrap" '
+            +'title="Su texto entra en los prompts">leido</span>')
+        : ('<button onclick="matLeer('+c.id+','+id+')" class="btn btn-sm" '
+            +'style="font-size:10.5px;padding:2px 8px" '
+            +'title="'+(arch.noLeido?esc('La ultima vez: '+arch.noLeido)
+              :'Sacarle el texto para que entre en los prompts')+'">'
+            +(arch.noLeido?'Reintentar':'Leerlo')+'</button>')):'')
       +((emb&&id)?('<button onclick="matVer('+c.id+','+id+')" class="btn btn-sm" '
         +'style="font-size:10.5px;padding:2px 8px;'+(abierto?'border-color:var(--accent);color:var(--accent)':'')+'" '
         +'title="Ver el '+_embedNombre(u)+' aca mismo">'+(abierto?'Cerrar':'Ver')+'</button>'):'')
@@ -36061,6 +36124,34 @@ function preguntas(){
 // respondian con menos contexto del que habia. Ahora quedan guardados y entran
 // en todos los prompts junto con las llamadas.
 var _DOC_MAX=60000;
+// Un archivo a texto. Vive aparte porque ahora leen dos lugares: los
+// documentos de Contexto y los archivos que se suben a Material, que antes
+// entraban al prompt solo por su nombre.
+async function _archivoATexto(f, avisar){
+  var t='';
+  if(/\.pdf$/i.test(f.name)){
+    t=await _pdfATexto(f, avisar);
+    // Un PDF escaneado no tiene capa de texto. Guardarlo vacio seria peor que
+    // no guardarlo: figura en la lista y no aporta nada al prompt.
+    if(!t) return {error:'es un PDF escaneado, sin texto seleccionable'};
+  }else if(/\.docx$/i.test(f.name)){
+    if(avisar) avisar('Abriendo '+f.name+'...');
+    var mm=await _cargarMammoth();
+    var r=await mm.extractRawText({arrayBuffer:await f.arrayBuffer()});
+    t=(r&&r.value)||'';
+  }else if(/\.doc$/i.test(f.name)){
+    return {error:'es .doc viejo: guardalo como .docx'};
+  }else if(/\.(txt|md|csv|json|html?|vtt|srt)$/i.test(f.name) || /^text\//.test(f.type||'')){
+    t=await f.text();
+    if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
+      .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  }else{
+    return {error:'formato que no puedo leer'};
+  }
+  t=String(t).trim();
+  if(!t) return {error:'vino vacio'};
+  return {texto:t};
+}
 // Un documento no sirve para lo mismo en todos lados. Las transcripciones de
 // llamadas de venta del cliente con SUS leads son oro para entender el mercado
 // y para diagnosticar como vende, pero son doce y llenan solas el presupuesto,
@@ -36247,30 +36338,11 @@ function docSubir(clientId, uso){
     var ok=0, mal=[];
     var avisar=function(t){ toast(t); };
     for(var j=0;j<fs.length;j++){
-      var f=fs[j], t='';
+      var f=fs[j];
       try{
-        if(/\.pdf$/i.test(f.name)){
-          t=await _pdfATexto(f, avisar);
-          // Un PDF escaneado no tiene capa de texto. Guardarlo vacio seria peor
-          // que no guardarlo: figura en la lista y no aporta nada al prompt.
-          if(!t) { mal.push(f.name+' (es un PDF escaneado, sin texto seleccionable)'); continue; }
-        }else if(/\.docx$/i.test(f.name)){
-          avisar('Abriendo '+f.name+'...');
-          var mm=await _cargarMammoth();
-          var r=await mm.extractRawText({arrayBuffer:await f.arrayBuffer()});
-          t=(r&&r.value)||'';
-        }else if(/\.doc$/i.test(f.name)){
-          mal.push(f.name+' (es .doc viejo: guardalo como .docx)'); continue;
-        }else if(/\.(txt|md|csv|json|html?|vtt|srt)$/i.test(f.name) || /^text\//.test(f.type||'')){
-          t=await f.text();
-          if(/\.html?$/i.test(f.name)) t=t.replace(/<script[\s\S]*?<\/script>/gi,'')
-            .replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
-        }else{
-          mal.push(f.name+' (formato que no puedo leer)'); continue;
-        }
-        t=String(t).trim();
-        if(!t){ mal.push(f.name+' (vino vacio)'); continue; }
-        docs(c).unshift({ titulo:f.name.replace(/\.[^.]+$/,''), texto:t.slice(0,_DOC_MAX),
+        var res=await _archivoATexto(f, avisar);
+        if(res.error){ mal.push(f.name+' ('+res.error+')'); continue; }
+        docs(c).unshift({ titulo:f.name.replace(/\.[^.]+$/,''), texto:res.texto.slice(0,_DOC_MAX),
                           uso:(uso||'todo'), at:new Date().toISOString() });
         ok++;
       }catch(err){ mal.push(f.name+' ('+err.message+')'); }
