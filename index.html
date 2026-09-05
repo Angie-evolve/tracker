@@ -28280,7 +28280,8 @@ function _lpPaginaHtml(c){
     // iframe no se lee. No afirma nada sobre si carga o no: el preview hereda
     // el origen de la app, asi que el embed se comporta igual que publicado.
     ? ('<p class="nota armado">Calendario: '+E(cfg.calendarioNombre||calId)+'</p>'
-      +'<div id="cal-wrap"><iframe src="'+E(calUrl)+'" id="cal-'+E(calId)+'" scrolling="no" '
+      +'<div id="cal-wrap"><iframe data-src="'+E(calUrl)+'" src="'+E(calUrl)+'" '
+        +'id="cal-'+E(calId)+'" scrolling="no" '
         +'style="width:100%;height:760px;border:none;overflow:hidden" '
         +'title="Agenda tu turno"></iframe></div>'
       +'<script src="https://link.msgsndr.com/js/form_embed.js"><\/script>')
@@ -28291,9 +28292,20 @@ function _lpPaginaHtml(c){
   // esperar es donde se cae el lead.
   var pregPost=_lpPregDespues(c);
   var hook=String(cfg.webhookGhl||'').trim();
-  var postHtml=(calId && pregPost.length && hook) ? _lpPostHtml(pregPost, hook) : '';
+  // Dos ordenes posibles. "antes" no cuesta nada y no expone nada: las
+  // respuestas viajan en la URL del calendario y GHL las guarda en sus campos
+  // ocultos al reservar. "despues" necesita el webhook, que cobra por
+  // ejecucion, pero deja el horario primero.
+  var orden=(cfg.calendarioOrden||'antes');
+  var antes=(calId && pregPost.length && orden==='antes');
+  var postHtml = antes
+    ? _lpAntesHtml(pregPost, calUrl, calId)
+    : ((calId && pregPost.length && hook) ? _lpPostHtml(pregPost, hook) : '');
+  // Con las preguntas antes, el calendario nace oculto: lo destapa el script
+  // cuando ya tiene las respuestas para ponerle en la URL.
+  var calEmbed2 = antes ? calEmbed.replace('id="cal-wrap"','id="cal-wrap" hidden') : calEmbed;
   var mecanica = cfg.mecanica==='calendario'
-    ? (calEmbed+postHtml+(calId?'':_lpFormHtml()))
+    ? ((antes?postHtml+calEmbed2:calEmbed+postHtml)+(calId?'':_lpFormHtml()))
     : cfg.mecanica==='quiz'
       ? (qPreg.length ? _lpQuizHtml()
         : ('<p class="nota armado">Todavia no armaste las preguntas: se arman en la '
@@ -28836,8 +28848,11 @@ function _lpPregDespues(c){
   var qs=(qz&&Array.isArray(qz.preguntas))?qz.preguntas:[];
   if(qs.length){
     return qs.filter(function(q){ return (q.opciones||[]).length; }).slice(0,6)
-      .map(function(q){
-        return {q:String(q.pregunta||''), k:_lpClaveDe(q.pregunta),
+      .map(function(q,i){
+        // La clave es p1, p2... y no el texto: es la que hay que crear como
+        // campo oculto en el formulario de GHL, y tiene que ser corta y
+        // estable aunque despues se reescriba la pregunta.
+        return {q:String(q.pregunta||''), k:'p'+(i+1),
                 ops:(q.opciones||[]).map(function(o){ return String(o.texto||''); })};
       });
   }
@@ -28845,13 +28860,81 @@ function _lpPregDespues(c){
   return (((cfg.copy||{}).formulario||{}).campos||[])
     .filter(function(x){ return !ya.test(String(x.l||x.label||'')); })
     .slice(0,6)
-    .map(function(x){ return {q:String(x.l||x.label||''), k:_lpClaveDe(x.l||x.label), ops:[]}; });
+    .map(function(x,i){ return {q:String(x.l||x.label||''), k:'p'+(i+1), ops:[]}; });
 }
 function _lpClaveDe(t){
   return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40) || 'campo';
 }
 // El bloque de preguntas que reemplaza al calendario apenas se reservo.
+// Las preguntas y el gate ANTES del calendario. Al terminar, el calendario se
+// abre con todo en la URL: los datos de contacto en los campos que GHL ya
+// prellena, y las respuestas en los campos ocultos del formulario.
+// No lleva token, no llama a ninguna API y no depende de ningun servidor.
+function _lpAntesHtml(preg, calUrl, calId){
+  var E=function(t){ return String(t===null||t===undefined?'':t)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+  return '<div id="evx-antes">'
+    +'<p class="eyebrow" id="evx-paso"></p>'
+    +'<h2 id="evx-q" style="margin:0 0 20px"></h2>'
+    +'<div id="evx-ops" class="qops"></div>'
+    +'<p class="bajo" id="evx-nota"></p>'
+  +'</div>'
+  +'<script>(function(){'
+    +'var P='+JSON.stringify(preg)+';'
+    +'var CAL='+JSON.stringify(calUrl)+';'
+    +'var i=0,resp={};'
+    +'var caja=document.getElementById("evx-antes");'
+    // El calendario se busca recien al usarlo: como las preguntas van primero,
+    // cuando este script corre el bloque del calendario todavia no existe.
+    +'function el(id){return document.getElementById(id);}'
+    +'function pinta(){'
+      +'var p=P[i];'
+      +'el("evx-paso").textContent="Pregunta "+(i+1)+" de "+(P.length+1);'
+      +'el("evx-q").textContent=p.q;'
+      +'var c=el("evx-ops");'
+      +'if(p.ops&&p.ops.length){'
+        +'c.innerHTML=p.ops.map(function(o,j){return "<button type=\'button\' class=\'qop\' data-j=\'"+j+"\'>"+o+"</button>";}).join("");'
+        +'Array.prototype.forEach.call(c.querySelectorAll(".qop"),function(b){'
+          +'b.addEventListener("click",function(){resp[p.k]=p.ops[+b.getAttribute("data-j")];'
+          +'i++;i<P.length?pinta():gate();});});'
+      +'}else{'
+        +'c.innerHTML="<input id=\'evx-in\' placeholder=\'Tu respuesta\'>"'
+          +'+"<button type=\'button\' class=\'qop\' id=\'evx-ok\'>Seguir</button>";'
+        +'el("evx-ok").addEventListener("click",function(){'
+          +'resp[p.k]=(el("evx-in")||{}).value||"";i++;i<P.length?pinta():gate();});'
+      +'}'
+    +'}'
+    // El gate propio: los mismos tres datos que pide GHL, pero con nuestro
+    // diseno y sin los textos largos de advertencia.
+    +'function gate(){'
+      +'el("evx-paso").textContent="Ultimo paso";'
+      +'el("evx-q").textContent="\u00bfA donde te confirmamos el turno?";'
+      +'el("evx-ops").innerHTML="<input id=\'g-n\' placeholder=\'Tu nombre\'>"'
+        +'+"<input id=\'g-t\' placeholder=\'Tu WhatsApp\'>"'
+        +'+"<input id=\'g-m\' type=\'email\' placeholder=\'Tu mail\'>"'
+        +'+"<button type=\'button\' class=\'qop\' id=\'g-ok\'>Ver los horarios</button>";'
+      +'el("evx-nota").textContent="Elegis el horario en el paso siguiente.";'
+      +'el("g-ok").addEventListener("click",abrir);'
+    +'}'
+    +'function abrir(){'
+      +'var n=(el("g-n")||{}).value||"",t=(el("g-t")||{}).value||"",m=(el("g-m")||{}).value||"";'
+      +'if(!m||m.indexOf("@")<0){el("g-m").focus();return;}'
+      +'var q=[];'
+      +'q.push("full_name="+encodeURIComponent(n));'
+      +'q.push("phone="+encodeURIComponent(t));'
+      +'q.push("email="+encodeURIComponent(m));'
+      // Las respuestas van con la clave del campo oculto del formulario.
+      +'for(var k in resp)q.push(encodeURIComponent(k)+"="+encodeURIComponent(resp[k]));'
+      +'var cal=el("cal-wrap");'
+      +'var ifr=cal?cal.querySelector("iframe"):null;'
+      +'if(ifr)ifr.src=CAL+(CAL.indexOf("?")>=0?"&":"?")+q.join("&");'
+      +'caja.hidden=true;'
+      +'if(cal){cal.hidden=false;cal.scrollIntoView({behavior:"smooth",block:"center"});}'
+    +'}'
+    +'if(P.length)pinta();else gate();'
+  +'})();<\/script>';
+}
 function _lpPostHtml(preg, hook){
   var E=function(t){ return String(t===null||t===undefined?'':t)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
@@ -29078,7 +29161,11 @@ function _lpCalHtml(c, cfg){
       var hook=String(cfg.webhookGhl||'').trim();
       return '<div style="margin-top:10px">'
         +'<div style="font-size:11px;color:var(--text3);margin-bottom:5px">'
-          +'Preguntas despues de reservar'
+          +'Las preguntas '
+          +'<a href="javascript:void(0)" onclick="lpOrdenPreg('+c.id+')" '
+          +'style="color:var(--accent)">'
+          +(((cfg.calendarioOrden||'antes')==='antes')?'antes del horario':'despues del horario')
+          +'</a>'
           +(preg.length?(' \u00b7 '+preg.length+' que salen '
             +((c.quiz&&c.quiz.preguntas)?'del quiz':'de los campos')):'')+'</div>'
         +(preg.length
@@ -29091,8 +29178,8 @@ function _lpCalHtml(c, cfg){
           +'<div style="font-size:10.5px;color:'+(hook?'var(--text3)':'var(--amberx)')+';'
             +'margin-top:5px;line-height:1.5">'
             +(hook
-              ? 'Al reservar, las preguntas aparecen en la misma pagina y las respuestas van a ese workflow.'
-              : 'Sin esta URL las preguntas no se muestran: no habria donde guardar lo que contesten.')
+              ? 'Solo hace falta si las preguntas van DESPUES del horario.'
+              : 'Solo hace falta si las preguntas van despues del horario.')
           +'</div>')
           : '<div style="font-size:10.5px;color:var(--text3)">Arma el quiz o agrega campos '
             +'para que haya algo que preguntar despues de reservar.</div>')
@@ -29250,6 +29337,18 @@ function lpCalColores(clientId){
     +'\nTema: '+(col.oscuro?'oscuro':'claro')).then(function(){
     toast('Colores copiados');
   },function(){ toast('No pude copiar','amber'); });
+}
+function lpOrdenPreg(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  cfg.calendarioOrden=((cfg.calendarioOrden||'antes')==='antes')?'despues':'antes';
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast(cfg.calendarioOrden==='antes'
+    ? 'Preguntas antes: gratis, viajan en la URL del calendario.'
+    : 'Preguntas despues: necesita el webhook, que cobra por ejecucion.');
 }
 function lpHookGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
