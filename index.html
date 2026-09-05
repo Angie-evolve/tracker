@@ -22806,6 +22806,215 @@ function p360Mover(clientId, hasta){
   showTickets();
   toast(c.name+' quedo en '+hasta);
 }
+// ---- Citas de GHL --------------------------------------------------------
+// Que etapa ya tiene su llamada agendada, para cuando, con quien, y si se
+// movio o se cayo. Antes habia que entrar al calendario del cliente a mirar, o
+// tildar la etapa a mano y confiar.
+function _citasDe(c){ return (c && c.citas && typeof c.citas==='object') ? c.citas : {}; }
+// El titulo de la cita contra las palabras clave de cada etapa, las mismas que
+// ya usa la ruta para reconocer las llamadas de Fathom.
+function _citaEtapaDe(titulo){
+  var t=String(titulo||'').toLowerCase();
+  var hit=null;
+  rutaDef().forEach(function(e){
+    if(hit) return;
+    var kws=String(e.kw||'').split(',').map(function(k){ return k.trim().toLowerCase(); })
+      .filter(Boolean);
+    if(kws.some(function(k){ return t.indexOf(k)>=0; })) hit=e.l;
+  });
+  return hit;
+}
+function _citaFechaAR(iso){
+  var d=new Date(iso);
+  if(isNaN(d)) return '';
+  return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();
+}
+function _citaHora(iso){
+  var d=new Date(iso);
+  if(isNaN(d)) return '';
+  return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+}
+// Busca las citas de un cliente y las deja pegadas a sus etapas. Devuelve un
+// resumen para poder contar sin volver a leer la base.
+async function citasBuscar(clientId, callado){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return null;
+  var g=(c.ghl||{});
+  var fn=_lpCalFn();
+  var decir=function(t,col){ if(!callado) _citasDecir(clientId,t,col); };
+  if(!fn.url){ decir('Falta conectar la funcion de GHL en Supabase.','var(--amberx)'); return null; }
+  if(!g.token||!g.locationId){ decir('Este cliente no tiene la subcuenta conectada.','var(--amberx)'); return null; }
+  // La lista de calendarios se pide una sola vez por cliente y queda guardada:
+  // no cambia seguido y es una llamada de mas en cada vuelta automatica.
+  var cals=(c.ghlCalendarios||[]).map(function(x){ return x.id; });
+  try{
+    if(!cals.length){
+      var rc=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+        +'&accion=calendarios',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({token:g.token, location:g.locationId})})
+        .then(function(x){ return x.json(); });
+      if(!rc||!rc.ok){ decir('GHL: '+esc((rc&&rc.error)||'sin respuesta'),'var(--redx)'); return null; }
+      c.ghlCalendarios=(rc.calendarios||[]).map(function(x){ return {id:x.id, nombre:x.nombre}; });
+      cals=c.ghlCalendarios.map(function(x){ return x.id; });
+      if(!cals.length){ decir('La subcuenta no tiene calendarios.','var(--amberx)'); return null; }
+      save();
+    }
+    decir('Buscando citas...');
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=eventos',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:g.token, location:g.locationId, calendarios:cals,
+                            ahora:Date.now()})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ decir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return null; }
+    return _citasAplicar(c, r.eventos||[], callado);
+  }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); return null; }
+}
+// Guarda lo que vino y detecta que cambio desde la ultima vuelta.
+function _citasAplicar(c, eventos, callado){
+  var previas=_citasDe(c);
+  c.citas={};
+  c.citasSinEtapa=[];
+  c.citasAt=new Date().toISOString();
+  var res={agendadas:0, movidas:[], caidas:[], sueltas:0};
+  eventos.forEach(function(ev){
+    var et=_citaEtapaDe(ev.titulo);
+    if(!et){
+      // Las que no matchean no se tiran: se muestran para asignarlas a mano.
+      if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
+      return;
+    }
+    var ant=previas[et];
+    if(String(ev.estado||'')==='cancelled'){
+      c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con};
+      if(c.rutaAgenda) delete c.rutaAgenda[et];
+      res.caidas.push(et);
+      return;
+    }
+    // La misma cita con otro horario es una reprogramacion, no una cita nueva.
+    var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
+    c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
+                 deNuestroLado:ev.deNuestroLado, calendario:ev.calendario,
+                 anterior:movida?ant.inicio:(ant&&ant.anterior)||''};
+    c.rutaAgenda=c.rutaAgenda||{};
+    c.rutaAgenda[et]=_citaFechaAR(ev.inicio);
+    res.agendadas++;
+    if(movida) res.movidas.push(et);
+  });
+  res.sueltas=c.citasSinEtapa.length;
+  save();
+  if(!callado){
+    if(typeof renderTab==='function') renderTab();
+    _citasDecir(c.id, res.agendadas+' etapa'+(res.agendadas===1?'':'s')+' con cita'
+      +(res.movidas.length?(' \u00b7 '+res.movidas.length+' reprogramada'+(res.movidas.length===1?'':'s')):'')
+      +(res.caidas.length?(' \u00b7 '+res.caidas.length+' cancelada'+(res.caidas.length===1?'':'s')):'')
+      +(res.sueltas?(' \u00b7 '+res.sueltas+' sin etapa'):''),
+      res.caidas.length?'var(--amberx)':'var(--accent)');
+  }
+  return res;
+}
+function _citasDecir(clientId, t, col){
+  var e=document.getElementById('p3-citas-msg');
+  if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; return; }
+  if(typeof toast==='function') toast(String(t).replace(/<[^>]+>/g,''));
+}
+// Asigna a mano una cita que el titulo no dejo reconocer.
+function citasAsignar(clientId, idx, etapa){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!etapa) return;
+  var ev=(c.citasSinEtapa||[])[idx];
+  if(!ev) return;
+  c.citas=c.citas||{};
+  c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
+                  deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
+  c.rutaAgenda=c.rutaAgenda||{};
+  c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
+  c.citasSinEtapa.splice(idx,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
+}
+// El bloque que se ve en la ficha del panel.
+function _citasHtml(c){
+  var cit=_citasDe(c);
+  var claves=Object.keys(cit);
+  var sueltas=(c.citasSinEtapa||[]);
+  var conectado=!!(c.ghl&&c.ghl.token&&c.ghl.locationId);
+  var linea=function(et){
+    var x=cit[et];
+    if(x.estado==='cancelled'){
+      return '<div style="font-size:11.5px;color:var(--redx);padding:3px 0">'
+        +esc(et)+' \u00b7 cancelada (era el '+esc(_citaFechaAR(x.inicio))+')</div>';
+    }
+    return '<div style="font-size:11.5px;color:var(--text2);padding:3px 0">'
+      +esc(et)+' \u00b7 '+esc(_citaFechaAR(x.inicio))+' '+esc(_citaHora(x.inicio))
+      +(x.con?('<span style="color:var(--text3)"> con '+esc(x.con)+'</span>'):'')
+      +(x.deNuestroLado?('<span style="color:var(--text3)"> \u00b7 la toma '
+        +esc(x.deNuestroLado)+'</span>'):'')
+      +(x.anterior?('<span style="color:var(--amberx)"> \u00b7 reprogramada, era el '
+        +esc(_citaFechaAR(x.anterior))+'</span>'):'')
+    +'</div>';
+  };
+  var ops=rutaDef().map(function(e){
+    return '<option value="'+esc(e.l)+'">'+esc(e.l)+'</option>'; }).join('');
+  return '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:6px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:0.06em">Citas en GHL</div>'
+      +(conectado
+        ? ('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+          +'onclick="citasBuscar('+c.id+')">Buscar</button>')
+        : '')
+    +'</div>'
+    +'<div id="p3-citas-msg" style="font-size:11px;color:var(--text3);min-height:14px;'
+      +'margin-bottom:4px">'
+      +(conectado
+        ? (c.citasAt?('Ultima revision: '+new Date(c.citasAt).toLocaleString('es-AR')):'')
+        : 'Este cliente no tiene la subcuenta de GHL conectada.')
+    +'</div>'
+    +(claves.length?claves.map(linea).join(''):'')
+    // Enganchar por el titulo falla cuando la cita se llamo de otra forma. En
+    // vez de perderlas, se ofrecen para asignar en un clic.
+    +(sueltas.length
+      ? ('<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:0.06em;margin:8px 0 4px">Sin etapa reconocida</div>'
+        +sueltas.map(function(ev,i){
+          return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+            +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);'
+              +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+              +esc(ev.titulo||'sin titulo')+' \u00b7 '+esc(_citaFechaAR(ev.inicio))+'</span>'
+            +'<select onchange="citasAsignar('+c.id+','+i+',this.value)" '
+              +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
+              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+              +'font-family:var(--font)">'
+              +'<option value="">Es la etapa...</option>'+ops
+            +'</select>'
+          +'</div>';
+        }).join(''))
+      : '')
+  +'</div>';
+}
+// Una vuelta automatica: el cliente que hace mas que no se revisa.
+var _citasLatido=null;
+function citasVigilar(){
+  if(_citasLatido) return;
+  _citasLatido=setInterval(citasAuto, 6*60*1000);
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) citasAuto();
+  });
+}
+async function citasAuto(){
+  if(!_lpCalFn().url) return;
+  var cands=(DB.clients||[]).filter(function(c){
+    return !c.archived && c.ghl && c.ghl.token && c.ghl.locationId;
+  }).sort(function(a,b){
+    return String(a.citasAt||'').localeCompare(String(b.citasAt||''));
+  });
+  if(!cands.length) return;
+  await citasBuscar(cands[0].id, true);
+}
 function _p360FichaHtml(c){
   var ruta=_ruta(c).filter(function(x){ return !x.manual; });
   var calls=(c.fathomCalls||[]);
@@ -22881,6 +23090,9 @@ function _p360FichaHtml(c){
       +'"Mover aca" da por hechas las anteriores y destilda las de adelante.</div>'
     +ruta.map(fila).join('')
     +'</details>'
+    // Va abajo de la ruta y no arriba: primero donde esta parado, despues que
+    // tiene agendado. Arriba empujaba lo que se viene a ver al panel.
+    +_citasHtml(c)
   +'</div>';
 }
 function p360Filtro(v){ S.p360=v||''; showTickets(); }
@@ -28100,6 +28312,9 @@ function _lpPaginaHtml(c){
 // sueltos (body, h1, section) que en una pagina ajena le pisarian el diseno a
 // todo lo demas.
 var LP_GHL_CAJA='evx-lp';
+// Se imprime en el fragmento y en el aviso al copiar. Sin esto no habia forma
+// de saber si lo pegado era la version nueva o una copia vieja del portapapeles.
+var LP_GHL_VERSION=4;
 function _lpCssAcotado(css){
   var out='';
   var i=0, n=css.length;
@@ -28174,6 +28389,12 @@ function _lpFragmentoGhl(c){
     // y abajo. Cuanto mide no se puede leer desde adentro, asi que en vez de
     // compensarlo se pinta el fondo de la marca por fuera del bloque: la banda
     // deja de verse sin mover nada de la pagina.
+    // Dos defensas, porque no se puede ver como esta armada la seccion de GHL:
+    // el margen negativo con el mismo padding se come el espacio y lo pinta con
+    // el fondo de la marca; los pseudo-elementos cubren lo que quede si algun
+    // contenedor intermedio limita el margen.
+    +'.'+LP_GHL_CAJA+'{margin-top:-300px;padding-top:300px;'
+      +'margin-bottom:-300px;padding-bottom:300px}'
     +'.'+LP_GHL_CAJA+':before,.'+LP_GHL_CAJA+':after{content:"";position:absolute;'
       +'left:0;right:0;height:400px;background:var(--fondo);z-index:0}'
     +'.'+LP_GHL_CAJA+':before{bottom:100%}'
@@ -28181,7 +28402,8 @@ function _lpFragmentoGhl(c){
     +'.'+LP_GHL_CAJA+' .fondo{position:absolute;z-index:0}'
     +'.'+LP_GHL_CAJA+' .velo{position:absolute;z-index:1}'
     +'.'+LP_GHL_CAJA+' .env{position:relative;z-index:2}';
-  return '<div class="'+LP_GHL_CAJA+'">'
+  return '<!-- EVOLVE landing v'+LP_GHL_VERSION+' -->'
+    +'<div class="'+LP_GHL_CAJA+'" data-evx="'+LP_GHL_VERSION+'">'
     +'<style>'+_lpCssAcotado(css)+arreglos+'</style>'
     +cuerpo
   +'</div>';
@@ -28192,8 +28414,9 @@ async function lpCopiarGhl(clientId){
   var frag=_lpFragmentoGhl(c);
   try{
     await navigator.clipboard.writeText(frag);
-    _lpEstado('Copiado para GHL ('+Math.round(frag.length/1024)+' KB). Pegalo en un '
-      +'elemento de codigo de la pagina.','var(--accent)');
+    _lpEstado('Copiado para GHL \u00b7 version '+LP_GHL_VERSION+' \u00b7 '
+      +Math.round(frag.length/1024)+' KB. Pegalo en un elemento de codigo, '
+      +'reemplazando lo que haya.','var(--accent)');
     toast('Listo para pegar en GHL');
   }catch(e){ _lpEstado('No pude copiar al portapapeles.','var(--amberx)'); }
 }
@@ -45363,7 +45586,8 @@ async function arrancarConSesion(){
   // Un link de revision en la URL manda mas que la posicion guardada: si te
   // mandaron ahi desde el mail, ahi tenes que terminar.
   try{ rvAbrirDesdeLink(); }catch(e){}
-  try{ setTimeout(autoSyncFathom, 1500); fathomVigilar(); _asMontar(); verVigilar(); }catch(e){}
+  try{ setTimeout(autoSyncFathom, 1500); fathomVigilar(); _asMontar(); verVigilar();
+       setTimeout(citasAuto, 4000); citasVigilar(); }catch(e){}
 }
 
 (function iniciar(){
