@@ -22836,14 +22836,26 @@ function _citaHora(iso){
 }
 // Busca las citas de un cliente y las deja pegadas a sus etapas. Devuelve un
 // resumen para poder contar sin volver a leer la base.
+// Las reuniones no viven en la subcuenta de cada cliente: viven en la interna
+// de la agencia, que es donde estan conectados los Google Calendar del equipo.
+// Por eso se pregunta una sola vez para todos y no cliente por cliente.
+function _citasCtx(){
+  var g=function(k){ try{ return (localStorage.getItem(k)||'').trim(); }catch(e){ return ''; } };
+  return { token:g('evold-conv-token'), location:g('evold-conv-loc') };
+}
 async function citasBuscar(clientId, callado){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return null;
-  var g=(c.ghl||{});
   var fn=_lpCalFn();
+  var ctx=_citasCtx();
+  // Si el cliente tiene subcuenta propia se usa esa: sus reuniones pueden estar
+  // en su calendario y no en el de la agencia.
+  var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
+  var token=g?g.token:ctx.token, location=g?g.locationId:ctx.location;
   var decir=function(t,col){ if(!callado) _citasDecir(clientId,t,col); };
   if(!fn.url){ decir('Falta conectar la funcion de GHL en Supabase.','var(--amberx)'); return null; }
-  if(!g.token||!g.locationId){ decir('Este cliente no tiene la subcuenta conectada.','var(--amberx)'); return null; }
+  if(!token||!location){
+    decir('Falta la subcuenta interna de la agencia en Integraciones.','var(--amberx)'); return null; }
   // La lista de calendarios se pide una sola vez por cliente y queda guardada:
   // no cambia seguido y es una llamada de mas en cada vuelta automatica.
   var cals=(c.ghlCalendarios||[]).map(function(x){ return x.id; });
@@ -22852,7 +22864,7 @@ async function citasBuscar(clientId, callado){
       var rc=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
         +'&accion=calendarios',
         {method:'POST', headers:{'Content-Type':'application/json'},
-         body:JSON.stringify({token:g.token, location:g.locationId})})
+         body:JSON.stringify({token:token, location:location})})
         .then(function(x){ return x.json(); });
       if(!rc||!rc.ok){ decir('GHL: '+esc((rc&&rc.error)||'sin respuesta'),'var(--redx)'); return null; }
       c.ghlCalendarios=(rc.calendarios||[]).map(function(x){ return {id:x.id, nombre:x.nombre}; });
@@ -22864,7 +22876,7 @@ async function citasBuscar(clientId, callado){
     var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
       +'&accion=eventos',
       {method:'POST', headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({token:g.token, location:g.locationId, calendarios:cals,
+       body:JSON.stringify({token:token, location:location, calendarios:cals,
                             ahora:Date.now()})})
       .then(function(x){ return x.json(); });
     if(!r||!r.ok){ decir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return null; }
@@ -22872,6 +22884,36 @@ async function citasBuscar(clientId, callado){
   }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); return null; }
 }
 // Guarda lo que vino y detecta que cambio desde la ultima vuelta.
+// Una cita de la agenda de la agencia puede ser de cualquier cliente: se
+// reconoce por el nombre en el titulo, que es como se nombran ("Goltia <> ...",
+// "Sebastian Biagioni & Martin").
+function _citaEsDe(c, titulo){
+  var t=_n(String(titulo||''));
+  var n=_n(String(c.name||''));
+  if(!n) return false;
+  // Con el nombre entero primero; si no, con la primera palabra, que alcanza
+  // para "Sebastian Biagioni" cuando la tarjeta dice solo "Sebastian".
+  if(t.indexOf(n)>=0) return true;
+  var pal=n.split(/\s+/)[0];
+  return pal.length>=4 && t.indexOf(pal)>=0;
+}
+// Para que etapa es. Si el titulo la nombra, esa. Si no, la primera que tenga
+// pendiente el paso de agendar: es la reunion que se estaba esperando.
+function _citaEtapaPara(c, titulo){
+  var porTitulo=_citaEtapaDe(titulo);
+  if(porTitulo) return porTitulo;
+  var out=null;
+  rutaDef().forEach(function(e){
+    if(out) return;
+    var ps=(e.pasos||[]);
+    if(!ps.some(function(p){ return /agend/i.test(String(p.t||'')); })) return;
+    var h=rutaPasosHechos(c, e.l);
+    var pend=ps.some(function(p,i){
+      return /agend/i.test(String(p.t||'')) && h.indexOf(i)<0; });
+    if(pend) out=e.l;
+  });
+  return out;
+}
 function _citasAplicar(c, eventos, callado){
   var previas=_citasDe(c);
   c.citas={};
@@ -22879,7 +22921,10 @@ function _citasAplicar(c, eventos, callado){
   c.citasAt=new Date().toISOString();
   var res={agendadas:0, movidas:[], caidas:[], sueltas:0};
   eventos.forEach(function(ev){
-    var et=_citaEtapaDe(ev.titulo);
+    // De la agenda de la agencia viene todo: lo que no es de este cliente se
+    // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
+    if(!_citaEsDe(c, ev.titulo)) return;
+    var et=_citaEtapaPara(c, ev.titulo);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
@@ -22940,7 +22985,8 @@ function _citasHtml(c){
   var cit=_citasDe(c);
   var claves=Object.keys(cit);
   var sueltas=(c.citasSinEtapa||[]);
-  var conectado=!!(c.ghl&&c.ghl.token&&c.ghl.locationId);
+  var ctx=_citasCtx();
+  var conectado=!!((c.ghl&&c.ghl.token&&c.ghl.locationId)||(ctx.token&&ctx.location));
   var linea=function(et){
     var x=cit[et];
     if(x.estado==='cancelled'){
@@ -22972,7 +23018,7 @@ function _citasHtml(c){
       +'margin-bottom:4px">'
       +(conectado
         ? (c.citasAt?('Ultima revision: '+new Date(c.citasAt).toLocaleString('es-AR')):'')
-        : 'Este cliente no tiene la subcuenta de GHL conectada.')
+        : 'Falta cargar la subcuenta interna de la agencia en Integraciones.')
     +'</div>'
     +(claves.length?claves.map(linea).join(''):'')
     // Enganchar por el titulo falla cuando la cita se llamo de otra forma. En
@@ -23007,8 +23053,10 @@ function citasVigilar(){
 }
 async function citasAuto(){
   if(!_lpCalFn().url) return;
+  var ctx=_citasCtx();
   var cands=(DB.clients||[]).filter(function(c){
-    return !c.archived && c.ghl && c.ghl.token && c.ghl.locationId;
+    return (!c.archived || esProspecto(c))
+      && ((ctx.token&&ctx.location) || (c.ghl&&c.ghl.token&&c.ghl.locationId));
   }).sort(function(a,b){
     return String(a.citasAt||'').localeCompare(String(b.citasAt||''));
   });
