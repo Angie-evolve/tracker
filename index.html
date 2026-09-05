@@ -28280,14 +28280,20 @@ function _lpPaginaHtml(c){
     // iframe no se lee. No afirma nada sobre si carga o no: el preview hereda
     // el origen de la app, asi que el embed se comporta igual que publicado.
     ? ('<p class="nota armado">Calendario: '+E(cfg.calendarioNombre||calId)+'</p>'
-      +'<iframe src="'+E(calUrl)+'" id="cal-'+E(calId)+'" scrolling="no" '
-        +'style="width:100%;min-height:700px;border:none;overflow:hidden" '
-        +'title="Agenda tu turno"></iframe>'
+      +'<div id="cal-wrap"><iframe src="'+E(calUrl)+'" id="cal-'+E(calId)+'" scrolling="no" '
+        +'style="width:100%;height:760px;border:none;overflow:hidden" '
+        +'title="Agenda tu turno"></iframe></div>'
       +'<script src="https://link.msgsndr.com/js/form_embed.js"><\/script>')
     : '<p class="nota armado">Todavia no elegiste el calendario: se elige en la pestana '
       +'Landing. Hasta entonces va el formulario solo.</p>';
+  // Las preguntas de despues viven en la misma pagina y aparecen en el mismo
+  // instante en que el widget avisa que reservo: abrir otra pagina o hacerlo
+  // esperar es donde se cae el lead.
+  var pregPost=_lpPregDespues(c);
+  var hook=String(cfg.webhookGhl||'').trim();
+  var postHtml=(calId && pregPost.length && hook) ? _lpPostHtml(pregPost, hook) : '';
   var mecanica = cfg.mecanica==='calendario'
-    ? (calEmbed+(calId?'':_lpFormHtml()))
+    ? (calEmbed+postHtml+(calId?'':_lpFormHtml()))
     : cfg.mecanica==='quiz'
       ? (qPreg.length ? _lpQuizHtml()
         : ('<p class="nota armado">Todavia no armaste las preguntas: se arman en la '
@@ -28820,6 +28826,102 @@ function lpCssGuardar(clientId){
 // ve en ningun lado de la interfaz de GHL salvo entrando a Compartir, asi que
 // se trae por API: la subcuenta ya esta conectada para Oportunidades.
 var GHL_BOOKING='https://api.leadconnectorhq.com/widget/booking/';
+// Las preguntas que se hacen despues de reservar. Salen del quiz si esta
+// armado —son las que ya pensaste, con sus opciones— y si no, de los campos
+// del formulario que GHL no pregunta en su gate (nombre, mail y telefono ya
+// los pidio el widget: repetirlos es la forma mas rapida de perder al lead).
+function _lpPregDespues(c){
+  var cfg=_lpCfg(c);
+  var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')?c.quiz.preguntas:null;
+  var qs=(qz&&Array.isArray(qz.preguntas))?qz.preguntas:[];
+  if(qs.length){
+    return qs.filter(function(q){ return (q.opciones||[]).length; }).slice(0,6)
+      .map(function(q){
+        return {q:String(q.pregunta||''), k:_lpClaveDe(q.pregunta),
+                ops:(q.opciones||[]).map(function(o){ return String(o.texto||''); })};
+      });
+  }
+  var ya=/nombre|mail|email|tel|whats|celu/i;
+  return (((cfg.copy||{}).formulario||{}).campos||[])
+    .filter(function(x){ return !ya.test(String(x.l||x.label||'')); })
+    .slice(0,6)
+    .map(function(x){ return {q:String(x.l||x.label||''), k:_lpClaveDe(x.l||x.label), ops:[]}; });
+}
+function _lpClaveDe(t){
+  return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40) || 'campo';
+}
+// El bloque de preguntas que reemplaza al calendario apenas se reservo.
+function _lpPostHtml(preg, hook){
+  var E=function(t){ return String(t===null||t===undefined?'':t)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+  return '<div id="evx-post" hidden>'
+    +'<p class="eyebrow" id="evx-paso"></p>'
+    +'<h2 id="evx-q" style="margin:0 0 20px"></h2>'
+    +'<div id="evx-ops" class="qops"></div>'
+    +'<p class="bajo" id="evx-nota">Ya reservamos tu turno. Esto nos ayuda a preparar la llamada.</p>'
+  +'</div>'
+  +'<script>(function(){'
+    +'var P='+JSON.stringify(preg)+';'
+    +'var HOOK='+JSON.stringify(hook)+';'
+    +'var caja=document.getElementById("evx-post");'
+    +'var cal=document.getElementById("cal-wrap");'
+    +'var i=0,quien=null;'
+    // GHL avisa por postMessage cuando se reserva, y en ese aviso viajan el
+    // mail y el nombre. Es lo que evita volver a pedirselos.
+    +'function leer(d){try{'
+      +'if(!d||!d.length)return null;'
+      +'if(String(d[0]).indexOf("set-sticky-contacts")<0)return null;'
+      +'var o=JSON.parse(d[2]||"{}");'
+      +'return {email:o.email||"",nombre:o.full_name||"",telefono:o.phone||""};'
+    +'}catch(e){return null}}'
+    +'function mandar(extra){'
+      +'if(!quien||!quien.email)return;'
+      +'var cuerpo={email:quien.email,nombre:quien.nombre,telefono:quien.telefono};'
+      +'for(var k in extra)cuerpo[k]=extra[k];'
+      // keepalive: si contesta la ultima y cierra, el envio sale igual.
+      +'try{fetch(HOOK,{method:"POST",headers:{"Content-Type":"application/json"},'
+        +'body:JSON.stringify(cuerpo),keepalive:true}).catch(function(){});}catch(e){}'
+    +'}'
+    +'function pinta(){'
+      +'if(i>=P.length){'
+        +'document.getElementById("evx-paso").textContent="";'
+        +'document.getElementById("evx-q").textContent="Listo, gracias.";'
+        +'document.getElementById("evx-ops").innerHTML="";'
+        +'document.getElementById("evx-nota").textContent="Te llega la confirmacion del turno por mail.";'
+        +'return;}'
+      +'var p=P[i];'
+      +'document.getElementById("evx-paso").textContent="Pregunta "+(i+1)+" de "+P.length;'
+      +'document.getElementById("evx-q").textContent=p.q;'
+      +'var c=document.getElementById("evx-ops");'
+      +'if(p.ops&&p.ops.length){'
+        +'c.innerHTML=p.ops.map(function(o,j){return "<button type=\'button\' class=\'qop\' data-j=\'"+j+"\'>"+o+"</button>";}).join("");'
+        +'Array.prototype.forEach.call(c.querySelectorAll(".qop"),function(b){'
+          +'b.addEventListener("click",function(){var o={};o[p.k]=p.ops[+b.getAttribute("data-j")];'
+          +'mandar(o);i++;pinta();});});'
+      +'}else{'
+        +'c.innerHTML="<input id=\'evx-in\' placeholder=\'Escribi tu respuesta\'>"'
+          +'+"<button type=\'button\' class=\'qop\' id=\'evx-ok\'>Seguir</button>";'
+        +'document.getElementById("evx-ok").addEventListener("click",function(){'
+          +'var v=(document.getElementById("evx-in")||{}).value||"";'
+          +'var o={};o[p.k]=v;mandar(o);i++;pinta();});'
+      +'}'
+    +'}'
+    +'function arrancar(q){'
+      +'if(caja.hidden===false)return;'
+      +'quien=q;'
+      +'if(cal)cal.style.display="none";'
+      +'caja.hidden=false;pinta();'
+      +'caja.scrollIntoView({behavior:"smooth",block:"center"});'
+    +'}'
+    +'window.addEventListener("message",function(ev){'
+      +'var o=String(ev.origin||"");'
+      +'if(!/(leadconnector|msgsndr|gohighlevel)/i.test(o))return;'
+      +'var q=leer(ev.data);'
+      +'if(q&&q.email)arrancar(q);'
+    +'});'
+  +'})();<\/script>';
+}
 function _lpCalHtml(c, cfg){
   if(cfg.mecanica!=='calendario') return '';
   var lista=(cfg.calendarios||[]);
@@ -28933,6 +29035,35 @@ function _lpCalHtml(c, cfg){
           +'min-height:14px"></div>'
       +'</div>')
       : '')
+    // Las preguntas de despues necesitan a donde mandar las respuestas. Es la
+    // URL del Inbound Webhook del workflow de esa subcuenta: publica por
+    // diseno, no da acceso a nada mas que a disparar ese workflow.
+    +(function(){
+      if(!id) return '';
+      var preg=_lpPregDespues(c);
+      var hook=String(cfg.webhookGhl||'').trim();
+      return '<div style="margin-top:10px">'
+        +'<div style="font-size:11px;color:var(--text3);margin-bottom:5px">'
+          +'Preguntas despues de reservar'
+          +(preg.length?(' \u00b7 '+preg.length+' que salen '
+            +((c.quiz&&c.quiz.preguntas)?'del quiz':'de los campos')):'')+'</div>'
+        +(preg.length
+          ? ('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+            +'<input id="lp-hook" value="'+esc(hook)+'" '
+              +'placeholder="URL del Inbound Webhook de la subcuenta" '
+              +'style="'+est+';flex:1;min-width:240px">'
+            +'<button class="btn btn-sm" onclick="lpHookGuardar('+c.id+')">Guardar</button>'
+          +'</div>'
+          +'<div style="font-size:10.5px;color:'+(hook?'var(--text3)':'var(--amberx)')+';'
+            +'margin-top:5px;line-height:1.5">'
+            +(hook
+              ? 'Al reservar, las preguntas aparecen en la misma pagina y las respuestas van a ese workflow.'
+              : 'Sin esta URL las preguntas no se muestran: no habria donde guardar lo que contesten.')
+          +'</div>')
+          : '<div style="font-size:10.5px;color:var(--text3)">Arma el quiz o agrega campos '
+            +'para que haya algo que preguntar despues de reservar.</div>')
+      +'</div>';
+    })()
     +'<div id="lp-cal-est" style="font-size:11px;color:var(--text3);margin-top:6px;min-height:14px">'
       +(!conectado
         ? 'Este cliente no tiene la subcuenta de GHL conectada, asi que la lista '
@@ -29085,6 +29216,18 @@ function lpCalColores(clientId){
     +'\nTema: '+(col.oscuro?'oscuro':'claro')).then(function(){
     toast('Colores copiados');
   },function(){ toast('No pude copiar','amber'); });
+}
+function lpHookGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('lp-hook');
+  var v=String((e||{}).value||'').trim();
+  if(v && !/^https?:\/\//i.test(v)){ toast('Eso no parece una URL','amber'); return; }
+  _lpCfg(c).webhookGhl=v;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast(v?'Webhook guardado':'Webhook borrado');
 }
 function _lpFormDecir(t,col){
   var e=document.getElementById('lp-form-msg');
