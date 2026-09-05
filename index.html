@@ -21825,6 +21825,20 @@ async function p360Buscar(clientId, etapa){
 // reconozca: el titulo original de Fathom rara vez matchea la regex.
 // El titulo se reescribe con la etapa adelante, que es lo que _ruta mira para
 // reconocerla. El original queda guardado por si hay que ver de cual salio.
+// Deja registrado que la llamada de esa etapa ya esta agendada. Cuenta como
+// hecha, pero se distingue de una tildada a mano: aca hay una fecha real y una
+// grabacion que va a llegar.
+function p360Agendar(clientId, etapa, iso){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!iso) return;
+  var d=new Date(iso+'T12:00:00');
+  if(isNaN(d)) return;
+  c.rutaAgenda=c.rutaAgenda||{};
+  c.rutaAgenda[etapa]=('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();
+  save();
+  toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
+  p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
+}
 function p360Asignar(clientId, etapa, callId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -22047,7 +22061,21 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
           +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
             +'onclick="p360Cargar('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\','+(esDoc?'1':'0')+')">'
             +'Cargar</button>'
-        +'</div>';
+        +'</div>'
+        // Agendarla alcanza para darla por hecha. La de onboarding se agenda
+        // al cerrar la venta y se graba dias despues: pedir la grabacion deja
+        // al cliente trabado en una etapa que en los hechos ya paso.
+        +(esDoc?'':('<div style="display:flex;gap:8px;align-items:center;padding:0 0 6px 158px;'
+            +'flex-wrap:wrap">'
+          +'<span style="flex:none;font-size:11px;color:var(--text3)">o ya esta agendada para el</span>'
+          +'<input type="date" id="p3a-'+esc(e.l).replace(/[^a-zA-Z0-9]/g,'')+'" '
+            +'style="flex:none;font-size:11.5px;padding:4px 7px;border-radius:var(--radius);'
+            +'border:1px solid var(--border2);background:var(--bg3);color:var(--text)">'
+          +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+            +'onclick="p360Agendar('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\', '
+            +'document.getElementById(\'p3a-'+esc(e.l).replace(/[^a-zA-Z0-9]/g,'')+'\').value)">'
+            +'Agendar</button>'
+        +'</div>'));
       }).join('')
     +'</div>';
   };
@@ -23193,10 +23221,17 @@ function _ruta(c){
     // para siempre por mas que estuvieran hechas. Marcarlas a mano manda sobre
     // la deteccion automatica.
     var aMano=parseDDMMYYYY(((c.rutaHechas||{})[e.l])||'');
+    // Agendar cuenta como hecha. La llamada de onboarding se agenda al cerrar
+    // la venta y se graba dias despues: esperar la grabacion dejaba al cliente
+    // trabado en una etapa que en los hechos ya paso.
+    var agenda=parseDDMMYYYY(((c.rutaAgenda||{})[e.l])||'');
     var prev=(k.arranque&&e.dia!==null)?new Date(k.arranque.getTime()+e.dia*86400000):null;
-    var f=real||aMano||prev;
+    var f=real||aMano||agenda||prev;
     return {l:e.l, fecha:f, manual:false, aMano:!!aMano && !real,
-            estado:(real||aMano)?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
+            // La grabacion manda: cuando llega, la agenda deja de contar sola
+            // y la etapa pasa a estar respaldada de verdad.
+            agendada:!!agenda && !real && !aMano,
+            estado:(real||aMano||agenda)?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
   });
   // Los hitos cargados a mano entran como nodos mas de la misma linea: tienen
   // fecha propia y no habia razon para mostrarlos en una segunda linea aparte.
