@@ -29061,6 +29061,9 @@ function _lpCalHtml(c, cfg){
             : '')
           +'<button class="btn btn-sm" onclick="lpFormTraer('+c.id+')">'
             +((cfg.formularios||[]).length?'Actualizar':'Traer los formularios')+'</button>'
+          +'<button class="btn btn-sm" onclick="lpConfigBajar('+c.id+')" '
+            +'title="Lee la configuracion guardada en la subcuenta del cliente">'
+            +'Traer de la subcuenta</button>'
         +'</div>'
         +'<div id="lp-form-msg" style="font-size:11px;color:var(--text3);margin-top:5px;'
           +'min-height:14px"></div>'
@@ -29256,9 +29259,59 @@ function lpHookGuardar(clientId){
   if(v && !/^https?:\/\//i.test(v)){ toast('Eso no parece una URL','amber'); return; }
   _lpCfg(c).webhookGhl=v;
   save();
+  lpConfigSubir(clientId);
   if(typeof renderTab==='function') renderTab();
   _lpRefrescarPreview(clientId);
   toast(v?'Webhook guardado':'Webhook borrado');
+}
+// La configuracion de la landing, guardada en un contacto de sistema dentro de
+// la subcuenta del cliente. Vive con el cliente y no en nuestra base: si se le
+// entrega la subcuenta, la config va con ella. La landing publica nunca lo
+// toca; esto lo lee y lo escribe el tracker, que si esta autenticado.
+var LP_CONFIG_CLAVES=['calendarioId','calendarioNombre','calendarioUrl','calendarioUrlDe',
+                      'calendarioTema','formularioId','webhookGhl'];
+function _lpConfigDe(c){
+  var cfg=_lpCfg(c), o={};
+  LP_CONFIG_CLAVES.forEach(function(k){ if(cfg[k]) o[k]=cfg[k]; });
+  return o;
+}
+async function lpConfigGhl(clientId, guardar){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return null;
+  var fn=_lpCalFn(), k=_lpGhlCtx(c);
+  if(!fn.url||!k.token||!k.location) return null;
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=config',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:k.token, location:k.location,
+                            guardar:guardar?_lpConfigDe(c):undefined})})
+      .then(function(x){ return x.json(); });
+    return (r&&r.ok)?r:null;
+  }catch(e){ return null; }
+}
+// Guardar: se llama despues de cambiar el calendario, el formulario o el hook.
+function lpConfigSubir(clientId){
+  lpConfigGhl(clientId, true).then(function(r){
+    if(r) _lpFormDecir('Configuracion guardada en la subcuenta del cliente.','var(--text3)');
+  });
+}
+// Traer: pisa lo local con lo que este guardado en la subcuenta.
+async function lpConfigBajar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  _lpFormDecir('Leyendo la configuracion de la subcuenta...');
+  var r=await lpConfigGhl(clientId, false);
+  if(!r){ _lpFormDecir('No pude leerla. Revisa la conexion con GHL.','var(--amberx)'); return; }
+  var cfg=_lpCfg(c), n=0;
+  Object.keys(r.config||{}).forEach(function(k){
+    if(LP_CONFIG_CLAVES.indexOf(k)<0) return;
+    if(cfg[k]!==r.config[k]){ cfg[k]=r.config[k]; n++; }
+  });
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpFormDecir(n?(n+' dato(s) actualizados desde la subcuenta.')
+                :'Ya estaba todo igual que en la subcuenta.','var(--accent)');
 }
 function _lpFormDecir(t,col){
   var e=document.getElementById('lp-form-msg');
@@ -29308,6 +29361,7 @@ async function lpFormAsignar(clientId, formId){
     if(!r||!r.ok){ _lpFormDecir('GHL: '+esc((r&&r.error)||'sin respuesta'),'var(--redx)'); return; }
     cfg.formularioId=formId||'';
     save();
+    lpConfigSubir(clientId);
     var nom=((cfg.formularios||[]).filter(function(f){ return f.id===formId; })[0]||{}).nombre;
     _lpFormDecir(formId?('Listo: el calendario ahora pide "'+esc(nom||formId)+'".')
                        :'El calendario quedo sin formulario.','var(--accent)');
@@ -29388,6 +29442,9 @@ function _lpCalSet(c, id, nombre, slug, pegada){
   var cfg=_lpCfg(c);
   cfg.calendarioId=String(id||'').trim();
   cfg.calendarioNombre=String(nombre||'');
+  // La config viaja a la subcuenta apenas cambia, no en un guardado aparte que
+  // haya que acordarse de apretar.
+  setTimeout(function(){ lpConfigSubir(c.id); },0);
   // La direccion armada con el slug no siempre existe: GHL no publica como se
   // construye y probando da 404. Se guarda igual, pero marcada, porque la unica
   // confiable es la que se copia de Compartir.
