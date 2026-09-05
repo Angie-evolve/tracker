@@ -26181,17 +26181,24 @@ function _lpLimpiar(t){
 }
 
 function _lpEstado(html, color){
+  // Con el preview abierto la ficha no esta en pantalla: el aviso se escribia
+  // en un elemento que nadie estaba mirando y el boton parecia no hacer nada.
+  // La barra del preview gana, porque es lo que se tiene delante.
+  var p=document.getElementById('lp-pub-msg');
+  if(p){
+    p.textContent=String(html||'').replace(/<[^>]+>/g,'').trim();
+    p.style.color=color||'var(--text3)';
+    p.title=p.textContent;
+  }
   var e=document.getElementById('lp-estado');
-  // Con el preview abierto la ficha no esta en pantalla: sin esto, el aviso de
-  // que falta crear el bucket se escribia en un lugar que nadie estaba mirando
-  // y el boton parecia no hacer nada.
-  if(!e){
+  if(e){
+    e.innerHTML=html||'';
+    e.style.color=color||'var(--text3)';
+  }
+  if(!e&&!p){
     var t=String(html||'').replace(/<[^>]+>/g,'').trim();
     if(t && typeof toast==='function') toast(t, /red/.test(String(color||''))?'red':'');
-    return;
   }
-  e.innerHTML=html||'';
-  e.style.color=color||'var(--text3)';
 }
 
 // Lo que la app ya sabe del cliente, sin buscar nada afuera.
@@ -26653,6 +26660,10 @@ function lpVer(clientId){
         +'<button class="btn btn-sm" onclick="lpCopiarHtml('+c.id+')">Copiar el HTML</button>'
         // Publicar se decide mirando la pagina, no leyendo la ficha: por eso el
         // boton va aca tambien y no solo en la isla de abajo.
+        // El toast dura dos segundos y medio y sale en la otra punta de la
+        // pantalla: al lado del boton es donde se esta mirando.
+        +'<span id="lp-pub-msg" style="font-size:11px;color:var(--text3);max-width:340px;'
+          +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>'
         +'<button class="btn btn-sm" id="lp-pub-btn" onclick="lpPublicar('+c.id+')" '
           +'title="Sube la pagina a tu Supabase y te deja un link para mandar">'
           +(_lpCfg(c).publicadaUrl?'Volver a publicar':'Publicar')+'</button>'
@@ -27969,10 +27980,16 @@ function lpPubCopiar(clientId){
 async function lpPublicar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  if(!SB.token){ toast('Entra con tu cuenta para publicar.','amber'); return; }
+  if(!SB.token){ _lpEstado('Entra con tu cuenta para publicar.','var(--amberx)'); return; }
   var cfg=_lpCfg(c);
-  if(!cfg.copy){ toast('Primero escribi el copy.','amber'); return; }
+  if(!cfg.copy){ _lpEstado('Primero escribi el copy.','var(--amberx)'); return; }
   var ruta=_lpSlug(c)+'.html';
+  // Subir un HTML de 8 KB tarda poco, pero sin marcar el boton no hay ninguna
+  // senal de que el clic entro y se termina apretando de nuevo.
+  var pb=document.getElementById('lp-pub-btn');
+  var antes=pb?pb.textContent:'';
+  if(pb){ pb.disabled=true; pb.textContent='Publicando...'; }
+  var listo=function(txt){ if(pb){ pb.disabled=false; pb.textContent=txt||antes; } };
   _lpEstado('Publicando...');
   try{
     var html=_lpPaginaHtml(c);
@@ -27993,17 +28010,17 @@ async function lpPublicar(clientId){
       else if(r.status===403||/row-level security|Unauthorized/i.test(t))
         _lpEstado('El bucket existe pero no te deja escribir: faltan las policies.','var(--redx)');
       else _lpEstado('No pude publicarla: '+esc(t),'var(--redx)');
+      listo();
       return;
     }
     cfg.publicadaUrl=SB_URL+'/storage/v1/object/public/'+LP_BUCKET+'/'+encodeURI(ruta);
     cfg.publicadaAt=new Date().toISOString();
     save();
     if(typeof renderTab==='function') renderTab();
-    var pb=document.getElementById('lp-pub-btn');
-    if(pb) pb.textContent='Volver a publicar';
-    _lpEstado('Publicada. El link esta arriba de la isla.','var(--accent)');
+    listo('Volver a publicar');
+    _lpEstado('Publicada: '+cfg.publicadaUrl,'var(--accent)');
     toast('Landing publicada \u00b7 '+Math.round(html.length/1024)+' KB');
-  }catch(e){ _lpEstado('No pude publicarla: '+esc(e.message),'var(--redx)'); }
+  }catch(e){ _lpEstado('No pude publicarla: '+esc(e.message),'var(--redx)'); listo(); }
 }
 
 // ---- CSS propio ---------------------------------------------------------
