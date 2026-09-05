@@ -27169,6 +27169,7 @@ var LP_ESTRUCTURA={
   hollywood: ['hero', 'cifras', 'clientes', 'puntos', 'faq', 'contacto']
 };
 var LP_SECCION_NOMBRE={
+  header:'Barra de arriba',
   hero:'Hero', cifras:'Cifras', clientes:'Clientes', puntos:'Que incluye',
   faq:'Preguntas', contacto:'Contacto'
 };
@@ -27581,7 +27582,13 @@ function _lpPaginaHtml(c){
   // ventanita con scroll adentro.
   var calId=String(cfg.calendarioId||'').trim();
   var calEmbed = calId
-    ? ('<iframe src="'+E(GHL_BOOKING+calId)+'" id="cal-'+E(calId)+'" scrolling="no" '
+    // El cartel solo se ve mientras se arma. GHL manda X-Frame-Options, asi que
+    // adentro del preview el iframe queda en blanco y parecia que el calendario
+    // no se habia puesto: el embed anda igual en la pagina publicada.
+    ? ('<p class="nota armado">Calendario '+E(cfg.calendarioNombre||calId)
+        +'. Aca no se ve porque GHL no deja mostrarse dentro de otra pagina '
+        +'mientras se arma; en la pagina publicada aparece.</p>'
+      +'<iframe src="'+E(GHL_BOOKING+calId)+'" id="cal-'+E(calId)+'" scrolling="no" '
         +'style="width:100%;min-height:700px;border:none;overflow:hidden" '
         +'title="Agenda tu turno"></iframe>'
       +'<script src="https://link.msgsndr.com/js/form_embed.js"><\/script>')
@@ -27712,6 +27719,10 @@ function _lpPaginaHtml(c){
       // columnas que valgan, cualquier ancho guardado vuelve a fila entera.
       +'.col{flex-basis:100%!important;padding-right:0}'
       +'.fila-lado{display:block}}'
+    // Va ultimo a proposito: lo que escriba el cliente pisa a lo de la
+    // plantilla sin necesidad de !important. Se limpia </style> porque cerrar
+    // la etiqueta desde aca romperia el resto de la pagina.
+    +String(cfg.cssPropio||'').replace(/<\/style/gi,'<\\/style')
     +'</style></head><body>'
     // playsinline y muted son obligatorios para que iOS reproduzca solo. El
     // video se oculta si prefiere menos movimiento.
@@ -27719,8 +27730,16 @@ function _lpPaginaHtml(c){
       +'src="'+E(video)+'"></video></div><div class="velo"></div>'
       +'<style>@media(prefers-reduced-motion:reduce){.fondo video{display:none}}</style>'):'')
     +'<div class="env">'
-    +'<header>'+logo+'<a class="cta" style="margin:0;padding:11px 20px;font-size:15px" '
-      +'href="#contacto">'+E(o.cta||'Hablemos')+'</a></header>'
+    // La barra de arriba estaba clavada: su boton no se podia editar ni sacar,
+    // y en una pagina de un solo CTA quedaban dos botones iguales sin forma de
+    // borrar ninguno. Ahora se apaga como cualquier seccion y vuelve desde la
+    // tira de "Ocultas".
+    +(_lpOcultas(c).indexOf('header')>=0 ? ''
+      : ('<header data-sec="header">'
+        +'<button type="button" class="armado lp-x" data-ocultar="header" '
+          +'title="Ocultar la barra de arriba">Ocultar</button>'
+        +logo+'<a class="cta" style="margin:0;padding:11px 20px;font-size:15px" '
+        +'href="#contacto" data-c="ctaBarra">'+E(o.ctaBarra||o.cta||'Hablemos')+'</a></header>'))
     // El cuerpo sale del layout del cliente: una lista de referencias por
     // seccion. Cada elemento se dibuja igual caiga donde caiga, y los que
     // necesitan contenedor (ul, dl) se agrupan solos cuando quedan pegados.
@@ -27799,11 +27818,20 @@ function _lpPaginaHtml(c){
         var hueco='<p class="lp-hueco">'+E(LP_SECCION_NOMBRE[sec.k]||sec.k)+'</p>';
         if(sec.k==='hero')
           return '<div class="hero" data-sec="hero">'+cruz('hero')+dentro+hueco+'</div>';
-        var tit=(sec.k==='contacto') ? E(o.cta||'Empecemos') : (LP_TITULO[sec.k]||'');
+        // El titulo de Contacto era el texto del CTA, sin data-c: cambiarlo
+        // obligaba a cambiar el boton. Ahora tiene su propio campo y, abajo,
+        // una bajada opcional para explicar que pasa despues de agendar.
+        var esCon=(sec.k==='contacto');
+        var tit=esCon ? E(o.contacto&&o.contacto.titulo ? o.contacto.titulo : (o.cta||'Empecemos'))
+                      : (LP_TITULO[sec.k]||'');
+        var baja=(esCon&&o.contacto&&o.contacto.bajada)
+          ? ('<p class="bajada" data-c="contacto.bajada" style="margin:-14px 0 26px">'
+             +E(o.contacto.bajada)+'</p>') : '';
         return '<section data-sec="'+sec.k+'"'
-          +(sec.k==='contacto'?' id="contacto"':'')+'>'
+          +(esCon?' id="contacto"':'')+'>'
           +cruz(sec.k)
-          +(tit?('<h2>'+tit+'</h2>'):'')
+          +(tit?('<h2'+(esCon?' data-c="contacto.titulo"':'')+'>'+tit+'</h2>'):'')
+          +baja
           +dentro+hueco
         +'</section>';
       }).join('');
@@ -27820,6 +27848,43 @@ function _lpPaginaHtml(c){
     +'<footer>'+E(c.name||'')+'</footer>'
     +'</div></body></html>';
 }
+// ---- CSS propio ---------------------------------------------------------
+// Ultimo recurso a proposito: casi todo se resuelve moviendo y estirando. Pero
+// cuando falta una sola cosa —una tipografia, un color de un boton— no tener
+// donde escribir tres lineas obligaba a bajar el HTML y editarlo afuera, y ahi
+// se pierde el hilo con el tracker.
+function _lpCssHtml(c, cfg){
+  var v=String(cfg.cssPropio||'');
+  return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:8px">'
+      +'<div style="font-size:12.5px;color:var(--text2)">CSS propio</div>'
+      +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+        +'onclick="lpCssGuardar('+c.id+')">Guardar</button>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:8px">'
+      +'Se pega al final de la hoja de estilos, asi que pisa a la plantilla sin '
+      +'!important. Las clases son las de la pagina: <span class="mono">.hero</span>, '
+      +'<span class="mono">.cta</span>, <span class="mono">h1</span>, '
+      +'<span class="mono">section</span>, <span class="mono">header</span>.</div>'
+    +'<textarea id="lp-css" spellcheck="false" placeholder=".cta{border-radius:99px}" '
+      +'style="width:100%;box-sizing:border-box;height:110px;resize:vertical;font-size:11.5px;'
+      +'padding:9px 11px;border-radius:var(--radius);border:1px solid var(--border2);'
+      +'background:var(--bg3);color:var(--text);line-height:1.5;'
+      +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace">'+esc(v)+'</textarea>'
+  +'</div>';
+}
+function lpCssGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('lp-css');
+  _lpCfg(c).cssPropio=String((e||{}).value||'');
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+  toast('CSS guardado');
+}
+
 // ---- Calendario de GHL (mecanica calendario) ----------------------------
 // El embed de GHL es el id del calendario metido en una URL fija. El id no se
 // ve en ningun lado de la interfaz de GHL salvo entrando a Compartir, asi que
@@ -28448,6 +28513,7 @@ function landingHtml(c){
     +opciones('Tema', LP_TEMAS, 'tema', null, rr.porqueTema, rr.tema)
     +avisoHw
     +_lpVideoHtml(c, cfg)
+    +_lpCssHtml(c, cfg)
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +p2+dock;
 }
