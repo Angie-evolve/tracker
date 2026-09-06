@@ -31020,8 +31020,34 @@ function _lpVideoHtml(c, cfg){
   +'</div>';
 }
 function _hfFn(){
-  return { url:(localStorage.getItem('evold-hf-fn')||'').trim(),
-           sec:(localStorage.getItem('evold-hf-fn-sec')||'').trim() };
+  // El localStorage de este tracker vive al borde del limite —las
+  // transcripciones se guardan ahi— y cuando se llena setItem tira excepcion
+  // sin escribir nada. La config del equipo vive igual en DB.equipo, que va a
+  // Supabase, asi que se lee de ahi como respaldo.
+  var e={};
+  try{ e=_cfgEquipo()||{}; }catch(err){ /* todavia no hay DB */ }
+  var leer=function(k){
+    var v2='';
+    try{ v2=localStorage.getItem(k)||''; }catch(err){ /* nada */ }
+    return String(v2||e[k]||'').trim();
+  };
+  return { url:leer('evold-hf-fn'), sec:leer('evold-hf-fn-sec') };
+}
+// Guarda aunque el localStorage este lleno: primero en la config del equipo,
+// que es la que se sincroniza, y despues en el navegador si entra.
+function _hfGuardar(u, s2){
+  try{
+    var e=_cfgEquipo();
+    e['evold-hf-fn']=String(u||'');
+    e['evold-hf-fn-sec']=String(s2||'');
+  }catch(err){ /* sin DB no hay donde, cae al localStorage solo */ }
+  var lleno=false;
+  try{
+    localStorage.setItem('evold-hf-fn', String(u||''));
+    localStorage.setItem('evold-hf-fn-sec', String(s2||''));
+  }catch(err){ lleno=true; }
+  if(typeof save==='function') save();
+  return {lleno:lleno};
 }
 function lpHfFnModal(){
   var a=_hfFn();
@@ -31058,13 +31084,14 @@ function lpHfFnModal(){
     +'</div></div>';
 }
 function lpHfFnGuardar(){
-  var u=(document.getElementById('hf-fn-url')||{}).value||'';
-  var s2=(document.getElementById('hf-fn-sec')||{}).value||'';
-  localStorage.setItem('evold-hf-fn', String(u).trim());
-  localStorage.setItem('evold-hf-fn-sec', String(s2).trim());
+  var u=String((document.getElementById('hf-fn-url')||{}).value||'').trim();
+  var s2=String((document.getElementById('hf-fn-sec')||{}).value||'').trim();
+  var r=_hfGuardar(u, s2);
   closeModal();
   if(typeof renderTab==='function') renderTab();
-  toast('Higgsfield conectado');
+  toast(r.lleno
+    ? 'Guardado en la nube. El navegador esta lleno: mira Datos y almacenamiento.'
+    : 'Higgsfield conectado');
 }
 async function lpHfProbar(){
   var e=document.getElementById('hf-fn-msg');
@@ -31081,13 +31108,13 @@ async function lpHfProbar(){
     // Si contesta bien, se guarda sola. Pedir un segundo clic despues de que la
     // prueba paso era la forma mas facil de salir de aca creyendo que quedo
     // conectada cuando no habia guardado nada.
-    localStorage.setItem('evold-hf-fn', u);
-    localStorage.setItem('evold-hf-fn-sec', s2);
+    var g=_hfGuardar(u, s2);
     if(typeof renderTab==='function') renderTab();
     if(e){
-      e.textContent=r.credenciales
+      e.textContent=(r.credenciales
         ? 'Anda y quedo guardada. Ya podes cerrar.'
-        : 'Guardada, pero a la funcion le faltan HF_KEY y HF_SECRET en Supabase.';
+        : 'Guardada, pero a la funcion le faltan HF_KEY y HF_SECRET en Supabase.')
+        +(g.lleno ? ' (El navegador esta lleno, asi que quedo solo en la nube.)' : '');
       e.style.color=r.credenciales?'var(--accent)':'var(--amberx)';
     }
   }catch(err){ if(e){e.textContent='Error de red: '+err.message;e.style.color='var(--redx)';} }
