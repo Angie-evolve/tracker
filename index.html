@@ -1536,6 +1536,7 @@ async function sbFetch(ruta, opts, _reintento){
 var CFG_EQUIPO=[
   'evold-ghl-proxy-url','evold-ghl-proxy-secret',
   'evold-ghl-fn','evold-ghl-fn-sec',
+  'evold-hf-fn','evold-hf-fn-sec',
   'evold-fathom-proxy','evold-tickets-proxy','evold-tracker-url',
   'evold-cal-proxy-url','evold-cal-proxy-secret','evold-cal-id','evold-cal-nombre',
   'evold-conv-url','evold-conv-secret','evold-conv-token','evold-conv-loc',
@@ -30961,6 +30962,11 @@ function _lpVideoHtml(c, cfg){
       +'La piel Hollywood necesita un plano que muestre el negocio. Estas ideas salen de las '
       +'llamadas: el prompt va en ingles porque el modelo responde mejor, y los ajustes son '
       +'los de Seedance 2.5 en Higgsfield.</div>'
+    +'<div style="font-size:10.5px;margin-bottom:8px">'
+      +'<a href="javascript:void(0)" onclick="lpHfFnModal()" style="color:var(--accent)">'
+      +(_hfFn().url?'Cambiar la conexion con Higgsfield':'Conectar Higgsfield')+'</a>'
+      +(_hfFn().url?'':' \u00b7 sin esto el boton Generar no puede hacer nada')
+    +'</div>'
     +'<div id="lp-vid-estado" style="font-size:11px;color:var(--text3);margin-bottom:8px"></div>'
     +(ideas.length
       ? ideas.map(function(v,i){
@@ -30974,6 +30980,8 @@ function _lpVideoHtml(c, cfg){
               +'padding:9px 11px;background:var(--bg3);border-radius:var(--radius);'
               +'line-height:1.5">'+esc(v.prompt||'')+'</pre>'
             +'<div style="display:flex;gap:8px;align-items:center;margin-top:7px;flex-wrap:wrap">'
+              +'<button class="btn btn-sm btn-primary" style="font-size:10.5px;padding:2px 8px" '
+                +'id="lp-vid-gen-'+i+'" onclick="lpVideoGenerar('+c.id+','+i+')">Generar</button>'
               +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
                 +'onclick="lpVideoCopiar('+c.id+','+i+')">Copiar el prompt</button>'
               +'<span class="mono" style="font-size:10px;color:var(--text3)">'
@@ -30994,6 +31002,126 @@ function _lpVideoHtml(c, cfg){
       +(url?'La landing lo usa como fondo del hero.'
           :'Sin video, el hero cae al color de marca y el logo grande.')+'</div>'
   +'</div>';
+}
+function _hfFn(){
+  return { url:(localStorage.getItem('evold-hf-fn')||'').trim(),
+           sec:(localStorage.getItem('evold-hf-fn-sec')||'').trim() };
+}
+function lpHfFnModal(){
+  var a=_hfFn();
+  var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:700px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Conectar Higgsfield</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+        +'La clave de Higgsfield no puede ir en el tracker, que se sirve publico: vive en una '
+        +'edge function de Supabase con las variables <span class="mono">HF_KEY</span>, '
+        +'<span class="mono">HF_SECRET</span> y <span class="mono">HF_SECRETO</span>. '
+        +'Aca va la URL de esa funcion y su secreto. Se comparte con todo el equipo.'
+      +'</div>'
+      +'<input id="hf-fn-url" style="'+est+';margin-bottom:8px" '
+        +'placeholder="https://TU-PROYECTO.supabase.co/functions/v1/higgsfield" '
+        +'value="'+esc(a.url)+'">'
+      +'<input id="hf-fn-sec" style="'+est+'" placeholder="El valor de HF_SECRETO" '
+        +'value="'+esc(a.sec)+'">'
+      +'<div id="hf-fn-msg" style="font-size:11.5px;color:var(--text3);margin-top:10px;'
+        +'min-height:16px"></div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+        +'<button class="btn btn-sm" onclick="lpHfProbar()">Probar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="lpHfFnGuardar()">Guardar</button>'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function lpHfFnGuardar(){
+  var u=(document.getElementById('hf-fn-url')||{}).value||'';
+  var s2=(document.getElementById('hf-fn-sec')||{}).value||'';
+  localStorage.setItem('evold-hf-fn', String(u).trim());
+  localStorage.setItem('evold-hf-fn-sec', String(s2).trim());
+  closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast('Higgsfield conectado');
+}
+async function lpHfProbar(){
+  var e=document.getElementById('hf-fn-msg');
+  var u=String((document.getElementById('hf-fn-url')||{}).value||'').trim();
+  var s2=String((document.getElementById('hf-fn-sec')||{}).value||'').trim();
+  if(!u||!s2){ if(e){e.textContent='Faltan la URL y el secreto.';e.style.color='var(--amberx)';} return; }
+  if(e){ e.textContent='Probando...'; e.style.color='var(--text3)'; }
+  try{
+    var r=await fetch(u+(u.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(s2)+'&accion=ping')
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ if(e){e.textContent=(r&&r.error)||'No contesto.';e.style.color='var(--redx)';} return; }
+    // credenciales:false es la funcion respondiendo bien pero sin la clave de
+    // Higgsfield cargada: es un error distinto y hay que decirlo distinto.
+    if(e){
+      e.textContent=r.credenciales
+        ? 'Anda, y tiene la clave de Higgsfield cargada.'
+        : 'La funcion contesta, pero le faltan HF_KEY y HF_SECRET.';
+      e.style.color=r.credenciales?'var(--accent)':'var(--amberx)';
+    }
+  }catch(err){ if(e){e.textContent='Error de red: '+err.message;e.style.color='var(--redx)';} }
+}
+// Genera el video y espera. La API es asincrona: se manda, devuelve un id, y
+// se pregunta cada tanto. La espera vive aca y no en la funcion, que se corta
+// sola si se queda esperando minutos.
+async function lpVideoGenerar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var v=((_lpCfg(c).videoIdeas||[])[i]||{});
+  var prompt=String(v.prompt||'').trim();
+  var fn=_hfFn();
+  var e=document.getElementById('lp-vid-estado');
+  var decir=function(t,col){ if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; }
+                             else if(typeof toast==='function') toast(t); };
+  if(!fn.url||!fn.sec){ decir('Falta conectar Higgsfield.','var(--amberx)'); lpHfFnModal(); return; }
+  if(!prompt){ decir('Esa idea no tiene prompt.','var(--amberx)'); return; }
+  var b=document.getElementById('lp-vid-gen-'+i);
+  if(b){ b.disabled=true; b.textContent='Generando...'; }
+  var listo=function(){ if(b){ b.disabled=false; b.textContent='Generar'; } };
+  var llamar=function(accion, cuerpo){
+    return fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion='+accion,
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify(cuerpo)}).then(function(x){ return x.json(); });
+  };
+  try{
+    decir('Mandando el pedido...');
+    var r=await llamar('video', {prompt:prompt, dur:SEEDANCE.dur,
+      aspecto:SEEDANCE.aspecto, res:SEEDANCE.res});
+    if(!r||!r.ok){ decir((r&&r.error)||'No pude mandar el pedido.','var(--redx)'); listo(); return; }
+    var id=r.id, vueltas=0;
+    // Ocho segundos entre preguntas y tope de diez minutos: un video de 8s
+    // tarda un par de minutos, y sin tope esto quedaria preguntando para
+    // siempre si algo se cuelga del otro lado.
+    var esperar=async function(){
+      vueltas++;
+      if(vueltas>75){ decir('Tardo demasiado. Miralo en Higgsfield: '+id,'var(--amberx)');
+                      listo(); return; }
+      var q=await llamar('estado', {id:id});
+      if(!q||!q.ok){ decir((q&&q.error)||'Se corto la consulta.','var(--redx)'); listo(); return; }
+      if(!q.termino){
+        decir('Generando... ('+(vueltas*8)+'s)');
+        setTimeout(esperar, 8000);
+        return;
+      }
+      if(q.estado!=='completed'||!q.url){
+        decir('Higgsfield lo termino en "'+q.estado+'": '+(q.motivo||''),'var(--redx)');
+        listo(); return;
+      }
+      _lpCfg(c).videoUrl=q.url;
+      save();
+      if(typeof renderTab==='function') renderTab();
+      _lpRefrescarPreview(clientId);
+      decir('Listo, ya es el fondo del hero.','var(--accent)');
+      listo();
+    };
+    setTimeout(esperar, 8000);
+  }catch(err){ decir('Error de red: '+err.message,'var(--redx)'); listo(); }
 }
 function lpVideoUrlGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
