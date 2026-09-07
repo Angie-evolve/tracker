@@ -699,6 +699,8 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .p3r-tk:hover{background:rgba(255,255,255,.06)}
 .p3r-tk.sel{background:rgba(255,255,255,.08);border-left-color:var(--text2)}
 .p3r-tk.viejo{border-left-color:var(--redx)}
+.p3r-tk.espera{border-left-color:var(--amberx)}
+.p3r-tk.espera .mt{color:var(--amberx)}
 .p3r-tk .cl{display:block;font-size:11.5px;color:var(--text);line-height:1.3;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .p3r-tk .mt{display:block;font-size:9.5px;color:var(--text3);margin-top:3px;
@@ -24091,81 +24093,62 @@ function p360Html(){
     cols[i].cards.push(d);
   });
 
+  // La misma gramatica que el reparto: un cliente, un chip. Antes cada tarjeta
+  // repetia adentro el freno, el producto y la reunion, y el tablero dejaba de
+  // leerse de un vistazo. Todo eso se abre abajo al tocarla, que es donde ya
+  // vivia el detalle.
   var tarjeta=function(d){
     var f=d.peor;
-    var clase=f ? (f.de==='cliente'?' espera':' frena') : '';
-    var txt='', col='var(--text3)';
+    var abiertas=(d.c.tasks||[]).filter(function(t){ return !t.done&&!t.archivada; }).length;
+    // Rojo lo debemos nosotros, ambar el cliente: el mismo codigo de color que
+    // usa el resto del panel, ahora en el borde del chip.
+    var clase=f?(f.de==='cliente'?' espera':' viejo'):'';
+    var mt;
     if(f){
-      col=(f.de==='cliente')?'var(--amberx)':'var(--redx)';
-      txt=esc(f.q)+(f.dias!==null&&f.dias!==undefined?(' \u00b7 '+f.dias+' d'):'')
-        +(f.tapados?('<span style="color:var(--text3)"> \u00b7 '+f.tapados+' tapados</span>'):'');
+      mt=(abiertas>1?(abiertas+' abiertas'):'1 abierta')
+        +((f.dias!==null&&f.dias!==undefined)?(' \u00b7 '+f.dias+' d'):'');
     } else {
-      txt=(d.et&&d.et.estado==='tarde')?'Etapa atrasada':'Al dia';
-      if(d.et&&d.et.estado==='tarde') col='var(--amberx)';
-      // Si la etapa tiene proceso, el paso en el que quedo dice mucho mas que
-      // "atrasada": es lo concreto que hay que destrabar.
-      if(d.et){
-        var rs=rutaResumen(d.c, d.et.l);
-        if(rs && rs.listo){ txt='Proceso completo'; col='var(--accent)'; }
-        else if(rs){
-          // La tarea concreta y de quien es. Ambar si la debe el cliente, rojo
-          // si la debemos nosotros: es el mismo codigo que el resto del panel.
-          col=rs.delCliente?'var(--amberx)':'var(--redx)';
-          txt=esc((rs.tarea&&rs.tarea.t)||rs.peor.p.t||'')
-            +'<span style="color:var(--text3)"> \u00b7 '
-            +(rs.delCliente?'el cliente':(rs.area?esc(rs.area):'nosotros'))
-            +(rs.abiertos>1?(' \u00b7 +'+(rs.abiertos-1)):'')+'</span>';
-        }
-      }
+      mt=(d.et&&d.et.estado==='tarde')?'etapa atrasada':'sin frenos';
     }
-    // Antes el click salia a la ficha del cliente. Ahora abre la ruta acá
-    // mismo: mover de etapa y ver que falta es lo que se viene a hacer al
-    // panel, e irse pierde el contexto de las otras columnas.
-    return '<div class="p3card'+clase+(S.p360Abierto===d.c.id?' p3sel':'')+'" '
+    // La proxima reunion de cualquier etapa: con la fecha ya agendada, un chip
+    // rojo se lee como "esto esta parado" cuando en realidad espera un dia que
+    // ya existe.
+    var prox=(function(){
+      var cs=(d.c.citas||{}), cita=null;
+      Object.keys(cs).forEach(function(k){
+        var x=cs[k];
+        if(!x||!x.inicio) return;
+        if(!cita||String(x.inicio)<String(cita.inicio)) cita=x;
+      });
+      if(!cita||!cita.inicio) return '';
+      if(String(cita.estado||'')==='cancelled')
+        return '<span class="ot" style="color:var(--redx)">se cancelo la reunion</span>';
+      return '<span class="ot" style="color:var(--accent)">'
+        +esc(_citaFechaAR(cita.inicio))+' '+esc(_citaHora(cita.inicio))+'</span>';
+    })();
+    // Tocarla abre la ruta aca mismo: mover de etapa y ver que falta es lo que
+    // se viene a hacer al panel, e irse a la ficha pierde las otras columnas.
+    return '<button class="p3r-tk'+clase+(S.p360Abierto===d.c.id?' sel':'')+'" '
         +'draggable="true" ondragstart="p360Arrastrar(event,'+d.c.id+')" '
         +'ondragend="p360FinArrastre()" '
         +'onclick="p360Abrir('+d.c.id+')" '
-        +'title="'+esc(d.c.name||'')+' \u2014 tocala para ver en que quedo, o arrastrala a otra etapa">'
-      +'<div class="p3n">'+esc(d.c.name||'')
+        +'title="'+esc(d.c.name||'')+(d.prod?(' \u00b7 '+esc(d.prod)):'')
+        +' \u2014 tocala para ver en que quedo, o arrastrala a otra etapa">'
+      +'<span class="cl">'+esc(d.c.name||'')
         // Una tarjeta de prospecto se crea sola desde una llamada: una prueba,
         // un mail mal leido o alguien del equipo abren una que no va. Si no se
         // puede borrar, queda para siempre ocupando una columna.
         +(esProspecto(d.c)
-          ? ('<button onclick="event.stopPropagation();p360BorrarProspecto('+d.c.id+')" '
+          ? ('<span role="button" tabindex="0" '
+            +'onclick="event.stopPropagation();p360BorrarProspecto('+d.c.id+')" '
             +'title="Borrar este prospecto" aria-label="Borrar" '
-            +'style="float:right;border:0;background:none;color:var(--text3);cursor:pointer;'
-            +'font-size:14px;line-height:1;padding:0 2px">\u00d7</button>')
+            +'style="float:right;color:var(--text3);cursor:pointer;padding:0 2px">\u00d7</span>')
           : '')
-      +'</div>'
-      +(d.prod?('<div class="p3p">'+esc(d.prod)+'</div>'):'')
-      +'<div class="p3b" style="color:'+col+'">'+txt+'</div>'
-      // Lo que viene es tan importante como lo que traba: con la reunion ya
-      // agendada, la tarjeta roja se lee como "esto esta parado" cuando en
-      // realidad esta esperando una fecha que ya existe.
-      +(function(){
-        // La proxima reunion de cualquier etapa, no la de la etapa actual: la
-        // que ya esta agendada suele ser la de la etapa que viene, y es
-        // justamente la que se quiere ver desde la tarjeta.
-        var cs=(d.c.citas||{});
-        var cita=null;
-        Object.keys(cs).forEach(function(k){
-          var x=cs[k];
-          if(!x||!x.inicio) return;
-          if(!cita || String(x.inicio)<String(cita.inicio)) cita=x;
-        });
-        if(!cita||!cita.inicio) return '';
-        if(String(cita.estado||'')==='cancelled')
-          return '<div class="p3b" style="color:var(--redx)">Se cancelo la reunion del '
-            +esc(_citaFechaAR(cita.inicio))+'</div>';
-        return '<div class="p3b" style="color:var(--accent)">'
-          +esc(_citaFechaAR(cita.inicio))+' '+esc(_citaHora(cita.inicio))
-          +(cita.con?('<span style="color:var(--text3)"> con '+esc(cita.con)+'</span>'):'')
-          +(cita.anterior?('<span style="color:var(--amberx)"> \u00b7 reprogramada</span>'):'')
-        +'</div>';
-      })()
-    +'</div>';
+      +'</span>'
+      +'<span class="mt">'+mt+'</span>'
+      +prox
+    +'</button>';
   };
-
   var vacias=cols.filter(function(x){ return !x.cards.length; }).length;
   // El reparto es la vista principal. La primera pregunta al abrir el panel es
   // quien tiene que mover a cada cliente; en que columna esta se contesta
