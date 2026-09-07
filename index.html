@@ -6677,12 +6677,79 @@ function fathomHookModal(){
           +'</div>'
         +'</div>')
         :'')
+      +'<div id="fh-rev" style="margin-top:14px"></div>'
       +'<div class="modal-footer">'
         +(url?('<button class="btn" onclick="fathomSinClienteModal()">Sin cliente</button>'
+          // Con todo conectado y las llamadas entrando igual sin texto, lo unico
+          // que contesta por que es mirar la fila cruda que dejo el webhook.
+          +'<button class="btn" onclick="fathomRevisar()">Revisar lo que llega</button>'
           +'<button class="btn" onclick="fathomWebhookSync()">Traer ahora</button>'):'')
         +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
       +'</div>'
     +'</div></div>';
+}
+// Mira las ultimas filas que dejo el webhook en Supabase, tal como llegaron.
+// Con el equipo conectado y las llamadas entrando sin texto, la pregunta es si
+// el campo viene vacio o si la columna directamente no existe en la tabla, y
+// eso solo lo contesta la fila cruda.
+async function fathomRevisar(){
+  var out=document.getElementById('fh-rev');
+  if(!out) return;
+  var pinta=function(h){ out.innerHTML=h; };
+  var caja=function(cuerpo){
+    return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+      +'padding:11px 13px;font-size:11.5px;line-height:1.6;color:var(--text2)">'+cuerpo+'</div>';
+  };
+  if(!SB.token){ pinta(caja('Entra con tu cuenta para poder mirar la tabla.')); return; }
+  pinta(caja('Leyendo las ultimas filas...'));
+  var filas;
+  try{
+    filas=await sbFetch('llamadas_fathom?select=*&order=recibida_at.desc&limit=5');
+  }catch(e){
+    pinta(caja('<span style="color:var(--redx)">No pude leer la tabla: '+esc(e.message)+'</span>'));
+    return;
+  }
+  if(!filas||!filas.length){
+    pinta(caja('La tabla existe pero esta vacia: todavia no llego ninguna llamada.'));
+    return;
+  }
+  // Que columnas trae la tabla de verdad. Si transcripcion no esta, no hay nada
+  // que tildar en Fathom: falta la columna y el webhook la descarta al insertar.
+  var cols=Object.keys(filas[0]);
+  var hayCol=cols.indexOf('transcripcion')>=0;
+  var conTexto=filas.filter(function(f){ return String(f.transcripcion||'').length>40; }).length;
+  var cab;
+  if(!hayCol){
+    cab='<b style="color:var(--redx)">La tabla no tiene la columna transcripcion.</b> '
+      +'Por eso ninguna llamada la trae: el webhook la manda y la fila la descarta al '
+      +'insertar. Se arregla con un ALTER TABLE en Supabase, no tocando Fathom.';
+  } else if(!conTexto){
+    cab='<b style="color:var(--amberx)">La columna existe pero llega vacia en las '
+      +filas.length+' ultimas.</b> El webhook de Fathom manda la transcripcion solo si el '
+      +'campo esta tildado al crearlo, asi que esto se resuelve en el alta del webhook.';
+  } else {
+    cab='<b style="color:var(--accent)">'+conTexto+' de '+filas.length
+      +' llegaron con transcripcion.</b> Si igual no la ves en un cliente, el problema esta '
+      +'en la asignacion de esa llamada, no en lo que manda Fathom.';
+  }
+  var lineas=filas.map(function(f){
+    var t=String(f.transcripcion||'').length;
+    var r=String(f.resumen||'').length;
+    return '<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;'
+        +'border-top:1px solid var(--border)">'
+      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;'
+        +'white-space:nowrap">'+esc(f.titulo||'sin titulo')
+        +(f.grabo_mail?('<span style="color:var(--text3)"> \u00b7 '+esc(f.grabo_mail)+'</span>'):'')
+        +'</span>'
+      +'<span style="flex:none;color:'+(t?'var(--accent)':'var(--text3)')+'">'
+        +(t?(t+' car. de transcripcion'):'sin transcripcion')+'</span>'
+      +'<span style="flex:none;color:var(--text3)">'+(r?(r+' de resumen'):'sin resumen')+'</span>'
+    +'</div>';
+  }).join('');
+  pinta(caja(cab
+    +'<div style="margin-top:9px">'+lineas+'</div>'
+    +'<div style="margin-top:9px;color:var(--text3);font-size:10.5px">'
+      +'Columnas de la tabla: '+esc(cols.join(', '))+'</div>'));
 }
 function fathomHookGuardar(){
   var u=String((document.getElementById('fh-url')||{}).value||'').trim();
