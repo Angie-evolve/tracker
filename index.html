@@ -26714,6 +26714,92 @@ function _lpCampos(c, crear){
 // Crea en la subcuenta de GHL los campos definidos aca. El formulario no se
 // puede crear por API —Forms es de solo lectura— pero con los campos ya
 // creados armarlo es arrastrar en vez de tipear.
+// Un solo boton en vez de tres pasos sueltos. Preparar la subcuenta era crear
+// los campos, elegir el formulario y asignarlo al calendario, cada uno con su
+// boton y su forma de fallar. Ahora corre todo en orden y deja el log de que
+// hizo y que falta, que es lo unico que se quiere saber despues de apretarlo.
+async function lpPrepararGhl(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  var fn=_lpCalFn();
+  var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
+  var ctx=_citasCtx();
+  var token=g?g.token:ctx.token, location=g?g.locationId:ctx.location;
+  var e=document.getElementById('lp-campos-msg');
+  var log=[];
+  var pintar=function(){
+    if(!e) return;
+    e.innerHTML=log.map(function(l){
+      var col=l.e==='ok'?'var(--accent)':l.e==='mal'?'var(--redx)':
+              l.e==='mano'?'var(--amberx)':'var(--text3)';
+      return '<div style="display:flex;gap:8px;align-items:baseline;padding:2px 0">'
+        +'<span style="flex:none;color:'+col+'">'
+        +(l.e==='ok'?'\u2713':l.e==='mal'?'\u2715':l.e==='mano'?'\u25cb':'\u00b7')+'</span>'
+        +'<span style="font-size:11.5px;color:var(--text2)">'+l.t+'</span>'
+      +'</div>';
+    }).join('');
+  };
+  var di=function(t, estado){ log.push({t:t, e:estado||''}); pintar(); };
+
+  if(!fn.url){ di('Falta conectar la funcion de GHL.','mal'); return; }
+  if(!token||!location){ di('Falta la subcuenta de GHL de este cliente.','mal'); return; }
+
+  var L=LP_CAMPOS_GHL.map(function(x){
+    return {l:x.l, tipo:x.tipo, req:false, k:x.k};
+  });
+  if(!confirm('Preparar la subcuenta de '+(c.name||'este cliente')+'?\n\n'
+    +'\u00b7 Crear '+L.length+' campos ocultos (los mismos para todos tus clientes)\n'
+    +(cfg.formularioId&&cfg.calendarioId
+      ? '\u00b7 Asignar el formulario elegido al calendario\n' : '')
+    +'\nNo duplica lo que ya exista.')) return;
+
+  var llamar=function(accion, cuerpo){
+    return fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion='+accion,
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify(cuerpo)}).then(function(x){ return x.json(); });
+  };
+
+  di('Creando los campos...');
+  try{
+    var r=await llamar('campos', {token:token, location:location, campos:L});
+    log.pop();
+    if(!r||!r.ok){ di('Campos: '+esc((r&&r.error)||'sin respuesta'),'mal'); }
+    else{
+      var p=[];
+      if((r.creados||[]).length) p.push((r.creados||[]).length+' creados');
+      if((r.existentes||[]).length) p.push((r.existentes||[]).length+' ya estaban');
+      di('Campos \u00b7 '+(p.join(', ')||'nada que hacer'),
+         (r.errores||[]).length?'mal':'ok');
+      (r.errores||[]).forEach(function(x){ di(esc(String(x).slice(0,160)),'mal'); });
+    }
+  }catch(err){ log.pop(); di('Campos: '+esc(err.message),'mal'); }
+
+  if(cfg.formularioId && cfg.calendarioId){
+    di('Asignando el formulario...');
+    try{
+      var r2=await llamar('asignar', {token:token, location:location,
+        calendario:cfg.calendarioId, formulario:cfg.formularioId});
+      log.pop();
+      di(r2&&r2.ok ? 'Formulario asignado al calendario'
+                   : ('Formulario: '+esc((r2&&r2.error)||'sin respuesta')),
+         (r2&&r2.ok)?'ok':'mal');
+    }catch(err2){ log.pop(); di('Formulario: '+esc(err2.message),'mal'); }
+  }else if(cfg.calendarioId){
+    di('Sin formulario elegido: eleg\u00ed uno arriba y volv\u00e9 a correrlo','mano');
+  }
+
+  // Lo que la API no deja hacer. Decirlo aca evita que parezca que ya esta todo.
+  di('A mano en GHL: poner los campos ocultos y escribirles la Query Key '
+     +'(<a href="javascript:void(0)" onclick="lpClavesCopiar('+c.id+')" '
+     +'style="color:var(--accent)">copiar la lista</a>)','mano');
+  di('A mano en GHL: pegar el CSS '
+     +'(<a href="javascript:void(0)" onclick="lpCalCssCopiar('+c.id+')" '
+     +'style="color:var(--accent)">calendario</a> \u00b7 '
+     +'<a href="javascript:void(0)" onclick="lpFormCssCopiar('+c.id+')" '
+     +'style="color:var(--accent)">formulario</a>)','mano');
+}
 async function lpCamposAGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -31571,11 +31657,11 @@ function _lpBloqueCampos(c, cfg){
           var q=_lpPregDespues(c);
           var n=q.length||L.length;
           if(!n) return '';
-          return '<button class="btn btn-sm" onclick="lpCamposAGhl('+c.id+')" '
-            +'title="Los crea en la subcuenta para armar el formulario del calendario. '
-            +'Te pregunta antes y no duplica los que ya esten.">'
-            +'Crear en GHL '+n+' campo'+(n===1?'':'s')
-            +(q.length?' (las preguntas)':'')+'</button>';
+          return '<button class="btn btn-sm btn-primary" '
+            +'onclick="lpPrepararGhl('+c.id+')" '
+            +'title="Crea los campos, asigna el formulario al calendario y te dice '
+            +'que quedo a mano. Te pregunta antes y no duplica lo que ya este.">'
+            +'Preparar GHL</button>';
         })()
       +'</div>'
       +(function(){
