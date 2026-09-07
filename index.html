@@ -666,6 +666,16 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .p3v:hover{color:var(--text2)}
 .p3v.on{color:var(--text)}
 .p3vsep{color:var(--border2);padding:0 9px}
+.p3vn{font-size:10px;color:var(--amberx);margin-left:5px;font-variant-numeric:tabular-nums}
+/* Datos que faltan: lo que el panel no puede ubicar solo. */
+.p3bd{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px}
+.p3bd h3{font-size:12px;font-weight:500;color:var(--text);margin:0 0 3px}
+.p3bd .s{font-size:10.5px;color:var(--text3);line-height:1.55;margin-bottom:9px}
+.p3bd .r{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-top:1px solid var(--border)}
+.p3bd .a{flex:1;min-width:0;font-size:11.5px;color:var(--text2);line-height:1.4}
+.p3bd .a:hover{color:var(--text)}
+.p3bd .b{flex:none;font-size:10px;color:var(--text3);font-variant-numeric:tabular-nums}
+.p3bd .nada{font-size:11px;color:var(--text3);padding:5px 0;border-top:1px solid var(--border)}
 .p3r{display:grid;column-gap:8px;min-width:780px}
 .p3r-cab{padding:0 0 10px;border-bottom:1px solid var(--border2)}
 .p3r-cab .n{display:block;font-size:10.5px;color:var(--text3);overflow:hidden;
@@ -23915,7 +23925,7 @@ function _p360RepartoHtml(ver, cols){
     +anchoCol+')">';
   h+='<div class="p3r-cab"></div>';
   etapas.forEach(function(e){
-    var n=ver.filter(function(d){ return d.etapa===e; }).length;
+    var n=ver.filter(function(d){ return d.et&&d.et.l===e; }).length;
     h+='<div class="p3r-cab"><span class="n">'+esc(e)+'</span>'
       +'<span class="c'+(n?'':' cero')+'">'+(n||'\u2014')+'</span></div>';
   });
@@ -23963,6 +23973,62 @@ function p360Vista(v){
   // panel vive en la torre y lo repinta showTickets, igual que el resto de
   // los botones de esta pantalla.
   showTickets();
+}
+// Datos que faltan: lo que existe pero el panel no puede ubicar solo. Estaban
+// los tres repartidos —uno al pie del tablero, otro como pastilla de filtro, el
+// tercero adentro de la ficha— y asi ninguno se leia como pendiente.
+function _p360Faltan(datos, sinRuta){
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var citas=((typeof _agendaGhl==='function')?_agendaGhl():[])
+    .map(function(ev,i){ return {ev:ev, i:i}; })
+    .filter(function(x){
+      if(String(x.ev.estado||'')==='cancelled') return false;
+      var d=new Date(x.ev.inicio);
+      if(isNaN(d)||d<hoy) return false;
+      // Sin cliente que la reclame no hay tarjeta donde mostrarla.
+      return !(DB.clients||[]).some(function(y){
+        return (typeof _citaEsDe==='function')
+          && _citaEsDe(y, x.ev.titulo, x.ev.con, x.ev.mail); });
+    });
+  // Los prospectos sin producto no son un dato faltante: cual van a comprar es
+  // justamente lo que se define en la venta.
+  var prod=(datos||[]).filter(function(d){ return !d.prod && !esProspecto(d.c); });
+  return {citas:citas, etapa:(sinRuta||[]), prod:prod};
+}
+function _p360FaltanHtml(f){
+  var link=function(c){
+    return '<a class="a" href="javascript:void(0)" onclick="irCliente('+c.id+')" '
+      +'style="text-decoration:none">'+esc(c.name||'')+'</a>';
+  };
+  var grupo=function(tit, sub, filas){
+    return '<div><h3>'+tit+'</h3><div class="s">'+sub+'</div>'
+      +(filas.length?filas.join(''):'<div class="nada">Nada pendiente.</div>')+'</div>';
+  };
+  return '<div class="p3bd">'
+    +grupo('Reuniones sin asignar',
+      'Estan en la agenda y no engancharon con ningun cliente. Se asignan desde '
+      +'la ficha del cliente, en Citas.',
+      f.citas.map(function(x){
+        return '<div class="r"><span class="a">'+esc(x.ev.titulo||'sin titulo')
+          +(x.ev.con?('<span style="color:var(--text3)"> \u00b7 '+esc(x.ev.con)+'</span>'):'')
+          +'</span><span class="b">'+esc(_citaFechaAR(x.ev.inicio))+'</span></div>';
+      }))
+    +grupo('Sin etapa detectada',
+      'Ninguna llamada de Fathom coincide con una etapa de la ruta, asi que no '
+      +'entran en ninguna columna.',
+      f.etapa.map(function(d){
+        var n=((d.c.tasks||[]).filter(function(t){ return !t.done && !t.archivada; })).length;
+        return '<div class="r">'+link(d.c)
+          +'<span class="b">'+(n?(n+(n===1?' tarea':' tareas')):'sin tareas')+'</span></div>';
+      }))
+    +grupo('Sin producto',
+      'Aparecen en Todos pero en ninguna solapa de producto. Se cargaron antes '
+      +'de que el alta lo pidiera.',
+      f.prod.map(function(d){
+        return '<div class="r">'+link(d.c)
+          +'<span class="b">'+esc((d.et&&d.et.l)||'sin etapa')+'</span></div>';
+      }))
+  +'</div>';
 }
 function p360Html(){
   // Los prospectos entran aca y en ningun otro lado: el tablero es
@@ -24101,6 +24167,21 @@ function p360Html(){
   };
 
   var vacias=cols.filter(function(x){ return !x.cards.length; }).length;
+  // El reparto es la vista principal. La primera pregunta al abrir el panel es
+  // quien tiene que mover a cada cliente; en que columna esta se contesta
+  // despues, y para eso queda el tablero de siempre.
+  var vista=(S.p360Vista||'reparto');
+  var faltan=_p360Faltan(datos, sinRuta);
+  var nFaltan=faltan.citas.length+faltan.etapa.length+faltan.prod.length;
+  var LEAD={
+    reparto:'Quien tiene que mover a cada cliente y hace cuanto espera. '
+      +'Lo unico que se pinta es lo que ya paso su plazo.',
+    etapas:'En que etapa esta cada uno y que le impide avanzar. '
+      +'<span style="color:var(--redx)">Rojo</span> depende de nosotros, '
+      +'<span style="color:var(--amberx)">ambar</span> del cliente.',
+    faltan:'Lo que el panel no puede ubicar solo, y por eso no aparece en '
+      +'ninguna de las dos vistas.'
+  };
   return '<div class="tk-card" style="padding:18px 20px 22px">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;'
       +'flex-wrap:wrap;margin-bottom:4px">'
@@ -24113,25 +24194,25 @@ function p360Html(){
         +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado</div>'
     +'</div>'
     +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:14px">'
-      +'En que etapa esta cada uno y que le impide avanzar. '
-      +'<span style="color:var(--redx)">Rojo</span> depende de nosotros, '
-      +'<span style="color:var(--amberx)">ambar</span> del cliente.</div>'
+      +(LEAD[vista]||LEAD.reparto)+'</div>'
     +filtros
-    // Dos formas de mirar lo mismo: por etapa —donde esta cada uno— y por
-    // responsable —quien lo tiene que mover—. La segunda es la que faltaba.
+    // Tres miradas sobre lo mismo: quien lo tiene que mover, donde esta, y lo
+    // que no se pudo ubicar.
     +'<div class="p3vistas">'
-      +['etapas','reparto'].map(function(v){
-        var on=((S.p360Vista||'etapas')===v);
-        return '<button class="p3v'+(on?' on':'')+'" onclick="p360Vista(\''+v+'\')">'
-          +(v==='etapas'?'Por etapa':'Por responsable')+'</button>';
-      }).join('<span class="p3vsep">/</span>')
+      +[['reparto','Reparto'],['etapas','Por cliente'],['faltan','Datos que faltan']]
+        .map(function(x){
+          return '<button class="p3v'+((vista===x[0])?' on':'')
+            +'" onclick="p360Vista(\''+x[0]+'\')">'+x[1]
+            +((x[0]==='faltan'&&nFaltan)?('<span class="p3vn">'+nFaltan+'</span>'):'')
+          +'</button>';
+        }).join('<span class="p3vsep">/</span>')
     +'</div>'
     +_p360SopsHtml()
-    +((S.p360Vista==='reparto')
+    +((vista==='reparto')
       ? ('<div class="p3scroll">'+_p360RepartoHtml(ver, cols)+'</div>')
       : '')
-    +((S.p360Vista==='reparto')?'':'')
-    +'<div'+((S.p360Vista==='reparto')?' hidden':'')+'>'
+    +((vista==='faltan') ? _p360FaltanHtml(faltan) : '')
+    +'<div'+((vista==='etapas')?'':' hidden')+'>'
     +'<div class="p3scroll"><div class="p3cols">'
     +cols.map(function(col){
       var lb=esc(col.l).replace(/'/g,"\\'");
@@ -24148,16 +24229,17 @@ function p360Html(){
     }).join('')
     +'</div></div>'
     +'</div>'
-    +(sinRuta.length
+    // El listado de los que no cayeron en ninguna columna se mudo a la solapa
+    // "Datos que faltan": aca abajo era un renglon que se leia como una nota al
+    // pie y no como algo que hay que resolver.
+    +((vista==='etapas'&&sinRuta.length)
       ?('<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);'
         +'font-size:11.5px;color:var(--text3);line-height:1.55">'
-        +'<b style="color:var(--text2)">Sin etapa detectada:</b> '
-        +sinRuta.map(function(d){
-          return '<a href="javascript:void(0)" onclick="irCliente('+d.c.id+')" '
-            +'style="color:var(--text2);text-decoration:none">'+esc(d.c.name||'')+'</a>'; }).join(', ')
-        +'. La etapa sale del titulo de las llamadas de Fathom: si no coincide con ninguna, '
-        +'el cliente no entra en ninguna columna.</div>'):'')
-    +(vacias===cols.length
+        +sinRuta.length+(sinRuta.length===1?' cliente no cayo':' clientes no cayeron')
+        +' en ninguna columna. '
+        +'<a href="javascript:void(0)" onclick="p360Vista(\'faltan\')" '
+          +'style="color:var(--text2);text-decoration:none">Verlos</a></div>'):'')
+    +((vista==='etapas'&&vacias===cols.length)
       ?('<div style="margin-top:14px;font-size:11.5px;color:var(--text3)">'
         +'Ningun cliente'+(sel?(' de '+esc(selLabel)):'')+' cayo en una etapa.</div>'):'')
     // La ficha del cliente abierto va debajo del tablero, no encima de la
