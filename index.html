@@ -32818,8 +32818,21 @@ async function lpVideoGenerar(clientId, i){
   };
   try{
     decir('Mandando el pedido...');
-    var r=await llamar('video', {prompt:prompt, dur:SEEDANCE.dur,
-      aspecto:SEEDANCE.aspecto, res:SEEDANCE.res});
+    // Higgsfield contesta model_not_found cuando la cuenta no tiene ese modelo
+    // habilitado, no solo cuando la ruta no existe. Las dos de Seedance piden
+    // exactamente el mismo cuerpo, asi que se prueba la otra antes de darse por
+    // vencido: es la diferencia entre "no anda" y "tu plan tiene el lite".
+    var RUTAS=[{r:'/bytedance/seedance/v1/pro/fast/text-to-video', l:'Seedance pro fast'},
+               {r:'/bytedance/seedance/v1/lite/text-to-video',     l:'Seedance lite'}];
+    var r=null, usada='';
+    for(var ri=0; ri<RUTAS.length; ri++){
+      decir(ri?('Probando con '+RUTAS[ri].l+'...'):'Mandando el pedido...');
+      r=await llamar('video', {prompt:prompt, dur:SEEDANCE.dur, modelo:RUTAS[ri].r,
+        aspecto:SEEDANCE.aspecto, res:SEEDANCE.res});
+      usada=RUTAS[ri].l;
+      if(r&&r.ok) break;
+      if(!/model_not_found|not_found|404/i.test(String((r&&r.error)||''))) break;
+    }
     if(!r||!r.ok){
       // "secreto invalido" lo contesta la funcion y no dice donde mirar: es que
       // lo guardado aca no coincide con el HF_SECRETO de la funcion, que son
@@ -32829,8 +32842,12 @@ async function lpVideoGenerar(clientId, i){
         msg='La funcion rechazo el secreto: el que esta guardado aca no es el mismo '
           +'HF_SECRETO que tiene la funcion en Supabase. Se arregla en cualquiera de los dos, '
           +'pero tienen que ser iguales.';
-      decir(msg,'var(--redx)');
       if(/secreto/i.test(msg)) lpHfFnModal();
+      if(/model_not_found/i.test(msg))
+        msg='Higgsfield no te habilita ninguno de los dos modelos de Seedance. '
+          +'Suele ser el plan de la API, que se contrata aparte del de la web. '
+          +'Mientras tanto usa "Copiar el prompt" y generalo en higgsfield.ai.';
+      decir(msg,'var(--redx)');
       listo(); return;
     }
     var id=r.id, vueltas=0;
@@ -32853,6 +32870,8 @@ async function lpVideoGenerar(clientId, i){
         listo(); return;
       }
       _lpVideoSet(c, q.url);
+      if(usada && usada!=='Seedance pro fast')
+        try{ toast('Lo genero '+usada); }catch(e){}
       if(typeof renderTab==='function') renderTab();
       _lpRefrescarPreview(clientId);
       decir('Listo, ya es el fondo del hero.','var(--accent)');
