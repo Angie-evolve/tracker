@@ -39719,9 +39719,16 @@ function onbModal(clientId){
       +'<div class="modal-footer">'
         +'<button class="btn" onclick="closeModal()">Cerrar</button>'
         +(o&&!st.cargando
-          ?('<button class="btn" onclick="onbCrearForm('+c.id+')">Crear el formulario</button>'
-            +'<button class="btn btn-primary" onclick="onbCrearGuion('+c.id+')">'
-            +'Crear el guion</button>'):'')
+          ?((function(){
+              var hayF=(typeof formularios==='function')
+                && formularios().some(function(x){ return x.deOnb===c.id; });
+              var hayG=(typeof guiones==='function')
+                && guiones().some(function(x){ return x.deOnb===c.id; });
+              return '<button class="btn" onclick="onbCrearForm('+c.id+')">'
+                  +(hayF?'Actualizar el formulario':'Crear el formulario')+'</button>'
+                +'<button class="btn btn-primary" onclick="onbCrearGuion('+c.id+')">'
+                  +(hayG?'Actualizar el guion':'Crear el guion')+'</button>';
+            })()):'')
         +((!st.cargando)
           ?('<button class="btn'+(o?'':' btn-primary')+'" onclick="onbPreparar('+c.id+')">'
             +(o?'Volver a leer':'Leer las llamadas')+'</button>'):'')
@@ -39735,7 +39742,15 @@ function onbCrearGuion(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.onboarding||!c.onboarding.guion) return;
   var g=c.onboarding.guion;
-  var nuevo={ id:Date.now(), titulo:g.titulo||('Onboarding — '+(c.name||'')),
+  // Volver a leer y crear de nuevo dejaba dos guiones del mismo cliente, y en
+  // la llamada hay que elegir entre versiones sin saber cual es cual. Se pisa
+  // el anterior conservando su id: lo que ya se tildo sigue colgando de ahi.
+  var previo=guiones().filter(function(x){ return x.deOnb===c.id; })[0];
+  if(previo && !confirm('Ya hay un guion armado para '+(c.name||'este cliente')
+    +'. Se reemplaza por el nuevo.\n\nLo que hayas tildado en una llamada se conserva.'))
+    return;
+  var nuevo={ id:(previo?previo.id:Date.now()), deOnb:c.id,
+    titulo:g.titulo||('Onboarding — '+(c.name||'')),
     tipo:'onboarding', creadoAt:new Date().toISOString(),
     bloques:(g.bloques||[]).map(function(b){
       return { t:String(b.t||''), min:Number(b.min)||0, concepto:String(b.concepto||''),
@@ -39746,7 +39761,12 @@ function onbCrearGuion(clientId){
                    re:(q.re||[]).map(String), corte:String(q.corte||'') };
         }) };
     }) };
-  guiones().unshift(nuevo);
+  if(previo){
+    var l=guiones();
+    l[l.indexOf(previo)]=nuevo;
+  } else {
+    guiones().unshift(nuevo);
+  }
   save();
   closeModal();
   abrirGuion(nuevo.id, c.id);
@@ -39756,13 +39776,23 @@ function onbCrearForm(clientId){
   if(!c||!c.onboarding||!c.onboarding.formulario) return;
   var f=c.onboarding.formulario;
   var ok={texto:1,largo:1,numero:1,opcion:1,si_no:1};
-  var nuevo={ id:Date.now(), titulo:f.titulo||('Antes de la llamada — '+(c.name||'')),
+  var previo=formularios().filter(function(x){ return x.deOnb===c.id; })[0];
+  if(previo && !confirm('Ya hay un formulario armado para '+(c.name||'este cliente')
+    +'. Se reemplaza por el nuevo.\n\nLo respondido se conserva en las preguntas que no '
+    +'cambiaron de texto.')) return;
+  var nuevo={ id:(previo?previo.id:Date.now()), deOnb:c.id,
+    titulo:f.titulo||('Antes de la llamada — '+(c.name||'')),
     creadoAt:new Date().toISOString(),
     campos:(f.campos||[]).map(function(cp){
       return { l:String(cp.l||''), tipo:(ok[cp.tipo]?cp.tipo:'texto'),
                ayuda:String(cp.ayuda||''), req:!!cp.req };
     }) };
-  formularios().unshift(nuevo);
+  if(previo){
+    var lf=formularios();
+    lf[lf.indexOf(previo)]=nuevo;
+  } else {
+    formularios().unshift(nuevo);
+  }
   save();
   closeModal();
   abrirForm(nuevo.id);
