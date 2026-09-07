@@ -6818,6 +6818,9 @@ function _fathomProspectoDe(fila){
     return esProspecto(x) && String(x.email||'').toLowerCase()===mail;
   });
   if(ya) return ya;
+  // Los que se borraron a mano no se recrean. Era el unico motivo por el que
+  // una tarjeta borrada volvia sola.
+  if((DB.prospectosNo||[]).indexOf(mail)>=0) return null;
   var nom=_fathomNombreDe(fila, mail);
   var c={ id:Date.now()+Math.floor(Math.random()*1000),
     name:nom, email:mail, prospecto:true, archived:true,
@@ -22225,12 +22228,43 @@ function p360BorrarProspecto(clientId){
   var n=(c.fathomCalls||[]).length;
   if(!confirm('Borrar el prospecto "'+(c.name||'')+'"'
     +(n?(n===1?' y su llamada guardada':(' y sus '+n+' llamadas guardadas')):'')+'?\n\n'
-    +'Si vuelve a aparecer una llamada con ese mail, la tarjeta se crea de nuevo.')) return;
+    +'No se vuelve a crear, aunque aparezcan mas llamadas con ese mail.')) return;
+  // Sin esto volvia a aparecer sola: los prospectos se crean desde las llamadas
+  // de Fathom, asi que la siguiente sincronizacion la recreaba con el mismo
+  // mail. Borrar tiene que quedarse borrado.
+  var mail=String(c.email||'').trim().toLowerCase();
+  if(mail){
+    DB.prospectosNo=DB.prospectosNo||[];
+    if(DB.prospectosNo.indexOf(mail)<0) DB.prospectosNo.push(mail);
+  }
   DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
   if(S.p360Abierto===clientId) S.p360Abierto=null;
   save();
   if(typeof renderTab==='function') renderTab();
   toast('Prospecto borrado');
+}
+// Por si se borro de mas: sin esto, un mail en la lista queda sin forma de
+// volver, y el unico camino seria tocar la base a mano.
+function p360ProspectosNoHtml(){
+  var L=(DB.prospectosNo||[]);
+  if(!L.length) return '';
+  return '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);'
+      +'font-size:11.5px;color:var(--text3);line-height:1.55">'
+    +'<b style="color:var(--text2)">Prospectos borrados:</b> '
+    +L.map(function(m,i){
+      return '<span style="white-space:nowrap">'+esc(m)
+        +' <a href="javascript:void(0)" onclick="p360Reponer('+i+')" '
+        +'style="color:var(--accent);text-decoration:none">volver a permitir</a></span>';
+    }).join(' \u00b7 ')
+    +'. No se vuelven a crear aunque aparezcan llamadas con ese mail.</div>';
+}
+function p360Reponer(i){
+  var L=(DB.prospectosNo||[]);
+  if(!L[i]) return;
+  L.splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast('Va a volver a aparecer con la proxima llamada');
 }
 function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -24133,6 +24167,7 @@ function p360Html(){
       return d?_p360FichaHtml(d.c):'';
     })()
     +_p360SinProdHtml(datos, sel)
+    +p360ProspectosNoHtml()
   +'</div>';
 }
 
