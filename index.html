@@ -29962,36 +29962,69 @@ function _lpPaginaHtml(c){
   // linea: se arman en su propia pestana y aca solo se dibujan.
   var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')
     ? c.quiz.preguntas : null;
+  // El quiz se guarda en tres listas: las que puntuan, las de cada rama y las
+  // numericas que alimentan el calculo. La landing leia solo la primera, asi
+  // que la rama elegida no preguntaba nada y el informe se quedaba sin numeros.
   var qPreg=(qz&&Array.isArray(qz.preguntas))?qz.preguntas:[];
+  var qRamas=(qz&&Array.isArray(qz.ramas))?qz.ramas:[];
+  var qNum=(qz&&Array.isArray(qz.numericas))?qz.numericas:[];
   var _lpQuizHtml=function(){
     var g=(qz.gate&&typeof qz.gate==='object')?qz.gate:{};
     // Donde cae el gate lo decidio quien armo el quiz: antes captura mas y peor,
     // despues captura menos y mejor. Aca solo se respeta.
-    var pos = g.momento==='antes' ? 0
-      : g.momento==='medio'
-        ? Math.max(0, Math.min(qPreg.length, parseInt(g.despuesDePregunta,10)||0))
-        : qPreg.length;
-    var pasos=qPreg.map(function(q,i){
+    // 'medio' cuenta sobre las que puntuan, que es como se configuro. 'final'
+    // es el final de TODAS: con ramas y numericas, qPreg.length dejaba el gate
+    // en el medio y todo lo que venia despues no llegaba a GHL, porque el
+    // formulario ya se habia mandado.
+    var _pos = function(total){
+      return g.momento==='antes' ? 0
+        : g.momento==='medio'
+          ? Math.max(0, Math.min(qPreg.length, parseInt(g.despuesDePregunta,10)||0))
+          : total;
+    };
+    // Las de rama se dibujan todas y se muestran segun lo que se elija en la
+    // pregunta de rama: cual toca no se sabe hasta que contesta.
+    var _rama=function(nom){ return String(nom||'').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,''); };
+    var todas=[];
+    qPreg.forEach(function(q){ todas.push({q:q, rama:''}); });
+    qRamas.forEach(function(r){
+      (Array.isArray(r.preguntas)?r.preguntas:[]).forEach(function(q){
+        todas.push({q:q, rama:_rama(r.nombre)});
+      });
+    });
+    // Las numericas van al final, antes del resultado: no puntuan y son las mas
+    // caras de contestar, asi que se piden cuando ya invirtio en el resto.
+    qNum.forEach(function(q){ todas.push({q:q, rama:'', num:true}); });
+
+    var pasos=todas.map(function(x, i){
+      var q=x.q;
       var ops=Array.isArray(q.opciones)?q.opciones:[];
-      // Las numericas no tienen opciones: se contestan escribiendo. Sin esto la
-      // pregunta salia sin un solo boton y el quiz se clavaba ahi, porque el
-      // unico modo de avanzar es tocando una opcion.
       var cuerpo = ops.length
         ? ('<div class="qops">'+ops.map(function(op){
+            // Las numericas traen valor en vez de puntos: no califican, suman
+            // al calculo del informe.
             return '<button type="button" class="qop" data-pts="'
-              +(parseInt(op.puntos,10)||0)+'">'+E(op.texto||'')+'</button>';
+              +(parseInt(op.puntos,10)||0)+'"'
+              +(x.num?(' data-val="'+(parseFloat(op.valor)||0)+'"'):'')
+              +(x.q.tipo==='rama'?(' data-rama="'+E(_rama(op.texto))+'"'):'')
+              +'>'+E(op.texto||'')+'</button>';
           }).join('')+'</div>')
+        // Sin opciones se contesta escribiendo. Sin esto la pregunta salia sin
+        // un solo boton y el quiz se clavaba: el unico modo de avanzar es tocar.
         : ('<div class="qnum-campo">'
-            +'<input type="number" inputmode="decimal" class="qnum-in" data-num="'+i+'" '
-              +'data-et="'+E(q.pregunta||'')+'" placeholder="'+E(q.placeholder||'Tu numero')+'">'
+            +'<input type="number" inputmode="decimal" class="qnum-in" '
+              +'placeholder="'+E(q.placeholder||'Tu numero')+'">'
             +'<button type="button" class="qop" data-pts="0">Seguir</button>'
           +'</div>');
-      return '<div class="qp">'
-        +'<p class="qnum">Pregunta '+(i+1)+' de '+qPreg.length+'</p>'
+      return '<div class="qp"'+(x.rama?(' data-rama="'+x.rama+'"'):'')
+          +(x.num?' data-num':'')+'>'
+        +'<p class="qnum">'+E(String(q.valor||'').trim()||('Pregunta '+(i+1)))+'</p>'
         +'<h3 class="qq">'+E(q.pregunta||'')+'</h3>'
+        +'<div class="qet" hidden>'+E(q.pregunta||'')+'</div>'
         +cuerpo+'</div>';
     });
-    pasos.splice(pos,0,'<div class="qp">'
+    pasos.splice(_pos(pasos.length),0,'<div class="qp">'
       +(g.porque?('<p class="qnum">'+E(_lpLimpiar?_lpLimpiar(g.porque):g.porque)+'</p>'):'')
       +_lpFormHtml(true)+'</div>');
     var ent=(qz.entregable&&typeof qz.entregable==='object')?qz.entregable:{};
@@ -30001,6 +30034,9 @@ function _lpPaginaHtml(c){
     pasos.push('<div class="qp" data-fin>'
       +'<h3 class="qq" id="lp-nivel">'+E(ent.que||'Listo')+'</h3>'
       +(gr?('<p class="bajada" data-c="formulario.gracias">'+E(gr)+'</p>'):'')
+      // El informe: lo que contesto, con su numero. Sin esto el final era el
+      // nombre del nivel y nada mas, y el lead no se lleva con que se lo dieron.
+      +'<ul class="qres" id="lp-res" hidden></ul>'
       +'</div>');
     // El puntaje se acumula igual aunque no haya niveles cargados: es lo que
     // convierte las respuestas en el resultado que se prometio antes de
@@ -30012,33 +30048,57 @@ function _lpPaginaHtml(c){
       +'</div>'
       +'<script>(function(){'
       +'var q=document.getElementById("lp-quiz");if(!q)return;'
-      +'var ps=q.querySelectorAll(".qp"),b=q.querySelector(".qbar i"),i=0,pts=0;'
+      +'var ps=[].slice.call(q.querySelectorAll(".qp")),b=q.querySelector(".qbar i");'
+      +'var i=0,pts=0,rama="",NUM=[];'
       +'var NIV='+JSON.stringify(niveles.map(function(n){
           var r=String(n.rango||'').split('-');
           return {a:parseInt(r[0],10)||0, b:parseInt(r[1],10)||0, n:String(n.nombre||'')};
         }))+';'
-      +'var ver=function(n){for(var k=0;k<ps.length;k++)'
-        +'ps[k].className="qp"+(k===n?" on":"");'
-        +'if(b)b.style.width=Math.round((n/(ps.length-1))*100)+"%";i=n;'
-        +'if(ps[n].hasAttribute("data-fin")){var t=document.getElementById("lp-nivel");'
+      // Un paso de rama solo cuenta si es la rama que eligio. Antes de elegir,
+      // ninguna: si no, se le preguntarian las de todas las ramas.
+      +'var vale=function(p){var r=p.getAttribute("data-rama");return !r||r===rama;};'
+      +'var visibles=function(){return ps.filter(vale);};'
+      +'var pintar=function(){'
+        +'var vs=visibles(),n=vs.indexOf(ps[i]);'
+        +'for(var k=0;k<ps.length;k++)ps[k].className="qp"+(k===i?" on":"");'
+        +'if(b&&vs.length>1)b.style.width=Math.round((n/(vs.length-1))*100)+"%";'
+      +'};'
+      +'var fin=function(){'
+        +'var t=document.getElementById("lp-nivel");'
         +'for(var j=0;j<NIV.length;j++)if(pts>=NIV[j].a&&pts<=NIV[j].b&&NIV[j].n&&t)'
-        +'{t.textContent=NIV[j].n;break;}}};'
-      +'var NUM=[];'
+          +'{t.textContent=NIV[j].n;break;}'
+        +'var u=document.getElementById("lp-res");'
+        +'if(u&&NUM.length){u.innerHTML=NUM.map(function(x){'
+          +'return "<li><span>"+x.et+"</span><b>"+x.tx+"</b></li>";}).join("");'
+          +'u.hidden=false;}'
+      +'};'
+      +'var ver=function(n){i=n;pintar();if(ps[i].hasAttribute("data-fin"))fin();};'
+      +'var avanzar=function(){'
+        +'var vs=visibles(),n=vs.indexOf(ps[i]);'
+        +'if(n>=0&&n<vs.length-1)ver(ps.indexOf(vs[n+1]));'
+      +'};'
+      +'var anotar=function(p,tx){'
+        +'var e=p.querySelector(".qet");'
+        +'NUM.push({et:(e?e.textContent:""),tx:tx});'
+      +'};'
       +'q.addEventListener("click",function(e){'
         +'var o=e.target&&e.target.closest?e.target.closest(".qop"):null;if(!o)return;'
+        +'var p=o.closest(".qp");'
         +'pts+=parseInt(o.getAttribute("data-pts"),10)||0;'
-        // Lo escrito viaja con el resto: si no, se pierde apenas se pasa de
-        // pregunta y el numero que motivo todo el quiz no llega a ningun lado.
-        +'var inp=ps[i].querySelector(".qnum-in");'
-        +'if(inp&&String(inp.value).trim())NUM.push((inp.getAttribute("data-et")||"")+": "+inp.value);'
-        +'if(i<ps.length-1)ver(i+1);});'
+        // La rama se fija con la respuesta, no antes: es lo que decide que
+        // preguntas siguen.
+        +'if(o.getAttribute("data-rama"))rama=o.getAttribute("data-rama");'
+        +'if(p&&p.hasAttribute("data-num")){'
+          +'var inp=p.querySelector(".qnum-in");'
+          +'if(inp&&String(inp.value).trim())anotar(p,inp.value);'
+          +'else if(o.getAttribute("data-val")!==null&&!inp)anotar(p,o.textContent);'
+        +'}'
+        +'avanzar();});'
       +'var f=q.querySelector("form");'
       +'if(f)f.addEventListener("submit",function(e){e.preventDefault();'
-        // El campo resumen es el generico que ya creamos en GHL. Si el
-        // formulario no lo tiene, no se inventa nada.
         +'var r=f.querySelector("[name=resumen],[name=Resumen]");'
-        +'if(r&&NUM.length)r.value=(r.value?(r.value+" | "):"")+NUM.join(" | ");'
-        +'ver(ps.length-1);});'
+        +'if(r&&NUM.length)r.value=NUM.map(function(x){return x.et+": "+x.tx;}).join(" | ");'
+        +'avanzar();});'
       +'ver(0);})();<\/script>';
   };
   // El calendario todavia no existe cuando se arma la pagina: la nota avisa que
@@ -30221,6 +30281,11 @@ function _lpPaginaHtml(c){
       +'background .12s cubic-bezier(.23,1,.32,1)}'
     // Sin contorno permanente: la afordancia aparece abajo del cursor.
     +'.qop:hover{border-color:var(--acento);background:var(--fondo)}'
+    +'.qres{list-style:none;padding:0;margin:18px 0 0;display:flex;flex-direction:column;gap:1px}'
+    +'.qres li{display:flex;gap:14px;align-items:baseline;justify-content:space-between;'
+      +'padding:9px 0;border-top:1px solid rgba(127,127,127,.22);font-size:15px}'
+    +'.qres li span{opacity:.7}'
+    +'.qres li b{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}'
     +'.qnum-campo{display:flex;flex-direction:column;gap:10px}'
     +'.qnum-in{font:inherit;font-size:16px;width:100%;padding:15px 18px;border-radius:12px;'
       +'border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit}'
