@@ -27239,24 +27239,10 @@ function lpVer(clientId){
         +'<button class="btn btn-sm" onclick="lpCopiarGhl('+c.id+')" '
           +'title="El mismo diseno como fragmento, para pegar en un elemento de codigo de GHL">'
           +'Copiar para GHL</button>'
-        // Publicar se decide mirando la pagina, no leyendo la ficha: por eso el
-        // boton va aca tambien y no solo en la isla de abajo.
-        // El toast dura dos segundos y medio y sale en la otra punta de la
-        // pantalla: al lado del boton es donde se esta mirando.
+        // Aunque ya no haya boton de publicar, la barra sigue siendo donde
+        // _lpEstado escribe cuando el preview esta abierto.
         +'<span id="lp-pub-msg" style="font-size:11px;color:var(--text3);max-width:340px;'
           +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>'
-        +'<button class="btn btn-sm" id="lp-pub-btn" onclick="lpPublicar('+c.id+')" '
-          +'title="Sube la pagina a tu Supabase y te deja un link para mandar">'
-          +(_lpCfg(c).publicadaUrl?'Volver a publicar':'Publicar')+'</button>'
-        // La URL escrita en la barra entraba cortada y no se podia tocar. Lo
-        // que hace falta despues de publicar es abrirla o mandarla, no leerla.
-        +'<a class="btn btn-sm" id="lp-pub-ver" target="_blank" rel="noopener" '
-          +'href="'+esc(_lpCfg(c).publicadaUrl||'#')+'" '
-          +'style="text-decoration:none'+(_lpCfg(c).publicadaUrl?'':';display:none')+'" '
-          +'title="Abre la pagina publicada en otra pestana">Verla</a>'
-        +'<button class="btn btn-sm" id="lp-pub-cop" onclick="lpPubCopiar('+c.id+')" '
-          +'style="'+(_lpCfg(c).publicadaUrl?'':'display:none')+'" '
-          +'title="Copia el link para mandarselo al cliente">Copiar el link</button>'
         +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
       +'</div>'
       +'<div id="lp-viewport" style="flex:1;display:flex;justify-content:center;'
@@ -29433,103 +29419,6 @@ function _lpGraciasFicha(c){
   +'</div>';
 }
 
-// ---- Publicar -----------------------------------------------------------
-// La pagina se podia ver y copiar, pero para que alguien la abriera habia que
-// subirla a algun lado a mano. Se publica en el mismo Supabase donde ya vive
-// el material: un bucket publico y un link estable por cliente.
-var LP_BUCKET='landings';
-function _lpSlug(c){
-  return String(c.name||'landing').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || ('cliente-'+c.id);
-}
-function _lpPubHtml(c, cfg){
-  var u=String(cfg.publicadaUrl||'');
-  if(!u) return '';
-  var cuando=cfg.publicadaAt?new Date(cfg.publicadaAt).toLocaleString('es-AR'):'';
-  return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">'
-    +'<div style="font-size:12.5px;color:var(--text2);margin-bottom:8px">Publicada</div>'
-    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-      +'<a href="'+esc(u)+'" target="_blank" rel="noopener" '
-        +'style="flex:1;min-width:220px;font-size:11.5px;color:var(--accent);'
-        +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(u)+'</a>'
-      +'<button class="btn btn-sm" onclick="lpPubCopiar('+c.id+')">Copiar el link</button>'
-    +'</div>'
-    // Sin la fecha no se sabe si el link tiene los ultimos cambios o los de
-    // hace una semana, que es la unica pregunta que importa aca.
-    +'<div style="font-size:10.5px;color:var(--text3);margin-top:5px">'
-      +(cuando?('Con los cambios del '+esc(cuando)+'. '):'')
-      +'Cada vez que publiques se actualiza el mismo link.</div>'
-  +'</div>';
-}
-function lpPubCopiar(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c) return;
-  navigator.clipboard.writeText(String(_lpCfg(c).publicadaUrl||'')).then(function(){
-    toast('Link copiado');
-  },function(){ toast('No pude copiar','amber'); });
-}
-async function lpPublicar(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c) return;
-  if(!SB.token){ _lpEstado('Entra con tu cuenta para publicar.','var(--amberx)'); return; }
-  var cfg=_lpCfg(c);
-  if(!cfg.copy){ _lpEstado('Primero escribi el copy.','var(--amberx)'); return; }
-  var ruta=_lpSlug(c)+'.html';
-  // Subir un HTML de 8 KB tarda poco, pero sin marcar el boton no hay ninguna
-  // senal de que el clic entro y se termina apretando de nuevo.
-  var pb=document.getElementById('lp-pub-btn');
-  var antes=pb?pb.textContent:'';
-  if(pb){ pb.disabled=true; pb.textContent='Publicando...'; }
-  var listo=function(txt){ if(pb){ pb.disabled=false; pb.textContent=txt||antes; } };
-  _lpEstado('Publicando...');
-  try{
-    var html=_lpPaginaHtml(c);
-    // x-upsert para que republicar pise el archivo y el link no cambie nunca:
-    // un link distinto por version es un link que alguien ya mando y quedo mal.
-    // Va como Blob y no como texto suelto: con un string, fetch le pone
-    // text/plain y Supabase guarda ESE tipo, asi que el navegador despues
-    // mostraba el codigo fuente en vez de la pagina.
-    var cuerpo=new Blob([html],{type:'text/html; charset=utf-8'});
-    var r=await fetch(SB_URL+'/storage/v1/object/'+LP_BUCKET+'/'+encodeURI(ruta),{
-      method:'POST',
-      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
-                'x-upsert':'true',
-                'Content-Type':'text/html; charset=utf-8',
-                'Cache-Control':'max-age=60' },
-      body:cuerpo
-    });
-    if(!r.ok){
-      var t=await r.text();
-      // El mensaje lleva siempre el texto crudo de Supabase. Adivinar la causa
-      // y esconder la respuesta hizo perder una tarde: decia "faltan las
-      // policies" con las dos policies creadas.
-      var crudo=String(t||'').slice(0,300);
-      if(/Bucket not found/i.test(t))
-        _lpEstado('Falta crear el bucket publico "'+LP_BUCKET+'" en Supabase \u2192 Storage.','var(--redx)');
-      else if(r.status===401||/invalid|expired|jwt/i.test(t))
-        _lpEstado('Tu sesion vencio: recarga la pagina y volve a entrar. ('+esc(crudo)+')','var(--redx)');
-      else if(r.status===403||/row-level security/i.test(t))
-        _lpEstado('El bucket no te deja escribir (HTTP '+r.status+'): '+esc(crudo),'var(--redx)');
-      else _lpEstado('No pude publicarla (HTTP '+r.status+'): '+esc(crudo),'var(--redx)');
-      // El detalle completo va a la consola: en la barra entra una linea sola.
-      console.warn('Publicar landing, respuesta de Supabase:', r.status, t);
-      listo();
-      return;
-    }
-    cfg.publicadaUrl=SB_URL+'/storage/v1/object/public/'+LP_BUCKET+'/'+encodeURI(ruta);
-    cfg.publicadaAt=new Date().toISOString();
-    save();
-    if(typeof renderTab==='function') renderTab();
-    listo('Volver a publicar');
-    var ver=document.getElementById('lp-pub-ver');
-    if(ver){ ver.href=cfg.publicadaUrl; ver.style.display=''; }
-    var cop=document.getElementById('lp-pub-cop');
-    if(cop) cop.style.display='';
-    _lpEstado('Publicada. Ya podes verla o mandar el link.','var(--accent)');
-    toast('Landing publicada \u00b7 '+Math.round(html.length/1024)+' KB');
-  }catch(e){ _lpEstado('No pude publicarla: '+esc(e.message),'var(--redx)'); listo(); }
-}
 
 // ---- CSS propio ---------------------------------------------------------
 // Ultimo recurso a proposito: casi todo se resuelve moviendo y estirando. Pero
@@ -31560,8 +31449,6 @@ function landingHtml(c){
         'Arma la pagina con el COPY y la paleta de la marca, y la abre', true)
       +btnDock('Copiar el HTML','lpCopiarHtml('+c.id+')',
         'Copia la pagina entera al portapapeles, lista para pegar')
-      +btnDock((cfg.publicadaUrl?'Volver a publicar':'Publicar'),'lpPublicar('+c.id+')',
-        'Sube la pagina a tu Supabase y te deja un link para mandar')
     +'</div>'
   +'</div>';
 
@@ -31713,22 +31600,14 @@ function landingHtml(c){
   if(cp){
     // Los titulares 2 y 3 no estan en ningun lado: la pagina dibuja el primero
     // y los otros dos existen para testear. Si no se ven aca, no se ven.
+    // Los titulares alternativos ya se prueban en el preview: doble clic sobre
+    // el titulo lo cambia por el siguiente. Repetirlos aca era una segunda
+    // forma de hacer lo mismo, y la de la ficha no deja verlo puesto.
     var alt=(cp.promesas||[]).slice(1).filter(function(x){ return _lpLimpiar(x); });
     if(alt.length)
-      p2+='<div style="background:var(--bg2);border:1px solid var(--border);'
-        +'border-radius:var(--radius-md);padding:10px 12px">'
-        +'<div style="font-size:10px;color:var(--text3);margin-bottom:7px">'
-          +'Los otros titulares que escribio, para testear</div>'
-        +alt.map(function(x,i){
-          return '<div style="display:flex;gap:10px;align-items:center;padding:3px 0">'
-            +'<span style="flex:1;font-size:12.5px;color:var(--text2);line-height:1.4">'
-              +esc(_lpLimpiar(x))+'</span>'
-            +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:1px 7px" '
-              +'title="Lo pone en la pagina y manda el actual a la lista" '
-              +'onclick="lpUsarPromesa('+c.id+','+(i+1)+')">Usar</button>'
-          +'</div>';
-        }).join('')
-      +'</div>';
+      p2+='<div style="font-size:10.5px;color:var(--text3)">Escribio '+alt.length
+        +' titular'+(alt.length===1?'':'es')+' mas. Se prueban con doble clic sobre el '
+        +'titulo, en el preview.</div>';
     // Este si es accionable y no se ve en la pagina: la landing con los tres
     // campos de fabrica se ve igual de bien que una con los campos pensados.
     if(!((cp.formulario||{}).campos||[]).length)
@@ -31794,7 +31673,6 @@ function landingHtml(c){
     +avisoHw
     +_lpVideoHtml(c, cfg)
     +_lpCssHtml(c, cfg)
-    +_lpPubHtml(c, cfg)
     +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
     +p2+dock;
 }
