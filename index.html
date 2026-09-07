@@ -41206,6 +41206,51 @@ function bdActivar(){
 // La transcripcion estaba guardada y no habia forma de leerla: los botones
 // eran ver el resumen —que llega vacio— y resumir con IA. Con las llamadas de
 // otro, cuyo link de Fathom no abre, quedaba invisible lo unico que si tenemos.
+// Fathom manda el link privado por webhook y solo lo abre quien grabo. El link
+// publico existe: lo devuelve la busqueda por API key de esa persona, que es la
+// misma que usa el arreglo automatico. Aca se pide para una sola llamada.
+async function fcArreglarLink(clientId, callId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cl=(c.fathomCalls||[]).filter(function(x){ return String(x.id)===String(callId); })[0];
+  if(!cl) return;
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec){ toast('Falta configurar el webhook en Integraciones.','amber'); return; }
+  var f=_fathomFiltro(c);
+  if(!f){
+    toast('Este cliente no tiene mail cargado en la ficha, y el mail es con lo que se busca.','amber');
+    return;
+  }
+  toast('Pidiendole el link a Fathom...');
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       // Sin transcripcion: aca solo hace falta el link y el texto ya esta.
+       body:JSON.stringify({emails:f.mails, dominios:f.doms, transcripcion:false})});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok){ toast((d&&d.error)||('HTTP '+r.status),'red'); return; }
+    var rid=String(cl.id||'').replace(/^(fw|fathom)-/,'');
+    var m=(d.items||[]).filter(function(x){ return String(x.recording_id||'')===rid; })[0];
+    if(!m){
+      toast('Fathom devolvio '+((d.items||[]).length)+' reuniones y ninguna es esta. '
+        +'Suele pasar cuando la grabo alguien que no conecto su Fathom al tracker.','amber');
+      return;
+    }
+    if(!m.url || m.url.indexOf('/share/')<0){
+      toast('Fathom la encontro pero no devolvio un link publico para esta.','amber');
+      return;
+    }
+    cl.url=m.url;
+    // Se saca de la lista de intentos: quedo arreglada, no reintentada en vano.
+    c.fathomLinksTry=(c.fathomLinksTry||[]).filter(function(x){ return x!==String(cl.id||''); });
+    save();
+    if(typeof renderTab==='function') renderTab();
+    toast('Listo, ahora la abre cualquiera.');
+  }catch(e){
+    toast('No pude pedirlo: '+e.message,'red');
+  }
+}
 function fcVerTranscript(id){
   S._fcTrAbiertos=S._fcTrAbiertos||{};
   if(S._fcTrAbiertos[id]) delete S._fcTrAbiertos[id]; else S._fcTrAbiertos[id]=true;
@@ -41319,7 +41364,13 @@ function fathomCallsHTML(c){
             +'style="font-size:11px;color:'+(priv?'var(--text3)':'var(--accent)')
             +';text-decoration:none">Ver grabacion'
             +(priv?(quien?(' \u00b7 privada de '+esc(_p360Corto(quien))):' \u00b7 privada'):'')
-          +'</a>';
+          +'</a>'
+          // El arreglo automatico corre una vez cada tanto y de a un cliente:
+          // estando parado en la llamada que no abre, esperar la vuelta no es
+          // una respuesta.
+          +(priv?('<button class="btn btn-sm" onclick="fcArreglarLink('+c.id+',\''+cl.id+'\')" '
+            +'title="Le pide a Fathom el link publico de esta grabacion, el que abre cualquiera" '
+            +'style="font-size:10.5px;padding:2px 8px">Pedir el link publico</button>'):'');
         })():'')
         // El resumen de Fathom son treinta renglones. Abierto por defecto, una
         // ficha con cuatro llamadas es imposible de recorrer: la lista deja de
