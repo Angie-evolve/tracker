@@ -1736,6 +1736,7 @@ var CFG_EQUIPO=[
   'evold-ghl-proxy-url','evold-ghl-proxy-secret',
   'evold-ghl-fn','evold-ghl-fn-sec',
   'evold-hf-fn','evold-hf-fn-sec',
+  'evold-gcal-fn','evold-gcal-fn-sec',
   'evold-fathom-proxy','evold-tickets-proxy','evold-tracker-url',
   'evold-cal-proxy-url','evold-cal-proxy-secret','evold-cal-id','evold-cal-nombre',
   'evold-conv-url','evold-conv-secret','evold-conv-token','evold-conv-loc',
@@ -8552,6 +8553,19 @@ function integracionesAppHtml(){
     // Higgsfield vive aca y no solo dentro de la pestana Landing: es una
     // credencial de la agencia, igual que Anthropic o el proxy de GHL, y se
     // configura una vez para todo el equipo.
+    (function(){
+      var a=_gcalFn();
+      var listo=!!(a.url&&a.sec);
+      return card({name:'Google Calendar', st:listo?'ok':'no',
+        desc:'Las reuniones que se agendan fuera de GHL no llegan a GHL, salvo con el sync '
+          +'de dos vias, que crea un contacto por cada evento personal en la subcuenta del '
+          +'cliente. Leyendo Google directo aparecen igual y no se ensucia nada.',
+        detail:listo
+          ? ('Conectado \u00b7 '+recortar(String(a.url).replace(/^https?:\/\//,''),34))
+          : 'Sin configurar',
+        action:'gcalModal()', actionLabel:listo?'Ver las cuentas':'Conectar'});
+    })(),
+
     (function(){
       var a=_hfFn();
       var listo=!!(a.url&&a.sec);
@@ -23131,8 +23145,135 @@ async function citasBuscar(clientId, callado){
         'var(--redx)');
       return null;
     }
-    return _citasAplicar(c, r.eventos||[], callado, (r.eventos||[]).length);
+    var todos=(r.eventos||[]);
+    // Lo que se agendo en el Google Calendar de alguien del equipo no pasa por
+    // GHL salvo que este el sync de dos vias, y ese sync ensucia la subcuenta
+    // creando un contacto por cada evento personal. Se leen aparte y se suman.
+    var gg=await _gcalEventos();
+    if(gg.eventos.length) todos=todos.concat(gg.eventos);
+    if(gg.aviso) decir(gg.aviso,'var(--amberx)');
+    return _citasAplicar(c, todos, callado, todos.length);
   }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); return null; }
+}
+// ---- Google Calendar ----------------------------------------------------
+function _gcalFn(){
+  var e={};
+  try{ e=_cfgEquipo()||{}; }catch(err){ /* todavia no hay DB */ }
+  var leer=function(k){
+    var v='';
+    try{ v=localStorage.getItem(k)||''; }catch(err){ /* nada */ }
+    return String(v||e[k]||'').trim();
+  };
+  return { url:leer('evold-gcal-fn'), sec:leer('evold-gcal-fn-sec') };
+}
+function _gcalGuardar(u, s2){
+  try{ var e=_cfgEquipo(); e['evold-gcal-fn']=String(u||'');
+       e['evold-gcal-fn-sec']=String(s2||''); }catch(err){ /* sin DB */ }
+  var lleno=false;
+  try{ localStorage.setItem('evold-gcal-fn', String(u||''));
+       localStorage.setItem('evold-gcal-fn-sec', String(s2||'')); }
+  catch(err){ lleno=true; }
+  if(typeof save==='function') save();
+  return {lleno:lleno};
+}
+// Devuelve siempre un objeto: si Google no esta conectado, la busqueda de GHL
+// tiene que seguir andando igual y no romperse por esto.
+async function _gcalEventos(){
+  var fn=_gcalFn();
+  if(!fn.url||!fn.sec) return {eventos:[], aviso:''};
+  var hoy=Date.now();
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=eventos',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({desde:new Date(hoy-7*24*3600*1000).toISOString(),
+                            hasta:new Date(hoy+60*24*3600*1000).toISOString()})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok) return {eventos:[], aviso:'Google: '+((r&&r.error)||'sin respuesta')};
+    return {eventos:(r.eventos||[]),
+            aviso:(r.fallos||[]).length?('Google: '+r.fallos.join(' | ')):''};
+  }catch(e){ return {eventos:[], aviso:'Google: '+e.message}; }
+}
+async function gcalConectar(){
+  var fn=_gcalFn();
+  if(!fn.url||!fn.sec){ gcalModal(); return; }
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=url').then(function(x){ return x.json(); });
+    if(!r||!r.ok||!r.url){ toast((r&&r.error)||'No pude armar el link','amber'); return; }
+    // Se abre en otra pestana: Google no deja su pantalla de permisos dentro
+    // de un iframe, y volver aca lo hace el callback de la funcion.
+    window.open(r.url, '_blank', 'noopener');
+    toast('Autorizalo en la pesta\u00f1a que se abrio y despues toca Ver las cuentas');
+  }catch(e){ toast('Error de red: '+e.message,'amber'); }
+}
+function gcalModal(){
+  var a=_gcalFn();
+  var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+    +'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:720px">'
+      +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:6px">'
+        +'Conectar Google Calendar</div>'
+      +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+        +'Para que las reuniones agendadas fuera de GHL aparezcan igual. La clave vive en '
+        +'una edge function con <span class="mono">GOOGLE_CLIENT_ID</span>, '
+        +'<span class="mono">GOOGLE_CLIENT_SECRET</span> y '
+        +'<span class="mono">GCAL_SECRETO</span>. Se conecta una cuenta por persona.'
+      +'</div>'
+      +'<input id="gcal-url" style="'+est+';margin-bottom:8px" '
+        +'placeholder="https://TU-PROYECTO.supabase.co/functions/v1/gcal" '
+        +'value="'+esc(a.url)+'">'
+      +'<input id="gcal-sec" style="'+est+'" placeholder="El valor de GCAL_SECRETO" '
+        +'value="'+esc(a.sec)+'">'
+      +'<div id="gcal-msg" style="font-size:11.5px;margin-top:10px;min-height:16px;color:'
+        +((a.url&&a.sec)?'var(--accent)':'var(--text3)')+'">'
+        +((a.url&&a.sec)?'Hay una conexion guardada.':'Toca Probar y, si anda, queda guardada.')
+      +'</div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm" onclick="gcalProbar()">Probar</button>'
+        +'<button class="btn btn-sm" onclick="gcalCuentas()">Ver las cuentas</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="gcalConectar()">Conectar una cuenta</button>'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+async function gcalProbar(){
+  var e=document.getElementById('gcal-msg');
+  var u=String((document.getElementById('gcal-url')||{}).value||'').trim();
+  var s2=String((document.getElementById('gcal-sec')||{}).value||'').trim();
+  if(!u||!s2){ if(e){e.textContent='Faltan la URL y el secreto.';e.style.color='var(--amberx)';} return; }
+  if(e){ e.textContent='Probando...'; e.style.color='var(--text3)'; }
+  try{
+    var r=await fetch(u+(u.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(s2)+'&accion=ping')
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok){ if(e){e.textContent=(r&&r.error)||'No contesto.';e.style.color='var(--redx)';} return; }
+    var g=_gcalGuardar(u, s2);
+    if(typeof renderTab==='function') renderTab();
+    if(e){
+      e.textContent=(r.credenciales
+        ? 'Anda y quedo guardada. Ya podes conectar una cuenta.'
+        : 'La funcion contesta, pero le faltan GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET.')
+        +(g.lleno?' (El navegador esta lleno, quedo solo en la nube.)':'');
+      e.style.color=r.credenciales?'var(--accent)':'var(--amberx)';
+    }
+  }catch(err){ if(e){e.textContent='Error de red: '+err.message;e.style.color='var(--redx)';} }
+}
+async function gcalCuentas(){
+  var fn=_gcalFn(), e=document.getElementById('gcal-msg');
+  if(!fn.url||!fn.sec) return;
+  try{
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=quien').then(function(x){ return x.json(); });
+    if(!e) return;
+    var l=(r&&r.cuentas)||[];
+    e.textContent=l.length
+      ? ('Conectadas: '+l.map(function(x){ return x.quien; }).join(', '))
+      : 'Todavia no hay ninguna cuenta conectada.';
+    e.style.color=l.length?'var(--accent)':'var(--text3)';
+  }catch(err){ if(e){e.textContent='Error de red: '+err.message;e.style.color='var(--redx)';} }
 }
 // Guarda lo que vino y detecta que cambio desde la ultima vuelta.
 // Una cita de la agenda de la agencia puede ser de cualquier cliente: se
