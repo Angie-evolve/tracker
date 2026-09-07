@@ -23976,6 +23976,7 @@ function citasBorrarMano(clientId, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.citas||!c.citas[etapa]) return;
   delete c.citas[etapa];
+  S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
 }
@@ -23997,6 +23998,7 @@ function citasAsignarAgenda(clientId, idx, etapa){
                   deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
+  S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
   toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
@@ -24012,6 +24014,7 @@ function citasAsignar(clientId, idx, etapa){
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
   c.citasSinEtapa.splice(idx,1);
+  S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
   toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
@@ -24042,6 +24045,7 @@ function citasIgnorarAgenda(clientId, idx){
   DB.agendaNo=DB.agendaNo||[];
   var k=_agendaClave(ev);
   if(DB.agendaNo.indexOf(k)<0) DB.agendaNo.push(k);
+  S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
   if(typeof showTickets==='function' && S.torre) showTickets();
@@ -24058,33 +24062,212 @@ function citasReponerAgenda(i){
   if(typeof showTickets==='function' && S.torre) showTickets();
   toast('Vuelve a aparecer en la agenda');
 }
+// Que reunion esta abierta abajo de la malla. Vale 'e<indice>' para una
+// reunion y 'd<fecha>' para el "+N" de un dia entero.
+function citasSel(clave){
+  S.p3Cita=(S.p3Cita===clave)?'':clave;
+  if(typeof renderTab==='function') renderTab();
+}
+// El mes que se ve, contado desde el actual: la agenda de GHL trae dos meses
+// para atras y varios para adelante, y sin poder moverse solo se ve uno.
+function citasMes(d){
+  S.p3Mes=(typeof S.p3Mes==='number'?S.p3Mes:0)+d;
+  S.p3Cita='';
+  if(typeof renderTab==='function') renderTab();
+}
 function _citasHtml(c){
   var cit=_citasDe(c);
-  var claves=Object.keys(cit);
   var sueltas=(c.citasSinEtapa||[]);
   var ctx=_citasCtx();
   var conectado=!!((c.ghl&&c.ghl.token&&c.ghl.locationId)||(ctx.token&&ctx.location));
-  var linea=function(et){
-    var x=cit[et];
-    if(x.estado==='cancelled'){
-      return '<div style="font-size:11.5px;color:var(--redx);padding:3px 0">'
-        +esc(et)+' \u00b7 cancelada (era el '+esc(_citaFechaAR(x.inicio))+')</div>';
-    }
-    return '<div style="font-size:11.5px;color:var(--text2);padding:3px 0">'
-      +esc(et)+' \u00b7 '+esc(_citaFechaAR(x.inicio))+' '+esc(_citaHora(x.inicio))
-      +(x.manual?('<span style="color:var(--text3)"> \u00b7 cargada a mano</span>'
-        +'<button onclick="citasBorrarMano('+c.id+',\''+esc(et)+'\')" '
-        +'title="Sacarla" style="background:none;border:0;color:var(--text3);'
-        +'cursor:pointer;font-size:11px;padding:0 5px">\u00d7</button>'):'')
-      +(x.con?('<span style="color:var(--text3)"> con '+esc(x.con)+'</span>'):'')
-      +(x.deNuestroLado?('<span style="color:var(--text3)"> \u00b7 la toma '
-        +esc(x.deNuestroLado)+'</span>'):'')
-      +(x.anterior?('<span style="color:var(--amberx)"> \u00b7 reprogramada, era el '
-        +esc(_citaFechaAR(x.anterior))+'</span>'):'')
-    +'</div>';
-  };
   var ops=rutaDef().map(function(e){
     return '<option value="'+esc(e.l)+'">'+esc(e.l)+'</option>'; }).join('');
+
+  // Las tres fuentes caen en la misma malla: las que ya son de este cliente,
+  // las que quedaron sin etapa, y la agenda entera de la agencia. Antes vivian
+  // en tres listas separadas y habia que mirar las tres para entender un dia.
+  // Los ids de las que ya son del cliente: la misma reunion esta en la agenda
+  // general y en c.citas, y sin esto se dibuja dos veces en el mismo dia.
+  var mios={};
+  Object.keys(cit).forEach(function(k){
+    if(cit[k]&&cit[k].id) mios[String(cit[k].id)]=k; });
+  var ev=[];
+  Object.keys(cit).forEach(function(k){
+    var x=cit[k]||{};
+    ev.push({t:'cita', k:k, titulo:k, inicio:x.inicio, estado:x.estado,
+             con:x.con, mail:'', dato:x});
+  });
+  sueltas.forEach(function(x,i){
+    ev.push({t:'suelta', i:i, titulo:x.titulo, inicio:x.inicio, estado:x.estado,
+             con:x.con, mail:x.mail, dato:x});
+  });
+  _agendaGhl().forEach(function(x,i){
+    if(x.id && mios[String(x.id)]) return;
+    ev.push({t:'agenda', i:i, titulo:x.titulo, inicio:x.inicio, estado:x.estado,
+             con:x.con, mail:x.mail, dato:x});
+  });
+  ev.forEach(function(e,i){ e._i=i; });
+
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var off=(typeof S.p3Mes==='number')?S.p3Mes:0;
+  var base=new Date(hoy.getFullYear(), hoy.getMonth()+off, 1);
+  var diaClave=function(d){ return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate(); };
+  var porDia={};
+  ev.forEach(function(e){
+    var d=new Date(e.inicio);
+    if(isNaN(d.getTime())) return;
+    var k=diaClave(d);
+    (porDia[k]=porDia[k]||[]).push(e);
+  });
+  Object.keys(porDia).forEach(function(k){
+    porDia[k].sort(function(x,y){
+      return new Date(x.inicio).getTime()-new Date(y.inicio).getTime(); });
+  });
+
+  var color=function(e){
+    if(String(e.estado||'')==='cancelled') return 'var(--redx)';
+    if(e.t==='cita') return 'var(--accent)';
+    if(e.t==='suelta') return 'var(--amberx)';
+    return 'var(--text2)';
+  };
+  var nombre=function(e){ return String(e.con||e.titulo||'sin titulo'); };
+
+  var chip=function(e){
+    var col=color(e);
+    var on=(String(S.p3Cita||'')==='e'+e._i);
+    return '<div onclick="citasSel(\'e'+e._i+'\')" title="'+esc(nombre(e))+'" '
+      +'style="display:flex;align-items:center;gap:5px;margin-bottom:2px;padding:2px 6px 2px 0;'
+      +'border-radius:5px;cursor:pointer;overflow:hidden;'
+      +'background:var(--bg3);border:1px solid '+(on?col:'transparent')+'">'
+      +'<span style="flex:none;width:3px;height:12px;border-radius:2px;background:'+col+'"></span>'
+      +'<span style="flex:1;min-width:0;font-size:10.5px;color:var(--text2);overflow:hidden;'
+        +'text-overflow:ellipsis;white-space:nowrap">'+esc(nombre(e))+'</span>'
+    +'</div>';
+  };
+
+  // Seis semanas fijas: con cinco, un mes que arranca domingo se corta y el
+  // ultimo dia queda afuera de la malla.
+  var ini=new Date(base);
+  // getDay() da 0 el domingo, asi que para que la semana arranque el lunes el
+  // domingo tiene que retroceder 6 dias y no 0.
+  ini.setDate(ini.getDate()-((ini.getDay()+6)%7));
+  var celdas='';
+  for(var n=0;n<42;n++){
+    var d=new Date(ini.getFullYear(), ini.getMonth(), ini.getDate()+n);
+    var k=diaClave(d);
+    var L=(porDia[k]||[]);
+    var vis=L.slice(0,3), resto=L.length-vis.length;
+    var enMes=(d.getMonth()===base.getMonth());
+    var esHoy=(d.getTime()===hoy.getTime());
+    celdas+='<div style="min-height:78px;border-radius:8px;padding:6px 6px 4px;'
+      +'background:'+(L.length?'var(--bg2)':'transparent')+';'
+      +'border:1px solid '+(esHoy?'var(--accent)':'var(--border)')+';'
+      +'opacity:'+(enMes?'1':'0.35')+'">'
+      +'<div class="mono" style="font-size:10.5px;color:'
+        +(esHoy?'var(--accent)':'var(--text3)')+';margin-bottom:4px">'+d.getDate()+'</div>'
+      +vis.map(chip).join('')
+      +(resto>0?('<div onclick="citasSel(\'d'+k+'\')" style="font-size:10px;'
+        +'color:var(--text3);cursor:pointer;padding:1px 3px">+'+resto+'</div>'):'')
+    +'</div>';
+  }
+
+  var fila=function(e){
+    // El desplegable cambia segun de donde salio: asignar una de la agenda y
+    // una que quedo sin etapa son dos funciones distintas, y una que ya es del
+    // cliente no se vuelve a asignar.
+    var accion='';
+    if(e.t==='agenda'){
+      accion='<select onchange="citasAsignarAgenda('+c.id+','+e.i+',this.value)" '
+        +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+        +'font-family:var(--font)"><option value="">Es de este cliente, etapa...</option>'
+        +ops+'</select>'
+        +'<button onclick="citasIgnorarAgenda('+c.id+','+e.i+')" title="Sacarla de la agenda" '
+        +'aria-label="Sacar de la agenda" style="flex:none;border:0;background:none;'
+        +'color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">'
+        +'\u00d7</button>';
+    } else if(e.t==='suelta'){
+      accion='<select onchange="citasAsignar('+c.id+','+e.i+',this.value)" '
+        +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
+        +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+        +'font-family:var(--font)"><option value="">Es la etapa...</option>'
+        +ops+'</select>';
+    } else if(e.dato&&e.dato.manual){
+      accion='<button class="btn btn-sm" onclick="citasBorrarMano('+c.id+',\''
+        +esc(e.k).replace(/'/g,"\\'")+'\')" style="flex:none;font-size:10.5px;'
+        +'padding:2px 8px">Sacar</button>';
+    }
+    // Quien se la lleva segun el reconocimiento automatico: es lo que explica
+    // por que una cita no cayo en el cliente que uno esperaba.
+    var duenio='';
+    if(e.t==='agenda'){
+      var dd=(DB.clients||[]).filter(function(y){
+        return _citaEsDe(y, e.titulo, e.con, e.mail); })[0];
+      if(dd) duenio=' \u00b7 '+String(dd.name||'');
+    }
+    var extra='';
+    if(String(e.estado||'')==='cancelled') extra=' \u00b7 cancelada';
+    else if(e.dato&&e.dato.anterior) extra=' \u00b7 reprogramada, era el '
+      +_citaFechaAR(e.dato.anterior);
+    if(e.dato&&e.dato.manual) extra+=' \u00b7 cargada a mano';
+    if(e.dato&&e.dato.deNuestroLado) extra+=' \u00b7 la toma '+String(e.dato.deNuestroLado);
+    return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0">'
+      +'<span style="flex:none;width:3px;align-self:stretch;border-radius:2px;'
+        +'background:'+color(e)+'"></span>'
+      +'<span style="flex:1;min-width:0">'
+        +'<span style="font-size:11.5px;color:var(--text2)">'
+        +esc(_citaHora(e.inicio))+' \u00b7 '+esc(e.titulo||'sin titulo')
+        +(e.t==='cita'?'':'')+'</span>'
+        +'<span style="font-size:11px;color:var(--text3)">'
+        +(e.con?(' \u00b7 '+esc(e.con)):'')+(e.mail?(' '+esc(e.mail)):'')
+        +esc(duenio)+esc(extra)+'</span>'
+      +'</span>'
+      +accion
+    +'</div>';
+  };
+
+  // Lo que se abre abajo de la malla: una reunion sola, o el dia entero cuando
+  // se toca el "+N". Los chips van cortados a proposito, asi que el detalle es
+  // el unico lugar donde el titulo se lee completo.
+  var detalle=function(){
+    var sel=String(S.p3Cita||'');
+    if(!sel) return '';
+    var cuerpo='', enc='';
+    if(sel.charAt(0)==='d'){
+      var k=sel.slice(1), L=(porDia[k]||[]);
+      if(!L.length) return '';
+      var pp=k.split('-');
+      var dd=new Date(Number(pp[0]), Number(pp[1]), Number(pp[2]));
+      enc=dd.toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'long'})
+        +' \u00b7 '+L.length+(L.length===1?' reuni\u00f3n':' reuniones');
+      cuerpo=L.map(fila).join('');
+    } else {
+      var e=ev[Number(sel.slice(1))];
+      if(!e) return '';
+      enc=_citaFechaAR(e.inicio)+(e.t==='cita'?(' \u00b7 '+String(e.k)):'');
+      cuerpo=fila(e);
+    }
+    return '<div style="margin-top:10px;border:1px solid var(--border2);border-radius:8px;'
+      +'padding:8px 10px;background:var(--bg2)">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+        +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:0.06em">'+esc(enc)+'</span>'
+        +'<button onclick="citasSel(\''+sel+'\')" aria-label="Cerrar" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;'
+          +'font-size:15px;line-height:1;padding:0 2px">\u00d7</button>'
+      +'</div>'+cuerpo
+    +'</div>';
+  };
+
+  var dias=['lun','mar','mie','jue','vie','sab','dom'].map(function(x){
+    return '<div class="mono" style="font-size:10px;color:var(--text3);padding:0 2px 4px">'
+      +x+'</div>'; }).join('');
+  var punto=function(col,txt){
+    return '<span style="display:inline-flex;align-items:center;gap:4px">'
+      +'<span style="width:3px;height:9px;border-radius:2px;background:'+col+'"></span>'
+      +txt+'</span>';
+  };
+
   return '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
       +'flex-wrap:wrap;margin-bottom:6px">'
@@ -24117,61 +24300,32 @@ function _citasHtml(c){
         ? (c.citasAt?('Ultima revision: '+new Date(c.citasAt).toLocaleString('es-AR')):'')
         : 'Falta cargar la subcuenta interna de la agencia en Integraciones.')
     +'</div>'
-    +(claves.length?claves.map(linea).join(''):'')
-    // Enganchar por el titulo falla cuando la cita se llamo de otra forma. En
-    // vez de perderlas, se ofrecen para asignar en un clic.
-    // Las de la agenda que no se pudieron atar a NINGUN cliente. Enganchar por
-    // nombre falla seguido: la empresa se llama de una forma y el turno esta a
-    // nombre de la persona, o al reves.
-    // Se listan TODAS las proximas, no solo las que no engancharon. Filtrar por
-    // "sin cliente reconocido" escondia el caso que importa: la cita esta en la
-    // agenda, el reconocimiento falla, y no habia forma de verla ni asignarla.
-    +(function(){
-      var hoy=new Date(); hoy.setHours(0,0,0,0);
-      var ag=_agendaGhl().map(function(ev,i){ return {ev:ev, i:i}; })
-        .filter(function(x){
-          if(String(x.ev.estado||'')==='cancelled') return false;
-          var d=new Date(x.ev.inicio);
-          return !isNaN(d) && d>=hoy;
-        }).slice(0,12);
-      if(!ag.length) return '';
-      return '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
-          +'letter-spacing:0.06em;margin:10px 0 4px">Proximas en la agenda \u00b7 '
-          +ag.length+'</div>'
-        +ag.map(function(x){
-          return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
-            +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);'
-              +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-              +esc(x.ev.titulo||'sin titulo')+' \u00b7 '+esc(_citaFechaAR(x.ev.inicio))
-              +(x.ev.con?(' \u00b7 '+esc(x.ev.con)):'')
-              +(x.ev.mail?('<span style="color:var(--text3)"> '+esc(x.ev.mail)+'</span>'):'')
-              // De quien la dio por suya el reconocimiento automatico: es lo que
-              // explica por que no cayo en el cliente que uno esperaba.
-              +(function(){
-                var d=(DB.clients||[]).filter(function(y){
-                  return _citaEsDe(y, x.ev.titulo, x.ev.con, x.ev.mail); })[0];
-                return d ? ('<span style="color:var(--text3)"> \u00b7 '+esc(d.name||'')
-                  +'</span>') : '';
-              })()+'</span>'
-            +'<select onchange="citasAsignarAgenda('+c.id+','+x.i+',this.value)" '
-              +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
-              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
-              +'font-family:var(--font)">'
-              +'<option value="">Es de este cliente, etapa...</option>'+ops
-            +'</select>'
-            // Pruebas, cancelaciones y reuniones que no son de ningun cliente
-            // se quedaban en la lista para siempre tapando las que importan.
-            +'<button onclick="citasIgnorarAgenda('+c.id+','+x.i+')" '
-              +'title="Sacarla de la agenda" aria-label="Sacar de la agenda" '
-              +'style="flex:none;border:0;background:none;color:var(--text3);cursor:pointer;'
-              +'font-size:14px;line-height:1;padding:0 2px">\u00d7</button>'
-          +'</div>';
-        }).join('');
-    })()
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin:8px 0 6px">'
+      +'<div style="display:flex;align-items:center;gap:4px">'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:2px 8px" '
+          +'onclick="citasMes(-1)" aria-label="Mes anterior">\u2039</button>'
+        +'<span style="font-size:11.5px;color:var(--text2);min-width:15ch;text-align:center">'
+          +esc(base.toLocaleDateString('es-AR',{month:'long',year:'numeric'}))+'</span>'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:2px 8px" '
+          +'onclick="citasMes(1)" aria-label="Mes siguiente">\u203a</button>'
+        +(off!==0?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;'
+          +'margin-left:4px" onclick="citasMes('+(-off)+')">Hoy</button>'):'')
+      +'</div>'
+      +'<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--text3)">'
+        +punto('var(--accent)','de este cliente')
+        +punto('var(--amberx)','sin etapa')
+        +punto('var(--text2)','resto de la agenda')
+      +'</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px">'
+      +dias+celdas
+    +'</div>'
+    +detalle()
     +(function(){
       var no=(DB.agendaNo||[]);
       if(!no.length) return '';
-      return '<details class="p3-mano"><summary>'+no.length
+      return '<details class="p3-mano" style="margin-top:8px"><summary>'+no.length
           +(no.length===1?' cita sacada':' citas sacadas')+' de la agenda</summary>'
         +no.map(function(k,i){
           // La clave lleva la fecha y el titulo pegados: para volver a ponerla
@@ -24187,23 +24341,6 @@ function _citasHtml(c){
         }).join('')
       +'</details>';
     })()
-    +(sueltas.length
-      ? ('<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
-          +'letter-spacing:0.06em;margin:8px 0 4px">Sin etapa reconocida</div>'
-        +sueltas.map(function(ev,i){
-          return '<div style="display:flex;gap:8px;align-items:center;padding:3px 0">'
-            +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);'
-              +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-              +esc(ev.titulo||'sin titulo')+' \u00b7 '+esc(_citaFechaAR(ev.inicio))+'</span>'
-            +'<select onchange="citasAsignar('+c.id+','+i+',this.value)" '
-              +'style="flex:none;font-size:11px;padding:3px 6px;border-radius:var(--radius);'
-              +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
-              +'font-family:var(--font)">'
-              +'<option value="">Es la etapa...</option>'+ops
-            +'</select>'
-          +'</div>';
-        }).join(''))
-      : '')
   +'</div>';
 }
 // Una vuelta automatica: el cliente que hace mas que no se revisa.
