@@ -30018,7 +30018,7 @@ function _lpPaginaHtml(c){
             +'<button type="button" class="qop" data-pts="0">Seguir</button>'
           +'</div>');
       return '<div class="qp"'+(x.rama?(' data-rama="'+x.rama+'"'):'')
-          +(x.num?' data-num':'')+'>'
+          +(x.num?(' data-num data-clave="'+E(q.clave||'')+'"'):'')+'>'
         +'<p class="qnum">'+E(String(q.valor||'').trim()||('Pregunta '+(i+1)))+'</p>'
         +'<h3 class="qq">'+E(q.pregunta||'')+'</h3>'
         +'<div class="qet" hidden>'+E(q.pregunta||'')+'</div>'
@@ -30031,11 +30031,25 @@ function _lpPaginaHtml(c){
     // El texto de gracias sale del copy, no del quiz: es el mismo que usa el
     // formulario suelto y se edita en un solo lugar.
     var gr=String(((o.formulario&&o.formulario.gracias)||''));
+    // El informe lo diseno quien armo las preguntas, porque depende del nicho:
+    // en un rubro son horas y plata, en otro turnos caidos. Si no vino, queda
+    // el nivel y lo que contesto, que es mejor que un numero inventado.
+    var inf=(qz.informe&&typeof qz.informe==='object')?qz.informe:{};
+    var infLin=(Array.isArray(inf.lineas)?inf.lineas:[]).filter(function(l){
+      return l && String(l.formula||'').trim() && String(l.et||'').trim(); });
     pasos.push('<div class="qp" data-fin>'
-      +'<h3 class="qq" id="lp-nivel">'+E(ent.que||'Listo')+'</h3>'
-      +(gr?('<p class="bajada" data-c="formulario.gracias">'+E(gr)+'</p>'):'')
-      // El informe: lo que contesto, con su numero. Sin esto el final era el
-      // nombre del nivel y nada mas, y el lead no se lleva con que se lo dieron.
+      +'<h3 class="qq" id="lp-nivel">'+E(inf.titulo||ent.que||'Listo')+'</h3>'
+      +(inf.bajada?('<p class="bajada">'+E(_lpLimpiar(inf.bajada))+'</p>')
+        :(gr?('<p class="bajada" data-c="formulario.gracias">'+E(gr)+'</p>'):''))
+      +(infLin.length
+        ? ('<ul class="qres qcalc">'+infLin.map(function(l){
+            return '<li data-f="'+E(l.formula)+'" data-u="'+E(l.unidad||'')+'">'
+              +'<span>'+E(l.et)+'</span><b>&mdash;</b></li>';
+          }).join('')+'</ul>')
+        : '')
+      +(inf.cierre?('<p class="nota">'+E(_lpLimpiar(inf.cierre))+'</p>'):'')
+      // Lo que contesto, siempre: es lo que hace que el numero de arriba se
+      // pueda chequear en vez de creer.
       +'<ul class="qres" id="lp-res" hidden></ul>'
       +'</div>');
     // El puntaje se acumula igual aunque no haya niveles cargados: es lo que
@@ -30049,11 +30063,16 @@ function _lpPaginaHtml(c){
       +'<script>(function(){'
       +'var q=document.getElementById("lp-quiz");if(!q)return;'
       +'var ps=[].slice.call(q.querySelectorAll(".qp")),b=q.querySelector(".qbar i");'
-      +'var i=0,pts=0,rama="",NUM=[];'
+      +'var i=0,pts=0,rama="",NUM=[],VAL={};'
       +'var NIV='+JSON.stringify(niveles.map(function(n){
           var r=String(n.rango||'').split('-');
           return {a:parseInt(r[0],10)||0, b:parseInt(r[1],10)||0, n:String(n.nombre||'')};
         }))+';'
+      +'var K='+JSON.stringify({
+          valorHora:parseFloat(quizMarca(c).valorHora)||15,
+          automatizable:parseFloat(quizMarca(c).automatizable)||0.6,
+          recupero:parseFloat(quizMarca(c).recupero)||0.5
+        })+';'
       // Un paso de rama solo cuenta si es la rama que eligio. Antes de elegir,
       // ninguna: si no, se le preguntarian las de todas las ramas.
       +'var vale=function(p){var r=p.getAttribute("data-rama");return !r||r===rama;};'
@@ -30063,10 +30082,33 @@ function _lpPaginaHtml(c){
         +'for(var k=0;k<ps.length;k++)ps[k].className="qp"+(k===i?" on":"");'
         +'if(b&&vs.length>1)b.style.width=Math.round((n/(vs.length-1))*100)+"%";'
       +'};'
+      // La formula la escribio la IA y termina en una pagina publica: se
+      // reemplazan las claves por su numero y despues se exige que no quede
+      // nada mas que digitos y operadores. Si queda cualquier otra cosa, no se
+      // evalua: la linea se esconde en vez de correr texto ajeno.
+      +'var calc=function(f){'
+        +'var v=String(f||"");'
+        +'for(var k in K)v=v.split(k).join("("+K[k]+")");'
+        +'for(var k2 in VAL)v=v.split(k2).join("("+VAL[k2]+")");'
+        +'if(!/^[0-9.+\-*\/() ]+$/.test(v))return null;'
+        +'try{var r=Function("return ("+v+")")();'
+          +'return (typeof r==="number"&&isFinite(r))?r:null;}catch(e){return null;}'
+      +'};'
+      +'var fmt=function(n,u){'
+        +'var x=Math.round(n*100)/100;'
+        +'var s2=x.toLocaleString("es-AR",{maximumFractionDigits:(Math.abs(x)<10?1:0)});'
+        +'return u==="USD"?("$"+s2):(u?(s2+" "+u):s2);'
+      +'};'
       +'var fin=function(){'
         +'var t=document.getElementById("lp-nivel");'
         +'for(var j=0;j<NIV.length;j++)if(pts>=NIV[j].a&&pts<=NIV[j].b&&NIV[j].n&&t)'
           +'{t.textContent=NIV[j].n;break;}'
+        +'var ls=q.querySelectorAll(".qcalc li");'
+        +'for(var m=0;m<ls.length;m++){'
+          +'var r2=calc(ls[m].getAttribute("data-f"));'
+          +'if(r2===null){ls[m].hidden=true;continue;}'
+          +'ls[m].querySelector("b").textContent=fmt(r2,ls[m].getAttribute("data-u"));'
+        +'}'
         +'var u=document.getElementById("lp-res");'
         +'if(u&&NUM.length){u.innerHTML=NUM.map(function(x){'
           +'return "<li><span>"+x.et+"</span><b>"+x.tx+"</b></li>";}).join("");'
@@ -30090,8 +30132,12 @@ function _lpPaginaHtml(c){
         +'if(o.getAttribute("data-rama"))rama=o.getAttribute("data-rama");'
         +'if(p&&p.hasAttribute("data-num")){'
           +'var inp=p.querySelector(".qnum-in");'
-          +'if(inp&&String(inp.value).trim())anotar(p,inp.value);'
-          +'else if(o.getAttribute("data-val")!==null&&!inp)anotar(p,o.textContent);'
+          +'var cl=p.getAttribute("data-clave")||"";'
+          +'if(inp&&String(inp.value).trim()){'
+            +'anotar(p,inp.value);if(cl)VAL[cl]=parseFloat(inp.value)||0;}'
+          +'else if(o.getAttribute("data-val")!==null&&!inp){'
+            +'anotar(p,o.textContent);'
+            +'if(cl)VAL[cl]=parseFloat(o.getAttribute("data-val"))||0;}'
         +'}'
         +'avanzar();});'
       +'var f=q.querySelector("form");'
@@ -30286,6 +30332,8 @@ function _lpPaginaHtml(c){
       +'padding:9px 0;border-top:1px solid rgba(127,127,127,.22);font-size:15px}'
     +'.qres li span{opacity:.7}'
     +'.qres li b{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}'
+    +'.qcalc li b{font-size:19px}'
+    +'.qcalc{margin-top:20px}'
     +'.qnum-campo{display:flex;flex-direction:column;gap:10px}'
     +'.qnum-in{font:inherit;font-size:16px;width:100%;padding:15px 18px;border-radius:12px;'
       +'border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit}'
@@ -37806,7 +37854,22 @@ async function quizPreguntasGenerar(clientId){
         // Sin esto el quiz salia siendo una lista de preguntas sueltas. El
         // nombre, el entregable y el gate son lo que decide si el lead lo
         // termina, y se definian recien al armar el HTML, cuando ya era tarde.
-        +'ADEMAS DE LAS PREGUNTAS, TRES COSAS:\n\n'
+        // El informe se pensaba con una formula fija para todos. Lo que hace
+        // valioso al resultado es que hable del negocio de ese lead, y en un
+        // rubro son horas y plata, en otro son metros de deposito o turnos que
+        // se caen. Lo piensa quien arma las preguntas, que es cuando se sabe.
+        +'EL INFORME es lo que ve al terminar, y depende del nicho: en un rubro son horas y '
+        +'plata, en otro son leads perdidos, turnos caidos o metros de deposito. Entre 2 y 4 '
+        +'lineas, cada una con su etiqueta y su formula.\n'
+        +'Cada numerica lleva una "clave" corta en camelCase para poder nombrarla en las '
+        +'formulas. Las formulas usan SOLO esas claves y estas tres constantes de la marca: '
+        +'valorHora ('+(m.valorHora||15)+' USD), automatizable ('+(m.automatizable||0.6)+') y '
+        +'recupero ('+(m.recupero||0.5)+'). Operadores + - * / y parentesis, nada mas: ni '
+        +'funciones ni condicionales.\n'
+        +'Si un numero no se puede calcular con lo que preguntas, no lo pongas. Cada linea '
+        +'tiene que ser defendible si el lead la pregunta en la reunion: conviene quedarse '
+        +'corto.\n\n'
+        +'ADEMAS DE LAS PREGUNTAS, CUATRO COSAS:\n\n'
         +'1. INSTRUMENTO: como se llama esto. Escaneo, diagnostico, auditoria, scorecard, '
         +'calculadora, indice. Cada palabra promete un nivel distinto de rigor y de compromiso: '
         +'en B2B de ticket alto las palabras tecnicas suben la calidad del lead y bajan el '
@@ -37834,8 +37897,10 @@ async function quizPreguntasGenerar(clientId){
         +'"opciones":[{"texto":"","puntos":0}]}],'
         +'"ramas":[{"nombre":"","preguntas":[{"pregunta":"","tipo":"condicional","funcion":"",'
         +'"opciones":[{"texto":"","puntos":0}]}]}],'
-        +'"numericas":[{"pregunta":"","tipo":"numerica","valor":"que alimenta",'
-        +'"opciones":[{"texto":"","valor":0}]}],'
+        +'"numericas":[{"pregunta":"","tipo":"numerica","clave":"horasSemana",'
+        +'"valor":"que alimenta","opciones":[{"texto":"","valor":0}]}],'
+        +'"informe":{"titulo":"","bajada":"","cierre":"",'
+        +'"lineas":[{"et":"","formula":"","unidad":"USD|h|%|"}]},'
         +'"niveles":[{"rango":"0-5","nombre":""}]}\n\nMATERIAL:\n'+JSON.stringify(mat)}]})
     });
     var d=await r.json();
