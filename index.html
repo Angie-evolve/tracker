@@ -31240,16 +31240,43 @@ function lpCalIdGuardar(clientId){
 // arranca con sonido.
 var SEEDANCE = {modelo:'Seedance 2.5', modo:'t2v', dur:8, res:'1080p',
                 aspecto:'16:9', audio:false};
+// El video vivia solo, en un bloque aparte, cuando es una pieza de material
+// mas: lo mismo que los documentos y las llamadas de las que sale el copy.
+// Juntos se ve de una que alimenta a esta landing.
+function _lpMaterialFuentes(c){
+  var doc=(typeof docsCopy==='function')?docsCopy(c):[];
+  var mat=(c.material||[]);
+  // Solo el material que se leyo de verdad: uno cargado y sin texto no entra al
+  // prompt, asi que contarlo mentiria sobre con que se escribio el copy.
+  var leidos=mat.filter(function(m){ return String(m.texto||'').length>200; });
+  var out=[];
+  if(doc.length) out.push(doc.length+' documento'+(doc.length===1?'':'s'));
+  if(leidos.length) out.push(leidos.length+' de material le'+(leidos.length===1?'ido':'idos'));
+  return {doc:doc, mat:mat, leidos:leidos, resumen:out.join(' \u00b7 ')};
+}
 function _lpVideoHtml(c, cfg){
   if(cfg.piel!=='hollywood') return '';
   var ideas=(cfg.videoIdeas||[]);
   var url=(cfg.videoUrl||'');
+  var fu=_lpMaterialFuentes(c);
   return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
       +'flex-wrap:wrap;margin-bottom:8px">'
-      +'<div style="font-size:12.5px;color:var(--text2)">Video de fondo</div>'
+      +'<div style="font-size:12.5px;color:var(--text2)">Material</div>'
       +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
         +'onclick="lpVideoIdeas('+c.id+')">'+(ideas.length?'Otras ideas':'Pensar el video')+'</button>'
+    +'</div>'
+    // Lo que de verdad alimenta esta landing. Estaba repartido entre la hoja
+    // Material y la de Contexto, y desde aca no habia forma de saber con que
+    // se escribio el copy.
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +(fu.resumen
+        ? ('El copy se escribe con '+esc(fu.resumen)+'. '
+          +'<a href="javascript:void(0)" onclick="setHojaSuccess(\'material\')" '
+          +'style="color:var(--accent)">Ver el material</a>')
+        : ('Todavia no hay material cargado: el copy va a salir generico. '
+          +'<a href="javascript:void(0)" onclick="setHojaSuccess(\'material\')" '
+          +'style="color:var(--accent)">Cargar material</a>'))
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
       +'La piel Hollywood necesita un plano que muestre el negocio. Estas ideas salen de las '
@@ -31443,8 +31470,7 @@ async function lpVideoGenerar(clientId, i){
         decir('Higgsfield lo termino en "'+q.estado+'": '+(q.motivo||''),'var(--redx)');
         listo(); return;
       }
-      _lpCfg(c).videoUrl=q.url;
-      save();
+      _lpVideoSet(c, q.url);
       if(typeof renderTab==='function') renderTab();
       _lpRefrescarPreview(clientId);
       decir('Listo, ya es el fondo del hero.','var(--accent)');
@@ -31457,9 +31483,28 @@ function lpVideoUrlGuardar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var e=document.getElementById('lp-vid-url');
-  _lpCfg(c).videoUrl=String((e||{}).value||'').trim();
-  save();
+  _lpVideoSet(c, String((e||{}).value||'').trim());
   if(typeof renderTab==='function') renderTab();
+}
+// Guarda el video y lo deja tambien en Material. Vivia solo en cfg.videoUrl,
+// asi que en la hoja Material del cliente no figuraba: la pieza mas cara de
+// producir era la unica que no aparecia en la lista de lo que tiene.
+function _lpVideoSet(c, url){
+  var cfg=_lpCfg(c);
+  var antes=String(cfg.videoUrl||'').trim();
+  url=String(url||'').trim();
+  cfg.videoUrl=url;
+  c.material=c.material||[];
+  // Se reemplaza el registro anterior en vez de acumular uno por cada
+  // generacion: es el mismo lugar de la landing, no una pieza nueva.
+  c.material=c.material.filter(function(m){
+    return !(m && m.deLanding==='video' ) && !(antes && m && m.url===antes && m.deLanding);
+  });
+  if(url){
+    c.material.unshift({id:Date.now(), label:'Video de fondo de la landing',
+      url:url, deLanding:'video', at:new Date().toISOString()});
+  }
+  save();
 }
 function lpVideoCopiar(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
