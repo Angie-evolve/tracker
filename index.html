@@ -23024,6 +23024,22 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
   // no se pudieron enganchar y asignarlas de un clic, en vez de dejar la
   // busqueda en cero sin salida.
   S._citasAgenda=eventos||[];
+  // Y tambien guardada, porque en memoria se perdia al recargar: quedaba la
+  // fecha de "ultima revision" pero ninguna cita abajo, y la unica salida
+  // —asignarla a mano— desaparecia sin decir por que.
+  // Se guardan solo las proximas y con los campos que usa la lista: el
+  // navegador de esta app ya vive al borde del limite.
+  try{
+    var corte=Date.now()-2*24*3600*1000;
+    DB.agendaGhl={ at:new Date().toISOString(),
+      eventos:(eventos||[]).filter(function(ev){
+        var t=Date.parse(ev.inicio||''); return !t || t>corte;
+      }).slice(0,60).map(function(ev){
+        return {id:ev.id, titulo:ev.titulo, inicio:ev.inicio, estado:ev.estado,
+                con:ev.con, mail:ev.mail, deNuestroLado:ev.deNuestroLado,
+                calendario:ev.calendario};
+      }) };
+  }catch(e){ /* si no entra, se sigue con la de memoria */ }
   var previas=_citasDe(c);
   c.citas={};
   c.citasSinEtapa=[];
@@ -23084,7 +23100,7 @@ function _citasDecir(clientId, t, col){
 function citasAsignarAgenda(clientId, idx, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!etapa) return;
-  var ev=(S._citasAgenda||[])[idx];
+  var ev=_agendaGhl()[idx];
   if(!ev) return;
   c.citas=c.citas||{};
   c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
@@ -23111,6 +23127,11 @@ function citasAsignar(clientId, idx, etapa){
   toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
 }
 // El bloque que se ve en la ficha del panel.
+// La de memoria si la hay —recien buscada, mas completa— y si no la guardada.
+function _agendaGhl(){
+  if((S._citasAgenda||[]).length) return S._citasAgenda;
+  return ((DB.agendaGhl||{}).eventos)||[];
+}
 function _citasHtml(c){
   var cit=_citasDe(c);
   var claves=Object.keys(cit);
@@ -23161,7 +23182,7 @@ function _citasHtml(c){
     // agenda, el reconocimiento falla, y no habia forma de verla ni asignarla.
     +(function(){
       var hoy=new Date(); hoy.setHours(0,0,0,0);
-      var ag=(S._citasAgenda||[]).map(function(ev,i){ return {ev:ev, i:i}; })
+      var ag=_agendaGhl().map(function(ev,i){ return {ev:ev, i:i}; })
         .filter(function(x){
           if(String(x.ev.estado||'')==='cancelled') return false;
           var d=new Date(x.ev.inicio);
