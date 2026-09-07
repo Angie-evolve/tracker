@@ -45916,7 +45916,44 @@ function setMmRango(n){
   renderTab();
 }
 
-function mensualMatrizHtml(ops, rules, money){
+// new Date('2026-07-27') se parsea como medianoche UTC, y en Argentina eso es
+// el 26 a las 21. Con eso la semana arrancaba un dia antes y el gasto del lunes
+// caia en el mes anterior. Las fechas de las semanas son dias, no instantes.
+function _mmFecha(v){
+  var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(v||''));
+  if(m) return new Date(+m[1], +m[2]-1, +m[3]);
+  var d=new Date(v);
+  return isNaN(d)?null:d;
+}
+// La inversion por mes sale de las semanas de Meta (c.liveLines), que es la
+// unica serie de gasto con fecha. Las conversionLines son bloques largos y
+// sumarlas ademas contaria la misma plata dos veces.
+function _mmInversion(c, meses){
+  var out=meses.map(function(){ return null; });
+  var idx={}; meses.forEach(function(mm,i){ idx[mm.y+'-'+mm.m]=i; });
+  ((c&&c.liveLines)||[]).forEach(function(l){
+    // La linea rolling son los ultimos siete dias y se pisa con la semana en
+    // curso: sumarla contaria ese gasto dos veces.
+    if(l.rolling) return;
+    var gasto=Number((l.metrics||{}).adSpent);
+    if(!gasto || isNaN(gasto)) return;
+    var d1=_mmFecha(l.dateStart||l.weekKey), d2=_mmFecha(l.dateEnd||l.dateStart||l.weekKey);
+    if(!d1||!d2) return;
+    // Una semana cae en dos meses seguido. Repartirla por dia es mas honesto
+    // que darsela entera al mes del lunes, que corre el gasto hasta seis dias.
+    var dias=Math.round((d2-d1)/86400000)+1;
+    if(dias<1||dias>31) dias=7;
+    var porDia=gasto/dias;
+    for(var k=0;k<dias;k++){
+      var d=new Date(d1.getFullYear(), d1.getMonth(), d1.getDate()+k);
+      var i=idx[d.getFullYear()+'-'+d.getMonth()];
+      if(i==null) continue;
+      out[i]=(out[i]||0)+porDia;
+    }
+  });
+  return out;
+}
+function mensualMatrizHtml(ops, rules, money, c){
   if(!ops || !ops.length) return '';
   var stamps=[];
   ops.forEach(function(o){ if(o.createdAt){ var d=new Date(o.createdAt); if(!isNaN(d)) stamps.push(d.getTime()); } });
@@ -45972,7 +46009,19 @@ function mensualMatrizHtml(ops, rules, money){
     };
   });
 
+  // Se calcula despues de col porque necesita la facturacion de cada mes.
+  var inv=_mmInversion(c, meses);
+  col.forEach(function(cc,i){
+    cc.inversion=inv[i];
+    // Sin inversion no hay ROAS: dividir por cero da infinito y un mes sin
+    // pauta no es un mes con retorno infinito, es un mes sin pauta.
+    cc.roas=(inv[i]&&inv[i]>0)?(cc.valor/inv[i]):null;
+  });
+
   var fNum=function(v){ return v==null?null:Math.round(v).toLocaleString('es-AR'); };
+  var fRoas=function(v){
+    return v==null?null:((Math.round(v*100)/100).toFixed(2).replace('.',',')+'x');
+  };
   var fPct=function(v){ return v==null?null:(Math.round(v*10)/10).toFixed(1).replace('.',',')+'%'; };
   var fMon=function(v){ return v==null?null:money(v); };
   var FILAS=[
@@ -45987,6 +46036,8 @@ function mensualMatrizHtml(ops, rules, money){
     {k:'cierres',l:'Cierres',f:fNum},
     {k:'tasa',l:'Tasa de cierre',f:fPct},
     {k:'valor',l:'Facturacion',f:fMon},
+    {k:'inversion',l:'Inversion en pauta',f:fMon},
+    {k:'roas',l:'ROAS',f:fRoas},
     {k:'ticket',l:'Ticket promedio',f:fMon},
     {k:'porAgenda',l:'Facturacion por agenda',f:fMon}
   ].filter(function(f){
@@ -46019,7 +46070,14 @@ function mensualMatrizHtml(ops, rules, money){
       }).join('')
     +'</tbody></table></div>'
     +'<div class="mm-foot">Cada oportunidad cae en el mes en que entro, no en el mes en que avanzo: la columna de un mes son los cierres de los leads de ese mes. '
-    +'El mes en curso va sombreado porque todavia esta sumando. Respeta el segmento elegido arriba, pero no el filtro de periodo.</div>'
+    +'El mes en curso va sombreado porque todavia esta sumando. Respeta el segmento elegido arriba, pero no el filtro de periodo. '
+    // El ROAS de aca no es el de Meta y conviene decirlo: el de Meta divide lo
+    // que entro ese mes por lo que se gasto ese mes, y mezcla cohortes. Este
+    // sigue a los leads del mes, que es lo que permite comparar meses entre si.
+    +'El ROAS divide lo que terminaron facturando los leads que entraron ese mes por lo que se '
+    +'gasto ese mes, asi que no da igual que el de Meta: un lead que entro en mayo y cerro en '
+    +'julio suma en mayo. La inversion sale de las semanas de Meta, repartidas por dia cuando '
+    +'la semana cae en dos meses.</div>'
     +'</div>';
 }
 
@@ -46704,7 +46762,7 @@ function renderVentasTab(c, el){
   if(view==='embudo'&&seg&&S.ventasPais){
     _opsMens=_opsMens.filter(function(o){ return _n(paisOf(o))===_n(S.ventasPais); });
   }
-  html+=mensualMatrizHtml(_opsMens, _rules, money);
+  html+=mensualMatrizHtml(_opsMens, _rules, money, c);
 
   el.innerHTML=html;
 }
