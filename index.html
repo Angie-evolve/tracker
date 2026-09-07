@@ -19495,6 +19495,7 @@ function renderTab(){
     el.innerHTML=`
       <div style="min-height:calc(100vh - 92px);display:flex;flex-direction:column">
         ${successSubNav(c)}
+        ${_queHaceHtml(c)}
         <div style="flex:1;display:flex;flex-direction:column">
         <div id="sh-facturacion" style="display:${_shHoja()==='facturacion'?'block':'none'}">
         ${_acordadoHtml(c)}
@@ -21791,6 +21792,121 @@ function setHojaSuccess(k){
 }
 // El boton de reporte va al final de la misma fila: era lo unico util de la
 // cabecera que se saco, y aca no roba una linea entera de alto.
+// Que hace el cliente, en dos frases y sin jerga. Va arriba de todo porque es
+// lo primero que hace falta y lo que nadie tiene escrito: el que entra a la
+// ficha para preparar una llamada, cubrir a alguien o revisar un anuncio
+// arranca reconstruyendolo de las llamadas cada vez.
+function _queHace(c){
+  return (c.queHace&&typeof c.queHace==='object')?c.queHace:null;
+}
+function _queHaceHtml(c){
+  var q=_queHace(c);
+  var editando=(S._qhEdit===c.id);
+  var marco='margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)';
+  if(editando){
+    return '<div style="'+marco+'">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.07em;margin-bottom:6px">Que hace</div>'
+      +'<textarea id="qh-txt" rows="3" style="width:100%;box-sizing:border-box;padding:9px 11px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-family:var(--font);font-size:13px;line-height:1.6;'
+        +'resize:vertical">'+esc((q&&q.txt)||'')+'</textarea>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:7px">'
+        +'<button class="btn btn-sm" onclick="queHaceCancelar()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="queHaceGuardar('+c.id+')">'
+        +'Guardar</button>'
+      +'</div>'
+    +'</div>';
+  }
+  var acciones='<span id="qh-estado" style="font-size:11px;color:var(--text3)"></span>'
+    +'<button class="btn btn-sm" id="qh-btn" onclick="queHaceLeer('+c.id+')" '
+      +'title="Lee las llamadas y los documentos del cliente y lo escribe solo" '
+      +'style="font-size:10.5px;padding:2px 8px">'+(q?'Volver a leer':'Escribirlo con IA')+'</button>'
+    +'<button class="btn btn-sm" onclick="queHaceEditar('+c.id+')" '
+      +'style="font-size:10.5px;padding:2px 8px">'+(q?'Editar':'Escribirlo')+'</button>';
+  if(!q||!String(q.txt||'').trim()){
+    return '<div style="'+marco+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +'<span style="flex:1;min-width:200px;font-size:12.5px;color:var(--text3);line-height:1.6">'
+        +'Nadie escribio todavia que hace '+esc(c.name||'este cliente')+'.</span>'
+      +acciones
+    +'</div>';
+  }
+  return '<div style="'+marco+'">'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:5px">'
+      +'<span style="flex:1;min-width:120px;font-size:10px;color:var(--text3);'
+        +'text-transform:uppercase;letter-spacing:.07em">Que hace</span>'
+      +acciones
+    +'</div>'
+    +'<div style="font-size:13px;color:var(--text2);line-height:1.65;max-width:88ch">'
+      +esc(q.txt)+'</div>'
+  +'</div>';
+}
+function queHaceEditar(clientId){ S._qhEdit=clientId; renderTab(); }
+function queHaceCancelar(){ S._qhEdit=null; renderTab(); }
+function queHaceGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=String((document.getElementById('qh-txt')||{}).value||'').trim();
+  // A mano tambien se puede borrar: dejarlo vacio es una respuesta valida y
+  // vale mas que una frase inventada que despues alguien lee como cierta.
+  c.queHace=t?{txt:t, at:new Date().toISOString(), auto:false}:null;
+  S._qhEdit=null;
+  save();
+  renderTab();
+}
+async function queHaceLeer(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var e=document.getElementById('qh-estado');
+  var b=document.getElementById('qh-btn');
+  var decir=function(t,col){ if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; } };
+  if(!apiKey){ decir('Falta la clave de Anthropic en Configuracion de agencia.','var(--amberx)'); return; }
+  var mat=_llamadasParaIA(c);
+  if(!mat.items.length){ decir('No hay llamadas ni documentos con texto.','var(--amberx)'); return; }
+  if(b){ b.disabled=true; b.textContent='Leyendo...'; }
+  decir('Leyendo '+mat.items.length+' fuentes...');
+  var pedido='Abajo esta el material del cliente '+(c.name||'')+': llamadas y documentos.\n\n'
+    +'Explicame en DOS frases, como si se lo contaras a un chico de diez anos, que hace este '
+    +'cliente exactamente: que vende, a quien, y que problema le resuelve.\n\n'
+    +'REGLAS:\n'
+    +'- Sin jerga, sin nombres de tecnologias, sin siglas y sin adjetivos de marketing. Nada de '
+    +'"solucion integral", "plataforma end to end" ni "optimiza procesos".\n'
+    +'- Concreto: que pasa en el mundo real cuando alguien le compra.\n'
+    +'- Solo lo que este en el material. No lo deduzcas del rubro ni del nombre.\n'
+    +'- Si el material no alcanza para saberlo, responde exactamente: NO ALCANZA\n'
+    +'- Devolve solo el texto, sin comillas ni titulo.\n\n'
+    +'MATERIAL:\n\n'
+    // _llamadasParaIA devuelve las fuentes sueltas, no un texto armado: cada
+    // consumidor las pega como le sirve.
+    +mat.items.map(function(x){ return '### '+x.titulo+'\n'+x.texto; }).join('\n\n');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:400,
+        messages:[{role:'user', content:pedido}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var txt=String(((d.content||[])[0]||{}).text||'').trim();
+    // Vacio es una respuesta correcta: significa que el material no alcanza, y
+    // es mejor decirlo que escribir dos frases verosimiles que nadie chequea.
+    if(!txt || /^NO ALCANZA/i.test(txt)){
+      if(b){ b.disabled=false; b.textContent=_queHace(c)?'Volver a leer':'Escribirlo con IA'; }
+      decir('El material no alcanza para saber que hace. Escribilo a mano.','var(--amberx)');
+      return;
+    }
+    c.queHace={txt:txt, at:new Date().toISOString(), auto:true};
+    save();
+    renderTab();
+  }catch(err){
+    if(b){ b.disabled=false; b.textContent=_queHace(c)?'Volver a leer':'Escribirlo con IA'; }
+    decir(err.message||'no pude leerlo','var(--redx)');
+  }
+}
 function successSubNav(c){
   if(c) S._shCliente=c.id;
   var sel=_shHoja();
