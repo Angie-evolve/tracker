@@ -659,6 +659,20 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
   cursor:pointer;white-space:nowrap;border-radius:0}
 .lp-tab:hover{color:var(--text2)}
 .lp-tab.on{color:var(--strong);border-bottom-color:var(--accent)}
+.lp-modo{background:none;border:0;color:var(--text3);cursor:pointer;
+  font-family:var(--font);font-size:10.5px;padding:2px 7px;border-radius:8px}
+.lp-modo:hover{color:var(--text2);background:var(--bg3)}
+/* Las preguntas que faltan, listas para mandar. */
+.lp-falta{display:flex;gap:9px;align-items:flex-start;padding:4px 0;cursor:pointer}
+.lp-falta input{margin-top:3px;flex:none;accent-color:var(--accent)}
+.lp-falta-q{display:block;font-size:11.5px;color:var(--text2);line-height:1.55}
+.lp-falta-d{display:block;font-size:10px;color:var(--text3);margin-top:2px}
+/* Lo que sale hacia afuera, en el orden en que se hace. */
+.lp-ent-i{display:flex;gap:11px;align-items:center;padding:9px 0;
+  border-top:1px solid var(--border);flex-wrap:wrap}
+.lp-ent-i:first-of-type{border-top:0}
+.lp-ent-n{flex:none;width:16px;font-size:11px;color:var(--text3)}
+.lp-ent-s{font-size:10.5px;color:var(--text3);margin-top:2px}
 /* El costo de haber elegido distinto, y el lugar para dejar dicho por que. */
 .lp-diff{border:1px solid rgba(224,163,58,.30);background:rgba(224,163,58,.05);
   border-radius:var(--radius-lg);padding:11px 13px;margin-bottom:16px}
@@ -27850,6 +27864,44 @@ function _lpFraccion(n){
 // mas. Lo util es el costo de esa diferencia y poder dejar dicho por que:
 // dentro de tres semanas alguien va a preguntarse por que esta en oscuro, y la
 // respuesta tiene que estar aca y no en un WhatsApp.
+// Las preguntas tildadas, en texto. Se arma una sola vez y la usan el boton de
+// WhatsApp y el de copiar: dos formas de sacar lo mismo de la app.
+function _lpFaltaTexto(c){
+  var cfg=_lpCfg(c), r=cfg.reco||{}, no=cfg.faltaNo||{};
+  var L=(r.falta||[]).map(function(x,i){
+    if(no[i]) return '';
+    var q=(x&&typeof x==='object')?_lpLimpiar(x.q||x.pregunta||''):_lpLimpiar(x);
+    return q?('\u2022 '+q):'';
+  }).filter(Boolean);
+  if(!L.length) return '';
+  return 'Hola! Para avanzar con la landing me faltan estos datos:\n\n'+L.join('\n');
+}
+function lpFaltaTildar(clientId, i, on){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var cfg=_lpCfg(c);
+  cfg.faltaNo=cfg.faltaNo||{};
+  if(on) delete cfg.faltaNo[i]; else cfg.faltaNo[i]=true;
+  save();
+}
+function lpFaltaCopiar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=_lpFaltaTexto(c);
+  if(!t){ toast('No hay ninguna tildada','amber'); return; }
+  navigator.clipboard.writeText(t).then(function(){ toast('Preguntas copiadas'); },
+    function(){ toast('No pude copiar','amber'); });
+}
+function lpFaltaWhatsApp(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=_lpFaltaTexto(c);
+  if(!t){ toast('No hay ninguna tildada','amber'); return; }
+  // Al numero del cliente si lo hay; si no, a WhatsApp sin destinatario, que
+  // deja elegir el contacto en vez de no hacer nada.
+  var n=String(c.telefono||c.contactoTelefono||'').replace(/[^0-9]/g,'');
+  window.open('https://wa.me/'+n+'?text='+encodeURIComponent(t), '_blank', 'noopener');
+}
 function _lpDiffHtml(c, cfg){
   var r=cfg.reco;
   if(!r) return '';
@@ -32061,6 +32113,17 @@ function _lpPaso(c, k, titulo, resumen, hecho, html, accion){
     +'</button>'
   +'</section>';
 }
+// Para la quinta landing del mes no hace falta que te expliquen que es
+// Hollywood. En rapido no se abre nada solo y las descripciones se callan.
+// Se guarda en el navegador y no en el cliente: es una preferencia de quien
+// trabaja, no del cliente que se esta armando.
+function _lpModo(){ return (localStorage.getItem('evold-lp-modo')||'guiado'); }
+function lpModo(){
+  try{ localStorage.setItem('evold-lp-modo', _lpModo()==='rapido'?'guiado':'rapido'); }
+  catch(e){ /* lleno: no es critico */ }
+  S._lpPaso=null;
+  if(typeof renderTab==='function') renderTab();
+}
 function lpPaso(k){
   S._lpPaso=k;
   if(typeof renderTab==='function') renderTab();
@@ -32101,11 +32164,61 @@ function _lpPielesHtml(c, cfg, sugerida, motivo){
       +'<div class="lp-por">'+esc(_lpLimpiar(motivo))+'</div>'):'')
   +'</div>';
 }
+// Todo lo que sale de la ficha hacia afuera, junto y en el orden en que se
+// hace. Estaba repartido: el HTML en la isla, la pagina de gracias en su
+// bloque, el CSS adentro de la rosca, el prompt maestro compitiendo con todo.
+function _lpEntregaHtml(c, cfg){
+  var html=_lpPaginaHtml(c);
+  var kb=Math.round(html.length/1024);
+  var g=_lpGracias(c);
+  var wa=String(g.wa||'').replace(/[^0-9]/g,'');
+  var item=function(n, t, sub, botones){
+    return '<div class="lp-ent-i">'
+      +'<span class="lp-ent-n mono">'+n+'</span>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:12.5px;color:var(--text)">'+esc(t)+'</div>'
+        +'<div class="lp-ent-s mono">'+esc(sub)+'</div>'
+      +'</div>'
+      +'<div style="display:flex;gap:6px;flex:none">'+botones+'</div>'
+    +'</div>';
+  };
+  var bt=function(txt, fn, fuerte){
+    return '<button class="btn btn-sm'+(fuerte?' btn-primary':'')+'" '
+      +'style="font-size:10.5px;padding:3px 9px" onclick="'+fn+'">'+txt+'</button>';
+  };
+  return '<div>'
+    +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:11px">'
+      +'Tres piezas y, si hace falta, el prompt. En este orden.</div>'
+    +item(1,'La landing', 'index.html \u00b7 '+kb+' KB'
+        +(String(cfg.videoUrl||'').trim()?' \u00b7 con el video':''),
+      bt('Copiar','lpCopiarHtml('+c.id+')',true)
+      +bt('Copiar para GHL','lpCopiarGhl('+c.id+')'))
+    +item(2,'La p\u00e1gina de gracias',
+      (g.pasos||[]).length+' pasos'+(wa?'':' \u00b7 sin WhatsApp'),
+      bt('Verla','lpGraciasVer('+c.id+')')
+      +bt('Copiar para GHL','lpGraciasCopiarGhl('+c.id+')'))
+    +item(3,'El CSS de los widgets','para pegar en GHL \u2192 Custom CSS',
+      bt('Calendario','lpCalCssCopiar('+c.id+')')
+      +bt('Formulario','lpFormCssCopiar('+c.id+')'))
+    // El prompt maestro baja de jerarquia: sigue estando, pero deja de
+    // competir con el flujo normal.
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:12px;padding-top:10px;'
+      +'border-top:1px solid var(--border)">'
+      +'<a href="javascript:void(0)" onclick="lpPromptMaestro('+c.id+')" '
+      +'style="color:var(--accent)">Prompt maestro</a> si prefer\u00eds hacerla afuera '
+      +'de punta a punta.</div>'
+  +'</div>';
+}
 function landingHtml(c){
   var cfg=_lpCfg(c);
-  var head='<div style="font-size:10px;font-weight:500;color:var(--text3);'
-      +'text-transform:uppercase;letter-spacing:0.07em;margin-bottom:12px">'
-      +'Landing de conversion</div>';
+  var head='<div style="display:flex;align-items:center;justify-content:space-between;'
+      +'gap:10px;margin-bottom:12px">'
+    +'<span style="font-size:10px;font-weight:500;color:var(--text3);'
+      +'text-transform:uppercase;letter-spacing:0.07em">Landing de conversion</span>'
+    +'<button class="lp-modo" onclick="lpModo()" '
+      +'title="En rapido no se abre nada solo. Se acuerda por usuario, no por cliente.">'
+      +(_lpModo()==='rapido'?'modo r\u00e1pido':'modo guiado')+'</button>'
+  +'</div>';
 
   // Las acciones viajan en una isla pegada al piso de la pestaña. Arriba
   // quedaban a un scroll de distancia del paso que se estaba mirando, y "Ver la
@@ -32351,13 +32464,32 @@ function landingHtml(c){
     +'</div>'
     // Lo que no se pudo saber vale tanto como la eleccion: dice que preguntarle
     // al cliente en la proxima llamada en vez de decidir a ciegas.
+    // Eran tres bullets ambar que se leen y se olvidan. Son, literalmente, la
+    // agenda de la proxima llamada: con un tilde y un boton salen por WhatsApp.
     +((r&&(r.falta||[]).length)
       ?('<div style="margin-top:11px;padding-top:11px;border-top:1px solid var(--border)">'
-        +'<div style="font-size:10.5px;color:var(--amberx);margin-bottom:5px">'
-        +'Esto no lo pude sacar del material</div>'
-        +r.falta.map(function(x){
-          return '<div style="font-size:11.5px;color:var(--text2);line-height:1.6">&middot; '
-            +esc(_lpLimpiar(x))+'</div>'; }).join('')
+        +'<div style="font-size:10.5px;color:var(--amberx);margin-bottom:7px">'
+        +'Para cerrar estas decisiones falta preguntarle a '+esc(c.name||'el cliente')+'</div>'
+        +r.falta.map(function(x,i){
+          // El modelo puede devolver el texto suelto o {q, desbloquea}: se
+          // aceptan los dos, que si no habria que rehacer las reco viejas.
+          var q=(x&&typeof x==='object')?_lpLimpiar(x.q||x.pregunta||''):_lpLimpiar(x);
+          var des=(x&&typeof x==='object')?String(x.desbloquea||''):'';
+          var on=!(((cfg.faltaNo||{})[i]));
+          return '<label class="lp-falta">'
+            +'<input type="checkbox"'+(on?' checked':'')+' '
+              +'onchange="lpFaltaTildar('+c.id+','+i+',this.checked)">'
+            +'<span><span class="lp-falta-q">'+esc(q)+'</span>'
+              +(des?('<span class="lp-falta-d mono">desbloquea: '+esc(des)+'</span>'):'')
+            +'</span>'
+          +'</label>';
+        }).join('')
+        +'<div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+            +'onclick="lpFaltaWhatsApp('+c.id+')">Mandar por WhatsApp</button>'
+          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+            +'onclick="lpFaltaCopiar('+c.id+')">Copiarlas</button>'
+        +'</div>'
       +'</div>'):'')
     +avisosInv
     +'<div id="lp-reco-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
@@ -32399,11 +32531,13 @@ function landingHtml(c){
        +'El video de fondo solo aparece con la piel Hollywood.</div>', a:'Abrir'},
     {k:'grac',  t:'P\u00e1gina de gracias',
      r:((_lpGracias(c).pasos||[]).length+' pasos'),
-     hecho:true, h:_lpGraciasFicha(c), a:'Abrir'}
+     hecho:true, h:_lpGraciasFicha(c), a:'Abrir'},
+    {k:'ent',   t:'Entregar', r:'la landing, gracias y el CSS',
+     hecho:!!cp2, h:_lpEntregaHtml(c, cfg), a:'Abrir'}
   ];
   // Si no hay nada abierto, se abre el primero sin terminar: al entrar, lo que
   // hace falta hacer queda a la vista sin buscarlo.
-  if(!S._lpPaso){
+  if(!S._lpPaso && _lpModo()!=='rapido'){
     for(var pi=0;pi<pasos.length;pi++) if(!pasos[pi].hecho){ S._lpPaso=pasos[pi].k; break; }
   }
   var cuerpoPasos=pasos.map(function(x){
