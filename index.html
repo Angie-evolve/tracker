@@ -583,6 +583,23 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
    una pastilla, abrir el preview, mirar, cerrar y volver a buscar donde
    estabas; con el preview al lado el cambio se ve sin perder la posicion. */
 /* Un solo boton y un menu: los otros tres se usan una vez y al final. */
+/* Un paso a la vez. Cerrado es una linea con lo que decidiste; abierto, el
+   bloque de siempre. Sin esto la pestana era un scroll de dos mil y pico de
+   pixeles donde todo pesaba igual. */
+.lp-paso{border:1px solid var(--border);border-radius:var(--radius-lg);
+  margin-bottom:8px;background:var(--bg2);overflow:hidden}
+.lp-paso.abierta{background:transparent}
+.lp-paso-cab{display:flex;align-items:center;gap:11px;width:100%;background:none;
+  border:0;cursor:pointer;font-family:var(--font);padding:11px 14px;text-align:left}
+.lp-paso-cab:hover{background:var(--bg3)}
+.lp-paso-n{flex:none;width:14px;font-size:11px;color:var(--text3);text-align:center}
+.lp-paso-n.ok{color:var(--accent)}
+.lp-paso-t{font-size:12.5px;color:var(--text);flex:none}
+.lp-paso-r{flex:1;min-width:0;font-size:11px;color:var(--text3);text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lp-paso-abrir{flex:none;font-size:11px;color:var(--text3)}
+.lp-paso-cab:hover .lp-paso-abrir{color:var(--text2)}
+.lp-paso-cuerpo{padding:2px 14px 14px}
 .lp-dock{position:relative;pointer-events:auto;display:flex;flex-direction:column;
   align-items:center;gap:6px}
 .lp-dock-in{display:flex;align-items:center;gap:4px;background:var(--bg3);
@@ -31874,6 +31891,37 @@ document.addEventListener('keydown', function(ev){
   var c=id&&DB.clients?DB.clients.find(function(x){return x.id===id;}):null;
   if(c){ ev.preventDefault(); lpVer(c.id); }
 });
+// Un paso a la vez, los otros colapsados a su resultado. La pestana era un
+// scroll de dos mil y pico de pixeles donde todo pesaba lo mismo; ahora cada
+// paso cerrado es una linea que muestra lo que decidiste, y se abre uno.
+//
+// Envuelve los bloques que ya existen en vez de reescribirlos: cada uno sigue
+// siendo la misma funcion, con sus handlers y sus ids.
+function _lpPaso(c, k, titulo, resumen, hecho, html, accion){
+  var abierto=(S._lpPaso===k);
+  if(abierto){
+    return '<section class="lp-paso abierta">'
+      +'<button class="lp-paso-cab" onclick="lpPaso(null)">'
+        +'<span class="lp-paso-n">'+(hecho?'\u2713':'\u00b7')+'</span>'
+        +'<span class="lp-paso-t">'+esc(titulo)+'</span>'
+        +'<span class="lp-paso-r">cerrar</span>'
+      +'</button>'
+      +'<div class="lp-paso-cuerpo">'+html+'</div>'
+    +'</section>';
+  }
+  return '<section class="lp-paso">'
+    +'<button class="lp-paso-cab" onclick="lpPaso(\''+k+'\')">'
+      +'<span class="lp-paso-n'+(hecho?' ok':'')+'">'+(hecho?'\u2713':'\u00b7')+'</span>'
+      +'<span class="lp-paso-t">'+esc(titulo)+'</span>'
+      +'<span class="lp-paso-r mono">'+esc(resumen||'')+'</span>'
+      +'<span class="lp-paso-abrir">'+esc(accion||'Abrir')+'</span>'
+    +'</button>'
+  +'</section>';
+}
+function lpPaso(k){
+  S._lpPaso=k;
+  if(typeof renderTab==='function') renderTab();
+}
 function landingHtml(c){
   var cfg=_lpCfg(c);
   var head='<div style="font-size:10px;font-weight:500;color:var(--text3);'
@@ -32118,6 +32166,50 @@ function landingHtml(c){
   +'</div>';
 
   var rr=cfg.reco||{};
+  // Los resumenes de cada paso cerrado: lo que decidiste, no como se llama el
+  // paso. Es lo unico que hace util una linea colapsada.
+  var _nom=function(lista,k){ for(var i=0;i<lista.length;i++) if(lista[i].k===k) return lista[i].l;
+                              return k||''; };
+  var cp2=cfg.copy||null;
+  var nTit=cp2?((cp2.promesas||[]).filter(Boolean).length):0;
+  var nCam=cp2?(((cp2.formulario||{}).campos)||[]).length:0;
+  var fuentes=_lpMaterialFuentes(c);
+  var pasos=[
+    {k:'leer',  t:'Sitio leido',
+     r:(cfg.investigacion?((cfg.investigacion.clientes||[]).length+' clientes \u00b7 '
+        +((cfg.investigacion.numeros||[]).length)+' numeros'):'sin leer'),
+     hecho:!!cfg.investigacion, h:reco, a:'Abrir'},
+    {k:'combi', t:'Combinacion',
+     r:_nom(LP_MECANICAS,cfg.mecanica)+' \u00b7 '+_nom(LP_PIELES,cfg.piel)
+       +' \u00b7 '+_nom(LP_TEMAS,cfg.tema),
+     hecho:true,
+     h:opciones('Mecanica', LP_MECANICAS, 'mecanica', null, rr.porqueMecanica, rr.mecanica,
+         'lpMecModal('+c.id+')')
+      +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)},
+         rr.porquePiel, rr.piel)
+      +opciones('Tema', LP_TEMAS, 'tema', null, rr.porqueTema, rr.tema)
+      +avisoHw, a:'Abrir'},
+    {k:'copy',  t:'Escribir el copy',
+     r:(cp2?(nTit+' titular'+(nTit===1?'':'es')+' \u00b7 '+nCam+' campo'+(nCam===1?'':'s'))
+          :'sin copy'),
+     hecho:!!cp2, h:p2, a:cp2?'Abrir':'Escribir'},
+    {k:'mat',   t:'Material',
+     r:(fuentes.resumen||'sin material')+(String(cfg.videoUrl||'').trim()?' \u00b7 1 video':''),
+     hecho:!!(fuentes.doc.length||fuentes.leidos.length),
+     h:_lpVideoHtml(c, cfg)||'<div style="font-size:11.5px;color:var(--text3)">'
+       +'El video de fondo solo aparece con la piel Hollywood.</div>', a:'Abrir'},
+    {k:'grac',  t:'P\u00e1gina de gracias',
+     r:((_lpGracias(c).pasos||[]).length+' pasos'),
+     hecho:true, h:_lpGraciasFicha(c), a:'Abrir'}
+  ];
+  // Si no hay nada abierto, se abre el primero sin terminar: al entrar, lo que
+  // hace falta hacer queda a la vista sin buscarlo.
+  if(!S._lpPaso){
+    for(var pi=0;pi<pasos.length;pi++) if(!pasos[pi].hecho){ S._lpPaso=pasos[pi].k; break; }
+  }
+  var cuerpoPasos=pasos.map(function(x){
+    return _lpPaso(c, x.k, x.t, x.r, x.hecho, x.h, x.a);
+  }).join('');
   // Los handlers de adentro del modal llaman a renderTab, que pasa por aca:
   // este es el unico lugar donde hace falta engancharse para que el modal no
   // quede con el dato viejo.
@@ -32126,21 +32218,10 @@ function landingHtml(c){
   setTimeout(function(){ _lpLadoPintar(c.id); }, 0);
   return head
     +_lpSemaforoHtml(c)
-    +reco
-    +opciones('Mecanica', LP_MECANICAS, 'mecanica', null, rr.porqueMecanica, rr.mecanica,
-      'lpMecModal('+c.id+')')
-    // Los tres bloques de configuracion se fueron adentro de la rosca: apilados
-    // aca empujaban la piel y el tema abajo del pliegue, y son cosas que se
-    // tocan una vez y despues no.
-    +opciones('Piel', LP_PIELES, 'piel', {hollywood:!_lpHollywoodViable(c)}, rr.porquePiel, rr.piel)
-    +opciones('Tema', LP_TEMAS, 'tema', null, rr.porqueTema, rr.tema)
-    +avisoHw
-    +_lpVideoHtml(c, cfg)
-    // Va al final: es lo ultimo del recorrido —se llega despues de reservar—
-    // y ponerla arriba cortaba la secuencia mecanica, piel, tema.
-    +_lpGraciasFicha(c)
-    +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;min-height:16px"></div>'
-    +p2+dock;
+    +cuerpoPasos
+    +'<div id="lp-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
+      +'min-height:16px;margin-top:10px"></div>'
+    +dock;
 }
 
 // ---- Formularios ---------------------------------------------------------
