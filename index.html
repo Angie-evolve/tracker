@@ -23581,9 +23581,45 @@ function citasAsignar(clientId, idx, etapa){
 }
 // El bloque que se ve en la ficha del panel.
 // La de memoria si la hay —recien buscada, mas completa— y si no la guardada.
+// La clave para ignorar una cita. El id de GHL cuando viene; si no, la fecha
+// mas el titulo, que es lo unico estable que queda.
+function _agendaClave(ev){
+  return String((ev&&ev.id)||'') || (String((ev&&ev.inicio)||'')+'|'+String((ev&&ev.titulo)||''));
+}
 function _agendaGhl(){
-  if((S._citasAgenda||[]).length) return S._citasAgenda;
-  return ((DB.agendaGhl||{}).eventos)||[];
+  var L=((S._citasAgenda||[]).length) ? S._citasAgenda : (((DB.agendaGhl||{}).eventos)||[]);
+  var no=(DB.agendaNo||[]);
+  if(!no.length) return L;
+  // Filtrar aca y no en la vista: asi la cita ignorada desaparece de todas las
+  // listas a la vez, y los indices que usan asignar y borrar siguen siendo los
+  // mismos que se pintaron.
+  return L.filter(function(ev){ return no.indexOf(_agendaClave(ev))<0; });
+}
+// Las citas se bajan de GHL en cada sincronizacion, asi que sacarlas del array
+// no alcanza: vuelven solas. Se anota la clave y no se muestran mas.
+function citasIgnorarAgenda(clientId, idx){
+  var ev=_agendaGhl()[idx];
+  if(!ev) return;
+  if(!confirm('Sacar "'+String(ev.titulo||'sin titulo')+'" de la agenda?\n\n'
+    +'No se borra de GHL: deja de aparecer aca.')) return;
+  DB.agendaNo=DB.agendaNo||[];
+  var k=_agendaClave(ev);
+  if(DB.agendaNo.indexOf(k)<0) DB.agendaNo.push(k);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof showTickets==='function' && S.torre) showTickets();
+  toast('Sacada de la agenda');
+}
+// Por si se saco de mas: sin esto la clave queda en la lista sin forma de
+// volver, y el unico camino seria tocar la base a mano.
+function citasReponerAgenda(i){
+  var L=(DB.agendaNo||[]);
+  if(!L[i]) return;
+  L.splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof showTickets==='function' && S.torre) showTickets();
+  toast('Vuelve a aparecer en la agenda');
 }
 function _citasHtml(c){
   var cit=_citasDe(c);
@@ -23686,8 +23722,33 @@ function _citasHtml(c){
               +'font-family:var(--font)">'
               +'<option value="">Es de este cliente, etapa...</option>'+ops
             +'</select>'
+            // Pruebas, cancelaciones y reuniones que no son de ningun cliente
+            // se quedaban en la lista para siempre tapando las que importan.
+            +'<button onclick="citasIgnorarAgenda('+c.id+','+x.i+')" '
+              +'title="Sacarla de la agenda" aria-label="Sacar de la agenda" '
+              +'style="flex:none;border:0;background:none;color:var(--text3);cursor:pointer;'
+              +'font-size:14px;line-height:1;padding:0 2px">\u00d7</button>'
           +'</div>';
         }).join('');
+    })()
+    +(function(){
+      var no=(DB.agendaNo||[]);
+      if(!no.length) return '';
+      return '<details class="p3-mano"><summary>'+no.length
+          +(no.length===1?' cita sacada':' citas sacadas')+' de la agenda</summary>'
+        +no.map(function(k,i){
+          // La clave lleva la fecha y el titulo pegados: para volver a ponerla
+          // alcanza con reconocerla, no hace falta que se lea lindo.
+          var t=String(k).split('|');
+          return '<div style="display:flex;gap:8px;align-items:baseline;padding:2px 0">'
+            +'<span style="flex:1;min-width:0;font-size:11px;color:var(--text3);'
+              +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+              +esc(t[1]||t[0])+'</span>'
+            +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;flex:none" '
+              +'onclick="citasReponerAgenda('+i+')">Volver a mostrar</button>'
+          +'</div>';
+        }).join('')
+      +'</details>';
     })()
     +(sueltas.length
       ? ('<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
