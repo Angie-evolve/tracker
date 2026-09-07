@@ -22387,8 +22387,24 @@ function _p360Etapa(c){
   try{ r=_ruta(c)||[]; }catch(e){ return null; }
   var fijas=r.filter(function(x){ return !x.manual; });
   if(!fijas.length) return null;
-  var i=fijas.findIndex(function(x){ return x.estado!=='hecho'; });
-  if(i<0) i=fijas.length-1;
+  // _ruta viene en orden cronologico, que es lo que sirve para dibujar la linea
+  // de tiempo. Para decir en que etapa esta hay que mirar el orden de la ruta:
+  // una etapa sin fecha queda ultima en el calendario y hacia que el cliente
+  // figurara ahi aunque fuera la primera del recorrido.
+  var _ord=rutaDef().map(function(e){ return e.l; });
+  fijas=fijas.slice().sort(function(a,b){
+    return _ord.indexOf(a.l)-_ord.indexOf(b.l);
+  });
+  // La etapa actual es la que sigue a la ULTIMA cumplida, no la primera sin
+  // cumplir. Las etapas no se cumplen en orden —una cita de Onboarding puede
+  // entrar antes de que exista la grabacion del diagnostico— y con la primera
+  // pendiente el cliente quedaba clavado en Diagnostico con el onboarding ya
+  // agendado.
+  var ult=-1;
+  fijas.forEach(function(x,j){ if(x.estado==='hecho') ult=j; });
+  var i=(ult<0)
+    ? 0
+    : (ult+1<fijas.length ? ult+1 : ult);
   return {l:fijas[i].l, i:i, total:fijas.length, estado:fijas[i].estado,
           hechas:fijas.filter(function(x){ return x.estado==='hecho'; }).length};
 }
@@ -24964,7 +24980,16 @@ function _ruta(c){
     // Agendar cuenta como hecha. La llamada de onboarding se agenda al cerrar
     // la venta y se graba dias despues: esperar la grabacion dejaba al cliente
     // trabado en una etapa que en los hechos ya paso.
+    // La cita de GHL tambien cuenta como agendada. Se guardaba en c.citas y la
+    // ruta miraba solo c.rutaAgenda, que se llena al asignar una a mano: un
+    // cliente con la reunion de Onboarding puesta en el calendario seguia
+    // figurando en Diagnostico, y las citas se veian ahi abajo sin efecto.
+    var _ct=(c.citas||{})[e.l];
     var agenda=parseDDMMYYYY(((c.rutaAgenda||{})[e.l])||'');
+    if(!agenda && _ct && _ct.inicio && String(_ct.estado||'')!=='cancelled'){
+      var _d=new Date(_ct.inicio);
+      if(!isNaN(_d)) agenda=new Date(_d.getFullYear(), _d.getMonth(), _d.getDate());
+    }
     var prev=(k.arranque&&e.dia!==null)?new Date(k.arranque.getTime()+e.dia*86400000):null;
     var f=real||aMano||agenda||prev;
     return {l:e.l, fecha:f, manual:false, aMano:!!aMano && !real,
