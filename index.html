@@ -30063,7 +30063,19 @@ function _lpPaginaHtml(c){
       +'<script>(function(){'
       +'var q=document.getElementById("lp-quiz");if(!q)return;'
       +'var ps=[].slice.call(q.querySelectorAll(".qp")),b=q.querySelector(".qbar i");'
-      +'var i=0,pts=0,rama="",NUM=[],VAL={};'
+      +'var i=0,pts=0,rama="",NUM=[],VAL={},vistos={};'
+      // Los seis contadores que el quiz escribia en GHL con el token. Aca van a
+      // lp_eventos, que acepta escritura publica: la misma tabla que ya mide
+      // vistas y opt-ins de la landing, con la clave publicable.
+      +'var SBU='+JSON.stringify(SB_URL)+',SBK='+JSON.stringify(SB_KEY)+';'
+      +'var CLI='+JSON.stringify(String(c.id))+',EMB='+JSON.stringify(String(cfg.landingId||c.name||''))+';'
+      +'var ev=function(t){'
+        +'if(vistos[t])return;vistos[t]=1;'
+        +'try{fetch(SBU+"/rest/v1/lp_eventos",{method:"POST",keepalive:true,'
+          +'headers:{"apikey":SBK,"Content-Type":"application/json","Prefer":"return=minimal"},'
+          +'body:JSON.stringify({cliente:CLI,embudo:EMB,tipo:t,pagina:location.pathname})'
+        +'});}catch(e){}'
+      +'};'
       +'var NIV='+JSON.stringify(niveles.map(function(n){
           var r=String(n.rango||'').split('-');
           return {a:parseInt(r[0],10)||0, b:parseInt(r[1],10)||0, n:String(n.nombre||'')};
@@ -30114,7 +30126,8 @@ function _lpPaginaHtml(c){
           +'return "<li><span>"+x.et+"</span><b>"+x.tx+"</b></li>";}).join("");'
           +'u.hidden=false;}'
       +'};'
-      +'var ver=function(n){i=n;pintar();if(ps[i].hasAttribute("data-fin"))fin();};'
+      +'var ver=function(n){i=n;pintar();'
+        +'if(ps[i].hasAttribute("data-fin")){fin();ev("quiz_informe");}};'
       +'var avanzar=function(){'
         +'var vs=visibles(),n=vs.indexOf(ps[i]);'
         +'if(n>=0&&n<vs.length-1)ver(ps.indexOf(vs[n+1]));'
@@ -30123,9 +30136,14 @@ function _lpPaginaHtml(c){
         +'var e=p.querySelector(".qet");'
         +'NUM.push({et:(e?e.textContent:""),tx:tx});'
       +'};'
+      +'var resp=0;'
       +'q.addEventListener("click",function(e){'
         +'var o=e.target&&e.target.closest?e.target.closest(".qop"):null;if(!o)return;'
         +'var p=o.closest(".qp");'
+        +'resp++;'
+        +'if(resp===1)ev("quiz_empezar");'
+        +'if(resp===1)ev("quiz_p1");'
+        +'if(resp===2)ev("quiz_p2");'
         +'pts+=parseInt(o.getAttribute("data-pts"),10)||0;'
         // La rama se fija con la respuesta, no antes: es lo que decide que
         // preguntas siguen.
@@ -30140,11 +30158,27 @@ function _lpPaginaHtml(c){
             +'if(cl)VAL[cl]=parseFloat(o.getAttribute("data-val"))||0;}'
         +'}'
         +'avanzar();});'
+      +'var nivel=function(){'
+        +'for(var j=0;j<NIV.length;j++)if(pts>=NIV[j].a&&pts<=NIV[j].b&&NIV[j].n)return NIV[j].n;'
+        +'return "";};'
       +'var f=q.querySelector("form");'
       +'if(f)f.addEventListener("submit",function(e){e.preventDefault();'
         +'var r=f.querySelector("[name=resumen],[name=Resumen]");'
         +'if(r&&NUM.length)r.value=NUM.map(function(x){return x.et+": "+x.tx;}).join(" | ");'
+        // El campo puede no existir en el formulario de GHL: se crea oculto en
+        // vez de perder el dato. Si GHL no lo conoce lo ignora, y si esta
+        // creado con su Query Key llega.
+        +'var pon=function(n,v){var el=f.querySelector("[name="+n+"]");'
+          +'if(!el){el=document.createElement("input");el.type="hidden";el.name=n;'
+          +'f.appendChild(el);}el.value=v;};'
+        +'pon("nivel",nivel());pon("puntaje",pts);'
         +'avanzar();});'
+      +'ev("quiz_ver");'
+      // El click en el CTA final: es el ultimo de los seis y el que dice si el
+      // informe convence, que es distinto de si lo vieron.
+      +'q.addEventListener("click",function(e){'
+        +'var a=e.target&&e.target.closest?e.target.closest("[data-fin] a,[data-fin] .cta"):null;'
+        +'if(a)ev("quiz_agendar");});'
       +'ver(0);})();<\/script>';
   };
   // El calendario todavia no existe cuando se arma la pagina: la nota avisa que
@@ -31128,6 +31162,13 @@ var LP_CAMPOS_GHL=(function(){
   // se sabe cual era la pregunta. Aca entra el texto completo.
   L.push({l:'Respuestas (resumen)', k:'resumen', tipo:'texto largo',
     porque:'Las preguntas con su respuesta, para leerlas de un vistazo'});
+  // El nivel es lo que decide la etapa. Antes lo escribia la pagina con el
+  // token; como campo del formulario lo puede leer un workflow, que es la
+  // unica forma de mover el pipeline sin la llave en una pagina publica.
+  L.push({l:'Nivel del quiz', k:'nivel', tipo:'texto',
+    porque:'El nivel que saco. Es lo que el workflow mira para mover la etapa'});
+  L.push({l:'Puntaje del quiz', k:'puntaje', tipo:'numero',
+    porque:'El puntaje crudo, por si el corte de niveles cambia despues'});
   ['utm_ad','utm_campaign','utm_source'].forEach(function(u){
     L.push({l:u, k:u, tipo:'texto', porque:'De donde vino el lead'});
   });
@@ -32914,8 +32955,11 @@ function _lpQuizGateHtml(c, n){
         ? ('Al final: el que responde las '+n+' preguntas ya invirtio y deja el dato. '
           +'Toca un numero para pedirlos antes si preferis volumen sobre calidad.')
         : pos===0
-        ? 'Antes de todo: mas leads y peores. Toca un numero para pedirlos mas tarde.'
-        : ('Despues de la pregunta '+pos+'. Mas a la derecha, menos leads y mejores.'))
+        ? ('Antes de todo: mas leads y peores. Ojo que el nivel todavia no existe cuando se '
+          +'manda el formulario, asi que no viaja a GHL y el workflow no puede mover la etapa '
+          +'con el. Toca un numero para pedirlos mas tarde.')
+        : ('Despues de la pregunta '+pos+'. Mas a la derecha, menos leads y mejores. '
+          +'El nivel se calcula al terminar, asi que con el gate aca todavia no viaja a GHL.'))
     +'</div>'
   +'</div>';
 }
