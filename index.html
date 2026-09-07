@@ -27191,6 +27191,11 @@ async function escribirCopyLanding(clientId){
     });
     cfg.copy=o;
     cfg.copyAt=new Date().toISOString();
+    // Para que piel se escribio. El copy trae secciones que una piel dibuja y
+    // otra no —FAQ, tabla de precios—, asi que cambiar de piel puede dejarlo
+    // viejo sin que nada lo diga.
+    cfg.copyPiel=cfg.piel||'institucional';
+    cfg.copyMecanica=cfg.mecanica||'formulario';
     save();
     if(typeof renderTab==='function') renderTab();
     // Si la vista previa esta abierta, se repinta con el copy nuevo: sin esto
@@ -27203,6 +27208,8 @@ async function escribirCopyLanding(clientId){
       +iaManualBoton('El copy', _pedidoCopy, function(o){
         cfg.copy=o;
         cfg.copyAt=new Date().toISOString();
+        cfg.copyPiel=cfg.piel||'institucional';
+        cfg.copyMecanica=cfg.mecanica||'formulario';
         save();
         if(typeof renderTab==='function') renderTab();
       }),'var(--redx)');
@@ -27649,6 +27656,94 @@ function _lpFraccion(n){
 // Lo que se puede hacer en el modo, en una linea. Se arma en un solo lugar
 // porque editar y mover comparten la barra: con dos textos, el ultimo en
 // escribir tapaba al otro.
+// Semaforo de publicable. La unica pregunta que importa al abrir la ficha es
+// "esto se puede publicar o no", y hasta ahora habia que deducirla mirando
+// seis bloques. Cada falta dice ademas como salir: durante todo el armado de
+// Albet, cada vez que un mensaje decia que hacer, el diagnostico bajaba de
+// cinco vueltas a una.
+function _lpSemaforo(c){
+  var cfg=_lpCfg(c), o=cfg.copy;
+  var faltan=[], avisos=[];
+  var F=function(q, comoSalir){ faltan.push({q:q, c:comoSalir}); };
+  var A=function(q, comoSalir){ avisos.push({q:q, c:comoSalir}); };
+
+  if(!o) F('No hay copy', 'Toca Reescribir y lo escribe con el material.');
+  if(!((c.marca||{}).colores||[]).length)
+    A('Sin paleta de marca', 'Carga el zip de branding en Marca y la landing toma sus colores.');
+
+  var mec=cfg.mecanica||'formulario';
+  if(mec==='calendario'){
+    if(!String(cfg.calendarioId||'').trim())
+      F('Sin calendario elegido', 'En la rosca de Calendario, elegilo o pega el codigo de Compartir.');
+    else if(!String(cfg.calendarioUrl||'').trim())
+      F('El calendario no tiene direccion', 'En la rosca, toca Actualizar la lista o pega el codigo de Compartir.');
+    var preg=_lpPregDespues(c);
+    if(preg.length && (cfg.calendarioOrden||'antes')!=='antes'){
+      var d=cfg.destinoRespuestas||'formGhl';
+      if(d==='formGhl' && !String(cfg.formPostUrl||'').trim())
+        F('Las respuestas de despues no van a ningun lado',
+          'En Estructura, pega el embed del formulario de GHL.');
+      if(d==='webhook' && !String(cfg.webhookGhl||'').trim())
+        F('Falta el webhook', 'En Estructura, pega la URL del Inbound Webhook.');
+      if(d==='funcion' && !String(cfg.landingId||'').trim())
+        F('Falta el id de la landing', 'En Estructura, cargalo y creale la fila en la tabla landings.');
+    }
+  }else if(mec==='quiz'){
+    var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')?c.quiz.preguntas:null;
+    if(!((qz&&qz.preguntas)||[]).length)
+      F('El quiz no tiene preguntas', 'Se arman en la rosca, en la pestana Preguntas.');
+  }else{
+    if(!(((o||{}).formulario||{}).campos||[]).length)
+      A('El formulario sale con los campos de fabrica',
+        'En la rosca, pestana Gate, agregalos o reescribi el copy.');
+  }
+  if(cfg.piel==='hollywood' && !String(cfg.videoUrl||'').trim())
+    A('Hollywood sin video', 'Genera el video con Higgsfield o pega el link, abajo de Tema.');
+
+  // Lo que quedo viejo por cambiar algo despues de escribir el copy.
+  if(o && cfg.copyPiel && cfg.copyPiel!==(cfg.piel||'institucional'))
+    A('El copy se escribio para '+_lpNombrePiel(cfg.copyPiel),
+      'Reescribilo, o dejalo si te sirve igual.');
+  if(o && cfg.copyMecanica && cfg.copyMecanica!==(cfg.mecanica||'formulario'))
+    A('El copy se escribio para '+(cfg.copyMecanica),
+      'Los campos que pide pueden no ser los de esta mecanica.');
+
+  return {faltan:faltan, avisos:avisos, listo:!faltan.length};
+}
+function _lpNombrePiel(k){
+  for(var i=0;i<LP_PIELES.length;i++) if(LP_PIELES[i].k===k) return LP_PIELES[i].l;
+  return k||'';
+}
+function _lpSemaforoHtml(c){
+  var r=_lpSemaforo(c);
+  var fila=function(x, color){
+    return '<div style="display:flex;gap:9px;align-items:baseline;padding:3px 0">'
+      +'<span style="flex:none;width:5px;height:5px;border-radius:50%;margin-top:6px;'
+        +'background:'+color+'"></span>'
+      +'<span style="font-size:11.5px;color:var(--text2)">'+esc(x.q)
+        +' <span style="color:var(--text3)">'+esc(x.c)+'</span></span>'
+    +'</div>';
+  };
+  var color=r.faltan.length?'var(--redx)':(r.avisos.length?'var(--amberx)':'var(--accent)');
+  var titulo=r.faltan.length
+      ? ('Falta '+r.faltan.length+' cosa'+(r.faltan.length===1?'':'s')+' para publicar')
+    : r.avisos.length
+      ? 'Se puede publicar, con reparos'
+      : 'Lista para publicar';
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius-lg);'
+      +'padding:11px 14px;margin-bottom:16px;background:var(--bg2)">'
+    +'<div style="display:flex;align-items:center;gap:9px">'
+      +'<span style="flex:none;width:8px;height:8px;border-radius:50%;background:'+color+'"></span>'
+      +'<span style="font-size:12.5px;color:var(--text)">'+titulo+'</span>'
+    +'</div>'
+    +((r.faltan.length||r.avisos.length)
+      ? ('<div style="margin-top:7px;padding-top:7px;border-top:1px solid var(--border)">'
+        +r.faltan.map(function(x){ return fila(x,'var(--redx)'); }).join('')
+        +r.avisos.map(function(x){ return fila(x,'var(--amberx)'); }).join('')
+      +'</div>')
+      : '')
+  +'</div>';
+}
 function _lpPista(c, piel){
   return 'Toca un texto y escribi, arrastra para mover, estira el borde derecho '
     +'para el ancho. '
@@ -31885,6 +31980,7 @@ function landingHtml(c){
   if(S._lpGrModal===c.id)  setTimeout(function(){ _lpGrPintar(c.id); }, 0);
   setTimeout(function(){ _lpLadoPintar(c.id); }, 0);
   return head
+    +_lpSemaforoHtml(c)
     +reco
     +opciones('Mecanica', LP_MECANICAS, 'mecanica', null, rr.porqueMecanica, rr.mecanica,
       'lpMecModal('+c.id+')')
