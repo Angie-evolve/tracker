@@ -7137,9 +7137,30 @@ async function syncFathomFromGmail(silent){
 // apretar el boton, y un cliente nuevo arrancaba sin nada de su historial.
 // Esto la corre sola: un cliente por vuelta, no todos de una, porque cada uno
 // es una consulta a Fathom por cada key del equipo y en tandas se cae.
+// Un link /calls/NNN lo abre solo quien grabo, y el webhook manda ese: toda
+// llamada grabada por otro llega inservible para el resto del equipo. La
+// busqueda por API key devuelve el /share/, que abre cualquiera, y el backfill
+// ya reemplaza los privados de paso. Lo que faltaba era que volviera a pasar
+// por un cliente que ya se habia buscado, que es el caso de todos los que
+// tienen llamadas viejas.
+function _fathomPrivadas(c){
+  return (c.fathomCalls||[]).filter(function(x){
+    return x.url && String(x.url).indexOf('/share/')<0;
+  });
+}
+// Solo las que todavia no se intentaron. Sin esta marca, un link que Fathom no
+// va a devolver nunca dejaria a ese cliente para siempre primero en la cola y
+// ningun otro se buscaria jamas.
+function _fathomLinksPendientes(c){
+  var hechos=(c.fathomLinksTry||[]);
+  return _fathomPrivadas(c).filter(function(x){
+    return hechos.indexOf(String(x.id||''))<0;
+  });
+}
 function _fathomPendiente(){
   var lista=(DB.clients||[]).filter(function(c){
-    return !c.archivado && !c.fathomBuscadoAt && _fathomFiltro(c);
+    if(c.archivado || !_fathomFiltro(c)) return false;
+    return !c.fathomBuscadoAt || _fathomLinksPendientes(c).length>0;
   });
   return lista.length?lista[0]:null;
 }
@@ -7188,6 +7209,10 @@ async function _fathomBackfillUno(){
   // en cada vuelta, un cliente sin reuniones en Fathom quedaria golpeando la
   // API cada cuatro minutos para siempre.
   c.fathomBuscadoAt=new Date().toISOString();
+  // Se anota por cuales links se intento antes de pedir, por el mismo motivo
+  // que la fecha: si la consulta falla, no puede quedar reintentando eterno.
+  c.fathomLinksTry=(c.fathomLinksTry||[])
+    .concat(_fathomLinksPendientes(c).map(function(x){ return String(x.id||''); }));
   save();
   try{
     var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
