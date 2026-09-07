@@ -10026,6 +10026,7 @@ function ticketGuardarEdicion(){
   if(estado==='finalizada' && !t.done && sopFrenaCierre(t)){ estado=t.estado||''; }
   if(estado==='finalizada'){ if(!t.done){ t.done=true; t.doneAt=new Date().toISOString(); } }
   else if(t.done && estado){ t.done=false; delete t.doneAt; }
+  _rutaSyncDesdeTarea(DB.clients.find(function(x){return x.id===t._cid||x.id===d.cid;}), t);
   t.attachments=(d.attachments||[]).slice();
   // Cambiar de procedimiento invalida el avance: los ids de los pasos son de
   // otro SOP y quedarian colgados. Se avisa antes de tirarlo.
@@ -23280,6 +23281,22 @@ function _p360PasoAccion(c, t){
     +'style="color:var(--accent);text-decoration:none;white-space:nowrap">'
     +(listo?'ver':'armarlo')+'</a>';
 }
+// El paso, visto desde el tablero. Si ya esta, se muestra su numero; si no, el
+// link para subirlo. Delegar un paso es lo que hace falta cuando lo tiene que
+// hacer otro, y hasta ahora habia que reescribirlo a mano como tarea.
+function _p360PasoTicket(c, etapa, i){
+  var t=(typeof _rutaTarea==='function') ? _rutaTarea(c, etapa, i) : null;
+  if(t){
+    return ' <span style="color:var(--text3);font-size:9.5px" '
+      +'title="Ya esta en el tablero'+(t.responsible?(', lo tiene '+esc(t.responsible)):'')+'">'
+      +esc(t.ticket||'en el tablero')+'</span>';
+  }
+  return ' <a href="javascript:void(0)" '
+    +'onclick="event.stopPropagation();event.preventDefault();'
+    +'rutaPasoATicket('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\','+i+')" '
+    +'title="Pasarlo al tablero para delegarlo o ponerle fecha" '
+    +'style="color:var(--text3);font-size:9.5px;text-decoration:none">+ ticket</a>';
+}
 function _p360PasosHtml(c, etapa){
   var pr=rutaProcesos(c, etapa);
   if(!pr.length) return '';
@@ -23311,6 +23328,7 @@ function _p360PasosHtml(c, etapa){
               +esc(_p360PasoTexto(c, x.p.t))
               +(x.p.a?('<span style="color:var(--text3)"> \u00b7 '+esc(x.p.a)+'</span>'):'')
               +_p360PasoAccion(c, x.p.t)
+              +_p360PasoTicket(c, etapa, x.i)
             +'</span></label>')
           : ('<div style="font-size:10.5px;color:'+(x.listo?'var(--text3)':'var(--text2)')+';'
             +'line-height:1.4">'+esc(_p360PasoTexto(c, x.p.t))
@@ -23331,7 +23349,8 @@ function _p360PasosHtml(c, etapa){
                 +'onchange="rutaPasoTildar('+c.id+',\''+esc2(etapa)+'\','+y.i+')">'
                 +'<span style="font-size:10.5px;line-height:1.5;color:var(--text3)'
                 +(y.ok?';text-decoration:line-through;opacity:.65':'')+'">'
-                +esc(_p360PasoTexto(c, y.p.t))+_p360PasoAccion(c, y.p.t)+'</span></label>';
+                +esc(_p360PasoTexto(c, y.p.t))+_p360PasoAccion(c, y.p.t)
+                +_p360PasoTicket(c, etapa, y.i)+'</span></label>';
             }).join('')
           : '')
         +(x.hijos.length>6
@@ -24778,6 +24797,59 @@ function rutaPasoAuto(c, label, i){
   return ((c&&c.fathomCalls)||[]).some(function(x){
     return re.test(String(x.tipo||'')+' '+String(x.title||'')); });
 }
+// Un paso de la ruta y una tarea del tablero son la misma cosa mirada desde
+// dos lados: el paso dice que falta para avanzar de etapa, la tarea dice quien
+// lo hace y para cuando. Se atan por etapa mas indice, no por texto: renombrar
+// el paso en el SOP no rompe el vinculo.
+function _rutaTarea(c, label, i){
+  return (c.tasks||[]).filter(function(t){
+    return !t.deleted && t.rutaEtapa===label && t.rutaPaso===i;
+  })[0]||null;
+}
+// Pasar un paso al tablero. No se hace solo con todos: son quince por cliente
+// y veintiun clientes, y un tablero con trescientas tarjetas no lo mira nadie.
+// Se sube el que se quiere delegar o poner fecha.
+function rutaPasoATicket(clientId, label, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var ya=_rutaTarea(c, label, i);
+  if(ya){
+    toast('Ya esta en el tablero'+(ya.ticket?(' como '+ya.ticket):'')
+      +(ya.responsible?(', lo tiene '+ya.responsible):''));
+    return;
+  }
+  var ps=rutaPasos(label);
+  var p=ps[i];
+  if(!p) return;
+  var hechos=rutaPasosHechos(c, label);
+  c.tasks=c.tasks||[];
+  c.tasks.push({
+    id:Date.now()+Math.floor(Math.random()*1000),
+    text:String(p.t||''),
+    responsible:String(p.a||''),
+    ticket:(typeof nextTicketFromApp==='function')?('#'+nextTicketFromApp()):'',
+    rutaEtapa:label, rutaPaso:i,
+    done:(hechos.indexOf(i)>=0),
+    creadoAt:new Date().toISOString()
+  });
+  save();
+  showTickets();
+  toast('"'+String(p.t||'')+'" esta en el tablero');
+}
+// Del tablero a la ruta: tildar la tarea da por hecho el paso, y destildarla lo
+// vuelve a abrir. Sin esto habia que tildar lo mismo en dos lugares y el panel
+// mostraba como freno algo que ya estaba hecho.
+function _rutaSyncDesdeTarea(c, t){
+  if(!c || !t || !t.rutaEtapa || typeof t.rutaPaso!=='number') return false;
+  c.rutaPasos=c.rutaPasos||{};
+  var arr=(c.rutaPasos[t.rutaEtapa]||[]).slice();
+  var j=arr.indexOf(t.rutaPaso);
+  if(t.done && j<0) arr.push(t.rutaPaso);
+  else if(!t.done && j>=0) arr.splice(j,1);
+  else return false;
+  c.rutaPasos[t.rutaEtapa]=arr;
+  return true;
+}
 function rutaPasoTildar(clientId, label, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -24786,6 +24858,12 @@ function rutaPasoTildar(clientId, label, i){
   var j=arr.indexOf(i);
   if(j>=0) arr.splice(j,1); else arr.push(i);
   c.rutaPasos[label]=arr;
+  // Si ese paso ya vive en el tablero, se tilda ahi tambien: son la misma cosa.
+  var t=_rutaTarea(c, label, i);
+  if(t){
+    t.done=(arr.indexOf(i)>=0);
+    if(t.done) t.doneAt=new Date().toISOString(); else delete t.doneAt;
+  }
   save();
   showTickets();
 }
@@ -49870,6 +49948,7 @@ function toggleTask(clientId, taskId, checked){
     if(checked && sopFrenaCierre(t)) return;
     t.done=checked;
     if(checked) t.doneAt=new Date().toISOString(); else delete t.doneAt;
+    _rutaSyncDesdeTarea(c, t);
     save();
     if(S.view==='tickets') showTickets(); else renderTab();
   }
