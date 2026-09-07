@@ -21807,6 +21807,14 @@ function successSubNav(c){
         +'Proceso comercial &middot; '+_vtaLlamadas(c).length+'</button>'):'')
       // En Landing no va: ahi se arma la pagina, y el brief es para preparar la
       // proxima llamada. Sigue en las otras hojas, que es de donde se usa.
+      // Solo con material de venta cargado: sin las llamadas no tiene de donde
+      // sacar la ficha de estado y el guion saldria una plantilla disfrazada.
+      +(_onbMaterial(c).length
+        ? ('<button class="btn btn-sm" onclick="onbModal('+c.id+')" '
+          +'title="Lee las llamadas de venta y arma el formulario y el guion cronometrado '
+          +'de la llamada de onboarding">Preparar onboarding'
+          +(c.onboarding?' \u00b7 listo':'')+'</button>')
+        : '')
       +((sel!=='landing')
         ? ('<button class="btn btn-sm btn-primary" onclick="briefModal('+c.id+')" '
           +'title="Elegi las llamadas y arma un brief en HTML para preparar la proxima">'
@@ -38807,6 +38815,353 @@ function quizBajar(clientId){
   setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
   closeModal();
   toast('Listo. Acordate de publicar, no alcanza con guardar.');
+}
+// ---- Onboarding con hipotesis -------------------------------------------
+// La llamada de onboarding se usaba para averiguar y terminaba sin hipotesis:
+// cincuenta minutos agradables, notas sueltas, y la estrategia arrancando de
+// cero la semana siguiente. Esto lee el material de venta y devuelve las dos
+// piezas que el tracker ya sabe correr: el formulario que el cliente completa
+// antes, y el guion cronometrado de la llamada.
+//
+// Vive en DB y no en el prompt a proposito: el reparto de minutos y los
+// arquetipos se van a corregir con lo que aparezca en las llamadas, y esperar
+// a que alguien toque el codigo para cambiar un numero no escala.
+var ONB_VARS_DEF=[
+  {n:'Avatar',            q:'Quien es, que tamano, quien firma'},
+  {n:'Dolor de entrada',  q:'Uno solo, el mas urgente disponible'},
+  {n:'Punto A',           q:'Una frase con la que el avatar se reconoce'},
+  {n:'Deseo',             q:'El punto B en el lenguaje del cliente'},
+  {n:'Puerta de entrada', q:'Que parte del producto se comunica primero'},
+  {n:'Prueba',            q:'Que se puede demostrar sin inventar'},
+  {n:'Restriccion real',  q:'Capacidad, caja, agenda, accesos, socios'},
+  {n:'Lo prometido',      q:'Que le aseguro el closer y con que expectativa entra. '
+                            +'Esta se busca en lo que dijo el closer, no el cliente'}
+];
+// Los frentes suman 35 y la restriccion va primero: preguntada al final el dato
+// llega cuando ya no se puede usar. Los otros cinco minutos de la hora son
+// apertura, confirmacion de lo ya dicho, hipotesis y compromisos.
+var ONB_ARQ_DEF=[
+  {k:'A', l:'Pre-traccion', cuando:'Producto terminado, cero o casi cero clientes pagando',
+   riesgo:'Que el producto no active ni retenga, y que la campana cargue con la culpa',
+   frentes:[{t:'Restriccion y deadline',min:7},
+            {t:'Escena de origen: de que dolor propio nacio, contado como escena',min:12},
+            {t:'Los que casi compraron: quienes eran y en que paso se cayeron',min:8},
+            {t:'Activacion: que tiene que hacer el usuario para que le sirva',min:8}],
+   evitar:'Todo lo que asuma historial: mejor cliente, tasa de cierre, que anuncio rendia'},
+  {k:'B', l:'Traccion a ciegas', cuando:'Tiene clientes por referidos o venta directa, nunca pauto',
+   riesgo:'Que el avatar que trae la pauta no se parezca al que llegaba recomendado',
+   frentes:[{t:'Restriccion, deadline y capacidad de entrega',min:7},
+            {t:'De donde salio cada uno de los ultimos clientes y que los trajo',min:12},
+            {t:'Dolor y lenguaje: con que palabras le describen el problema',min:10},
+            {t:'Que pasa cuando el lead no viene recomendado',min:6}],
+   evitar:'Perfilar el avatar desde cero: ya existe en su cartera'},
+  {k:'C', l:'Traccion rota', cuando:'Tenia un sistema que traia clientes y dejo de rendir',
+   riesgo:'Diagnosticar mal la caida: mercado saturado, audiencia saturada y proceso '
+          +'cambiado se parecen desde afuera y se arreglan distinto',
+   frentes:[{t:'Restriccion, deadline y capacidad de entrega',min:7},
+            {t:'Que cambio exactamente cuando empezo a caer, incluidos los cambios propios',min:8},
+            {t:'Puerta de entrada: cual es la killer feature innegociable',min:12},
+            {t:'Alineacion interna: quien mas decide y que haria con la misma plata',min:8}],
+   evitar:'Gastar minutos perfilando: alguien que vendio treinta veces sabe a quien le vende'},
+  {k:'E', l:'Traccion con fuga', cuando:'Llega gente a buen costo y se pierde despues',
+   riesgo:'Escalar la fuga: duplicar el presupuesto duplica el agujero y el CPL sigue sano',
+   frentes:[{t:'Restriccion y deadline',min:7},
+            {t:'El paso exacto donde se cae, con numeros por etapa',min:10},
+            {t:'Por que se quedaron los que si se quedaron',min:10},
+            {t:'Compromiso y friccion: que se le exige al cliente y en que momento',min:8}],
+   evitar:'Aceptar el pedido de mas volumen sin mirar la conversion de abajo'},
+  {k:'D', l:'Escalando', cuando:'Funciona, quiere mas, no hay incendio',
+   riesgo:'Romper lo que anda: el angulo que trajo los primeros cien tiene techo, '
+          +'pero cambiarlo antes de tiempo cuesta mas de lo que rinde',
+   frentes:[{t:'Restriccion y deadline',min:7},
+            {t:'Que esta funcionando y por que, hasta poder explicarlo y no describirlo',min:13},
+            {t:'Donde esta el techo del angulo actual y que senales ya aparecieron',min:9},
+            {t:'Que se rompe primero si manana entra el triple de volumen',min:6}],
+   evitar:'Dar creativos nuevos antes de que pueda explicar por que funciona lo que funciona'}
+];
+function onbVars(){ return Array.isArray(DB.onbVars)&&DB.onbVars.length?DB.onbVars:ONB_VARS_DEF; }
+function onbArq(){ return Array.isArray(DB.onbArq)&&DB.onbArq.length?DB.onbArq:ONB_ARQ_DEF; }
+
+// El material de venta, no el de onboarding: la R1 es donde salen los datos del
+// negocio. En una R2 tipica el ochenta por ciento del tiempo habla el closer.
+function _onbMaterial(c){
+  return (c.fathomCalls||[]).filter(function(x){
+    return x.transcript && String(x.transcript).length>400;
+  }).sort(function(a,b){ return String(a.date||'').localeCompare(String(b.date||'')); });
+}
+function _onbPedido(c, lls){
+  var vars=onbVars().map(function(v,i){ return (i+1)+'. '+v.n+' — '+v.q; }).join('\n');
+  var arq=onbArq().map(function(a){
+    return a.k+' · '+a.l+' ('+a.cuando+'). Riesgo: '+a.riesgo
+      +'. Frentes y minutos: '+a.frentes.map(function(f){ return f.t+' ['+f.min+']'; }).join(' | ')
+      +'. No preguntar: '+a.evitar;
+  }).join('\n');
+  var mat=lls.map(function(x,i){
+    return '### Llamada '+(i+1)+': '+(x.title||'')+' ('+(x.date||'')+', '+(x.duration||'')+')\n'
+      +String(x.transcript||'').slice(0,60000);
+  }).join('\n\n');
+  return 'Sos analista de una agencia de performance. Abajo esta el material de venta del '
+    +'cliente '+(c.name||'')+': las llamadas de diagnostico y de presentacion, en orden.\n\n'
+    +'Tu trabajo NO es resumir. Es preparar la llamada de onboarding, que dura una hora y no '
+    +'es para averiguar sino para decidir.\n\n'
+    +'PASO 1 — Ficha de estado. Para cada una de estas variables:\n'+vars+'\n'
+    +'Marca DICHO si el cliente lo afirmo (copia la cita textual y el minuto si aparece), '
+    +'INFERIDO si se deduce de lo dicho, FALTA si no esta. Nunca completes por verosimilitud: '
+    +'una hipotesis apoyada en un dato inventado suena impecable y falla recien en pauta.\n\n'
+    +'PASO 2 — Arquetipo. Elegi uno:\n'+arq+'\n'
+    +'Dos ejes: si hay clientes pagando hoy, y de que lado del embudo esta el cuello. Un costo '
+    +'de adquisicion bueno con conversion pobre es fuga, no falta de leads, por mas que el '
+    +'cliente lo cuente al reves.\n\n'
+    +'PASO 3 — Reparto. Usa los frentes y los minutos del arquetipo que elegiste, tal cual, '
+    +'y con la restriccion primero. Suman 35 minutos.\n\n'
+    +'PASO 4 — Seleccion. Una pregunta entra a la llamada SOLO si pasa las tres:\n'
+    +'  a) Alimenta una variable en FALTA o INFERIDO. Lo que ya esta DICHO no se pregunta: se '
+    +'le lee en voz alta para que lo confirme.\n'
+    +'  b) Es imposible de responder por escrito. Solo califica si necesita repregunta para '
+    +'llegar al fondo, o si escrita saldria sanitizada. Numeros, fechas, precios, herramientas, '
+    +'accesos, contratos y disponibilidad NUNCA califican: van al formulario.\n'
+    +'  c) La respuesta cambia lo que hacemos las primeras dos semanas. Si el plan es el mismo '
+    +'conteste lo que conteste, es curiosidad bien formulada.\n'
+    +'Techo duro: 12 preguntas en total. Si sobran candidatas, ordena por costo de equivocarse: '
+    +'primero las que evitan dano operativo, despues las que definen el mensaje, ultimo las que '
+    +'optimizan.\n\n'
+    +'PASO 5 — Salida. Devolve SOLO un JSON, sin markdown ni texto alrededor, con esta forma:\n'
+    +'{"arquetipo":{"k":"B","porque":"una frase con la evidencia"},'
+    +'"variables":[{"n":"Avatar","estado":"DICHO|INFERIDO|FALTA","valor":"","cita":"","min":""}],'
+    +'"guion":{"titulo":"Onboarding — NOMBRE","bloques":[{"t":"","min":7,"concepto":"que se '
+    +'tiene que llevar el cliente de este bloque","preguntas":[{"q":"la pregunta textual",'
+    +'"porque":"que variable alimenta","re":["repregunta 1","repregunta 2"],"corte":"como se '
+    +'sabe que ya se puede pasar a la siguiente"}]}]},'
+    +'"formulario":{"titulo":"Antes de la llamada — NOMBRE","campos":[{"l":"la pregunta",'
+    +'"tipo":"texto|largo|numero|opcion|si_no","ayuda":"","req":true}]},'
+    +'"hipotesis":{"nombre":"","avatar":"","dolor":"","deseo":"","puntoA":"","paraQue":""},'
+    +'"fuera":[{"q":"pregunta descartada","porque":"que puerta no paso"}]}\n\n'
+    +'El formulario lleva todo lo que no entra a la llamada: numeros, la tabla de precios si hay '
+    +'planes, y siempre si la pasarela de cobro esta operativa, que es bloqueante de cronograma. '
+    +'La hipotesis es la apuesta que se entra a validar, no a construir.\n\n'
+    +'MATERIAL:\n\n'+mat;
+}
+async function onbPreparar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return; }
+  var lls=_onbMaterial(c);
+  if(!lls.length){
+    toast('Este cliente no tiene llamadas de venta con transcripcion.','amber'); return;
+  }
+  S._onb={cid:clientId, cargando:true, err:''};
+  onbModal(clientId);
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:8000,
+        messages:[{role:'user', content:_onbPedido(c, lls)}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var txt=String(((d.content||[])[0]||{}).text||'');
+    // El modelo a veces envuelve el JSON en un bloque de codigo aunque se le
+    // pida que no: sacarlo es mas barato que reintentar.
+    txt=txt.replace(/^[\s\S]*?```(?:json)?/,'').replace(/```[\s\S]*$/,'').trim()||txt;
+    var o=JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1));
+    o.at=new Date().toISOString();
+    o.fuentes=lls.length;
+    c.onboarding=o;
+    save();
+    S._onb={cid:clientId, cargando:false, err:''};
+  }catch(e){
+    S._onb={cid:clientId, cargando:false, err:e.message||'no pude leer la respuesta'};
+  }
+  onbModal(clientId);
+}
+function _onbMin(o){
+  return ((o.guion&&o.guion.bloques)||[]).reduce(function(a,b){ return a+(Number(b.min)||0); },0);
+}
+function _onbNPreg(o){
+  return ((o.guion&&o.guion.bloques)||[]).reduce(function(a,b){
+    return a+((b.preguntas||[]).length); },0);
+}
+function onbModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var st=S._onb||{};
+  var o=c.onboarding;
+  var cuerpo;
+  if(st.cargando){
+    cuerpo='<div style="display:flex;align-items:center;gap:10px;padding:26px 0;'
+      +'font-size:12.5px;color:var(--text3)"><span class="carga-spin"></span>'
+      +'<span>Leyendo las llamadas de venta y armando la agenda...</span></div>';
+  } else if(st.err){
+    cuerpo='<div style="padding:18px 0;font-size:12.5px;color:var(--redx)">'+esc(st.err)+'</div>';
+  } else if(!o){
+    cuerpo='<div style="padding:18px 0;font-size:12.5px;color:var(--text3)">'
+      +'Todavia no se leyo el material de este cliente.</div>';
+  } else {
+    var arq=onbArq().filter(function(a){ return a.k===((o.arquetipo||{}).k); })[0];
+    var mins=_onbMin(o), npreg=_onbNPreg(o);
+    // Los dos numeros que el criterio fija duro. Si el modelo se paso, hay que
+    // verlo antes de crear el guion, no despues de la llamada.
+    var chip=function(ok, t){
+      return '<span style="font-size:10.5px;padding:2px 8px;border-radius:99px;'
+        +'background:'+(ok?'rgba(78,207,160,.13)':'rgba(224,163,58,.13)')+';'
+        +'color:'+(ok?'var(--accent)':'var(--amberx)')+'">'+t+'</span>';
+    };
+    var est=function(e){
+      var col=(e==='DICHO')?'var(--accent)':((e==='INFERIDO')?'var(--amberx)':'var(--text3)');
+      return '<span style="font-size:9.5px;letter-spacing:.06em;color:'+col+'">'+esc(e||'')+'</span>';
+    };
+    cuerpo=''
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
+        +'<span style="font-size:12.5px;color:var(--text)">'
+          +esc((arq&&(arq.k+' · '+arq.l))||'Arquetipo sin definir')+'</span>'
+        +chip(npreg<=12, npreg+' de 12 preguntas')
+        +chip(mins===35, mins+' de 35 minutos')
+        +'<span style="flex:1"></span>'
+        +'<span style="font-size:10.5px;color:var(--text3)">'+(o.fuentes||0)+' llamadas leidas</span>'
+      +'</div>'
+      +((o.arquetipo&&o.arquetipo.porque)
+        ?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+          +esc(o.arquetipo.porque)+'</div>'):'')
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:6px">Que sabemos ya</div>'
+      +(o.variables||[]).map(function(v){
+        return '<div style="display:flex;gap:9px;align-items:baseline;padding:5px 0;'
+            +'border-top:1px solid var(--border)">'
+          +'<span style="flex:none;width:118px;font-size:11.5px;color:var(--text2)">'
+            +esc(v.n||'')+'</span>'
+          +'<span style="flex:none;width:62px">'+est(v.estado)+'</span>'
+          +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text3);line-height:1.5">'
+            +esc(v.valor||'')
+            +(v.cita?('<span style="color:var(--text3);opacity:.7"> — “'
+              +esc(String(v.cita).slice(0,150))+'”'
+              +(v.min?(' ['+esc(v.min)+']'):'')+'</span>'):'')
+          +'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:18px 0 6px">La llamada · '
+        +esc((o.guion&&o.guion.titulo)||'')+'</div>'
+      +((o.guion&&o.guion.bloques)||[]).map(function(b){
+        return '<div style="padding:9px 0;border-top:1px solid var(--border)">'
+          +'<div style="display:flex;gap:8px;align-items:baseline">'
+            +'<span style="flex:none;font-size:11px;color:var(--accent);'
+              +'font-variant-numeric:tabular-nums">'+(Number(b.min)||0)+'′</span>'
+            +'<span style="flex:1;font-size:12px;color:var(--text)">'+esc(b.t||'')+'</span>'
+          +'</div>'
+          +(b.concepto?('<div style="font-size:10.5px;color:var(--text3);margin:3px 0 0 26px;'
+            +'line-height:1.5">Se lleva: '+esc(b.concepto)+'</div>'):'')
+          +(b.preguntas||[]).map(function(q){
+            return '<div style="margin:6px 0 0 26px">'
+              +'<div style="font-size:11.5px;color:var(--text2);line-height:1.5">'
+                +esc(q.q||'')+'</div>'
+              +((q.re||[]).length?('<div style="font-size:10.5px;color:var(--text3);'
+                +'margin-top:2px;line-height:1.5">↳ '
+                +(q.re||[]).map(esc).join(' · ')+'</div>'):'')
+              +(q.porque?('<div style="font-size:10px;color:var(--text3);opacity:.75;'
+                +'margin-top:2px">'+esc(q.porque)+'</div>'):'')
+            +'</div>';
+          }).join('')
+        +'</div>';
+      }).join('')
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin:18px 0 6px">Al formulario · '
+        +((o.formulario&&(o.formulario.campos||[]).length)||0)+' preguntas</div>'
+      +((o.formulario&&o.formulario.campos)||[]).map(function(cp){
+        return '<div style="display:flex;gap:9px;align-items:baseline;padding:4px 0;'
+            +'border-top:1px solid var(--border);font-size:11.5px;color:var(--text3)">'
+          +'<span style="flex:1;min-width:0">'+esc(cp.l||'')+'</span>'
+          +'<span style="flex:none;font-size:10px;opacity:.7">'+esc(cp.tipo||'texto')+'</span>'
+        +'</div>';
+      }).join('')
+      +((o.fuera||[]).length
+        ?('<details style="margin-top:16px"><summary style="font-size:11px;color:var(--text3);'
+            +'cursor:pointer">'+(o.fuera||[]).length+' preguntas que se descartaron</summary>'
+          +(o.fuera||[]).map(function(x){
+            return '<div style="font-size:11px;color:var(--text3);padding:3px 0;line-height:1.5">'
+              +esc(x.q||'')+'<span style="opacity:.7"> — '+esc(x.porque||'')+'</span></div>';
+          }).join('')
+        +'</details>'):'')
+      // La hipotesis es la salida obligatoria: se lee en voz alta al final para
+      // que el cliente la confirme o la corrija. Sin esto la llamada termina en
+      // notas y la hipotesis se escribe despues, sola, y nadie la valida.
+      +((o.hipotesis&&o.hipotesis.dolor)
+        ?('<div style="margin-top:18px;padding:13px 15px;border:1px solid var(--border2);'
+            +'border-radius:var(--radius);background:var(--bg3)">'
+          +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+            +'letter-spacing:.06em;margin-bottom:7px">Hipotesis a validar · '
+            +'se lee en voz alta en los ultimos 10 minutos</div>'
+          +[['Avatar',o.hipotesis.avatar],['Dolor atacado',o.hipotesis.dolor],
+            ['Deseo',o.hipotesis.deseo],['Punto A',o.hipotesis.puntoA],
+            ['Para que',o.hipotesis.paraQue]].map(function(x){
+            if(!x[1]) return '';
+            return '<div style="display:flex;gap:9px;font-size:11.5px;padding:2px 0;'
+                +'line-height:1.5">'
+              +'<span style="flex:none;width:96px;color:var(--text3)">'+x[0]+'</span>'
+              +'<span style="flex:1;color:var(--text2)">'+esc(x[1])+'</span></div>';
+          }).join('')
+        +'</div>'):'');
+  }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:900px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">Onboarding de '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Lee las llamadas de venta y arma las dos piezas: el formulario '
+        +'que el cliente completa antes, y el guion cronometrado de la hora.</div>'
+      +cuerpo
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+        +(o&&!st.cargando
+          ?('<button class="btn" onclick="onbCrearForm('+c.id+')">Crear el formulario</button>'
+            +'<button class="btn btn-primary" onclick="onbCrearGuion('+c.id+')">'
+            +'Crear el guion</button>'):'')
+        +((!st.cargando)
+          ?('<button class="btn'+(o?'':' btn-primary')+'" onclick="onbPreparar('+c.id+')">'
+            +(o?'Volver a leer':'Leer las llamadas')+'</button>'):'')
+      +'</div>'
+    +'</div></div>';
+}
+// Se crean como plantillas de la agencia, igual que los que se cargan a mano:
+// nacen de este cliente pero despues se editan, se reusan y se mejoran. Que la
+// IA los escriba no los hace de otra especie.
+function onbCrearGuion(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.onboarding||!c.onboarding.guion) return;
+  var g=c.onboarding.guion;
+  var nuevo={ id:Date.now(), titulo:g.titulo||('Onboarding — '+(c.name||'')),
+    tipo:'onboarding', creadoAt:new Date().toISOString(),
+    bloques:(g.bloques||[]).map(function(b){
+      return { t:String(b.t||''), min:Number(b.min)||0, concepto:String(b.concepto||''),
+        preguntas:(b.preguntas||[]).map(function(q){
+          // Las repreguntas viven abajo de la suya: en vivo se leen juntas, y
+          // como preguntas sueltas romperian el techo de doce.
+          return { q:String(q.q||''), porque:String(q.porque||''),
+                   re:(q.re||[]).map(String), corte:String(q.corte||'') };
+        }) };
+    }) };
+  guiones().unshift(nuevo);
+  save();
+  closeModal();
+  abrirGuion(nuevo.id, c.id);
+}
+function onbCrearForm(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.onboarding||!c.onboarding.formulario) return;
+  var f=c.onboarding.formulario;
+  var ok={texto:1,largo:1,numero:1,opcion:1,si_no:1};
+  var nuevo={ id:Date.now(), titulo:f.titulo||('Antes de la llamada — '+(c.name||'')),
+    creadoAt:new Date().toISOString(),
+    campos:(f.campos||[]).map(function(cp){
+      return { l:String(cp.l||''), tipo:(ok[cp.tipo]?cp.tipo:'texto'),
+               ayuda:String(cp.ayuda||''), req:!!cp.req };
+    }) };
+  formularios().unshift(nuevo);
+  save();
+  closeModal();
+  abrirForm(nuevo.id);
 }
 function briefModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
