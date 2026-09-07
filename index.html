@@ -659,6 +659,28 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
   cursor:pointer;white-space:nowrap;border-radius:0}
 .lp-tab:hover{color:var(--text2)}
 .lp-tab.on{color:var(--strong);border-bottom-color:var(--accent)}
+/* La escala del gate: inicio, las preguntas y donde caen los datos. */
+.lp-gate{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.lp-gate-l{font-size:10px;color:var(--text3)}
+.lp-gate-p{font-family:var(--font);font-size:11px;background:var(--bg3);
+  border:1px solid var(--border);color:var(--text3);border-radius:7px;
+  padding:4px 9px;cursor:pointer;min-width:26px}
+.lp-gate-p:hover:not(:disabled){border-color:var(--border2);color:var(--text2)}
+.lp-gate-p.on{background:var(--accent);border-color:var(--accent);
+  color:var(--on-accent);cursor:default;padding:4px 12px}
+/* Los tres titulares, comparables de un vistazo. Elegir uno es un clic y se
+   ve en el preview de al lado. */
+.lp-tit{display:flex;gap:11px;align-items:flex-start;width:100%;text-align:left;
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:11px 13px;margin-bottom:7px;cursor:pointer;font-family:var(--font)}
+.lp-tit:hover{border-color:var(--border2)}
+.lp-tit.on{border-color:var(--accent);background:transparent;cursor:default}
+.lp-tit-r{flex:none;width:13px;height:13px;border-radius:50%;margin-top:3px;
+  border:1px solid var(--border2);display:block}
+.lp-tit.on .lp-tit-r{border-color:var(--accent);background:radial-gradient(
+  circle,var(--accent) 0 45%,transparent 46%)}
+.lp-tit-t{display:block;font-size:13px;color:var(--text);line-height:1.4}
+.lp-tit-s{display:block;font-size:10.5px;color:var(--text3);margin-top:3px}
 .lp-mec-panel{margin-top:12px;border:1px solid var(--border2);
   border-radius:var(--radius-lg);background:var(--bg2);padding:12px 14px 14px}
 .lp-mec{font-size:12.5px;line-height:1.6;padding-right:6px}
@@ -26826,15 +26848,25 @@ async function lpPrepararGhl(clientId){
     di('Sin formulario elegido: eleg\u00ed uno arriba y volv\u00e9 a correrlo','mano');
   }
 
-  // Lo que la API no deja hacer. Decirlo aca evita que parezca que ya esta todo.
-  di('A mano en GHL: poner los campos ocultos y escribirles la Query Key '
+  // El CSS se copia aca mismo: era una de las cuatro cosas que habia que
+  // acordarse de hacer, y copiarla es lo unico que se puede automatizar.
+  try{
+    await navigator.clipboard.writeText(_lpCalCss(c));
+    di('CSS del calendario copiado al portapapeles','ok');
+  }catch(e2){ di('No pude copiar el CSS del calendario','mal'); }
+
+  // Lo que la API no deja hacer queda como pendiente en el log, no desaparece:
+  // el log es el estado. Sin esto, terminar sin errores parecia que ya estaba.
+  if(!String(cfg.calendarioUrl||'').trim())
+    di('El embed del calendario todavia no esta pegado '
+       +'\u00b7 pegalo en la pesta\u00f1a Calendario','mano');
+  di('Falta pegar el CSS en GHL \u2192 Calendar \u2192 Widget appearance. '
+     +'El del formulario va en el form builder '
+     +'(<a href="javascript:void(0)" onclick="lpFormCssCopiar('+c.id+')" '
+     +'style="color:var(--accent)">copiarlo</a>)','mano');
+  di('Falta poner los campos ocultos y escribirles la Query Key '
      +'(<a href="javascript:void(0)" onclick="lpClavesCopiar('+c.id+')" '
      +'style="color:var(--accent)">copiar la lista</a>)','mano');
-  di('A mano en GHL: pegar el CSS '
-     +'(<a href="javascript:void(0)" onclick="lpCalCssCopiar('+c.id+')" '
-     +'style="color:var(--accent)">calendario</a> \u00b7 '
-     +'<a href="javascript:void(0)" onclick="lpFormCssCopiar('+c.id+')" '
-     +'style="color:var(--accent)">formulario</a>)','mano');
 }
 async function lpCamposAGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -27346,7 +27378,8 @@ function lpUsarPromesa(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var cfg=_lpCfg(c), pr=((cfg.copy||{}).promesas)||[];
-  if(!Array.isArray(pr)||i<1||i>=pr.length) return;
+  if(!Array.isArray(pr)||i<0||i>=pr.length) return;
+  if(i===0) return;   // ya es el de la pagina
   var x=pr[0]; pr[0]=pr[i]; pr[i]=x;
   save();
   if(typeof renderTab==='function') renderTab();
@@ -31596,6 +31629,57 @@ async function lpVideoIdeas(clientId){
 // Las preguntas se armaban en la pestana Quiz, tres pantallas adentro, aunque
 // la mecanica se elige aca. Vive suelto y no dentro de landingHtml porque
 // ahora tambien lo usa el modal de la rosca.
+// Donde se piden los datos, dibujado. "6 preguntas, los datos al final" era
+// una frase que describia algo que se puede mostrar, y es la decision de
+// conversion mas importante del quiz.
+function _lpQuizGateHtml(c, n){
+  var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')?c.quiz.preguntas:null;
+  var g=(qz&&qz.gate&&typeof qz.gate==='object')?qz.gate:{};
+  // Se lee del modelo que ya usa el quiz —momento y despuesDePregunta— en vez
+  // de guardar un segundo estado diciendo lo mismo.
+  var pos = g.momento==='antes' ? 0
+    : g.momento==='medio' ? Math.max(1,Math.min(n,parseInt(g.despuesDePregunta,10)||1))
+    : n;
+  var casilla=function(txt, act, i){
+    return '<button class="lp-gate-p'+(act?' on':'')+'"'
+      +(i===null?' disabled':(' onclick="lpQuizGate('+c.id+','+i+')" '
+        +'title="Pedir los datos aca"'))+'>'+esc(txt)+'</button>';
+  };
+  var out='<span class="lp-gate-l mono">inicio</span>';
+  if(pos===0) out+=casilla('datos', true, null);
+  for(var i=1;i<=n;i++){
+    out+=casilla(String(i), false, i);
+    if(pos===i) out+=casilla('datos', true, null);
+  }
+  out+='<span class="lp-gate-l mono">resultado</span>';
+  return '<div style="margin-bottom:14px">'
+    +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em;margin-bottom:7px">Donde se piden los datos</div>'
+    +'<div class="lp-gate">'+out+'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.55;margin-top:7px;'
+      +'max-width:74ch">'
+      +(pos>=n
+        ? ('Al final: el que responde las '+n+' preguntas ya invirtio y deja el dato. '
+          +'Toca un numero para pedirlos antes si preferis volumen sobre calidad.')
+        : pos===0
+        ? 'Antes de todo: mas leads y peores. Toca un numero para pedirlos mas tarde.'
+        : ('Despues de la pregunta '+pos+'. Mas a la derecha, menos leads y mejores.'))
+    +'</div>'
+  +'</div>';
+}
+function lpQuizGate(clientId, despues){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.quiz||!c.quiz.preguntas) return;
+  var qz=c.quiz.preguntas;
+  var n=(Array.isArray(qz.preguntas)?qz.preguntas:[]).length;
+  qz.gate=qz.gate||{};
+  if(despues<=0){ qz.gate.momento='antes'; delete qz.gate.despuesDePregunta; }
+  else if(despues>=n){ qz.gate.momento='final'; delete qz.gate.despuesDePregunta; }
+  else { qz.gate.momento='medio'; qz.gate.despuesDePregunta=despues; }
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _lpRefrescarPreview(clientId);
+}
 function _lpBloqueQuiz(c, cfg){
     if(cfg.mecanica!=='quiz') return '';
     var qz=(c.quiz&&c.quiz.preguntas&&typeof c.quiz.preguntas==='object')?c.quiz.preguntas:null;
@@ -31612,6 +31696,9 @@ function _lpBloqueQuiz(c, cfg){
         ? 'Todavia no hay preguntas: la landing va a mostrar el formulario hasta que las armes.'
         : 'Primero hace falta la promesa del quiz: de ahi sale la estructura de las preguntas.');
     return '<div style="margin-bottom:16px">'
+      // El momento del gate se dibuja: era una frase que describia algo que se
+      // puede mostrar, y es la decision de conversion mas importante del quiz.
+      +(pres.length?_lpQuizGateHtml(c, pres.length):'')
       +'<div style="font-size:11px;color:var(--text3);margin-bottom:7px">Las preguntas</div>'
       +'<div style="font-size:11.5px;color:'+((!pres.length&&!prom)?'var(--amberx)':'var(--text3)')
         +';line-height:1.6;max-width:74ch;margin-bottom:8px">'+esc(estado)+'</div>'
@@ -32088,16 +32175,33 @@ function landingHtml(c){
     // Los titulares alternativos ya se prueban en el preview: doble clic sobre
     // el titulo lo cambia por el siguiente. Repetirlos aca era una segunda
     // forma de hacer lo mismo, y la de la ficha no deja verlo puesto.
-    var alt=(cp.promesas||[]).slice(1).filter(function(x){ return _lpLimpiar(x); });
-    if(alt.length)
-      p2+='<div style="font-size:10.5px;color:var(--text3)">Escribio '+alt.length
-        +' titular'+(alt.length===1?'':'es')+' mas. Se prueban con doble clic sobre el '
-        +'titulo, en el preview.</div>';
+    // Los tres titulares, a la vista y comparables. Antes decia "escribio 2
+    // titulares mas, se prueban con doble clic en el preview": un secreto con
+    // instrucciones. Si existen para testear, se eligen aca, uno al lado del
+    // otro, que es la unica forma de compararlos.
+    var tits=(cp.promesas||[]).filter(function(x){ return _lpLimpiar(x); });
+    if(tits.length>1){
+      p2+='<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin:12px 0 7px">Titulares</div>'
+        +tits.map(function(t,i){
+          var txt=_lpLimpiar(t);
+          var n=txt.split(/\s+/).filter(Boolean).length;
+          var puesto=(i===0);
+          return '<button class="lp-tit'+(puesto?' on':'')+'" '
+              +'onclick="lpUsarPromesa('+c.id+','+i+')" '
+              +'title="'+(puesto?'Es el que esta en la pagina':'Ponerlo en la pagina')+'">'
+            +'<span class="lp-tit-r"></span>'
+            +'<span><span class="lp-tit-t">'+esc(txt)+'</span>'
+              +'<span class="lp-tit-s mono">'+n+' palabra'+(n===1?'':'s')
+              +(puesto?' \u00b7 en la pagina':'')+'</span></span>'
+          +'</button>';
+        }).join('');
+    }
     // Este si es accionable y no se ve en la pagina: la landing con los tres
     // campos de fabrica se ve igual de bien que una con los campos pensados.
     if(!((cp.formulario||{}).campos||[]).length)
       p2+='<div style="font-size:10.5px;color:var(--amberx);line-height:1.55;margin-top:'
-        +(alt.length?'10':'0')+'px">'
+        +(tits.length>1?'10':'0')+'px">'
         +'Este copy no trae campos, asi que sale con nombre, email y telefono. '
         +'Reescribi el copy y los arma.</div>';
   }
