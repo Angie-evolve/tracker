@@ -28282,7 +28282,7 @@ async function acordadoLeer(clientId){
   // Lo acordado es lo que se hablo con NOSOTROS: sus llamadas de venta a
   // terceros traen otros precios y otras cuotas, y el analisis las leia
   // como si fueran el acuerdo.
-  var mat=_llamadasParaIA(c, {sinComerciales:true});
+  var mat=_llamadasParaIA(c, {sinComerciales:true, ventaPrimero:true});
   if(!mat.items.length){ decir('No hay llamadas con transcripcion.','var(--amberx)'); return; }
   if(b){ b.disabled=true; b.textContent='Leyendo...'; }
   decir('<span style="display:inline-flex;align-items:center;gap:8px">'
@@ -28311,6 +28311,12 @@ async function acordadoLeer(clientId){
     +'- Solo cuentan las reuniones DE NOSOTROS CON EL CLIENTE. Si algun bloque fuera una '
     +'grabacion del cliente vendiendole a un prospecto suyo, ignorala entera: ahi el precio '
     +'y las cuotas son las que el le cobra a otro, no las que acordamos.\n'
+    +'- El acuerdo se cierra en la reunion de venta o de presentacion, que vienen marcadas '
+    +'[DE VENTA]. Busca ahi PRIMERO y sacale todo lo que puedas. Recien si un campo no esta '
+    +'en ninguna de esas, mira las demas.\n'
+    +'- Las de estrategia, implementacion o seguimiento hablan de plazos de campana y de '
+    +'numeros que no son el contrato. Una frase de ahi no es un acuerdo: antes de usarla, '
+    +'preguntate si se esta hablando de lo que el cliente NOS paga. Si no, dejalo vacio.\n'
     +'- Si el precio cambio a lo largo de las llamadas, poné el ultimo acordado en "valor" y '
     +'contá el cambio en "detalle", corto.\n'
     +'- Los montos con su moneda tal cual se dijeron. No conviertas.\n'
@@ -43983,14 +43989,29 @@ function docSubir(clientId, uso){
   };
   inp.click();
 }
+// La reunion donde se cierra el acuerdo es la de venta o la de presentacion.
+// El resto —estrategia, implementacion, seguimiento— habla de plazos y de
+// numeros que no son el contrato, y de ahi salian "acuerdos" que nadie acordo.
+function _esLlamadaDeVenta(cl){
+  var t=_n((cl&&(cl.title||''))+' '+(cl&&(cl.tipo||'')));
+  return /(venta|presentacion|propuesta|cierre|closing|diagnostico)/.test(t);
+}
 function _llamadasParaIA(c, opt){
   // Las llamadas de venta del cliente son grabaciones suyas vendiendole a SUS
   // prospectos. Para casi todo suman, pero para saber que acordamos NOSOTROS
   // con el no: ahi el precio y las cuotas son las que el le pone a otro.
   var sinComerciales=!!(opt&&opt.sinComerciales);
   var total=0, omitidas=[], items=[];
-  (c.fathomCalls||[]).forEach(function(cl){
-    var titulo=(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')';
+  // Las de venta primero: asi son las que entran seguro cuando el material no
+  // cabe entero, y el que lee sabe cual mirar antes que las demas.
+  var lls=(c.fathomCalls||[]).slice();
+  if(opt&&opt.ventaPrimero){
+    lls.sort(function(a,b){
+      return (_esLlamadaDeVenta(b)?1:0)-(_esLlamadaDeVenta(a)?1:0); });
+  }
+  lls.forEach(function(cl){
+    var titulo=(cl.title||'Llamada')+' ('+(cl.date||'sin fecha')+')'
+      +((opt&&opt.ventaPrimero&&_esLlamadaDeVenta(cl))?'  [DE VENTA]':'');
     var cuerpo=cl.transcript||cl.summary||'';
     if(!cuerpo){ omitidas.push(titulo+': sin material'); return; }
     if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
