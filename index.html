@@ -21910,6 +21910,155 @@ function setHojaSuccess(k){
 // preparar una llamada necesita cuanto paga y desde cuando, y eso vivia en
 // otra hoja: obligaba a ir y volver justo cuando se esta leyendo lo demas.
 // Es solo lectura, un clic lleva a Facturacion, que es donde se edita.
+// ---- Plan de pagos ------------------------------------------------------
+// El valor del contrato dice cuanto se acordo; esto dice cuando entra y cuanto
+// entro. Sin el, "cobrado" era una cuenta que cada uno hacia de memoria y la
+// proyeccion no tenia con que distinguir lo facturado de lo pagado.
+function _pagos(c){
+  if(!Array.isArray(c.pagos)) c.pagos=[];
+  return c.pagos;
+}
+function _pagosResumen(c){
+  var ps=_pagos(c), total=0, cobrado=0;
+  ps.forEach(function(x){
+    var m=parseFloat(x.monto)||0;
+    total+=m;
+    if(x.pagadoAt) cobrado+=m;
+  });
+  var contrato=parseFloat(c.contractValue)||0;
+  return {n:ps.length, total:total, cobrado:cobrado, pendiente:total-cobrado,
+          contrato:contrato, descuadre:(contrato&&ps.length)?(contrato-total):0};
+}
+// El proximo pago con fecha que sigue sin cobrarse. Se copia a nextPaymentDate
+// porque de ahi ya cuelgan el sidebar, las alarmas de cobro y la proyeccion:
+// tener dos fuentes para la misma pregunta las iba a dejar diciendo cosas
+// distintas.
+function _pagosSync(c){
+  var prox='', hayConFecha=false;
+  _pagos(c).forEach(function(x){
+    if(x.tipo==='hito') return;
+    var f=String(x.fecha||'').slice(0,10);
+    if(!f) return;
+    hayConFecha=true;
+    if(x.pagadoAt) return;
+    if(!prox || f<prox) prox=f;
+  });
+  // Solo se toca cuando el plan tiene cuotas con fecha. Si es todo por hitos, o
+  // no hay plan, el valor puede venir cargado a mano de antes y pisarlo seria
+  // borrar un dato que nadie pidio borrar.
+  if(!hayConFecha) return;
+  // Cobradas todas, no queda ninguna programada: dejar la ultima fecha ahi la
+  // muestra en el sidebar como plata que todavia no entro.
+  c.nextPaymentDate=prox;
+}
+function pagoAgregar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var ps=_pagos(c);
+  var r=_pagosResumen(c);
+  // La cuota nueva arranca con lo que falta para llegar al contrato: en la
+  // mayoria de los casos es un pago unico y queda cargado de una.
+  var falta=r.contrato?Math.max(r.contrato-r.total,0):0;
+  ps.push({id:Date.now()+ps.length, monto:(falta||''), tipo:'fecha', fecha:'', hito:'', pagadoAt:''});
+  save(); pagoRepintar(clientId);
+}
+function pagoBorrar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  _pagos(c).splice(i,1);
+  _pagosSync(c); save(); pagoRepintar(clientId);
+}
+function pagoCampo(clientId, i, campo, v){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var x=_pagos(c)[i]; if(!x) return;
+  x[campo]=String(v==null?'':v);
+  _pagosSync(c); save();
+  // El monto y el texto del hito se escriben letra por letra: repintar ahi
+  // saca el foco. Lo que cambia la forma de la fila —el tipo— si repinta.
+  if(campo==='tipo') pagoRepintar(clientId); else pagoTotales(clientId);
+}
+function pagoTildar(clientId, i, v){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var x=_pagos(c)[i]; if(!x) return;
+  x.pagadoAt=v?(_isoLocal(new Date())):'';
+  _pagosSync(c); save(); pagoRepintar(clientId);
+}
+function pagoRepintar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var e=document.getElementById('fact-pagos');
+  if(c&&e) e.innerHTML=_pagosHtml(c);
+}
+function pagoTotales(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var e=document.getElementById('fact-totales');
+  if(c&&e) e.innerHTML=_pagosTotalesHtml(c);
+}
+function _pagosTotalesHtml(c){
+  var r=_pagosResumen(c);
+  var plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
+  if(!r.n) return '<span style="color:var(--text3)">Sin cuotas cargadas.</span>';
+  return '<span style="color:var(--accent)">'+plata(r.cobrado)+' cobrado</span>'
+    +'<span style="color:var(--text3)"> de '+plata(r.total)+'</span>'
+    +(r.pendiente>0?('<span style="color:var(--text2)"> · falta cobrar '
+      +plata(r.pendiente)+'</span>'):'')
+    // Un plan que no suma el contrato es el error que hace que la proyeccion
+    // diga otra cosa que la factura, y no se ve solo.
+    +(r.descuadre?('<span style="color:var(--amberx)"> · '
+      +(r.descuadre>0
+        ? ('faltan '+plata(r.descuadre)+' para llegar al contrato')
+        : ('hay '+plata(-r.descuadre)+' de mas sobre el contrato'))
+      +'</span>'):'');
+}
+function _pagosHtml(c){
+  var ps=_pagos(c);
+  var est='box-sizing:border-box;font-size:12px;padding:4px 7px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+    +'font-family:var(--font);color-scheme:dark';
+  var filas=ps.map(function(x,i){
+    var pago=!!x.pagadoAt;
+    return '<div style="display:flex;gap:7px;align-items:center;padding:5px 0;'
+        +'border-top:1px solid var(--border)">'
+      +'<input type="checkbox"'+(pago?' checked':'')+' style="flex:none" '
+        +'title="'+(pago?('Cobrado el '+esc(x.pagadoAt)):'Marcar como cobrado')+'" '
+        +'onchange="pagoTildar('+c.id+','+i+',this.checked)">'
+      +'<span style="flex:none;color:var(--text3);font-size:12px">$</span>'
+      +'<input type="number" value="'+esc(String(x.monto||''))+'" placeholder="0" '
+        +'oninput="pagoCampo('+c.id+','+i+',\'monto\',this.value)" '
+        +'style="'+est+';width:100px;flex:none;font-variant-numeric:tabular-nums'
+        +(pago?';color:var(--accent)':'')+'">'
+      +'<select onchange="pagoCampo('+c.id+','+i+',\'tipo\',this.value)" '
+        +'style="'+est+';width:82px;flex:none">'
+        +'<option value="fecha"'+(x.tipo!=='hito'?' selected':'')+'>Por fecha</option>'
+        +'<option value="hito"'+(x.tipo==='hito'?' selected':'')+'>Por hito</option>'
+      +'</select>'
+      +(x.tipo==='hito'
+        ? ('<input value="'+esc(x.hito||'')+'" placeholder="Con que se dispara: firma, '
+          +'entrega de la landing, dia 30..." '
+          +'oninput="pagoCampo('+c.id+','+i+',\'hito\',this.value)" '
+          +'style="'+est+';flex:1;min-width:0">')
+        : ('<input type="date" value="'+esc(String(x.fecha||'').slice(0,10))+'" '
+          +'onchange="pagoCampo('+c.id+','+i+',\'fecha\',this.value)" '
+          +'style="'+est+';flex:1;min-width:0">'))
+      +'<button onclick="pagoBorrar('+c.id+','+i+')" aria-label="Sacar la cuota" '
+        +'title="Sacar la cuota" style="flex:none;border:0;background:none;color:var(--text3);'
+        +'cursor:pointer;font-size:15px;line-height:1;padding:0 2px">&times;</button>'
+    +'</div>';
+  }).join('');
+  return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:2px">'
+    +'<div style="font-size:12px;font-weight:500;color:var(--text)">Plan de pagos</div>'
+    +'<div id="fact-totales" style="font-size:11.5px;line-height:1.5;text-align:right">'
+      +_pagosTotalesHtml(c)+'</div>'
+  +'</div>'
+  +(ps.length?filas:('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;'
+    +'padding:6px 0;max-width:78ch">Cada cuota va con su monto y con cuando se cobra: una '
+    +'fecha, o un hito, que es para lo que se cobra contra algo entregado y no contra el '
+    +'calendario. Lo que tildes como cobrado es lo que cuenta como plata que entro.</div>'))
+  +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 9px;margin-top:8px" '
+    +'onclick="pagoAgregar('+c.id+')">+ Cuota</button>';
+}
 // El popup de facturacion. Los campos vivian sueltos al final del contexto,
 // donde nadie los buscaba y alargaban la hoja: ahora se abren desde el lapiz
 // de la tarjeta, que es donde se ven los numeros que hay que corregir.
@@ -22011,6 +22160,8 @@ function factModal(clientId){
       +'<div class="modal-sub">Lo que se cargue aca es lo que entra en la proyeccion '
         +'y en las alarmas de cobro.</div>'
       +_factCamposHtml(c)
+      +'<div id="fact-pagos" style="margin-top:16px;padding-top:14px;'
+        +'border-top:1px solid var(--border)">'+_pagosHtml(c)+'</div>'
       +'<div class="modal-footer">'
         +'<button class="btn btn-primary" onclick="factCerrar()">Listo</button>'
       +'</div>'
@@ -22102,6 +22253,17 @@ function _factResumenHtml(c){
     );
   return marco(aviso?'rgba(240,168,48,0.45)':'var(--border)',
     grilla
+    +(function(){
+      var r=_pagosResumen(c);
+      if(!r.n) return '';
+      return '<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border);'
+          +'font-size:11.5px;line-height:1.5">'
+        +'<span class="mono" style="color:var(--accent)">'+plata(r.cobrado)+'</span>'
+        +'<span style="color:var(--text3)"> cobrado de '+plata(r.total)+'</span>'
+        +(r.pendiente>0?('<span style="display:block;color:var(--text3)">falta cobrar '
+          +plata(r.pendiente)+'</span>'):'')
+      +'</div>';
+    })()
     +(aviso?('<div style="display:flex;gap:7px;margin-top:11px;padding-top:10px;'
       +'border-top:1px solid var(--border)">'
       +'<span style="flex:none;width:5px;height:5px;margin-top:6px;border-radius:1px;'
