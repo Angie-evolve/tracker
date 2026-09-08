@@ -34812,7 +34812,10 @@ function _guionInternoHtml(c){
   var h=o.hipotesis||{};
   var sup=(h.supuestos||[]).filter(function(x){ return x&&x.que; });
   var fuera=(o.fuera||[]);
-  if(!h.dolor && !sup.length && !fuera.length) return '';
+  var mk=o.mercado||((typeof onbMercadoDe==='function')?onbMercadoDe(c):null)||{};
+  var avisos=(mk.avisos||[]);
+  var comp=(mk.competidores||[]);
+  if(!h.dolor && !sup.length && !fuera.length && !avisos.length && !comp.length) return '';
   var tit=function(t){
     return '<div style="font-size:10px;color:var(--accent);text-transform:uppercase;'
       +'letter-spacing:.1em;margin:16px 0 7px">'+t+'</div>'; };
@@ -34829,6 +34832,32 @@ function _guionInternoHtml(c){
       +'Nada de esto se dice hoy. La hipotesis se escribe despues de cortar y se presenta '
       +'armada en la sesion de estrategia. Si pregunta que vamos a hacer: el proceso y la '
       +'fecha, nunca el angulo.</div>'
+    // Arriba de la hipotesis: en la llamada esto es lo que hace que no se le
+    // compre el relato de que no tiene competencia.
+    +(avisos.length?(tit('Avisos antes de entrar · salen de la web, no de el')
+      +avisos.map(function(x){
+        return '<div style="border-left:2px solid var(--amberx);padding:2px 0 2px 11px;'
+            +'margin-bottom:9px">'
+          +'<div style="font-size:12.5px;color:var(--text);line-height:1.55">'
+            +esc(x.txt||'')+'</div>'
+          +((x.evidencia||x.fuente)?('<div style="font-size:11px;color:var(--text3);'
+            +'line-height:1.5;margin-top:3px">'+esc(x.evidencia||'')
+            +(x.fuente?('<a href="'+esc(x.fuente)+'" target="_blank" rel="noopener" '
+              +'style="color:var(--text3);margin-left:5px">fuente</a>'):'')
+          +'</div>'):'')
+        +'</div>';
+      }).join('')):'')
+    +(comp.length?(tit('Contra quien compite de verdad')
+      +comp.map(function(x){
+        return '<div style="font-size:11.5px;color:var(--text2);line-height:1.5;padding:4px 0;'
+            +'border-top:1px solid var(--border)">'
+          +'<b style="color:var(--text);font-weight:500">'+esc(x.n||'')+'</b>'
+          +(x.que?(' — '+esc(x.que)):'')
+          +(x.precio?('<span style="color:var(--text3)"> · '+esc(x.precio)+'</span>'):'')
+          +(x.ventaja?('<span style="display:block;color:var(--text3)">tiene: '
+            +esc(x.ventaja)+'</span>'):'')
+        +'</div>';
+      }).join('')):'')
     +(h.dolor?(tit('La apuesta que entramos a poner a prueba')
       +[['Para quien',h.avatar],['Dolor',h.dolor],
         ['Promesa',[h.promesa,h.plazo].filter(Boolean).join(' · ')],
@@ -40269,10 +40298,35 @@ function _onbPedido(c, lls){
     return '### Llamada '+(i+1)+': '+(x.title||'')+' ('+(x.date||'')+', '+(x.duration||'')+')\n'
       +String(x.transcript||'').slice(0,60000);
   }).join('\n\n');
+  // Va aparte y rotulada: si se mezcla con las llamadas, el modelo termina
+  // marcando como DICHO algo que el cliente nunca dijo y que salio de la web.
+  var mk=onbMercadoDe(c);
+  var mkTxt='';
+  if(mk){
+    mkTxt='\n\nINVESTIGACION DE MERCADO (sale de la web, NO del cliente. Nada de esto se '
+      +'marca como DICHO ni se le atribuye a el):\n'
+      +(mk.mercado?('Mercado: '+mk.mercado+'\n'):'')
+      +(mk.competidores||[]).map(function(x){
+        return '- Competidor: '+(x.n||'')+' — '+(x.que||'')
+          +(x.precio?(' — precio: '+x.precio):'')
+          +(x.ventaja?(' — tiene: '+x.ventaja):''); }).join('\n')
+      +((mk.alternativas||[]).length?('\n'+(mk.alternativas||[]).map(function(x){
+        return '- Alternativa sin contratar: '+(x.n||'')
+          +(x.porque?(' — '+x.porque):''); }).join('\n')):'')
+      +((mk.avisos||[]).length?('\nAVISOS (el cliente cree una cosa y la web muestra otra):\n'
+        +(mk.avisos||[]).map(function(x){
+          return '- '+(x.txt||'')+(x.evidencia?(' — '+x.evidencia):''); }).join('\n')):'')
+      +'\n\nUsala para dos cosas y solo dos: que el DIFERENCIAL de la hipotesis se mida '
+      +'contra la competencia real y no contra la que el cliente imagina, y para que alguna '
+      +'pregunta de la llamada ponga a prueba lo que la web contradice, sin nombrarle al '
+      +'cliente que investigamos. Si la investigacion no cambia ninguna pregunta, no fuerces '
+      +'ninguna.';
+  }
   return onbSop()
     .split('{{CLIENTE}}').join(String(c.name||''))
     .split('{{VARIABLES}}').join(vars)
     .split('{{ARQUETIPOS}}').join(arq)
+    +mkTxt
     +'\nMATERIAL:\n\n'+mat;
 }
 
@@ -40339,6 +40393,85 @@ function onbSopOriginal(clientId){
   save();
   onbSopModal(clientId);
 }
+// El analisis lee las llamadas y nada mas: todo lo que sale de ahi es lo que el
+// cliente cree de su propio mercado. Los avisos mas filosos —que existe alguien
+// haciendo lo mismo hace tres anios, que el competidor tiene capa gratis— no
+// estan en ninguna llamada y hoy los tenia que poner una persona a mano.
+function onbMercadoDe(c){
+  return (c && c.onbMercado && typeof c.onbMercado==='object') ? c.onbMercado : null;
+}
+function _onbCtxMercado(c){
+  var q=(typeof _queHace==='function')?_queHace(c):null;
+  var t=[];
+  if(q&&(q.hoy||q.txt)) t.push('DE QUE VIVE HOY: '+(q.hoy||q.txt));
+  if(q&&q.conNosotros) t.push('QUE NOS TRAE: '+q.conNosotros);
+  // Un recorte de cada llamada alcanza para ubicar rubro, pais y competencia
+  // nombrada. Mandarlas enteras gasta el presupuesto en leer en vez de buscar.
+  _onbMaterial(c).forEach(function(x,i){
+    t.push('### Llamada '+(i+1)+': '+(x.title||'')+'\n'+String(x.transcript||'').slice(0,14000));
+  });
+  return t.join('\n\n');
+}
+async function onbMercado(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return; }
+  if(!_onbMaterial(c).length){
+    toast('Sin llamadas no hay de donde sacar el rubro ni el pais.','amber'); return;
+  }
+  S._onbMk={cid:clientId, cargando:true, err:''};
+  onbModal(clientId);
+  try{
+    var o=await _lpApi(apiKey,{
+      model:'claude-sonnet-5', max_tokens:8000,
+      // Igual que en la investigacion de la landing: buscar encuentra, fetch
+      // LEE. Con busqueda sola el modelo arma la respuesta con los recortes del
+      // buscador y termina inventando precios que la pagina no dice.
+      tools:[{type:'web_search_20250305', name:'web_search', max_uses:8},
+             {type:'web_fetch_20250910', name:'web_fetch', max_uses:10,
+              citations:{enabled:true}}],
+      messages:[{role:'user', content:
+        'Abajo esta el material de venta de "'+String(c.name||'')+'". Tu trabajo no es '
+        +'resumirlo: es averiguar contra quien compite de verdad, en su rubro y en su pais, '
+        +'y traer lo que el no dijo.\n\n'
+        +'COMO TRABAJAR:\n'
+        +'- Sacá del material el rubro, el pais y la ciudad. Busca competencia de ESE mercado, '
+        +'no del mercado global: un competidor de otro pais no le compite.\n'
+        +'- ABRI las paginas con web_fetch y leelas. No armes la respuesta con los fragmentos '
+        +'del buscador: son recortes y llevan a inventar precios y funcionalidades.\n'
+        +'- Cada dato lleva la URL exacta de la pagina donde lo leiste.\n'
+        +'- Las palabras entre comillas tienen que estar TEXTUALES en la pagina.\n'
+        +'- Si una pagina no abre, ponela en "noPude" y segui.\n'
+        +'- Busca tambien la alternativa gratis o casera: muchas veces el competidor real no '
+        +'es otra empresa sino seguir haciendolo a mano.\n\n'
+        +'LO QUE MAS IMPORTA son los AVISOS: donde lo que el cliente cree de su mercado no '
+        +'coincide con lo que muestra la web. Si dijo que no tiene competencia y la tiene, si '
+        +'dijo que su diferencial es el precio y el otro tiene capa gratuita, si el que dice '
+        +'ser el unico llego tercero. Cada aviso con la evidencia y su URL. Si el material no '
+        +'alcanza para afirmar que el cliente cree lo contrario, no es un aviso: es un hallazgo.\n\n'
+        +'Devolve SOLO un JSON, sin markdown, empezando con { :\n'
+        +'{"mercado":"el rubro y el pais en una linea",'
+        +'"competidores":[{"n":"nombre","que":"que hace igual, en una linea",'
+        +'"precio":"lo que publica, o vacio","ventaja":"que tiene que el cliente no",'
+        +'"fuente":"url exacta"}],'
+        +'"alternativas":[{"n":"como lo resuelven hoy sin contratar a nadie","porque":"",'
+        +'"fuente":""}],'
+        +'"avisos":[{"txt":"lo que el cliente cree y la web desmiente","evidencia":"",'
+        +'"fuente":"url exacta"}],'
+        +'"noPude":["paginas que no pudiste abrir"]}\n\n'
+        +'Array vacio si no encontras. Nunca inventes nombres, precios ni URLs.\n\n'
+        +'MATERIAL DEL CLIENTE:\n\n'+_onbCtxMercado(c)}]
+    }, 'web-fetch-2025-09-10');
+    o.at=new Date().toISOString();
+    c.onbMercado=o;
+    save();
+    S._onbMk={cid:clientId, cargando:false, err:''};
+  }catch(e){
+    S._onbMk={cid:clientId, cargando:false, err:e.message||'no pude leer la respuesta'};
+  }
+  onbModal(clientId);
+}
 async function onbPreparar(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -40368,6 +40501,10 @@ async function onbPreparar(clientId){
     var o=JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1));
     o.at=new Date().toISOString();
     o.fuentes=lls.length;
+    // El panel interno del guion lee de c.onboarding: sin copiarla aca, la
+    // investigacion quedaria guardada y sin aparecer en la llamada.
+    var _mk=onbMercadoDe(c);
+    if(_mk) o.mercado=_mk;
     c.onboarding=o;
     save();
     S._onb={cid:clientId, cargando:false, err:''};
@@ -40375,6 +40512,70 @@ async function onbPreparar(clientId){
     S._onb={cid:clientId, cargando:false, err:e.message||'no pude leer la respuesta'};
   }
   onbModal(clientId);
+}
+function _onbMercadoHtml(c){
+  var mk=onbMercadoDe(c);
+  var st=(S._onbMk&&S._onbMk.cid===c.id)?S._onbMk:null;
+  var cab='<div style="display:flex;align-items:baseline;gap:9px;margin:16px 0 6px">'
+    +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em">El mercado</span>'
+    +(mk&&mk.mercado?('<span style="flex:1;min-width:0;font-size:11px;color:var(--text3);'
+      +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      +esc(mk.mercado)+'</span>'):'<span style="flex:1"></span>')
+    +((st&&st.cargando)
+      ? '<span style="font-size:11px;color:var(--text3)">buscando...</span>'
+      : ('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+        +'onclick="onbMercado('+c.id+')" title="Busca competencia real del rubro y el pais, '
+        +'y trae lo que el cliente no dijo">'+(mk?'Volver a investigar':'Investigar')+'</button>'))
+  +'</div>';
+  if(st&&st.err) return cab+'<div style="font-size:11.5px;color:var(--redx);line-height:1.55">'
+    +esc(st.err)+'</div>';
+  if(st&&st.cargando) return cab+'<div style="font-size:11.5px;color:var(--text3);'
+    +'line-height:1.55">Buscando competencia en la web y leyendo sus paginas. Tarda un rato '
+    +'mas que leer las llamadas.</div>';
+  if(!mk) return cab+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;'
+    +'max-width:82ch">Las llamadas cuentan el mercado que el cliente cree tener. Esto busca '
+    +'el que tiene: quien hace lo mismo en su rubro y su pais, a que precio, y con que '
+    +'ventaja. Correlo antes de leer las llamadas y el analisis lo usa.</div>';
+  var comp=(mk.competidores||[]), av=(mk.avisos||[]), alt=(mk.alternativas||[]);
+  return cab
+    // Los avisos van primero: es lo unico de todo esto que cambia como se
+    // encara la llamada.
+    +av.map(function(x){
+      return '<div style="border-left:2px solid var(--amberx);padding:3px 0 3px 11px;'
+          +'margin-bottom:8px">'
+        +'<div style="font-size:12px;color:var(--text);line-height:1.55">'+esc(x.txt||'')+'</div>'
+        +((x.evidencia||x.fuente)?('<div style="font-size:11px;color:var(--text3);'
+          +'line-height:1.5;margin-top:2px">'+esc(x.evidencia||'')
+          +(x.fuente?('<a href="'+esc(x.fuente)+'" target="_blank" rel="noopener" '
+            +'style="color:var(--text3);margin-left:5px">fuente</a>'):'')+'</div>'):'')
+      +'</div>';
+    }).join('')
+    +comp.map(function(x){
+      return '<div style="display:flex;gap:9px;align-items:baseline;padding:4px 0;'
+          +'border-top:1px solid var(--border);font-size:11.5px">'
+        +'<span style="flex:none;width:118px;color:var(--text2)">'+esc(x.n||'')+'</span>'
+        +'<span style="flex:1;min-width:0;color:var(--text3);line-height:1.5">'+esc(x.que||'')
+          +(x.precio?(' · '+esc(x.precio)):'')
+          +(x.ventaja?('<span style="display:block">tiene: '+esc(x.ventaja)+'</span>'):'')
+        +'</span>'
+        +(x.fuente?('<a href="'+esc(x.fuente)+'" target="_blank" rel="noopener" '
+          +'style="flex:none;font-size:10.5px;color:var(--text3)">ver</a>'):'')
+      +'</div>';
+    }).join('')
+    +alt.map(function(x){
+      return '<div style="font-size:11.5px;color:var(--text3);line-height:1.5;padding:3px 0;'
+          +'border-top:1px solid var(--border)">Sin contratar a nadie: '+esc(x.n||'')
+        +(x.porque?(' — '+esc(x.porque)):'')+'</div>';
+    }).join('')
+    +((mk.noPude||[]).length?('<div style="font-size:10.5px;color:var(--text3);opacity:.75;'
+      +'margin-top:6px;line-height:1.5">No pude abrir: '+esc((mk.noPude||[]).join(', '))
+      +'</div>'):'')
+    +(!comp.length&&!av.length&&!alt.length
+      ? '<div style="font-size:11.5px;color:var(--amberx);line-height:1.55">No encontro '
+        +'competencia publicada en ese rubro y pais. Puede ser cierto, o que no este en la '
+        +'web: no lo des por bueno sin chequearlo.</div>'
+      : '');
 }
 function _onbMin(o){
   return ((o.guion&&o.guion.bloques)||[]).reduce(function(a,b){ return a+(Number(b.min)||0); },0);
@@ -40409,8 +40610,9 @@ function onbModal(clientId){
   } else if(st.err){
     cuerpo='<div style="padding:18px 0;font-size:12.5px;color:var(--redx)">'+esc(st.err)+'</div>';
   } else if(!o){
-    cuerpo='<div style="padding:18px 0;font-size:12.5px;color:var(--text3)">'
-      +'Todavia no se leyo el material de este cliente.</div>';
+    cuerpo='<div style="padding:14px 0 0;font-size:12.5px;color:var(--text3)">'
+      +'Todavia no se leyo el material de este cliente.</div>'
+      +_onbMercadoHtml(c);
   } else {
     var arq=onbArq().filter(function(a){ return a.k===((o.arquetipo||{}).k); })[0];
     var mins=_onbMin(o), npreg=_onbNPreg(o);
@@ -40437,6 +40639,7 @@ function onbModal(clientId){
       +((o.arquetipo&&o.arquetipo.porque)
         ?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
           +esc(o.arquetipo.porque)+'</div>'):'')
+      +_onbMercadoHtml(c)
       +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.06em;margin-bottom:6px">Que sabemos ya</div>'
       +(o.variables||[]).map(function(v){
