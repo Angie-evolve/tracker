@@ -10916,11 +10916,28 @@ var EERR_MESES=['enero','febrero','marzo','abril','mayo','junio',
 // Cuando entro un cliente. No hay campo de alta, asi que se reconstruye: la
 // fecha de inicio del contrato es la mas fiel, despues la de firma, y como
 // ultimo recurso el id, que se genera con Date.now() al crearlo.
+// El dia tal cual se ve en pantalla. toISOString pasa por UTC y corre la
+// fecha una casilla segun la zona horaria.
+function _isoLocal(d){
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
 function _fecha(x){
   if(!x) return null;
   // signDate viene en DD/MM/YYYY del lector de contratos.
   var mm=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(x));
-  var d=mm?new Date(+mm[3],+mm[2]-1,+mm[1]):new Date(x);
+  if(mm){
+    var dm=new Date(+mm[3],+mm[2]-1,+mm[1]);
+    return isNaN(dm.getTime())?null:dm;
+  }
+  // new Date('2026-08-27') se lee como medianoche UTC, que en Argentina es el
+  // 26 a las 21hs: toda fecha guardada asi salia un dia antes al mostrarla, y
+  // una alta del dia 1 caia en el mes anterior al contar clientes nuevos.
+  var iso=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(x));
+  if(iso){
+    var di=new Date(+iso[1],+iso[2]-1,+iso[3]);
+    return isNaN(di.getTime())?null:di;
+  }
+  var d=new Date(x);
   return isNaN(d.getTime())?null:d;
 }
 // Devuelve la fecha Y de donde salio. La fuente importa: el id del cliente dice
@@ -19561,7 +19578,7 @@ function renderTab(){
           </div>
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
             <span style="font-size:11px;color:var(--text3)">Cliente desde</span>
-            <input type="date" value="${(clienteAltaInfo(c).fecha&&clienteAltaFiable(c))?clienteAltaInfo(c).fecha.toISOString().slice(0,10):''}"
+            <input type="date" value="${(clienteAltaInfo(c).fecha&&clienteAltaFiable(c))?_isoLocal(clienteAltaInfo(c).fecha):''}"
               onchange="setClientFee(${c.id},'altaAt',this.value)"
               style="font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
             <span style="font-size:10.5px;color:${clienteAltaFiable(c)?'var(--text3)':'var(--amberx)'}">
@@ -21833,6 +21850,81 @@ function setHojaSuccess(k){
 // lo primero que hace falta y lo que nadie tiene escrito: el que entra a la
 // ficha para preparar una llamada, cubrir a alguien o revisar un anuncio
 // arranca reconstruyendolo de las llamadas cada vez.
+// El resumen de plata al lado del contexto. El que entra a la ficha para
+// preparar una llamada necesita cuanto paga y desde cuando, y eso vivia en
+// otra hoja: obligaba a ir y volver justo cuando se esta leyendo lo demas.
+// Es solo lectura, un clic lleva a Facturacion, que es donde se edita.
+function _factResumenHtml(c){
+  var tipo={garantia:'Garantia', recurrente:'Recurrente', mixto:'Implementacion + fee',
+            'one-time':'One-time'}[c.serviceType||'garantia']||'Garantia';
+  var marco=function(borde, dentro){
+    return '<div onclick="setHojaSuccess(\'facturacion\')" title="Ir a Facturacion" '
+      +'style="flex:none;width:260px;align-self:flex-start;cursor:pointer;'
+      +'background:var(--bg2);border:1px solid '+borde+';border-radius:var(--radius-lg);'
+      +'padding:12px 14px">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">'
+        +'<span style="font-size:12.5px;font-weight:500;color:var(--text)">Facturacion</span>'
+        +'<span style="font-size:11px;color:var(--text3)">'+esc(tipo)+'</span>'
+      +'</div>'+dentro
+    +'</div>';
+  };
+  if(!verPlata()) return marco('var(--border)',
+    '<div style="font-size:11px;color:var(--text3);line-height:1.55;margin-top:8px">'
+    +'Los montos de este cliente no estan habilitados para tu usuario.</div>');
+
+  var val=parseFloat(c.contractValue)||0;
+  var fee=parseFloat(c.monthlyFee)||0;
+  var dias=parseInt((c.contract||{}).durationDays,10)||0;
+  var alta=clienteAltaInfo(c);
+  var plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
+  var dato=function(v, rot, tenue, col){
+    return '<div>'
+      +'<div class="mono" style="font-size:15px;line-height:1.3;color:'
+        +(col||(tenue?'var(--text3)':'var(--strong)'))+'">'+v+'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:1px">'+rot+'</div>'
+    +'</div>';
+  };
+  // Lo que se dijo en las llamadas contra lo que hay cargado: sin esto la
+  // tarjeta muestra $0 y parece que el cliente no paga, cuando en realidad
+  // la venta se cerro y lo que falta es que alguien lo escriba.
+  var a=_acordado(c);
+  var dicho=(a&&a.precio&&a.precio.valor)?String(a.precio.valor):'';
+  var plazoDicho=(a&&a.plazo&&a.plazo.valor)?String(a.plazo.valor):'';
+  var fuerte=function(t){ return '<b style="color:var(--text);font-weight:500">'
+    +esc(_lpLimpiar(t))+'</b>'; };
+  var aviso='';
+  if(!val && !fee){
+    aviso = dicho
+      ? ('La venta cerro en '+fuerte(dicho)
+         +(plazoDicho?(' a '+fuerte(plazoDicho)):'')
+         +' y falta el monto. Asi no suma nada a la proyeccion.')
+      : 'Sin monto cargado: este cliente no suma nada a la proyeccion.';
+  } else if(val && !dias && (c.serviceType||'garantia')!=='recurrente'){
+    aviso='Falta la duracion: sin plazo no se puede prorratear el contrato por mes.';
+  }
+
+  return marco(aviso?'rgba(240,168,48,0.45)':'var(--border)',
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:11px">'
+      +dato(val?plata(val):(c.serviceType==='recurrente'?'\u2014':'$0'),
+            (c.serviceType==='mixto'?'fee de implementacion':'valor del contrato'), !val)
+      +dato(fee?plata(fee):'—', 'por mes', !fee)
+      +dato(alta.fecha
+              ? alta.fecha.toLocaleDateString('es-AR',{day:'numeric',month:'numeric',year:'2-digit'})
+              : '—',
+            'cliente desde', !alta.fecha,
+            // La fecha estimada es la del dia que se cargo en la app, no la
+            // real: mostrarla igual que una cargada a mano la da por cierta.
+            (alta.fecha&&!clienteAltaFiable(c))?'var(--amberx)':'')
+      +dato(dias?(dias+' dias'):'—', 'duracion', !dias)
+    +'</div>'
+    +(aviso?('<div style="display:flex;gap:7px;margin-top:11px;padding-top:10px;'
+      +'border-top:1px solid var(--border)">'
+      +'<span style="flex:none;width:5px;height:5px;margin-top:6px;border-radius:1px;'
+        +'background:var(--amberx)"></span>'
+      +'<span style="flex:1;font-size:11.5px;color:var(--text2);line-height:1.55">'
+        +aviso+'</span>'
+    +'</div>'):''));
+}
 function _queHace(c){
   return (c.queHace&&typeof c.queHace==='object')?c.queHace:null;
 }
@@ -21871,10 +21963,17 @@ function _queHaceHtml(c){
   var hoy=String((q&&(q.hoy||q.txt))||'').trim();
   var nos=String((q&&q.conNosotros)||'').trim();
   if(!hoy && !nos){
-    return '<div style="'+marco+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-      +'<span style="flex:1;min-width:200px;font-size:12.5px;color:var(--text3);line-height:1.6">'
-        +'Nadie escribio todavia que hace '+esc(c.name||'este cliente')+'.</span>'
-      +acciones
+    return '<div style="'+marco+'">'
+      +'<div style="display:flex;align-items:flex-start;gap:26px;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:240px;display:flex;align-items:center;gap:10px;'
+          +'flex-wrap:wrap">'
+          +'<span style="flex:1;min-width:200px;font-size:12.5px;color:var(--text3);'
+            +'line-height:1.6">Nadie escribio todavia que hace '
+            +esc(c.name||'este cliente')+'.</span>'
+          +acciones
+        +'</div>'
+        +_factResumenHtml(c)
+      +'</div>'
     +'</div>';
   }
   // Las dos son del mismo cliente y se confunden: lo que hace para vivir no es
@@ -21893,9 +21992,10 @@ function _queHaceHtml(c){
       +'<span style="flex:1;min-width:120px"></span>'
       +acciones
     +'</div>'
-    +'<div style="display:flex;gap:26px;flex-wrap:wrap;max-width:118ch">'
+    +'<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start">'
       +parte('De que vive hoy', hoy)
       +parte('Que quiere trabajar con nosotros', nos, 'var(--accent)')
+      +_factResumenHtml(c)
     +'</div>'
   +'</div>';
 }
