@@ -32,6 +32,7 @@
   --text3: #555;
   --strong: #fff;
   --accent: #4ecfa0;
+  --accent2: #57cfd6;   /* lo que se dice en voz alta, distinto de lo que se tilda */
   --amberx: #f0a830;
   --redx: #f07050;
   --on-accent: #0d0d0d;
@@ -34521,20 +34522,51 @@ function guionResp(c, id){
   var r=c.guionResp[id];
   if(!r) r=c.guionResp[id]={v:{}, hechos:{}, conceptos:{}, at:''};
   if(!r.v) r.v={}; if(!r.hechos) r.hechos={}; if(!r.conceptos) r.conceptos={};
+  // Los tramos que se leen no se tildan pregunta por pregunta: tienen su
+  // propio "dicho". Y las afirmaciones que se confirman guardan cual quedo
+  // mal, que es el dato que importa, mas el texto de la correccion.
+  if(!r.dichos) r.dichos={}; if(!r.conf) r.conf={}; if(!r.corr) r.corr={};
   return r;
 }
+// El SOP devuelve negritas e italicas dentro de lo que se lee en voz alta. Se
+// escapa todo y se devuelven solo esas cuatro etiquetas: el texto lo escribe
+// un modelo y no hay razon para dejarlo meter markup libre.
+function _guionRico(t){
+  var x=esc(String(t||''));
+  x=x.replace(/&lt;(\/?)(b|i)&gt;/g, '<$1$2>');
+  // Un {{MONTO}} sin completar se lee en voz alta como "llave llave monto".
+  // Pintado en ambar se ve antes de abrir la boca.
+  return x.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g,
+    '<span style="color:var(--amberx)">{{$1}}</span>');
+}
+// Los tramos sin preguntas son cinco de los ocho. Si no cuentan, el avance
+// muestra la llamada al 60% con todo hecho.
+function _guionLeeSolo(b){
+  return !((b.preguntas||[]).length) && (((b.leer||[]).length)||((b.confirmar||[]).length));
+}
 function _guionAvance(g, r){
-  var tot=0, n=0, conc=0, concOk=0;
+  var tot=0, n=0, conc=0, concOk=0, tram=0, tramOk=0;
   (g.bloques||[]).forEach(function(b,bi){
     if(b.concepto){ conc++; if(r&&r.conceptos[bi]) concOk++; }
+    // Un bloque que solo se lee avanza con su tilde de "dicho", no con
+    // preguntas tildadas: no tiene ninguna. El de confirmacion no tiene tilde
+    // propia: se da por hecho cuando cada afirmacion quedo confirmada o
+    // marcada para corregir, que es lo unico que hay que hacer ahi.
+    if(_guionLeeSolo(b)){
+      tram++;
+      var cf=(b.confirmar||[]);
+      var todas=cf.length && cf.every(function(x,n){ return r&&r.conf[bi+'-'+n]; });
+      if(r&&(r.dichos[bi]||todas)) tramOk++;
+    }
     (b.preguntas||[]).forEach(function(q){
       tot++;
       var k=_gk(bi, q.q||q);
       if(r&&(r.hechos[k]||String(r.v[k]||'').trim())) n++;
     });
   });
-  return {tot:tot, n:n, conc:conc, concOk:concOk,
-          pct:(tot+conc)?Math.round((n+concOk)/(tot+conc)*100):0};
+  var d=tot+conc+tram, h=n+concOk+tramOk;
+  return {tot:tot, n:n, conc:conc, concOk:concOk, tram:tram, tramOk:tramOk,
+          pct:d?Math.round(h/d*100):0};
 }
 function guionNuevo(){
   var g={ id:Date.now(), titulo:'Guion sin nombre', tipo:'onboarding',
@@ -34616,6 +34648,7 @@ function abrirGuion(id, clientId){
         +(c?(esc(c.name||'')+' \u00b7 '+av.n+' de '+av.tot+' preguntas'
              +(av.conc?(' \u00b7 '+av.concOk+' de '+av.conc+' conceptos'):''))
            :'Estas editando la plantilla. Para correrlo, abrilo desde un cliente.')+'</div>'
+      +(c?_guionRelojHtml(g, clientId):'')
       +(c?'':('<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
         +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
           +'onclick="guionLlamadasModal('+id+')">Sacarlo de las llamadas</button></div>'))
@@ -34631,9 +34664,173 @@ function abrirGuion(id, clientId){
         +'onclick="guionBloqueAdd('+id+')">+ Bloque</button>'))
       +'<div class="modal-footer">'
         +(c?('<button class="btn" onclick="guionCopiar('+id+','+clientId+')">Copiar</button>'):'')
+        +((c&&_guionInternoHtml(c))
+          ?('<button class="btn" onclick="guionInterno()" '
+            +'title="Hipotesis, supuestos y preguntas de reserva">Interno</button>'):'')
         +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
       +'</div>'
-    +'</div></div>';
+    +'</div>'
+    +(c?_guionInternoHtml(c):'')
+  +'</div>';
+}
+// El reloj de la corrida en vivo. Sin esto la hora se va a noventa minutos,
+// que es lo que pasa en la practica.
+var _RJ={key:'', on:false, t0:0, acc:0, tb0:0, accb:0, bi:0, tick:null};
+function _guionMins(g){
+  return (g.bloques||[]).reduce(function(a,b){ return a+(Number(b.min)||0); },0);
+}
+function _rjMmss(sg){
+  sg=Math.max(0,Math.floor(sg));
+  return Math.floor(sg/60)+':'+('0'+(sg%60)).slice(-2);
+}
+function _rjSeg(){
+  return {g:_RJ.on?((Date.now()-_RJ.t0)/1000):_RJ.acc,
+          b:_RJ.on?((Date.now()-_RJ.tb0)/1000):_RJ.accb};
+}
+function guionRelojToggle(){
+  var t=_rjSeg();
+  if(_RJ.on){ _RJ.acc=t.g; _RJ.accb=t.b; _RJ.on=false; }
+  else { _RJ.t0=Date.now()-_RJ.acc*1000; _RJ.tb0=Date.now()-_RJ.accb*1000; _RJ.on=true; }
+  _guionRelojPintar();
+}
+// El reloj del bloque se reinicia al cambiar de bloque. El global no.
+function guionRelojBloque(bi){
+  _RJ.bi=bi; _RJ.accb=0; _RJ.tb0=Date.now();
+  if(!_RJ.on){ _RJ.t0=Date.now()-_RJ.acc*1000; _RJ.on=true; }
+  _guionRelojPintar();
+}
+function _guionRelojPintar(){
+  var caja=document.getElementById('rj');
+  // El modal se cerro: sin esto el intervalo sigue corriendo para siempre
+  // contra nodos que ya no existen.
+  if(!caja){ if(_RJ.tick){ clearInterval(_RJ.tick); _RJ.tick=null; } return; }
+  var g=_guion(_RJ.gid); if(!g) return;
+  var t=_rjSeg();
+  var tope=_guionMins(g)||60;
+  var b=(g.bloques||[])[_RJ.bi]||{};
+  var bmin=Number(b.min)||0;
+  var pasadoG=(t.g>tope*60), pasadoB=(bmin&&t.b>bmin*60);
+  var eG=document.getElementById('rj-g');
+  if(eG){ eG.textContent=_rjMmss(t.g);
+          eG.style.color=pasadoG?'var(--amberx)':'var(--strong)'; }
+  var eT=document.getElementById('rj-tope');
+  if(eT) eT.textContent='/ '+tope+'′';
+  var eB=document.getElementById('rj-b');
+  if(eB){ eB.innerHTML='bloque '+(_RJ.bi+1)+' · <b style="color:'
+    +(pasadoB?'var(--amberx)':'var(--text)')+'">'+_rjMmss(t.b)+'</b>'
+    +(bmin?(' / '+bmin+'′'):''); }
+  var eBt=document.getElementById('rj-btn');
+  if(eBt) eBt.textContent=_RJ.on?'Pausar':(t.g?'Seguir':'Empezar');
+  // En vivo el instinto es recortar el final, que es justo lo unico que no se
+  // puede recortar: la devolucion y los compromisos son lo que el cliente se
+  // lleva.
+  var eA=document.getElementById('rj-av');
+  if(eA){
+    var recortable=(g.bloques||[]).filter(function(x,i){
+      return i>_RJ.bi && String(x.tipo||'arquetipo')==='arquetipo'; })[0];
+    eA.style.display=(pasadoG||pasadoB)?'block':'none';
+    eA.textContent=recortable
+      ? ('Vas pasado. Lo que se recorta es "'+(recortable.t||'')+'", nunca la devolucion '
+         +'ni los proximos pasos.')
+      : 'Vas pasado y no queda ningun frente para recortar. Acorta este, no el final.';
+  }
+  var eR=document.getElementById('rj-rail');
+  if(eR){
+    var hijos=eR.children;
+    for(var i=0;i<hijos.length;i++){
+      hijos[i].style.background=(i<_RJ.bi)?'rgba(78,207,160,0.35)'
+        :((i===_RJ.bi)?'var(--accent)':'var(--bg4)');
+    }
+  }
+}
+function _guionRelojHtml(g, clientId){
+  if(_RJ.key!==(g.id+'-'+clientId)){
+    _RJ={key:(g.id+'-'+clientId), gid:g.id, on:false, t0:0, acc:0, tb0:0, accb:0,
+         bi:0, tick:_RJ.tick};
+  }
+  _RJ.gid=g.id;
+  if(!_RJ.tick) _RJ.tick=setInterval(_guionRelojPintar, 500);
+  var tope=_guionMins(g)||60;
+  return '<div id="rj" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;'
+      +'margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius)">'
+    +'<span id="rj-g" class="mono" style="font-size:26px;font-weight:600;line-height:1;'
+      +'color:var(--strong)">0:00</span>'
+    +'<span id="rj-tope" class="mono" style="font-size:12px;color:var(--text3)">/ '
+      +tope+'′</span>'
+    +'<span id="rj-b" class="mono" style="font-size:13px;color:var(--text3)">bloque 1 · '
+      +'<b style="color:var(--text)">0:00</b></span>'
+    +'<span style="flex:1"></span>'
+    +'<button id="rj-btn" class="btn btn-sm" style="flex:none" '
+      +'onclick="guionRelojToggle()">Empezar</button>'
+    // Proporcional a los minutos de cada bloque: asi se ve de un vistazo cuanto
+    // pesa el que viene, no cuantos quedan.
+    +'<div id="rj-rail" style="flex-basis:100%;display:flex;gap:3px;margin-top:2px">'
+      +(g.bloques||[]).map(function(b,i){
+        return '<div style="flex:'+(Number(b.min)||1)+';height:3px;border-radius:2px;'
+          +'background:'+(i===0?'var(--accent)':'var(--bg4)')+'"></div>'; }).join('')
+    +'</div>'
+    +'<div id="rj-av" style="flex-basis:100%;display:none;font-size:11.5px;'
+      +'color:var(--amberx);line-height:1.5"></div>'
+  +'</div>';
+}
+// La hipotesis, los supuestos y las descartadas no se le muestran al cliente:
+// en un panel aparte se puede compartir pantalla sin exponerlos. La hipotesis
+// ademas no se presenta en el onboarding, se escribe despues.
+function guionInterno(){
+  var e=document.getElementById('guion-int');
+  if(e) e.hidden=!e.hidden;
+}
+function _guionInternoHtml(c){
+  var o=(c&&c.onboarding)||{};
+  var h=o.hipotesis||{};
+  var sup=(h.supuestos||[]).filter(function(x){ return x&&x.que; });
+  var fuera=(o.fuera||[]);
+  if(!h.dolor && !sup.length && !fuera.length) return '';
+  var tit=function(t){
+    return '<div style="font-size:10px;color:var(--accent);text-transform:uppercase;'
+      +'letter-spacing:.1em;margin:16px 0 7px">'+t+'</div>'; };
+  return '<div id="guion-int" hidden style="position:fixed;top:0;right:0;bottom:0;'
+      +'width:min(420px,92vw);z-index:120;overflow-y:auto;padding:22px 22px 40px;'
+      +'background:var(--bg2);border-left:1px solid var(--border2)">'
+    +'<div style="display:flex;align-items:baseline;gap:10px">'
+      +'<span style="flex:1;font-size:13px;color:var(--strong);font-weight:500">'
+        +'Interno</span>'
+      +'<button onclick="guionInterno()" aria-label="Cerrar" style="border:0;background:none;'
+        +'color:var(--text3);cursor:pointer;font-size:17px;line-height:1">×</button>'
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:6px">'
+      +'Nada de esto se dice hoy. La hipotesis se escribe despues de cortar y se presenta '
+      +'armada en la sesion de estrategia. Si pregunta que vamos a hacer: el proceso y la '
+      +'fecha, nunca el angulo.</div>'
+    +(h.dolor?(tit('La apuesta que entramos a poner a prueba')
+      +[['Para quien',h.avatar],['Dolor',h.dolor],
+        ['Promesa',[h.promesa,h.plazo].filter(Boolean).join(' · ')],
+        ['Mecanismo',h.mecanismo],['Diferencial',h.diferencial],
+        ['Asumimos',h.asumimos]].map(function(x){
+        return '<div style="display:flex;gap:9px;font-size:11.5px;padding:3px 0;'
+            +'line-height:1.5">'
+          +'<span style="flex:none;width:84px;color:var(--text3)">'+x[0]+'</span>'
+          +'<span style="flex:1;color:'+(x[1]?'var(--text2)':'var(--amberx)')+'">'
+            +(x[1]?esc(x[1]):'falta')+'</span></div>';
+      }).join('')):'')
+    +(sup.length?(tit('Tiene que ser cierto que')
+      +sup.map(function(x){
+        return '<div style="font-size:11.5px;color:var(--text2);line-height:1.55;'
+            +'padding:3px 0">· '+esc(x.que)
+          +(x.comoSeChequea?('<span style="color:var(--text3)"> — se chequea '
+            +esc(x.comoSeChequea)+'</span>'):'')+'</div>';
+      }).join('')):'')
+    // Cuando un frente cierra antes de tiempo, se saca una de aca sin romper
+    // el reparto de minutos.
+    +(fuera.length?(tit('De reserva, si sobra tiempo en un frente')
+      +fuera.map(function(x){
+        return '<div style="font-size:12px;color:var(--text2);line-height:1.5;padding:5px 0;'
+            +'border-top:1px solid var(--border)">'+esc(x.q||'')
+          +((x.bloque||x.porque)?('<span style="display:block;font-size:10.5px;'
+            +'color:var(--text3);margin-top:2px">'+esc(x.bloque||x.porque)+'</span>'):'')
+        +'</div>';
+      }).join('')):'')
+  +'</div>';
 }
 function _guionBloqueHtml(g, b, bi, c, r, inp){
   var id=g.id;
@@ -34658,9 +34855,10 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
     : (c?'':('<textarea rows="2" placeholder="Que se tiene que llevar de este bloque" '
         +'onchange="guionCampo('+id+','+bi+',\'concepto\',this.value)" '
         +'style="'+inp+';resize:vertical;margin-top:8px">' +'</textarea>'));
-  var preguntas=(b.preguntas||[]).map(function(q,qi){
-    var texto=(typeof q==='string')?q:(q.q||'');
-    var porque=(typeof q==='object')?(q.porque||''):'';
+  var preguntas=(b.preguntas||[]).map(function(q0,qi){
+    var q=(typeof q0==='string')?{q:q0}:(q0||{});
+    var texto=q.q||'';
+    var porque=q.porque||'';
     var k=_gk(bi, texto);
     if(c){
       var val=String((r.v||{})[k]||'');
@@ -34671,8 +34869,23 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
             +'onchange="guionTildar('+id+','+c.id+',\''+k+'\',this.checked)">'
           +'<span style="flex:1;font-size:12.5px;color:'+(ok?'var(--text3)':'var(--text)')+';'
             +'line-height:1.5">'+esc(texto)
-            +(porque?('<span style="display:block;font-size:10.5px;color:var(--text3);'
-              +'margin-top:2px">'+esc(porque)+'</span>'):'')+'</span>'
+            // Una debajo de la otra y no separadas por puntos: en vivo se leen
+            // de arriba abajo mientras la persona contesta, y en una sola
+            // linea no se siguen.
+            +((q.re||[]).length?('<span style="display:block;margin-top:5px;padding-left:9px;'
+              +'border-left:2px solid var(--border2)">'
+              +(q.re||[]).map(function(x){
+                return '<span style="display:block;font-size:11px;color:var(--text3);'
+                  +'line-height:1.5">\u21b3 '+esc(x)+'</span>'; }).join('')
+            +'</span>'):'')
+            +((porque||q.corte)?('<span style="display:block;font-size:10.5px;'
+              +'color:var(--text3);margin-top:4px">'
+              +(porque?esc(porque):'')
+              +((porque&&q.corte)?' \u00b7 ':'')
+              // Es lo que evita quedarse pegado en una pregunta.
+              +(q.corte?('<span style="color:var(--accent2)">Se pasa cuando</span> '
+                +esc(q.corte)):'')
+            +'</span>'):'')+'</span>'
         +'</label>'
         +'<textarea rows="1" placeholder="La respuesta" '
           +'onchange="guionResponder('+id+','+c.id+',\''+k+'\',this.value)" '
@@ -34698,6 +34911,8 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
     +'<div style="display:flex;align-items:baseline;gap:9px">'
       +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3);'
         +'flex:none">'+(bi+1)+'</span>'
+      +((Number(b.min)||0)?('<span style="flex:none;font-size:11px;color:var(--accent);'
+        +'font-variant-numeric:tabular-nums">'+(Number(b.min)||0)+'\u2032</span>'):'')
       +(c?('<div style="flex:1;font-size:13px;color:var(--strong);font-weight:500">'
           +esc(b.t||'Bloque '+(bi+1))+'</div>')
         :('<input value="'+esc(b.t||'')+'" placeholder="Nombre del bloque" '
@@ -34711,8 +34926,62 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
         +'<button onclick="guionBloqueBorrar('+id+','+bi+')" '
           +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:15px;'
           +'flex:none">&times;</button>'))
+      +(c?('<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+        +'onclick="guionRelojBloque('+bi+')" title="Arranca el reloj de este bloque">'
+        +'Voy en este</button>'):'')
     +'</div>'
     +concepto
+    // Lo que se dice en voz alta va mas grande que el resto de la interfaz:
+    // se lee mientras se habla, y a 12px no se puede.
+    +((b.leer||[]).length
+      ? ('<div style="background:var(--bg3);border-radius:var(--radius);padding:13px 15px;'
+          +'margin-top:9px">'
+        +'<div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">'
+          +(c?('<input type="checkbox"'+((r&&r.dichos[bi])?' checked':'')+' '
+            +'title="Dicho" onchange="guionDicho('+id+','+c.id+','+bi+',this.checked)">'):'')
+          +'<span style="font-size:10px;color:var(--accent2);text-transform:uppercase;'
+            +'letter-spacing:.1em">Lo que se dice</span>'
+        +'</div>'
+        +(b.leer||[]).map(function(t){
+          return '<div style="font-size:15px;color:var(--text);line-height:1.6;'
+            +'margin-bottom:9px">'+_guionRico(t)+'</div>'; }).join('')
+      +'</div>')
+      : '')
+    // No se pregunta: se lee lo que ya conto en la venta para que confirme o
+    // corrija. Preguntarlo de nuevo invita a contestar lo que ya esta contestado.
+    +((b.confirmar||[]).length
+      ? ('<div style="background:var(--bg3);border-radius:var(--radius);padding:13px 15px;'
+          +'margin-top:9px">'
+        +'<div style="font-size:10px;color:var(--accent2);text-transform:uppercase;'
+          +'letter-spacing:.1em;margin-bottom:4px">Se lee, no se pregunta</div>'
+        +(b.confirmar||[]).map(function(x,n){
+          var est=(c&&r)?(r.conf[bi+'-'+n]||''):'';
+          var bt=function(val, rot){
+            var mio=(est===val);
+            return '<button data-cf="'+val+'" onclick="guionConf('+id+','+(c?c.id:0)+','
+              +bi+','+n+',\''+val+'\',this)" style="flex:none;cursor:pointer;font-size:11px;'
+              +'padding:3px 9px;border-radius:var(--radius);font-family:var(--font);'
+              +'border:1px solid '+(mio?'transparent':'var(--border2)')+';'
+              +'background:'+(mio?(val==='no'?'var(--amberx)':'var(--accent)'):'var(--bg3)')+';'
+              +'color:'+(mio?'var(--on-accent)':'var(--text3)')+'">'+rot+'</button>';
+          };
+          return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;'
+              +'border-top:1px solid var(--border)">'
+            +'<span style="flex:1;min-width:0">'
+              +'<span style="display:block;font-size:13px;color:var(--text);line-height:1.5">'
+                +esc((x&&x.tx)||'')+'</span>'
+              +((x&&x.src)?('<span style="display:block;font-size:11px;color:var(--text3);'
+                +'margin-top:2px">'+esc(x.src)+'</span>'):'')
+            +'</span>'
+            +(c?(bt('ok','\u2713')+bt('no','corregir')):'')
+          +'</div>';
+        }).join('')
+        +(c?('<textarea rows="2" placeholder="Lo que hubo que corregir" '
+          +'onchange="guionCorr('+id+','+c.id+','+bi+',this.value)" '
+          +'style="'+inp+';resize:vertical;margin-top:9px;font-size:12px">'
+          +esc((r&&r.corr[bi])||'')+'</textarea>'):'')
+      +'</div>')
+      : '')
     +'<div style="margin-top:8px">'+preguntas+'</div>'
     +(c?'':('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px;margin-top:7px" '
       +'onclick="guionPreguntaAdd('+id+','+bi+')">+ Pregunta</button>'))
@@ -34777,6 +35046,38 @@ function guionResponder(id, clientId, k, v){
   if(String(v||'').trim()) r.hechos[k]=1;
   r.at=new Date().toISOString(); save();
 }
+// Igual que guionTildar: no se redibuja, sacaria el foco en plena llamada.
+function guionDicho(id, clientId, bi, v){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var r=guionResp(c, id);
+  if(v) r.dichos[bi]=1; else delete r.dichos[bi];
+  r.at=new Date().toISOString(); save();
+}
+// La afirmacion confirmada no cambia de color: la que importa es la que se
+// corrige, y pintar las ocho de verde la esconde.
+function guionConf(id, clientId, bi, n, val, el){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var r=guionResp(c, id);
+  var k=bi+'-'+n;
+  if(r.conf[k]===val) delete r.conf[k]; else r.conf[k]=val;
+  r.at=new Date().toISOString(); save();
+  if(el&&el.parentElement){
+    var st=r.conf[k];
+    var bs=el.parentElement.querySelectorAll('button[data-cf]');
+    for(var i=0;i<bs.length;i++){
+      var mio=(bs[i].getAttribute('data-cf')===st);
+      bs[i].style.background=mio?(st==='no'?'var(--amberx)':'var(--accent)'):'var(--bg3)';
+      bs[i].style.color=mio?'var(--on-accent)':'var(--text3)';
+      bs[i].style.borderColor=mio?'transparent':'var(--border2)';
+    }
+  }
+}
+function guionCorr(id, clientId, bi, v){
+  var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
+  var r=guionResp(c, id);
+  r.corr[bi]=String(v==null?'':v);
+  r.at=new Date().toISOString(); save();
+}
 function guionConcepto(id, clientId, bi, v){
   var c=DB.clients.find(function(x){return x.id===clientId;}); if(!c) return;
   var r=guionResp(c, id);
@@ -34789,13 +35090,28 @@ function guionCopiar(id, clientId){
   var r=guionResp(c, id);
   var t=(g.titulo||'')+' \u2014 '+(c.name||'')+'\n\n'+(g.bloques||[]).map(function(b,bi){
     return (bi+1)+'. '+(b.t||'Bloque '+(bi+1))
-      +(b.concepto?('\nSE TIENE QUE LLEVAR: '+b.concepto):'')+'\n'
+      +((Number(b.min)||0)?(' ['+b.min+' min]'):'')
+      +(b.concepto?('\nSE TIENE QUE LLEVAR: '+b.concepto):'')
+      // Lo que se confirmo importa menos que lo que hubo que corregir: eso es
+      // lo que cambia respecto de lo que creiamos antes de la llamada.
+      +((b.confirmar||[]).length
+        ? ('\n'+(b.confirmar||[]).map(function(x,n){
+            var e=(r.conf||{})[bi+'-'+n];
+            return '  ['+(e==='ok'?'ok':(e==='no'?'CORREGIR':'  '))+'] '+((x&&x.tx)||'');
+          }).join('\n')
+          +(String((r.corr||{})[bi]||'').trim()
+            ? ('\n  CORRECCIONES: '+String(r.corr[bi]).trim()) : ''))
+        : '')
+      +'\n'
       +(b.preguntas||[]).map(function(q){
         var texto=(typeof q==='string')?q:(q.q||'');
         var v=String((r.v||{})[_gk(bi,texto)]||'').trim();
         return '  - '+texto+'\n    '+(v||'(sin responder)');
       }).join('\n');
-  }).join('\n\n');
+  }).join('\n\n')
+  // La hipotesis se escribe hoy o no se escribe: manana las respuestas ya se
+  // leen como notas sueltas y se pierde el porque de cada una.
+  +'\n\n--- PENDIENTE: escribir la hipotesis HOY, mientras las respuestas estan frescas ---';
   navigator.clipboard.writeText(t).then(function(){ toast('Copiado.'); },
     function(){ toast('No pude copiar.','amber'); });
 }
@@ -39823,7 +40139,7 @@ var ONB_ARQ_DEF=[
 // app, como los arquetipos: el criterio lo escribe quien toma las llamadas, no
 // quien toca el codigo. Las marcas entre llaves las completa la app antes de
 // mandarlo; si se borran, ese pedazo no viaja.
-var ONB_SOP_DEF = "Sos analista de una agencia de performance. Abajo esta el material de venta del cliente {{CLIENTE}}: las llamadas de diagnostico y de presentacion, en orden.\n\nTu trabajo NO es resumir. Es preparar la llamada de onboarding, que dura una hora y no es para averiguar sino para decidir.\n\nPASO 1 — Ficha de estado. Para cada una de estas variables:\n{{VARIABLES}}\nMarca DICHO si el cliente lo afirmo (copia la cita textual y el minuto si aparece), INFERIDO si se deduce de lo dicho, FALTA si no esta. Nunca completes por verosimilitud: una hipotesis apoyada en un dato inventado suena impecable y falla recien en pauta.\n\nPASO 2 — Arquetipo. Elegi uno:\n{{ARQUETIPOS}}\nDos ejes: si hay clientes pagando hoy, y de que lado del embudo esta el cuello. Un costo de adquisicion bueno con conversion pobre es fuga, no falta de leads, por mas que el cliente lo cuente al reves.\n\nPASO 3 — Reparto. Usa los frentes y los minutos del arquetipo que elegiste, tal cual, y con la restriccion primero. Suman 35 minutos.\n\nPASO 4 — Seleccion. Una pregunta entra a la llamada SOLO si pasa las tres:\n  a) Alimenta una variable en FALTA o INFERIDO. Lo que ya esta DICHO no se pregunta: se le lee en voz alta para que lo confirme.\n  b) Es imposible de responder por escrito. Solo califica si necesita repregunta para llegar al fondo, o si escrita saldria sanitizada. Numeros, fechas, precios, herramientas, accesos, contratos y disponibilidad NUNCA califican: van al formulario.\n  c) La respuesta cambia lo que hacemos las primeras dos semanas. Si el plan es el mismo conteste lo que conteste, es curiosidad bien formulada.\nLas de la llamada tambien van al hueso: sobre lo que ya paso, no sobre lo que pasaria. La repregunta es para bajar al caso concreto —\"dame la ultima\", \"cuanto fue\", \"quien estaba\"—, no para abrir una hipotesis.\nTecho duro: 12 preguntas en total. Si sobran candidatas, ordena por costo de equivocarse: primero las que evitan dano operativo, despues las que definen el mensaje, ultimo las que optimizan.\n\nPASO 5 — Salida. Devolve SOLO un JSON, sin markdown ni texto alrededor, con esta forma:\n{\"arquetipo\":{\"k\":\"B\",\"porque\":\"una frase con la evidencia\"},\"variables\":[{\"n\":\"Avatar\",\"estado\":\"DICHO|INFERIDO|FALTA\",\"valor\":\"\",\"cita\":\"\",\"min\":\"\"}],\"guion\":{\"titulo\":\"Onboarding — NOMBRE\",\"bloques\":[{\"t\":\"\",\"min\":7,\"concepto\":\"que se tiene que llevar el cliente de este bloque\",\"preguntas\":[{\"q\":\"la pregunta textual\",\"porque\":\"que variable alimenta\",\"re\":[\"repregunta 1\",\"repregunta 2\"],\"corte\":\"como se sabe que ya se puede pasar a la siguiente\"}]}]},\"formulario\":{\"titulo\":\"Antes de la llamada — NOMBRE\",\"campos\":[{\"l\":\"la pregunta\",\"tipo\":\"texto|largo|numero|opcion|si_no\",\"ayuda\":\"\",\"req\":true}]},\"hipotesis\":{\"nombre\":\"\",\"avatar\":\"\",\"dolor\":\"\",\"deseo\":\"\",\"puntoA\":\"\",\"paraQue\":\"\",\"promesa\":\"\",\"plazo\":\"\",\"mecanismo\":\"\",\"diferencial\":\"\",\"asumimos\":\"\",\"supuestos\":[{\"que\":\"\",\"comoSeChequea\":\"\"}]},\"fuera\":[{\"q\":\"pregunta descartada\",\"porque\":\"que puerta no paso\"}]}\n\nEl formulario lleva todo lo que no entra a la llamada: numeros, la tabla de precios si hay planes, y siempre si la pasarela de cobro esta operativa, que es bloqueante de cronograma. La hipotesis es la apuesta que se entra a validar, no a construir.\n\nLA HIPOTESIS ES DE OFERTA, no solo de mensaje. Ademas del avatar y el dolor:\n- PROMESA: el resultado concreto y medible, con su PLAZO. \"Mas leads\" no es una promesa; \"12 reuniones con duenos de club por mes a partir del dia 30\" si.\n- MECANISMO: por que esa promesa es creible, en una linea, apoyado en como funciona el producto de verdad. Si el mecanismo quedo en FALTA, dejalo vacio y no lo inventes.\n- DIFERENCIAL: contra que alternativa se compara y que nota el cliente.\n- ASUMIMOS: que riesgo le sacamos de encima. Es lo que hace que la oferta se pueda aceptar sin pensarla tres semanas.\n- SUPUESTOS: dos o tres cosas que tienen que ser ciertas para que la promesa se cumpla, cada una con COMO SE CHEQUEA. Una hipotesis que no se puede refutar no sirve para decidir nada.\nNada de esto se inventa: lo que no salga del material va vacio, que es una respuesta util porque dice que eso se pregunta en la llamada.\n\nCOMO SE ESCRIBEN LAS PREGUNTAS DEL FORMULARIO, y esto vale mas que la cantidad:\n- Una sola cosa por pregunta. \"Que incluye y cuanto tarda\" se contesta a medias siempre: van dos preguntas.\n- Concreta y verificable. Nada de \"contanos sobre tu propuesta de valor\": preguntá por un hecho, un paso, un numero o un ejemplo.\n- En el vocabulario del cliente, el que usa en las llamadas. Si el dice \"las obras\" no escribas \"los proyectos\".\n- Si la respuesta te la imaginas antes de preguntarla, la pregunta sobra.\n- Al hueso y sobre hechos, nunca hipoteticas. Nada de \"imaginate que...\", \"que harias si...\" ni \"como te gustaria que...\": eso se contesta con lo que uno quiere que pase. Preguntá por lo que ya paso: \"la ultima vez que...\", \"cuantos...\", \"que hiciste cuando...\", \"quien lo hizo\". Si algo todavia no paso nunca, no se pregunta: se prueba.\n\nDOS VARIABLES QUE HAY QUE PROFUNDIZAR SI o SI, porque son de donde sale la promesa y casi nunca estan en el material de venta:\n- MECANISMO: no que hace, sino COMO. Que pasa entre que el cliente contrata y el resultado, paso por paso: quien hace cada cosa, cuanto tarda cada etapa, que tiene que poner el cliente y en que momento se cae la mayoria. Si en la ficha quedo en FALTA o INFERIDO, van dos o tres preguntas de esto, no una.\n- DIFERENCIAL: contra quien lo comparan de verdad —el competidor que nombran, o hacerlo a mano— y que diferencia CONCRETA nota el cliente. Preguntá por la ultima vez que le ganaron a alguien y por que dijo el cliente que eligio, no por adjetivos.\n";
+var ONB_SOP_DEF = "Sos analista de una agencia de performance. Abajo esta el material de venta del cliente {{CLIENTE}}: las llamadas de diagnostico y de presentacion, en orden.\n\nTu trabajo NO es resumir. Es preparar la llamada de onboarding, que dura una hora y no es para averiguar sino para decidir.\n\nPASO 1 — Ficha de estado. Para cada una de estas variables:\n{{VARIABLES}}\nMarca DICHO si el cliente lo afirmo (copia la cita textual y el minuto si aparece), INFERIDO si se deduce de lo dicho, FALTA si no esta. Nunca completes por verosimilitud: una hipotesis apoyada en un dato inventado suena impecable y falla recien en pauta.\n\nPASO 2 — Arquetipo. Elegi uno:\n{{ARQUETIPOS}}\nDos ejes: si hay clientes pagando hoy, y de que lado del embudo esta el cuello. Un costo de adquisicion bueno con conversion pobre es fuga, no falta de leads, por mas que el cliente lo cuente al reves.\n\nPASO 3 — Reparto. Usa los frentes y los minutos del arquetipo que elegiste, tal cual, y con la restriccion primero. Suman 35 minutos.\n\nLa llamada dura 60 minutos, no 35. Los 35 del arquetipo son SOLO los frentes donde se pregunta. Los otros 25 son cinco tramos fijos que no se preguntan y que van SIEMPRE, en este orden:\n  1) apertura [4] — se dice como va a ser la hora, que se decide hoy y que no.\n  2) contexto [5] — una sola pregunta (que hace la empresa explicado simple) mas el repaso del acuerdo en voz alta.\n  3) confirmacion [5] — NO se pregunta: se le leen las afirmaciones que ya dijo en la venta para que confirme o corrija.\n  ...aca van los frentes del arquetipo, con sus minutos...\n  4) devolucion [10] — se le devuelve lo que se entendio, con sus propias palabras, para que corrija. Mas los huecos que sigan abiertos.\n  5) compromisos [5] — que pasa la semana que viene, que tiene que hacer el y con que fecha.\nLa hipotesis NO se lee en la llamada de onboarding: es interna, se escribe despues y se presenta armada en la sesion de estrategia.\n\nCada bloque lleva un \"tipo\": apertura, contexto, confirmacion, restriccion, nucleo, arquetipo, devolucion o compromisos. Los tramos de leer usan \"leer\" (parrafos para decir en voz alta, admiten <b> y <i>) y el de confirmacion usa \"confirmar\" (cada afirmacion con la fuente: la llamada y el minuto). Un bloque puede tener \"leer\" y \"preguntas\" a la vez: el de contexto los tiene. En \"leer\" escribi lo que se dice tal cual se dice, en primera persona y en rioplatense, no una instruccion sobre que decir. Los montos del acuerdo salen del cierre y no del material: si no los tenes, dejalos como {{MONTO}}, {{RECURRENTE}} o {{PAUTA}}, que la app pinta en ambar para que no se lean en voz alta sin completar.\n\nPASO 4 — Seleccion. Una pregunta entra a la llamada SOLO si pasa las tres:\n  a) Alimenta una variable en FALTA o INFERIDO. Lo que ya esta DICHO no se pregunta: se le lee en voz alta para que lo confirme.\n  b) Es imposible de responder por escrito. Solo califica si necesita repregunta para llegar al fondo, o si escrita saldria sanitizada. Numeros, fechas, precios, herramientas, accesos, contratos y disponibilidad NUNCA califican: van al formulario.\n  c) La respuesta cambia lo que hacemos las primeras dos semanas. Si el plan es el mismo conteste lo que conteste, es curiosidad bien formulada.\nLas de la llamada tambien van al hueso: sobre lo que ya paso, no sobre lo que pasaria. La repregunta es para bajar al caso concreto —\"dame la ultima\", \"cuanto fue\", \"quien estaba\"—, no para abrir una hipotesis.\nTecho duro: 12 preguntas en total. Si sobran candidatas, ordena por costo de equivocarse: primero las que evitan dano operativo, despues las que definen el mensaje, ultimo las que optimizan.\n\nPASO 5 — Salida. Devolve SOLO un JSON, sin markdown ni texto alrededor, con esta forma:\n{\"arquetipo\":{\"k\":\"B\",\"porque\":\"una frase con la evidencia\"},\"variables\":[{\"n\":\"Avatar\",\"estado\":\"DICHO|INFERIDO|FALTA\",\"valor\":\"\",\"cita\":\"\",\"min\":\"\"}],\"guion\":{\"titulo\":\"Onboarding — NOMBRE\",\"bloques\":[{\"t\":\"\",\"min\":7,\"tipo\":\"apertura|contexto|confirmacion|restriccion|nucleo|arquetipo|devolucion|compromisos\",\"concepto\":\"que se tiene que llevar el cliente de este bloque\",\"leer\":[\"parrafo que se dice en voz alta\"],\"confirmar\":[{\"tx\":\"la afirmacion que ya dijo\",\"src\":\"R1 · 8:32\"}],\"preguntas\":[{\"q\":\"la pregunta textual\",\"porque\":\"que variable alimenta\",\"re\":[\"repregunta 1\",\"repregunta 2\"],\"corte\":\"como se sabe que ya se puede pasar a la siguiente\"}]}]},\"formulario\":{\"titulo\":\"Antes de la llamada — NOMBRE\",\"campos\":[{\"l\":\"la pregunta\",\"tipo\":\"texto|largo|numero|opcion|si_no\",\"ayuda\":\"\",\"req\":true}]},\"hipotesis\":{\"nombre\":\"\",\"avatar\":\"\",\"dolor\":\"\",\"deseo\":\"\",\"puntoA\":\"\",\"paraQue\":\"\",\"promesa\":\"\",\"plazo\":\"\",\"mecanismo\":\"\",\"diferencial\":\"\",\"asumimos\":\"\",\"supuestos\":[{\"que\":\"\",\"comoSeChequea\":\"\"}]},\"fuera\":[{\"q\":\"pregunta descartada\",\"porque\":\"que puerta no paso\",\"bloque\":\"a que bloque pertenece\"}]}\n\nEl formulario lleva todo lo que no entra a la llamada: numeros, la tabla de precios si hay planes, y siempre si la pasarela de cobro esta operativa, que es bloqueante de cronograma. La hipotesis es la apuesta que se entra a validar, no a construir.\n\nLA HIPOTESIS ES DE OFERTA, no solo de mensaje. Ademas del avatar y el dolor:\n- PROMESA: el resultado concreto y medible, con su PLAZO. \"Mas leads\" no es una promesa; \"12 reuniones con duenos de club por mes a partir del dia 30\" si.\n- MECANISMO: por que esa promesa es creible, en una linea, apoyado en como funciona el producto de verdad. Si el mecanismo quedo en FALTA, dejalo vacio y no lo inventes.\n- DIFERENCIAL: contra que alternativa se compara y que nota el cliente.\n- ASUMIMOS: que riesgo le sacamos de encima. Es lo que hace que la oferta se pueda aceptar sin pensarla tres semanas.\n- SUPUESTOS: dos o tres cosas que tienen que ser ciertas para que la promesa se cumpla, cada una con COMO SE CHEQUEA. Una hipotesis que no se puede refutar no sirve para decidir nada.\nNada de esto se inventa: lo que no salga del material va vacio, que es una respuesta util porque dice que eso se pregunta en la llamada.\n\nCOMO SE ESCRIBEN LAS PREGUNTAS DEL FORMULARIO, y esto vale mas que la cantidad:\n- Una sola cosa por pregunta. \"Que incluye y cuanto tarda\" se contesta a medias siempre: van dos preguntas.\n- Concreta y verificable. Nada de \"contanos sobre tu propuesta de valor\": preguntá por un hecho, un paso, un numero o un ejemplo.\n- En el vocabulario del cliente, el que usa en las llamadas. Si el dice \"las obras\" no escribas \"los proyectos\".\n- Si la respuesta te la imaginas antes de preguntarla, la pregunta sobra.\n- Al hueso y sobre hechos, nunca hipoteticas. Nada de \"imaginate que...\", \"que harias si...\" ni \"como te gustaria que...\": eso se contesta con lo que uno quiere que pase. Preguntá por lo que ya paso: \"la ultima vez que...\", \"cuantos...\", \"que hiciste cuando...\", \"quien lo hizo\". Si algo todavia no paso nunca, no se pregunta: se prueba.\n\nDOS VARIABLES QUE HAY QUE PROFUNDIZAR SI o SI, porque son de donde sale la promesa y casi nunca estan en el material de venta:\n- MECANISMO: no que hace, sino COMO. Que pasa entre que el cliente contrata y el resultado, paso por paso: quien hace cada cosa, cuanto tarda cada etapa, que tiene que poner el cliente y en que momento se cae la mayoria. Si en la ficha quedo en FALTA o INFERIDO, van dos o tres preguntas de esto, no una.\n- DIFERENCIAL: contra quien lo comparan de verdad —el competidor que nombran, o hacerlo a mano— y que diferencia CONCRETA nota el cliente. Preguntá por la ultima vez que le ganaron a alguien y por que dijo el cliente que eligio, no por adjetivos.\n";
 function onbSop(){
   var t=(typeof DB!=="undefined" && DB.onbSop) ? String(DB.onbSop) : "";
   return t.trim() ? t : ONB_SOP_DEF;
@@ -40032,6 +40348,19 @@ function onbModal(clientId){
           +'</div>'
           +(b.concepto?('<div style="font-size:10.5px;color:var(--text3);margin:3px 0 0 26px;'
             +'line-height:1.5">Se lleva: '+esc(b.concepto)+'</div>'):'')
+          +((b.leer||[]).length?('<div style="margin:5px 0 0 26px;padding-left:9px;'
+            +'border-left:2px solid var(--accent2)">'
+            +(b.leer||[]).map(function(t){
+              return '<div style="font-size:11px;color:var(--text2);line-height:1.55;'
+                +'padding:1px 0">'+_guionRico(t)+'</div>'; }).join('')
+          +'</div>'):'')
+          +((b.confirmar||[]).length?('<div style="margin:5px 0 0 26px">'
+            +(b.confirmar||[]).map(function(x){
+              return '<div style="font-size:11px;color:var(--text3);line-height:1.5;'
+                  +'padding:1px 0">\u2713 '+esc((x&&x.tx)||'')
+                +((x&&x.src)?('<span style="opacity:.7"> \u00b7 '+esc(x.src)+'</span>'):'')
+              +'</div>'; }).join('')
+          +'</div>'):'')
           +(b.preguntas||[]).map(function(q){
             return '<div style="margin:6px 0 0 26px">'
               +'<div style="font-size:11.5px;color:var(--text2);line-height:1.5">'
@@ -40151,6 +40480,13 @@ function onbCrearGuion(clientId){
     tipo:'onboarding', creadoAt:new Date().toISOString(),
     bloques:(g.bloques||[]).map(function(b){
       return { t:String(b.t||''), min:Number(b.min)||0, concepto:String(b.concepto||''),
+        // Sin copiar esto, agregar un campo al SOP no alcanza: el dato llega
+        // del modelo y muere aca, en la lista blanca.
+        tipo:String(b.tipo||'arquetipo'),
+        leer:(b.leer||[]).map(String),
+        confirmar:(b.confirmar||[]).map(function(x){
+          return { tx:String((x&&x.tx)||''), src:String((x&&x.src)||'') };
+        }).filter(function(x){ return x.tx; }),
         preguntas:(b.preguntas||[]).map(function(q){
           // Las repreguntas viven abajo de la suya: en vivo se leen juntas, y
           // como preguntas sueltas romperian el techo de doce.
