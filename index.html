@@ -22001,14 +22001,14 @@ function _pagos(c){
   return c.pagos;
 }
 function _pagosResumen(c){
-  var ps=_pagos(c), total=0, cobrado=0;
+  var ps=_pagos(c), total=0, cobrado=0, sena=0;
   ps.forEach(function(x){
     var m=parseFloat(x.monto)||0;
     total+=m;
-    if(x.pagadoAt) cobrado+=m;
+    if(x.pagadoAt){ cobrado+=m; if(x.concepto==='sena') sena+=m; }
   });
   var contrato=parseFloat(c.contractValue)||0;
-  return {n:ps.length, total:total, cobrado:cobrado, pendiente:total-cobrado,
+  return {n:ps.length, total:total, cobrado:cobrado, sena:sena, pendiente:total-cobrado,
           contrato:contrato, descuadre:(contrato&&ps.length)?(contrato-total):0};
 }
 // El proximo pago con fecha que sigue sin cobrarse. Se copia a nextPaymentDate
@@ -22057,7 +22057,8 @@ function pagoAgregar(clientId){
   // La cuota nueva arranca con lo que falta para llegar al contrato: en la
   // mayoria de los casos es un pago unico y queda cargado de una.
   var falta=r.contrato?Math.max(r.contrato-r.total,0):0;
-  ps.push({id:Date.now()+ps.length, monto:(falta||''), tipo:'fecha', fecha:'', hito:'', pagadoAt:''});
+  ps.push({id:Date.now()+ps.length, monto:(falta||''), tipo:'fecha', fecha:'', hito:'',
+           concepto:'', pagadoAt:''});
   save(); pagoRepintar(clientId);
 }
 function pagoBorrar(clientId, i){
@@ -22098,6 +22099,7 @@ function _pagosTotalesHtml(c){
   var plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
   if(!r.n) return '<span style="color:var(--text3)">Sin cuotas cargadas.</span>';
   return '<span style="color:var(--accent)">'+plata(r.cobrado)+' cobrado</span>'
+    +(r.sena>0?('<span style="color:var(--text3)"> ('+plata(r.sena)+' de se\u00f1a)</span>'):'')
     +'<span style="color:var(--text3)"> de '+plata(r.total)+'</span>'
     +(r.pendiente>0?('<span style="color:var(--text2)"> · falta cobrar '
       +plata(r.pendiente)+'</span>'):'')
@@ -22126,6 +22128,16 @@ function _pagosHtml(c){
         +'oninput="pagoCampo('+c.id+','+i+',\'monto\',this.value)" '
         +'style="'+est+';width:100px;flex:none;font-variant-numeric:tabular-nums'
         +(pago?';color:var(--accent)':'')+'">'
+      // Que es esa plata. Una sena cobrada no es lo mismo que el contrato
+      // pagado: entra igual como plata que entro, pero decirlo cambia lo que
+      // uno hace despues.
+      +'<select onchange="pagoCampo('+c.id+','+i+',\'concepto\',this.value)" '
+        +'style="'+est+';width:78px;flex:none">'
+        +[['','Cuota'],['sena','Se\u00f1a'],['saldo','Saldo']].map(function(o){
+          return '<option value="'+o[0]+'"'
+            +((String(x.concepto||'')===o[0])?' selected':'')+'>'+o[1]+'</option>';
+        }).join('')
+      +'</select>'
       +'<select onchange="pagoCampo('+c.id+','+i+',\'tipo\',this.value)" '
         +'style="'+est+';width:82px;flex:none">'
         +'<option value="fecha"'+(x.tipo!=='hito'?' selected':'')+'>Por fecha</option>'
@@ -22404,6 +22416,10 @@ function _factResumenHtml(c){
           +'font-size:11.5px;line-height:1.5">'
         +'<span class="mono" style="color:var(--accent)">'+plata(r.cobrado)+'</span>'
         +'<span style="color:var(--text3)"> cobrado de '+plata(r.total)+'</span>'
+        // Todo lo que entro es sena: el cliente reservo, no pago el servicio.
+        // Sin decirlo, la tarjeta lo muestra igual que a uno que ya pago.
+        +((r.sena>0&&r.sena===r.cobrado)
+          ?'<span style="display:block;color:var(--amberx)">solo se\u00f1o</span>':'')
         +(r.pendiente>0?('<span style="display:block;color:var(--text3)">falta cobrar '
           +plata(r.pendiente)+'</span>'):'')
       +'</div>';
