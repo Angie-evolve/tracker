@@ -7148,6 +7148,108 @@ function _fathomSenas(c){
 function _fathomDomClave(dom){
   return String(dom||'').split('.')[0].replace(/[^a-z0-9]/g,'');
 }
+// Las palabras que identifican al cliente sin que nadie las escriba. Salen de
+// lo que ya esta cargado en su ficha y en su material: el nombre, el dominio
+// de sus mails, el zip de marca, el contrato, los documentos.
+// "Zen" no puede quedarse con las reuniones de Zentenio: se compara por palabra
+// entera y no por "contiene". Las escritas a mano siguen siendo por "contiene":
+// si alguien escribio un pedazo, lo escribio a proposito.
+function _fathomContiene(mn, t){
+  t=String(t||'');
+  if(!t) return false;
+  var i=mn.indexOf(t);
+  while(i>=0){
+    var a=(i===0)?'':mn.charAt(i-1);
+    var b=mn.charAt(i+t.length);
+    if(!/[a-z0-9]/.test(a) && !/[a-z0-9]/.test(b)) return true;
+    i=mn.indexOf(t, i+1);
+  }
+  return false;
+}
+function _fathomAlias(c){
+  var out=[], meter=function(v){
+    var t=_n(v).replace(/[^a-z0-9 ]/g,' ').trim();
+    if(t) out.push(t);
+  };
+  meter(c.name);
+  // Cada palabra del nombre por separado: "Red Zeppelin" tiene que reconocer
+  // un titulo que solo diga "Zeppelin".
+  _n(c.name).split(/\s+/).forEach(meter);
+  meter((c.marca||{}).de);
+  meter((c.contract||{}).fileName);
+  // El dominio solo sirve cuando es propio. De un gmail sale "gmail", que no
+  // identifica a nadie y engancharia cualquier reunion que lo nombre.
+  var prov=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton|protonmail|aol|me|mac)$/;
+  [c.email, c.contactoEmail].forEach(function(m){
+    var d=String(m||'').split('@')[1]||'';
+    var cl=d?_fathomDomClave(d):'';
+    if(cl && !prov.test(cl)) meter(cl);
+  });
+  (c.docs||[]).forEach(function(d){ meter(d.titulo||d.nombre); });
+  var gen=/^(diagnostico|venta|onboarding|reunion|llamada|meeting|call|strategy|seguimiento|contrato|propuesta|brief|transcripcion|documento|copia|final|firmado|pdf|docx|cliente|empresa|proyecto|sitio|web|www|com|landing)$/;
+  var vistas={};
+  return out.filter(function(t){
+    if(t.length<4 || gen.test(t) || vistas[t]) return false;
+    vistas[t]=1; return true;
+  });
+}
+// Solo sirven las que no comparte con nadie. Una palabra que le calza a dos
+// clientes no distingue a ninguno, y es asi como una llamada termina en la
+// ficha equivocada: preferimos no reconocerla y que quede para asignar a mano.
+function _fathomAliasUnicos(c){
+  var otros={};
+  (DB.clients||[]).forEach(function(x){
+    if(x.id===c.id) return;
+    _fathomAlias(x).forEach(function(t){ otros[t]=1; });
+    var n=_n(x.name); if(n) otros[n]=1;
+  });
+  return _fathomAlias(c).filter(function(t){ return !otros[t]; });
+}
+// La caja deja de estar siempre a la vista: se abre solo si hace falta, y
+// arriba muestra lo que ya reconoce sin que nadie escriba nada.
+function _fathomMapeoHtml(c){
+  var man=(c.fathomKeywords||[]);
+  var auto=_fathomAliasUnicos(c);
+  var est='flex:1;padding:6px 10px;font-size:12px;border:1px solid var(--border2);'
+    +'border-radius:6px;background:var(--bg3);color:var(--strong);font-family:var(--font);'
+    +'outline:none';
+  var chip=function(t){
+    return '<span style="font-size:10.5px;color:var(--text2);background:var(--bg3);'
+      +'border-radius:99px;padding:2px 8px">'+esc(t)+'</span>';
+  };
+  var cuerpo='<div style="font-size:10px;color:var(--text3);margin-bottom:6px;'
+      +'font-weight:500">Mapeo de cliente - palabras clave en titulo de reunion</div>'
+    +'<div style="display:flex;gap:8px">'
+      +'<input type="text" value="'+esc(man.join(', '))+'" '
+        +'placeholder="Ej: Vado Devs, Vado, Perla" '
+        +'onchange="updateFathomKeywords('+c.id+',this.value)" style="'+est+'">'
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.55;margin-top:7px">'
+      +'Solo hace falta si las reuniones se titulan distinto del nombre de la ficha. '
+      +'Lo que escribas aca le gana a todo lo demas.</div>';
+  return '<details style="margin-top:10px">'
+    +'<summary style="font-size:11px;color:var(--text3);cursor:pointer">'
+      +'Como se reconocen sus reuniones'
+      +(man.length?(' · '+man.length+' palabra'+(man.length===1?'':'s')+' a mano'):'')
+    +'</summary>'
+    +'<div style="background:var(--bg2);border:1px solid var(--border);'
+      +'border-radius:var(--radius-md);padding:10px 12px;margin-top:7px">'
+      +(auto.length
+        ? ('<div style="font-size:10px;color:var(--text3);margin-bottom:6px;font-weight:500">'
+            +'Reconoce solo, de lo que ya esta cargado</div>'
+          +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:11px">'
+            +auto.slice(0,12).map(chip).join('')
+            +(auto.length>12?('<span style="font-size:10.5px;color:var(--text3)">y '
+              +(auto.length-12)+' mas</span>'):'')
+          +'</div>')
+        : ('<div style="font-size:10.5px;color:var(--amberx);line-height:1.55;'
+            +'margin-bottom:11px">No hay ninguna palabra que lo distinga de los otros '
+            +'clientes. Cargale el contrato o el zip de marca en Material, o escribi una '
+            +'aca abajo.</div>'))
+      +cuerpo
+    +'</div>'
+  +'</details>';
+}
 function _fathomMatchClient(meeting, fila){
   var mn=_n(meeting);
   var byKw=mn&&DB.clients.find(function(c){
@@ -7165,9 +7267,19 @@ function _fathomMatchClient(meeting, fila){
     // creo el prospecto. Una palabra clave escrita a mano le gana a esto.
     if(typeof esProspecto==='function' && esProspecto(c)
        && n.split(/\s+/).filter(Boolean).length<2) return false;
-    return mn.indexOf(n)>=0;
+    return _fathomContiene(mn, n);
   });
   if(byName) return byName;
+  // Lo que ya esta cargado en la ficha alcanza para reconocerla sin que nadie
+  // escriba una palabra clave: el zip de marca, el contrato, los documentos.
+  var byAlias=mn&&DB.clients.find(function(c){
+    // Misma regla que arriba: el nombre de pila de un prospecto no alcanza,
+    // y el alias no puede ser la puerta de atras que la saltee.
+    if(typeof esProspecto==='function' && esProspecto(c)
+       && _n(c.name).split(/\s+/).filter(Boolean).length<2) return false;
+    return _fathomAliasUnicos(c).some(function(t){ return _fathomContiene(mn, t); });
+  });
+  if(byAlias) return byAlias;
   // Ultimo recurso y el mas confiable de los tres: quien estuvo en la llamada.
   // Va al final igual, porque si escribiste una palabra clave a mano esa gana:
   // sabes algo que el invitado no dice.
@@ -19819,14 +19931,7 @@ function renderTab(){
             </div>
           </div>
           ${fathomCallsHTML(c)}
-          <div style="margin-top:10px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px">
-            <div style="font-size:10px;color:var(--text3);margin-bottom:6px;font-weight:500">Mapeo de cliente - palabras clave en titulo de reunion</div>
-            <div style="display:flex;gap:8px">
-              <input type="text" value="${(c.fathomKeywords||[]).join(', ')}" placeholder="Ej: Vado Devs, Vado, Perla" 
-                onchange="updateFathomKeywords(${c.id},this.value)"
-                style="flex:1;padding:6px 10px;font-size:12px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--strong);font-family:var(--font);outline:none">
-            </div>
-          </div>
+          ${_fathomMapeoHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${docsHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
