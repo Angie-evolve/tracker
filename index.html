@@ -18887,6 +18887,43 @@ function _asFicha(c){
   });
   return out.join('\n');
 }
+// Las transcripciones enteras del cliente abierto. Antes solo se mandaba el
+// resumen recortado a 320 caracteres, asi que preguntarle "que dijo sobre el
+// precio" no tenia con que contestarse: el dato estaba en la app pero no en lo
+// que se le pasaba.
+// Van solo las del cliente abierto y con techo: las de toda la cartera son
+// megas de texto y no entran en una pregunta.
+var AS_TOPE_TX=120000;
+function _asTranscripciones(c){
+  var lls=(c.fathomCalls||[]).filter(function(l){
+    return String(l.transcript||'').trim().length>200; });
+  if(!lls.length){
+    var n=(c.fathomCalls||[]).length;
+    return n
+      ? ('=== TRANSCRIPCIONES ===\n'
+         +(n===1 ? 'La unica llamada cargada no tiene transcripcion guardada.'
+                 : ('Ninguna de las '+n+' llamadas tiene transcripcion guardada.'))
+         +' No supongas que no se hablo de algo: puede estar en una llamada cuyo texto no '
+         +'llego.')
+      : '';
+  }
+  var out=['=== TRANSCRIPCIONES DE LAS LLAMADAS ('+lls.length+' con texto) ==='], usado=0, entraron=0;
+  for(var i=0;i<lls.length;i++){
+    var l=lls[i], t=String(l.transcript||'').trim();
+    if(usado>=AS_TOPE_TX) break;
+    var queda=AS_TOPE_TX-usado;
+    var corte=(t.length>queda);
+    out.push('--- '+(l.date||'sin fecha')+' \u00b7 '+String(l.title||'Llamada')
+      +(l.duration?(' ('+l.duration+')'):'')+' ---');
+    out.push(corte?(t.slice(0,queda)+'\n[...cortada por largo]'):t);
+    usado+=Math.min(t.length,queda); entraron++;
+  }
+  if(entraron<lls.length){
+    out.push('[Faltan '+(lls.length-entraron)+' transcripcion'
+      +((lls.length-entraron)===1?'':'es')+' mas, no entraron por largo. Son las mas viejas.]');
+  }
+  return out.join('\n');
+}
 function _asContexto(){
   var hoy=new Date().toLocaleDateString('es-AR');
   var cli=DB.clients.find(function(x){return x.id===S.clientId;});
@@ -18894,8 +18931,15 @@ function _asContexto(){
   var partes=['Hoy es '+hoy+'.',
     '=== TODOS LOS CLIENTES ('+vivos.length+' activos) ===',
     vivos.slice(0,40).map(_asLineaCliente).join('\n')];
-  if(cli) partes.push(_asFicha(cli));
-  else partes.push('(No hay ningun cliente abierto en pantalla ahora.)');
+  if(cli){
+    partes.push(_asFicha(cli));
+    var tx=_asTranscripciones(cli);
+    if(tx) partes.push(tx);
+  } else {
+    partes.push('(No hay ningun cliente abierto en pantalla ahora. Para preguntar sobre lo '
+      +'que se dijo en una llamada hay que abrir el cliente: las transcripciones solo se '
+      +'mandan las del que esta en pantalla.)');
+  }
   return partes.join('\n\n');
 }
 function _asMontar(){
@@ -18931,7 +18975,8 @@ function asPintar(pensando){
       +'tareas, llamadas, campanas, landings.'
       +'<button class="as-ej" onclick="asEjemplo(this)">Que tareas abiertas hay y de quien son</button>'
       +'<button class="as-ej" onclick="asEjemplo(this)">Que clientes no tienen responsable</button>'
-      +(cli?('<button class="as-ej" onclick="asEjemplo(this)">Resumime la ultima llamada de '+esc(cli.name)+'</button>'):'')
+      +(cli?('<button class="as-ej" onclick="asEjemplo(this)">Resumime la ultima llamada de '+esc(cli.name)+'</button>'
+        +'<button class="as-ej" onclick="asEjemplo(this)">Que dijo textual sobre el precio</button>'):'')
       +'</div>';
   p.innerHTML=''
     +'<div class="as-cab"><div>'
@@ -18969,11 +19014,14 @@ async function asEnviar(){
       headers:{'Content-Type':'application/json','x-api-key':apiKey,
         'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
       body:JSON.stringify({
-        model:'claude-sonnet-5', max_tokens:1200,
+        model:'claude-sonnet-5', max_tokens:2400,
         system:'Sos el asistente del tracker de EVOLVE, una agencia. Contestas sobre los '
           +'datos que te paso abajo y NADA MAS: si algo no esta ahi, decilo en una linea en '
           +'vez de suponerlo. Se breve y concreto, en castellano rioplatense. Cuando cuentes '
-          +'cosas, dalas en lista corta. No repitas la pregunta.\n\n'
+          +'cosas, dalas en lista corta. No repitas la pregunta.\n'
+          +'Cuando haya transcripciones, contestas sobre lo que se dijo de verdad: citas '
+          +'entre comillas SOLO texto que este literal en la transcripcion, y decis de que '
+          +'llamada sale. Si algo no lo dijeron, decilo; no lo deduzcas del resumen.\n\n'
           +'DATOS DEL TRACKER:\n'+_asContexto(),
         // Se manda la conversacion entera: sin esto, "y de ese cliente?" no
         // tiene a que referirse y contesta cualquier cosa.
