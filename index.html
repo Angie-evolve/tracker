@@ -4235,7 +4235,7 @@ function _overviewMetricsHtml(_ovDonde){
   // mes. Si no, la tarjeta dice un numero y la tabla de abajo dice otro.
   var mrr=(typeof eerrAbonos==='function')
     ? eerrAbonos()
-    : recurrentes.reduce(function(s,cl){return s+(parseFloat(cl.monthlyFee)||0);},0);
+    : recurrentes.reduce(function(s,cl){return s+_feeMensual(cl);},0);
   var conLtv=activos.filter(function(cl){
     return (cl.serviceType==='garantia'||cl.serviceType==='mixto'||!cl.serviceType)
       && (parseFloat(cl.contractValue)||0)>0;
@@ -4462,6 +4462,16 @@ function setClientServiceType(clientId, type){
 // Un cliente mes a mes que sigue renovando no tiene fecha de fin: marcarlo asi
 // evita tener que corregir el "proximo pago" cada mes, que es como quedaban
 // vencidos y desaparecian de la proyeccion sin que nadie lo notara.
+// Cambia la forma de los campos, asi que repinta. setClientFee no repinta a
+// proposito —se escribe letra por letra— y por eso este va aparte.
+function setFeeTipo(clientId, tipo){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  c.feeTipo=(tipo==='pct')?'pct':'fijo';
+  save();
+  _factRepintarSiAbierto(clientId);
+  if(typeof renderTab==='function') renderTab();
+}
 function setRenuevaSolo(clientId, valor){
   var c=DB.clients.find(function(x){ return x.id===clientId; });
   if(!c) return;
@@ -11083,6 +11093,21 @@ function _rtEsfuerzo(c){
 // LA IMPLEMENTACION, no el del servicio: el fee sigue despues y no vence con
 // ella. Tratarla como el fin de todo hacia que el cliente desapareciera de la
 // proyeccion justo el mes en que empezaba a pagar el abono.
+// El fee no siempre es un monto fijo: hay acuerdos donde es un porcentaje de lo
+// que factura el cliente. La proyeccion necesita un numero igual, asi que se
+// guarda una base mensual estimada y de ahi sale el monto. Es un estimado y se
+// dice que lo es: un cero silencioso subestima el MRR y nadie se entera.
+function _feeMensual(c){
+  if(!c) return 0;
+  if(c.feeTipo==='pct'){
+    var pct=parseFloat(c.feePct)||0, base=parseFloat(c.feeBase)||0;
+    return (pct&&base) ? (base*pct/100) : 0;
+  }
+  return parseFloat(c.monthlyFee)||0;
+}
+function _feeEsEstimado(c){
+  return !!(c && c.feeTipo==='pct' && (parseFloat(c.feePct)||0));
+}
 function _rtMesesImpl(c){
   var ct=c.contract||{};
   var dias=parseFloat(ct.durationDays)||0;
@@ -11097,7 +11122,7 @@ function _rtMesesImpl(c){
 // mismo mes inflaba el arranque y dejaba en cero todo lo que venia despues.
 function rtMensualEn(c, anio, mes){
   if(c.serviceType!=='mixto') return rtMensual(c).monto||0;
-  var fee=parseFloat(c.monthlyFee)||0;
+  var fee=_feeMensual(c);
   var valor=parseFloat(c.contractValue)||0;
   var meses=_rtMesesImpl(c);
   var d=(typeof _eerrDesde==='function')?_eerrDesde(c):null;
@@ -11109,7 +11134,7 @@ function rtMensualEn(c, anio, mes){
   return (i<meses) ? (valor/meses) : fee;
 }
 function rtMensual(c){
-  var fee=parseFloat(c.monthlyFee)||0;
+  var fee=_feeMensual(c);
   var mixto=(c.serviceType==='mixto');
   if(fee&&!mixto) return {monto:fee, origen:'abono'};
   var valor=parseFloat(c.contractValue)||0;
@@ -12089,7 +12114,7 @@ function _eerrHasta(c){
   if(c.renuevaSolo && !(c.contract&&c.contract.endDate)) return null;
   // Un mixto con abono tampoco termina con el plazo: ese plazo es el de la
   // implementacion y el fee sigue cobrandose despues.
-  if(c.serviceType==='mixto' && (parseFloat(c.monthlyFee)||0)>0
+  if(c.serviceType==='mixto' && _feeMensual(c)>0
      && !(c.contract&&c.contract.endDate)) return null;
   var fin=(c.contract&&c.contract.endDate)||'';
   var prox=c.nextPaymentDate||'';
@@ -12150,7 +12175,7 @@ function eerrAbonosMes(anio, mes, soloFiables){
     .reduce(function(s,c){
       var m=(typeof rtMensualEn==='function')
         ? rtMensualEn(c, anio, mes)
-        : (parseFloat(c.monthlyFee)||0);
+        : _feeMensual(c);
       return s+(m||0);
     },0);
 }
@@ -22376,14 +22401,38 @@ function _factCamposHtml(c){
             </div>`:''}
             ${(c.serviceType==='recurrente'||c.serviceType==='mixto')?`
             <div>
-              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${c.serviceType==='mixto'?'Fee mensual de soporte':'Monto mensual'}</div>
+              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+                <span style="font-size:11px;color:var(--text3)">${c.serviceType==='mixto'?'Fee mensual de soporte':'Monto mensual'}</span>
+                <select onchange="setFeeTipo(${c.id},this.value)" style="font-size:10.5px;padding:1px 4px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text3);font-family:var(--font)">
+                  <option value="fijo"${c.feeTipo!=='pct'?' selected':''}>monto fijo</option>
+                  <option value="pct"${c.feeTipo==='pct'?' selected':''}>% de lo que factura</option>
+                </select>
+              </div>
+              ${c.feeTipo==='pct'?`
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="number" value="${c.feePct||''}" placeholder="10"
+                  oninput="setClientFee(${c.id},'feePct',this.value)"
+                  onchange="setClientFee(${c.id},'feePct',this.value)"
+                  style="width:62px;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
+                <span style="font-size:11.5px;color:var(--text3);flex:none">% de</span>
+                <span style="font-size:12px;color:var(--text2)">$</span>
+                <input type="number" value="${c.feeBase||''}" placeholder="0"
+                  oninput="setClientFee(${c.id},'feeBase',this.value)"
+                  onchange="setClientFee(${c.id},'feeBase',this.value)"
+                  style="flex:1;min-width:0;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
+              </div>
+              <div style="font-size:10.5px;color:var(--text3);margin-top:5px;line-height:1.55">
+                ${_feeMensual(c)>0
+                  ? ('Entra a la proyeccion como <b style="color:var(--amberx)">$'+Math.round(_feeMensual(c))+'/mes estimados</b>. Corregi la base cuando sepas lo que factura de verdad.')
+                  : 'Poné el porcentaje y una base mensual estimada de lo que factura: sin un numero, este fee no entra en la proyeccion.'}
+              </div>`:`
               <div style="display:flex;gap:6px;align-items:center">
                 <span style="font-size:12px;color:var(--text2)">$</span>
                 <input type="number" value="${c.monthlyFee||''}" placeholder="0"
                   oninput="setClientFee(${c.id},'monthlyFee',this.value)"
                   onchange="setClientFee(${c.id},'monthlyFee',this.value)"
                   style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text)">
-              </div>
+              </div>`}
             </div>
             <div>
               <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Proximo pago</div>
@@ -22570,7 +22619,7 @@ function _factResumenHtml(c){
     +'Los montos de este cliente no estan habilitados para tu usuario.</div>');
 
   var val=parseFloat(c.contractValue)||0;
-  var fee=parseFloat(c.monthlyFee)||0;
+  var fee=_feeMensual(c);
   var dias=parseInt((c.contract||{}).durationDays,10)||0;
   var alta=clienteAltaInfo(c);
   var plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
@@ -22605,7 +22654,8 @@ function _factResumenHtml(c){
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:11px">'
     +dato(val?plata(val):(c.serviceType==='recurrente'?'\u2014':'$0'),
             (c.serviceType==='mixto'?'fee de implementacion':'valor del contrato'), !val)
-    +dato(fee?plata(fee):'—', 'por mes', !fee)
+    +dato(fee?plata(fee):'—', _feeEsEstimado(c)?'por mes · estimado':'por mes', !fee,
+          _feeEsEstimado(c)?'var(--amberx)':'')
     +dato(alta.fecha
               ? alta.fecha.toLocaleDateString('es-AR',{day:'numeric',month:'numeric',year:'2-digit'})
               : '—',
