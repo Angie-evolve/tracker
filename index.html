@@ -10951,12 +10951,38 @@ function _rtEsfuerzo(c){
 // Un cliente por garantia no tiene abono mensual: tiene un valor de contrato y
 // una duracion. Mirar solo monthlyFee lo dejaba en "sin abono" cuando en
 // realidad el contrato dice cuanto paga y por cuanto tiempo.
+// Cuantos meses dura la implementacion. En un mixto la duracion es el plazo de
+// LA IMPLEMENTACION, no el del servicio: el fee sigue despues y no vence con
+// ella. Tratarla como el fin de todo hacia que el cliente desapareciera de la
+// proyeccion justo el mes en que empezaba a pagar el abono.
+function _rtMesesImpl(c){
+  var ct=c.contract||{};
+  var dias=parseFloat(ct.durationDays)||0;
+  if(!dias && ct.startDate && ct.endDate){
+    var d1=new Date(ct.startDate), d2=new Date(ct.endDate);
+    if(!isNaN(d1)&&!isNaN(d2)) dias=Math.round((d2-d1)/86400000);
+  }
+  return dias?Math.max(1, Math.round(dias/30)):0;
+}
+// Lo que aporta ESE mes. Un mixto no aporta lo mismo todos los meses: primero
+// la implementacion prorrateada, y cuando termina, el fee. Sumar los dos en el
+// mismo mes inflaba el arranque y dejaba en cero todo lo que venia despues.
+function rtMensualEn(c, anio, mes){
+  if(c.serviceType!=='mixto') return rtMensual(c).monto||0;
+  var fee=parseFloat(c.monthlyFee)||0;
+  var valor=parseFloat(c.contractValue)||0;
+  var meses=_rtMesesImpl(c);
+  var d=(typeof _eerrDesde==='function')?_eerrDesde(c):null;
+  // Sin plazo o sin fecha de alta no hay como saber cuando termina uno y
+  // arranca el otro: se devuelve lo que se sepa y no se inventa el reparto.
+  if(!valor||!meses||!d) return (valor&&meses?(valor/meses):0)+fee;
+  var i=(anio-d.a)*12+(mes-d.m);
+  if(i<0) return 0;
+  return (i<meses) ? (valor/meses) : fee;
+}
 function rtMensual(c){
   var fee=parseFloat(c.monthlyFee)||0;
   var mixto=(c.serviceType==='mixto');
-  // En un mixto los dos numeros conviven: el abono todos los meses y la
-  // implementacion prorrateada mientras dura. Devolver solo uno escondia el
-  // otro de la proyeccion.
   if(fee&&!mixto) return {monto:fee, origen:'abono'};
   var valor=parseFloat(c.contractValue)||0;
   if(mixto&&!valor) return {monto:fee, origen:'abono'};
@@ -10977,7 +11003,14 @@ function rtMensual(c){
   if(!meses) return mixto
     ? {monto:fee, origen:'abono', valor:valor}
     : {monto:0, origen:'contrato-sin-plazo', valor:valor};
-  return {monto:valor/meses+fee, origen:mixto?'mixto':'contrato', valor:valor, meses:meses, fee:fee};
+  // En un mixto el "por mes" no es un solo numero: se devuelve el del mes en
+  // curso, que es lo que la rentabilidad de hoy quiere saber.
+  if(mixto){
+    var hoy=new Date();
+    return {monto:rtMensualEn(c, hoy.getFullYear(), hoy.getMonth()), origen:'mixto',
+            valor:valor, meses:meses, fee:fee, impl:valor/meses};
+  }
+  return {monto:valor/meses, origen:'contrato', valor:valor, meses:meses, fee:fee};
 }
 
 function _rtFilas(){
@@ -11926,6 +11959,10 @@ function _eerrHasta(c){
   // anterior. Contarlo igual sumaba un mes que nadie pago.
   // Se renueva sola: no hay fin conocido, sigue contando indefinidamente.
   if(c.renuevaSolo && !(c.contract&&c.contract.endDate)) return null;
+  // Un mixto con abono tampoco termina con el plazo: ese plazo es el de la
+  // implementacion y el fee sigue cobrandose despues.
+  if(c.serviceType==='mixto' && (parseFloat(c.monthlyFee)||0)>0
+     && !(c.contract&&c.contract.endDate)) return null;
   var fin=(c.contract&&c.contract.endDate)||'';
   var prox=c.nextPaymentDate||'';
   // Una fecha de fin anterior al inicio es de un ciclo viejo: el PDF quedo
@@ -11983,7 +12020,9 @@ function eerrAbonosMes(anio, mes, soloFiables){
     })
     .filter(function(c){ return _eerrCubre(c, anio, mes); })
     .reduce(function(s,c){
-      var m=(typeof rtMensual==='function')?rtMensual(c).monto:(parseFloat(c.monthlyFee)||0);
+      var m=(typeof rtMensualEn==='function')
+        ? rtMensualEn(c, anio, mes)
+        : (parseFloat(c.monthlyFee)||0);
       return s+(m||0);
     },0);
 }
@@ -22147,6 +22186,12 @@ function _factCamposHtml(c){
               <div style="font-size:10px;color:var(--text3);margin-top:3px;line-height:1.45">${
                 (function(){
                   var m=(typeof rtMensual==='function')?rtMensual(c):null;
+                  // En un mixto son dos tramos, no un promedio: decir un solo
+                  // numero era lo que hacia pensar que el fee ya estaba adentro.
+                  if(m&&m.meses&&c.serviceType==='mixto'&&m.impl>0)
+                    return 'La implementacion se prorratea en '+m.meses+' mes'
+                      +(m.meses>1?'es':'')+': $'+Math.round(m.impl)+'/mes.'
+                      +(m.fee>0?(' Despues queda el fee de $'+Math.round(m.fee)+'/mes.'):'');
                   if(m&&m.monto>0&&m.meses) return 'Se prorratea en '+m.meses+' mes'+(m.meses>1?'es':'')+': $'+Math.round(m.monto)+'/mes';
                   if((parseFloat(c.contractValue)||0)>0) return 'Sin esto el contrato no entra en la proyeccion';
                   return 'Ej: 90 dias';
