@@ -508,6 +508,16 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 @media (prefers-reduced-motion:reduce){.as-dots i{animation:none;opacity:.6}}
 .as-esp button{border:0;background:none;color:var(--text3);cursor:pointer;
   font-family:var(--font);font-size:11px;text-decoration:underline;padding:0}
+
+/* El menu del + . Va en body y no dentro de la seccion: adentro lo recortaba
+   el overflow de la ficha y quedaba la mitad tapada. */
+#mas-menu{display:none;position:fixed;z-index:120;width:260px;background:var(--bg2);
+  border:1px solid var(--border2);border-radius:var(--radius-lg);padding:5px;
+  box-shadow:0 18px 50px rgba(0,0,0,0.55)}
+.mas-op{padding:8px 10px;border-radius:var(--radius);cursor:pointer}
+.mas-op:hover{background:var(--bg3)}
+.mas-op-t{font-size:12.5px;color:var(--text)}
+.mas-op-s{font-size:10.5px;color:var(--text3);line-height:1.5;margin-top:2px}
 .as-vacio{color:var(--text3);font-size:12px;line-height:1.65}
 .as-ej{display:block;width:100%;text-align:left;background:transparent;color:var(--text2);
   border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-top:6px;
@@ -43254,10 +43264,66 @@ function fathomUnificar(clientId){
   if(typeof renderTab==='function') renderTab();
   toast(n+(n===1?' llamada unificada':' llamadas unificadas'));
 }
+// Un solo boton para todo lo que se sube. Estaban repartidos en dos filas
+// —"Cargar llamada" arriba y las tres de documentos abajo— y el que venia a
+// subir algo tenia que saber de antemano en cual de las dos secciones caia lo
+// suyo para encontrar el boton.
+function _masMenu(){
+  var e=document.getElementById('mas-menu');
+  if(!e){
+    e=document.createElement('div'); e.id='mas-menu';
+    e.addEventListener('click', function(ev){ ev.stopPropagation(); });
+    document.body.appendChild(e);
+  }
+  return e;
+}
+function masCerrar(){
+  var e=document.getElementById('mas-menu');
+  if(e) e.style.display='none';
+}
+function masAbrir(clientId, btn){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=_masMenu();
+  var op=function(fn, t, sub){
+    return '<div onclick="masCerrar();'+fn+'" class="mas-op">'
+      +'<div class="mas-op-t">'+t+'</div>'
+      +(sub?('<div class="mas-op-s">'+sub+'</div>'):'')
+    +'</div>';
+  };
+  e.innerHTML=op('abrirLlamadaModal('+c.id+')','Cargar una llamada',
+      'La que no llego sola por Fathom')
+    +op('docPegarModal('+c.id+')','Pegar un texto',
+      'Un Loom transcripto, un mensaje, un brief')
+    +op('docSubir('+c.id+',\'todo\')','Subir archivos',
+      'pdf, docx, txt, md, csv, json, html, vtt, srt')
+    +op('docSubir('+c.id+',\'comercial\')','Subir llamadas de venta',
+      'Entran todas marcadas como proceso comercial');
+  e.style.display='block';
+  // El once alcanza: el menu se cierra con cualquier clic de afuera, y el de
+  // adentro no llega aca porque el contenedor corta la propagacion.
+  setTimeout(function(){ document.addEventListener('click', masCerrar, {once:true}); }, 0);
+  // Queda fijo a la pantalla: si se scrollea o cambia el tamano, el boton se
+  // mueve y el menu se queda flotando lejos de el. Mas simple cerrarlo.
+  window.addEventListener('scroll', masCerrar, {once:true, capture:true});
+  window.addEventListener('resize', masCerrar, {once:true});
+  // Se abre pegado al boton. Si no entra abajo, sube: en la ficha larga el
+  // boton suele quedar cerca del pie.
+  var r=btn.getBoundingClientRect();
+  var alto=e.offsetHeight||220;
+  var abajo=(window.innerHeight-r.bottom);
+  e.style.left=Math.max(8, Math.min(r.left, window.innerWidth-268))+'px';
+  e.style.top=(abajo>alto+12 ? (r.bottom+6) : Math.max(8, r.top-alto-6))+'px';
+}
+function _masBoton(clientId){
+  return '<button class="btn btn-sm" onclick="event.stopPropagation();masAbrir('
+    +clientId+',this)" title="Cargar una llamada, pegar un texto o subir archivos" '
+    +'style="font-size:12px;padding:3px 11px">+</button>';
+}
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const _dup=_fathomDuplicadas(c);
-  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">Cargar llamada</button>'
+  const btnAgregar=_masBoton(c.id)
     +(_dup?('<button class="btn btn-sm" style="margin-left:8px;color:var(--amberx)" '
       +'onclick="fathomUnificar('+c.id+')" title="La misma reunion grabada por dos personas '
       +'del equipo entro dos veces">Unificar '+_dup+' repetida'+(_dup===1?'':'s')+'</button>'):'');
@@ -43525,16 +43591,9 @@ function docsHtml(c){
     +'<button class="btn btn-sm btn-primary" style="flex:none" '
       +'onclick="ventasModal('+c.id+')">Analizar el proceso</button>'
   +'</div>'):'')
-  +'<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
-    +'<button class="btn btn-sm btn-primary" onclick="docPegarModal('+c.id+')">Pegar texto</button>'
-    +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'todo\')">Subir archivos</button>'
-    // Las llamadas de venta vienen de a doce: cargarlas de a una y despues
-    // marcarlas de a una era el camino garantizado a que quedaran sin marcar.
-    +'<button class="btn btn-sm" onclick="docSubir('+c.id+',\'comercial\')" '
-      +'title="Se cargan todas marcadas como proceso comercial">Subir llamadas de venta</button>'
-    +'<span style="flex:1"></span>'
-    +'<span style="font-size:10.5px;color:var(--text3);align-self:center">pdf, docx, txt, md, csv, json, html, vtt, srt</span>'
-  +'</div>'
+  // Los botones se fueron al + de la seccion de llamadas: todo lo que se sube
+  // entra por la misma puerta, sin tener que saber en que seccion cae.
+  +''
   +(l.length
     ? l.map(function(d,i){
         var u=_docUso(d);
