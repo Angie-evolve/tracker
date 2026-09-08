@@ -2163,6 +2163,9 @@ function _normalizarClientes(){
     if(!Array.isArray(c.conversionLines)) c.conversionLines=[];
     if(!Array.isArray(c.tasks)) c.tasks=[];
     if(!Array.isArray(c.fathomCalls)) c.fathomCalls=[];
+    // Las que ya estaban cargadas antes de que esto fuera automatico: se
+    // completan al abrir, sin que haya que ir cliente por cliente a pedirlo.
+    if(typeof _llDuracionesDe==='function'){ try{ _llDuracionesDe(c); }catch(e){} }
   });
 }
 async function load(){
@@ -6687,6 +6690,7 @@ async function fathomWebhookSync(silent){
     Object.keys(tocados).forEach(function(cid){
       var c=DB.clients.find(function(x){ return String(x.id)===String(cid); });
       if(!c) return;
+      _llDuracionesDe(c);
       (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
       _fathomSortMilestones(c);
     });
@@ -7119,6 +7123,8 @@ function _fathomCompletar(viejo, nuevo){
   var ps=(viejo.participantes||[]).slice();
   (nuevo.participantes||[]).forEach(function(m){ if(ps.indexOf(m)<0){ ps.push(m); cambio=true; } });
   if(ps.length) viejo.participantes=ps;
+  // La transcripcion recien llegada puede traer la duracion adentro.
+  if(typeof _llCompletarDuracion==='function' && _llCompletarDuracion(viejo)) cambio=true;
   return cambio;
 }
 function _fathomMails(fila){
@@ -44010,6 +44016,21 @@ function _pgCitas(txt){
 // Las transcripciones ya guardadas conservan las marcas de hablante, asi que
 // la duracion se puede sacar sin volver a subir nada. Solo completa las que
 // estan vacias: lo escrito a mano no se toca.
+// La duracion sale del ultimo timecode de la transcripcion. Habia que pedirla
+// con un boton, asi que casi todas las llamadas quedaban sin ella: se completa
+// sola apenas hay texto para leer.
+function _llCompletarDuracion(cl){
+  if(!cl || _durMin(cl.duration)) return false;
+  var d=_llDuracionDeTranscript(cl.transcript||'');
+  if(!d) return false;
+  cl.duration=d;
+  return true;
+}
+function _llDuracionesDe(c){
+  var n=0;
+  (c&&c.fathomCalls||[]).forEach(function(cl){ if(_llCompletarDuracion(cl)) n++; });
+  return n;
+}
 function calcularDuraciones(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
