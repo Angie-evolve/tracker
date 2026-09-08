@@ -34631,6 +34631,13 @@ function abrirGuion(id, clientId){
   var r=c?guionResp(c, id):null;
   var av=_guionAvance(g, r);
   var inp=_FORM_INP;
+  // Un bloque por pantalla. Solo con cliente: sin el se esta editando la
+  // plantilla y ahi hace falta ver los bloques juntos para reordenarlos.
+  if(c && S._gModo==='llamada'){
+    document.getElementById('modal-root').innerHTML=_guionLlamadaHtml(g, c, r, inp);
+    _guionRelojPintar();
+    return;
+  }
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:960px;max-height:88vh;overflow-y:auto">'
@@ -34667,6 +34674,9 @@ function abrirGuion(id, clientId){
         +((c&&_guionInternoHtml(c))
           ?('<button class="btn" onclick="guionInterno()" '
             +'title="Hipotesis, supuestos y preguntas de reserva">Interno</button>'):'')
+        +(c?('<button class="btn" onclick="guionModo()" '
+          +'title="Un bloque por pantalla, para correr la llamada">'
+          +'Modo llamada</button>'):'')
         +'<button class="btn btn-primary" onclick="closeModal()">Listo</button>'
       +'</div>'
     +'</div>'
@@ -34743,13 +34753,19 @@ function _guionRelojPintar(){
     }
   }
 }
-function _guionRelojHtml(g, clientId){
+// El reset va aparte porque la vista de llamada lee _RJ.bi para saber que
+// bloque pintar, y si el reset ocurriera despues —al dibujar el reloj— la
+// cabecera diria un bloque y el reloj otro, y Siguiente saltaria al equivocado.
+function _guionRelojInit(g, clientId){
   if(_RJ.key!==(g.id+'-'+clientId)){
     _RJ={key:(g.id+'-'+clientId), gid:g.id, on:false, t0:0, acc:0, tb0:0, accb:0,
          bi:0, tick:_RJ.tick};
   }
-  _RJ.gid=g.id;
+  _RJ.gid=g.id; _RJ.cid=clientId;
   if(!_RJ.tick) _RJ.tick=setInterval(_guionRelojPintar, 500);
+}
+function _guionRelojHtml(g, clientId){
+  _guionRelojInit(g, clientId);
   var tope=_guionMins(g)||60;
   return '<div id="rj" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;'
       +'margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius)">'
@@ -34832,7 +34848,7 @@ function _guionInternoHtml(c){
       }).join('')):'')
   +'</div>';
 }
-function _guionBloqueHtml(g, b, bi, c, r, inp){
+function _guionCuerpoHtml(g, b, bi, c, r, inp){
   var id=g.id;
   // El concepto arriba y destacado: es lo unico que la persona se tiene que
   // llevar, y si queda al final entre las preguntas se pasa por alto.
@@ -34906,31 +34922,7 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
         +'flex:none">&times;</button>'
     +'</div>';
   }).join('');
-  return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
-      +'padding:12px 14px;margin-bottom:9px">'
-    +'<div style="display:flex;align-items:baseline;gap:9px">'
-      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3);'
-        +'flex:none">'+(bi+1)+'</span>'
-      +((Number(b.min)||0)?('<span style="flex:none;font-size:11px;color:var(--accent);'
-        +'font-variant-numeric:tabular-nums">'+(Number(b.min)||0)+'\u2032</span>'):'')
-      +(c?('<div style="flex:1;font-size:13px;color:var(--strong);font-weight:500">'
-          +esc(b.t||'Bloque '+(bi+1))+'</div>')
-        :('<input value="'+esc(b.t||'')+'" placeholder="Nombre del bloque" '
-          +'onchange="guionCampo('+id+','+bi+',\'t\',this.value)" '
-          +'style="'+inp+';flex:1;font-weight:500">'
-        +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'+(bi===0?' disabled':'')
-          +' onclick="guionBloqueMover('+id+','+bi+',-1)">&#8593;</button>'
-        +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'
-          +((bi===(g.bloques.length-1))?' disabled':'')
-          +' onclick="guionBloqueMover('+id+','+bi+',1)">&#8595;</button>'
-        +'<button onclick="guionBloqueBorrar('+id+','+bi+')" '
-          +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:15px;'
-          +'flex:none">&times;</button>'))
-      +(c?('<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
-        +'onclick="guionRelojBloque('+bi+')" title="Arranca el reloj de este bloque">'
-        +'Voy en este</button>'):'')
-    +'</div>'
-    +concepto
+  return concepto
     // Lo que se dice en voz alta va mas grande que el resto de la interfaz:
     // se lee mientras se habla, y a 12px no se puede.
     +((b.leer||[]).length
@@ -34984,7 +34976,103 @@ function _guionBloqueHtml(g, b, bi, c, r, inp){
       : '')
     +'<div style="margin-top:8px">'+preguntas+'</div>'
     +(c?'':('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px;margin-top:7px" '
-      +'onclick="guionPreguntaAdd('+id+','+bi+')">+ Pregunta</button>'))
+      +'onclick="guionPreguntaAdd('+id+','+bi+')">+ Pregunta</button>'));
+}
+// La corrida en vivo: un bloque por pantalla, como una agenda y no como un
+// formulario. Apilados los ocho, en la llamada se scrollea buscando en cual se
+// esta y se leen de reojo los que no tocan.
+function guionModo(){
+  S._gModo=(S._gModo==='llamada')?'lista':'llamada';
+  var g=_guion(_RJ.gid);
+  if(g) abrirGuion(g.id, _RJ.cid);
+}
+// Cambiar de bloque reinicia el reloj del bloque; el global sigue corriendo.
+function guionIr(d){
+  var g=_guion(_RJ.gid); if(!g) return;
+  var n=_RJ.bi+d;
+  if(n<0||n>=(g.bloques||[]).length) return;
+  guionRelojBloque(n);
+  abrirGuion(g.id, _RJ.cid);
+}
+function _guionLlamadaHtml(g, c, r, inp){
+  _guionRelojInit(g, c.id);
+  var bs=(g.bloques||[]);
+  if(_RJ.bi>=bs.length) _RJ.bi=0;
+  var bi=_RJ.bi, b=bs[bi]||{};
+  var av=_guionAvance(g, r);
+  return '<div style="position:fixed;inset:0;z-index:100;background:var(--bg);'
+      +'display:flex;flex-direction:column">'
+    +'<div style="flex:none;padding:12px 22px 10px;border-bottom:1px solid var(--border);'
+      +'background:var(--bg2)">'
+      +'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;'
+        +'margin-bottom:8px">'
+        +'<span style="font-size:13px;color:var(--strong);font-weight:500">'
+          +esc(g.titulo||'')+'</span>'
+        +'<span style="font-size:11.5px;color:var(--text3)">'+esc(c.name||'')
+          +' · '+av.pct+'%</span>'
+        +'<span style="flex:1"></span>'
+        +((typeof _guionInternoHtml==='function'&&_guionInternoHtml(c))
+          ?('<button class="btn btn-sm" onclick="guionInterno()">Interno</button>'):'')
+        +'<button class="btn btn-sm" onclick="guionCopiar('+g.id+','+c.id+')">Copiar</button>'
+        +'<button class="btn btn-sm" onclick="guionModo()">Ver la lista</button>'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+      +_guionRelojHtml(g, c.id)
+    +'</div>'
+    +'<div style="flex:1;overflow-y:auto;padding:26px 22px 22px">'
+      +'<div style="max-width:720px;margin:0 auto;zoom:1.15">'
+        +'<div style="font-size:10px;color:var(--accent);text-transform:uppercase;'
+          +'letter-spacing:.13em">Bloque '+(bi+1)+' de '+bs.length
+          +((Number(b.min)||0)?(' · '+b.min+' minutos'):'')+'</div>'
+        +'<div style="font-size:27px;font-weight:600;color:var(--strong);line-height:1.15;'
+          +'letter-spacing:-.02em;margin:7px 0 14px">'+esc(b.t||'Bloque '+(bi+1))+'</div>'
+        +_guionCuerpoHtml(g, b, bi, c, r, inp)
+      +'</div>'
+    +'</div>'
+    +'<div style="flex:none;display:flex;gap:9px;align-items:center;flex-wrap:wrap;'
+      +'padding:12px 22px;border-top:1px solid var(--border);background:var(--bg2)">'
+      +'<button class="btn btn-sm"'+(bi===0?' disabled':'')
+        +' onclick="guionIr(-1)">← Anterior</button>'
+      +'<button class="btn btn-sm btn-primary"'+((bi===bs.length-1)?' disabled':'')
+        +' onclick="guionIr(1)">Siguiente bloque →</button>'
+      +'<span style="flex:1"></span>'
+      // Lo que se anota no se guarda solo hasta que el campo pierde el foco:
+      // decirlo evita cerrar la llamada creyendo que quedo todo escrito.
+      +'<span style="font-size:11px;color:var(--text3)">Se guarda al salir de cada '
+        +'campo. Copia las notas antes de cerrar.</span>'
+    +'</div>'
+  +'</div>'
+  +_guionInternoHtml(c);
+}
+// El marco de tarjeta de la vista en lista. La de llamada usa el mismo cuerpo
+// con otra cabecera, asi que entre las dos solo cambia esto.
+function _guionBloqueHtml(g, b, bi, c, r, inp){
+  var id=g.id;
+  return '<div style="border:1px solid var(--border);border-radius:var(--radius);'
+      +'padding:12px 14px;margin-bottom:9px">'
+    +'<div style="display:flex;align-items:baseline;gap:9px">'
+      +'<span style="font-family:var(--font-mono,monospace);font-size:.7rem;color:var(--text3);'
+        +'flex:none">'+(bi+1)+'</span>'
+      +((Number(b.min)||0)?('<span style="flex:none;font-size:11px;color:var(--accent);'
+        +'font-variant-numeric:tabular-nums">'+(Number(b.min)||0)+'\u2032</span>'):'')
+      +(c?('<div style="flex:1;font-size:13px;color:var(--strong);font-weight:500">'
+          +esc(b.t||'Bloque '+(bi+1))+'</div>')
+        :('<input value="'+esc(b.t||'')+'" placeholder="Nombre del bloque" '
+          +'onchange="guionCampo('+id+','+bi+',\'t\',this.value)" '
+          +'style="'+inp+';flex:1;font-weight:500">'
+        +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'+(bi===0?' disabled':'')
+          +' onclick="guionBloqueMover('+id+','+bi+',-1)">&#8593;</button>'
+        +'<button class="btn btn-sm" style="padding:2px 7px;flex:none"'
+          +((bi===(g.bloques.length-1))?' disabled':'')
+          +' onclick="guionBloqueMover('+id+','+bi+',1)">&#8595;</button>'
+        +'<button onclick="guionBloqueBorrar('+id+','+bi+')" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;font-size:15px;'
+          +'flex:none">&times;</button>'))
+      +(c?('<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+        +'onclick="guionRelojBloque('+bi+')" title="Arranca el reloj de este bloque">'
+        +'Voy en este</button>'):'')
+    +'</div>'
+    +_guionCuerpoHtml(g, b, bi, c, r, inp)
   +'</div>';
 }
 function guionTitulo(id,v){ var g=_guion(id); if(!g) return;
