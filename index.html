@@ -6626,9 +6626,22 @@ async function fathomWebhookSync(silent){
     if(!c){ sinCliente.push(f); return; }
     c.fathomCalls=c.fathomCalls||[];
     var id='fw-'+f.recording_id;
-    if(_fathomYaEsta(c, f.recording_id, f.url)){ marcar.push(f.recording_id); return; }
     var items=(f.action_items||[]).map(function(it){
       return (it&&(it.description||it.texto||it.text))||String(it||''); }).filter(Boolean);
+    var _ya=_fathomExistente(c, f.recording_id, f.url, f.titulo, f.fecha);
+    if(_ya){
+      // La misma reunion grabada por otra persona del equipo. No entra de
+      // nuevo, pero si trae la transcripcion que a la guardada le faltaba, se
+      // la queda: la copia que llega primero no siempre es la mas completa.
+      if(_fathomCompletar(_ya, {
+        transcript:f.transcripcion||'', summary:f.resumen||'', duration:f.duracion||'',
+        url:f.url||'', grabo:f.grabo_mail||'', grabaNombre:f.grabo_nombre||'',
+        actionItems:items,
+        participantes:(typeof _fathomMails==='function')?_fathomMails(f):[]
+      })) tocados[c.id]=true;
+      marcar.push(f.recording_id);
+      return;
+    }
     c.fathomCalls.unshift({
       id:id, title:f.titulo||'Llamada',
       date:f.fecha?new Date(f.fecha).toLocaleDateString('es-AR'):new Date().toLocaleDateString('es-AR'),
@@ -7025,14 +7038,63 @@ function _fathomProspectoDe(fila){
   DB.clients.push(c);
   return c;
 }
-function _fathomYaEsta(c, recId, url){
+// La clave con la que dos filas son la MISMA reunion aunque vengan de dos
+// grabaciones distintas: titulo y dia. Cada persona del equipo tiene su propio
+// webhook de Fathom, asi que una reunion con dos de los nuestros llega dos
+// veces, cada copia con su recording_id y su url. Mirando solo esos dos campos
+// la reunion entraba duplicada.
+// La guardada dice "8/9/2026" —dia/mes, formato de aca— y la que llega del
+// webhook viene en ISO. new Date() lee "8/9/2026" como 9 de agosto, asi que
+// comparandolas crudas la misma reunion daba dos dias distintos.
+function _fathomDia(v){
+  var t=String(v||'').trim();
+  if(!t) return '';
+  var dm=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t);
+  if(dm) return dm[3]+'-'+(+dm[2])+'-'+(+dm[1]);
+  var iso=/^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if(iso) return iso[1]+'-'+(+iso[2])+'-'+(+iso[3]);
+  // Con hora se pasa a local, que es como se guarda el texto que se muestra.
+  var d=new Date(t);
+  return isNaN(d.getTime()) ? t
+    : (d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate());
+}
+function _fathomClaveReunion(titulo, fecha){
+  return _n(titulo).replace(/\s+/g,' ')+'|'+_fathomDia(fecha);
+}
+// Devuelve la llamada que ya esta, no un booleano: cuando la copia nueva trae
+// algo que a la vieja le falta —la transcripcion, la duracion, el resumen— se
+// completa en vez de descartarse. Asi unificar no pierde datos.
+function _fathomExistente(c, recId, url, titulo, fecha){
   var rid=String(recId||'').trim();
   var u=String(url||'').trim();
-  return (c.fathomCalls||[]).some(function(x){
+  var clave=_fathomClaveReunion(titulo, fecha);
+  var porReunion=(clave!=='|');
+  return (c.fathomCalls||[]).filter(function(x){
     if(u && x.url && String(x.url).trim()===u) return true;
-    if(!rid) return false;
-    return String(x.id||'').replace(/^(fw|fathom)-/,'')===rid;
+    if(rid && String(x.id||'').replace(/^(fw|fathom)-/,'')===rid) return true;
+    return porReunion && _fathomClaveReunion(x.title, x.date)===clave;
+  })[0]||null;
+}
+function _fathomYaEsta(c, recId, url, titulo, fecha){
+  return !!_fathomExistente(c, recId, url, titulo, fecha);
+}
+// Lo que la copia nueva puede aportarle a la que ya estaba guardada.
+function _fathomCompletar(viejo, nuevo){
+  var campos=['transcript','summary','duration','url','grabo','grabaNombre'];
+  var cambio=false;
+  campos.forEach(function(k){
+    if(!String(viejo[k]||'').trim() && String(nuevo[k]||'').trim()){
+      viejo[k]=nuevo[k]; cambio=true;
+    }
   });
+  if(!(viejo.actionItems||[]).length && (nuevo.actionItems||[]).length){
+    viejo.actionItems=nuevo.actionItems; cambio=true;
+  }
+  // Los participantes se suman: cada grabacion ve la lista desde su lado.
+  var ps=(viejo.participantes||[]).slice();
+  (nuevo.participantes||[]).forEach(function(m){ if(ps.indexOf(m)<0){ ps.push(m); cambio=true; } });
+  if(ps.length) viejo.participantes=ps;
+  return cambio;
 }
 function _fathomMails(fila){
   var ps=(fila&&(fila.participantes||fila.calendar_invitees))||[];
@@ -7320,7 +7382,8 @@ async function _fathomBackfillUno(){
     });
     if(arreglados) save();
     var nuevas=(d.items||[]).filter(function(m){
-      return m.url && !_fathomYaEsta(c, m.recording_id, m.url) && _fathomEsDe(f, m);
+      return m.url && !_fathomYaEsta(c, m.recording_id, m.url, m.title||m.meeting_title, m.created_at||m.scheduled_start_time)
+        && _fathomEsDe(f, m);
     });
     if(!nuevas.length) return;
     nuevas.forEach(function(m){ _fathomImportar(c, m); });
@@ -22655,7 +22718,8 @@ async function p360Buscar(clientId, etapa){
     var ya={};
     (c.fathomCalls||[]).forEach(function(x){ if(x.url) ya[x.url]=1; });
     items=items.filter(function(m){
-      return _fathomEsDe(f, m) && !_fathomYaEsta(c, m.recording_id, m.url);
+      return _fathomEsDe(f, m) && !_fathomYaEsta(c, m.recording_id, m.url,
+        m.title||m.meeting_title, m.created_at||m.scheduled_start_time);
     });
     if(!items.length){
       di('Fathom devolvio reuniones, pero ninguna con '+esc(mails.join(', '))
@@ -42870,9 +42934,43 @@ function _fcResumen(t){
   });
   return s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
 }
+// Cuantas quedaron duplicadas de antes del arreglo. Se cuenta en vez de
+// limpiarlas solo: borrar llamadas sin que nadie lo pida es de las cosas que no
+// se pueden deshacer.
+function _fathomDuplicadas(c){
+  var vistas={}, dup=0;
+  (c.fathomCalls||[]).forEach(function(x){
+    var k=_fathomClaveReunion(x.title, x.date);
+    if(vistas[k]) dup++; else vistas[k]=1;
+  });
+  return dup;
+}
+function fathomUnificar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var n=_fathomDuplicadas(c);
+  if(!n){ toast('No hay llamadas repetidas.'); return; }
+  if(!confirm('Unificar '+n+(n===1?' llamada repetida':' llamadas repetidas')+'?\n\n'
+    +'La misma reunion grabada por dos personas del equipo entro dos veces. Se deja una '
+    +'sola y se le pasa lo que la otra tenga y a ella le falte.')) return;
+  var quedan=[], porClave={};
+  (c.fathomCalls||[]).forEach(function(x){
+    var k=_fathomClaveReunion(x.title, x.date);
+    if(porClave[k]){ _fathomCompletar(porClave[k], x); return; }
+    porClave[k]=x; quedan.push(x);
+  });
+  c.fathomCalls=quedan;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast(n+(n===1?' llamada unificada':' llamadas unificadas'));
+}
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
-  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">Cargar llamada</button>';
+  const _dup=_fathomDuplicadas(c);
+  const btnAgregar='<button class="btn btn-sm" onclick="abrirLlamadaModal('+c.id+')">Cargar llamada</button>'
+    +(_dup?('<button class="btn btn-sm" style="margin-left:8px;color:var(--amberx)" '
+      +'onclick="fathomUnificar('+c.id+')" title="La misma reunion grabada por dos personas '
+      +'del equipo entro dos veces">Unificar '+_dup+' repetida'+(_dup===1?'':'s')+'</button>'):'');
   if(!calls.length){
     return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
       +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
