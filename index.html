@@ -3912,12 +3912,36 @@ function equipo(){
   return Object.keys(set).sort().map(function(k){ return set[k]; });
 }
 
+// Cual es la columna donde el lead pasa a ser cliente. Se busca por nombre y
+// no por indice fijo porque la ruta se edita: si alguien la renombra o le mete
+// una etapa antes, el indice deja de significar lo mismo.
+function _iAltaCliente(){
+  var cols=rutaColumnas();
+  for(var i=0;i<cols.length;i++){
+    if(/\balta\b/i.test(String(cols[i].l||''))) return i;
+  }
+  return -1;
+}
+// Mirar solo la marca "prospecto" dejaba afuera a los que el tablero ya habia
+// movido hasta Onboarding: nadie les habia tocado "Pasar a cliente", pero de
+// leads no tenian nada.
+function _llegoAAlta(c){
+  if(!esProspecto(c)) return true;
+  var iA=_iAltaCliente();
+  if(iA<0) return false;
+  var e=null;
+  try{ e=_p360EtapaProspecto(c); }catch(err){ return false; }
+  return !!(e && typeof e.i==='number' && e.i>=iA);
+}
 function sidebarClients(){
   var f=cliFiltro();
   return DB.clients.filter(function(c){
     if(esAgencia(c)) return false;
-    if(esProspecto(c) && !f.prospectos) return false;
-    if(c.archived && !f.archivados) return false;
+    var alta=_llegoAAlta(c);
+    if(!alta && !f.prospectos) return false;
+    // Los prospectos nacen archivados. Si ya llegaron a alta, ese flag no los
+    // puede seguir escondiendo o volverian a quedar fuera por otra puerta.
+    if(c.archived && !f.archivados && !(esProspecto(c)&&(alta||f.prospectos))) return false;
     if(f.duenio==='mios' && !soyYo(c.owner)) return false;
     if(f.duenio==='otros' && (soyYo(c.owner)||!c.owner)) return false;
     if(f.duenio==='sin' && c.owner) return false;
