@@ -496,6 +496,18 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
   padding:8px 11px;border-radius:12px 12px 3px 12px}
 .as-m.el{color:var(--text2)}
 .as-m.el b{color:var(--text);font-weight:500}
+/* Los tres puntitos adentro del chat. El overlay del puente tapaba la pantalla
+   entera para decir lo mismo que entra en una linea. */
+.as-esp{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px}
+.as-dots{display:inline-flex;gap:3px;flex:none}
+.as-dots i{width:4px;height:4px;border-radius:50%;background:var(--text3);
+  animation:asDot 1.1s infinite ease-in-out}
+.as-dots i:nth-child(2){animation-delay:.15s}
+.as-dots i:nth-child(3){animation-delay:.3s}
+@keyframes asDot{0%,60%,100%{opacity:.25}30%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.as-dots i{animation:none;opacity:.6}}
+.as-esp button{border:0;background:none;color:var(--text3);cursor:pointer;
+  font-family:var(--font);font-size:11px;text-decoration:underline;padding:0}
 .as-vacio{color:var(--text3);font-size:12px;line-height:1.65}
 .as-ej{display:block;width:100%;text-align:left;background:transparent;color:var(--text2);
   border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-top:6px;
@@ -18973,7 +18985,13 @@ function asPintar(pensando){
     ? msgs.map(function(m){
         return '<div class="as-m '+(m.role==='user'?'yo':'el')+'">'+esc(m.content)+'</div>';
       }).join('')
-      +(pensando?'<div class="as-m el" style="color:var(--text3)">Pensando...</div>':'')
+      +(pensando?('<div class="as-m el"><span class="as-esp" id="as-esp">'
+        +'<span class="as-dots"><i></i><i></i><i></i></span>'
+        +'<span id="as-esp-txt">'+esc(S._asEstado||'Pensando')+'</span>'
+        // Sin overlay hay que dejar la salida a mano en algun lado, o un pedido
+        // colgado deja al asistente pensando para siempre.
+        +(S._asCancelable?' <button onclick="asCancelar()">cancelar</button>':'')
+      +'</span></div>'):'')
     : '<div class="as-vacio">Pregunta lo que quieras sobre lo que hay cargado: clientes, '
       +'tareas, llamadas, campanas, landings.'
       +'<button class="as-ej" onclick="asEjemplo(this)">Que tareas abiertas hay y de quien son</button>'
@@ -18999,6 +19017,7 @@ function asEjemplo(b){
   if(i){ i.value=b.textContent; i.focus(); }
 }
 async function asEnviar(){
+  if(S._asPensando) return;
   var i=document.getElementById('as-in');
   var q=String((i||{}).value||'').trim();
   if(!q) return;
@@ -19010,7 +19029,16 @@ async function asEnviar(){
   }
   S._asMsgs=(S._asMsgs||[]).concat([{role:'user',content:q}]);
   if(i) i.value='';
+  S._asEstado=''; S._asCancelable=false; S._asPensando=true;
   asPintar(true);
+  // El progreso va adentro del chat: se escribe en el nodo y no se repinta el
+  // panel entero, que en cada tick borraria lo que estes escribiendo abajo.
+  _IA_DISCRETO=function(t){
+    S._asEstado=t;
+    if(!S._asCancelable){ S._asCancelable=true; asPintar(true); return; }
+    var e=document.getElementById('as-esp-txt');
+    if(e) e.textContent=t;
+  };
   try{
     var r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
@@ -19042,7 +19070,11 @@ async function asEnviar(){
   }catch(e){
     S._asMsgs=(S._asMsgs||[]).concat([{role:'assistant',content:'No pude responder: '+e.message}]);
   }
+  _IA_DISCRETO=null; S._asEstado=''; S._asCancelable=false; S._asPensando=false;
   asPintar();
+}
+function asCancelar(){
+  if(typeof iaPuenteCancelarJob==='function') iaPuenteCancelarJob();
 }
 
 // --- Rodajes ---
@@ -27667,11 +27699,18 @@ function iaPuenteSet(v){
 var _IA_JOB=null;
 // Deja el pedido y espera la respuesta. Devuelve lo mismo que devolveria la
 // API, asi que las 31 funciones que llaman no cambian una linea.
+// Quien esta esperando puede mostrar el progreso a su manera. Cuando se
+// setea, el puente no dibuja su overlay: le pasa el texto a esta funcion y el
+// que llamo lo pone donde le queda mejor. Sin esto, el unico modo de avisar
+// que se esta trabajando era tapar la pantalla entera.
+var _IA_DISCRETO=null;
 function _iaPorPuente(prompt){
   return new Promise(function(res, rej){
     if(!SB.token){ rej(new Error('entra con tu cuenta para usar el puente')); return; }
     var cancelado=false, jobId=null, t0=Date.now();
+    var discreto=_IA_DISCRETO;
     var estado=function(t, col){
+      if(discreto){ try{ discreto(String(t).replace(/<[^>]+>/g,'')); }catch(e){} return; }
       var e=document.getElementById('iap-txt');
       if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; }
     };
@@ -27687,7 +27726,8 @@ function _iaPorPuente(prompt){
     var cerrar=function(){ var x=document.getElementById('ia-puente-root'); if(x) x.innerHTML=''; };
     _IA_JOB={ cancelar:function(){
       cancelado=true; cerrar(); rej(new Error('cancelaste el analisis')); } };
-    caja.innerHTML=
+    if(discreto){ estado('Dejando el pedido'); }
+    else caja.innerHTML=
       '<div class="modal-overlay" style="'+_iaPuenteEstiloOverlay()+'">'
       +'<div class="modal" style="max-width:640px">'
         +'<div class="modal-title">Analizando</div>'
