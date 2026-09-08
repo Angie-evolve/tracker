@@ -21951,17 +21951,53 @@ function setHojaSuccess(k){
 // preparar una llamada necesita cuanto paga y desde cuando, y eso vivia en
 // otra hoja: obligaba a ir y volver justo cuando se esta leyendo lo demas.
 // Es solo lectura, un clic lleva a Facturacion, que es donde se edita.
+// Editar en la tarjeta y no bajando a los campos: el que esta leyendo el
+// contexto quiere corregir un monto sin perder de vista lo que estaba mirando.
+function factEditar(clientId){
+  S._factEdit=(S._factEdit===clientId)?null:clientId;
+  if(typeof renderTab==='function') renderTab();
+}
 function _factResumenHtml(c){
   var tipo={garantia:'Garantia', recurrente:'Recurrente', mixto:'Implementacion + fee',
             'one-time':'One-time'}[c.serviceType||'garantia']||'Garantia';
+  var editando=(S._factEdit===c.id);
+  var lapiz='<button onclick="factEditar('+c.id+')" '
+    +'title="'+(editando?'Listo':'Editar la facturacion')+'" '
+    +'aria-label="'+(editando?'Listo':'Editar')+'" '
+    +'style="flex:none;border:0;background:none;padding:0 0 0 4px;cursor:pointer;line-height:0;'
+    +'color:'+(editando?'var(--accent)':'var(--text3)')+'">'
+    +(editando
+      ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        +'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+        +'<path d="M20 6 9 17l-5-5"/></svg>'
+      : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        +'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+        +'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>')
+  +'</button>';
   var marco=function(borde, dentro){
-    return '<div onclick="_shIrAMontos()" title="Ir a los campos de facturacion" '
-      +'style="flex:none;width:260px;align-self:flex-start;cursor:pointer;'
+    // La tarjeta entera deja de ser clickeable cuando se esta editando: un clic
+    // al costado de un input te sacaba de la tarjeta y perdias lo escrito.
+    return '<div'+(editando?'':' onclick="_shIrAMontos()" title="Ir a los campos de facturacion"')
+      +' style="flex:none;width:260px;align-self:flex-start;'
+      +(editando?'':'cursor:pointer;')
       +'background:var(--bg2);border:1px solid '+borde+';border-radius:var(--radius-lg);'
       +'padding:12px 14px">'
-      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">'
-        +'<span style="font-size:12.5px;font-weight:500;color:var(--text)">Facturacion</span>'
-        +'<span style="font-size:11px;color:var(--text3)">'+esc(tipo)+'</span>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+        +'<span style="font-size:12.5px;font-weight:500;color:var(--text);flex:none">'
+          +'Facturacion</span>'
+        +(editando
+          ? ('<select onchange="setClientServiceType('+c.id+',this.value)" '
+            +'style="flex:1;min-width:0;font-size:11px;padding:2px 4px;'
+            +'border-radius:var(--radius);border:1px solid var(--border2);'
+            +'background:var(--bg3);color:var(--text);font-family:var(--font)">'
+            +[['garantia','Garantia'],['recurrente','Recurrente'],
+              ['mixto','Implementacion + fee'],['one-time','One-time']].map(function(o){
+              return '<option value="'+o[0]+'"'
+                +(((c.serviceType||'garantia')===o[0])?' selected':'')+'>'+o[1]+'</option>';
+            }).join('')+'</select>')
+          : ('<span style="flex:1;text-align:right;font-size:11px;color:var(--text3)">'
+            +esc(tipo)+'</span>'))
+        +lapiz
       +'</div>'+dentro
     +'</div>';
   };
@@ -22000,20 +22036,52 @@ function _factResumenHtml(c){
     aviso='Falta la duracion: sin plazo no se puede prorratear el contrato por mes.';
   }
 
-  return marco(aviso?'rgba(240,168,48,0.45)':'var(--border)',
+  // Los mismos campos que estan mas abajo en la hoja, escribiendo en el mismo
+  // lugar: no hay un segundo estado que pueda quedar desincronizado.
+  var campo=function(html, rot){
+    return '<div>'+html
+      +'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'+rot+'</div></div>';
+  };
+  var estIn='width:100%;box-sizing:border-box;font-size:13px;padding:3px 6px;'
+    +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+    +'color:var(--text);font-family:var(--font);font-variant-numeric:tabular-nums;'
+    +'color-scheme:dark';
+  var grilla = editando
+    ? ('<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:11px">'
+      +campo('<input type="number" value="'+esc(String(c.contractValue||''))+'" placeholder="0" '
+        +'oninput="setClientFee('+c.id+',\'contractValue\',this.value)" '
+        +'onchange="setClientFee('+c.id+',\'contractValue\',this.value)" style="'+estIn+'">',
+        (c.serviceType==='mixto'?'fee de implementacion':'valor del contrato'))
+      +campo('<input type="number" value="'+esc(String(c.monthlyFee||''))+'" placeholder="0" '
+        +'oninput="setClientFee('+c.id+',\'monthlyFee\',this.value)" '
+        +'onchange="setClientFee('+c.id+',\'monthlyFee\',this.value)" style="'+estIn+'">',
+        'por mes')
+      +campo('<input type="date" value="'
+        +((alta.fecha&&clienteAltaFiable(c))?_isoLocal(alta.fecha):'')+'" '
+        +'onchange="setClientFee('+c.id+',\'altaAt\',this.value)" style="'+estIn+'">',
+        'cliente desde')
+      // Duracion repinta la pestana al guardar, asi que se avisa solo al salir
+      // del campo: con oninput se redibujaba letra por letra y perdia el foco.
+      +campo('<input type="number" value="'+esc(String(dias||''))+'" placeholder="90" '
+        +'onchange="setContratoDias('+c.id+',this.value)" style="'+estIn+'">', 'duracion')
+    +'</div>')
+    : (
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:11px">'
-      +dato(val?plata(val):(c.serviceType==='recurrente'?'\u2014':'$0'),
+    +dato(val?plata(val):(c.serviceType==='recurrente'?'\u2014':'$0'),
             (c.serviceType==='mixto'?'fee de implementacion':'valor del contrato'), !val)
-      +dato(fee?plata(fee):'—', 'por mes', !fee)
-      +dato(alta.fecha
+    +dato(fee?plata(fee):'—', 'por mes', !fee)
+    +dato(alta.fecha
               ? alta.fecha.toLocaleDateString('es-AR',{day:'numeric',month:'numeric',year:'2-digit'})
               : '—',
-            'cliente desde', !alta.fecha,
+    'cliente desde', !alta.fecha,
             // La fecha estimada es la del dia que se cargo en la app, no la
             // real: mostrarla igual que una cargada a mano la da por cierta.
             (alta.fecha&&!clienteAltaFiable(c))?'var(--amberx)':'')
-      +dato(dias?(dias+' dias'):'—', 'duracion', !dias)
+    +dato(dias?(dias+' dias'):'—', 'duracion', !dias)
     +'</div>'
+    );
+  return marco(aviso?'rgba(240,168,48,0.45)':'var(--border)',
+    grilla
     +(aviso?('<div style="display:flex;gap:7px;margin-top:11px;padding-top:10px;'
       +'border-top:1px solid var(--border)">'
       +'<span style="flex:none;width:5px;height:5px;margin-top:6px;border-radius:1px;'
