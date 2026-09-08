@@ -22106,14 +22106,20 @@ function _pagos(c){
   return c.pagos;
 }
 function _pagosResumen(c){
-  var ps=_pagos(c), total=0, cobrado=0, sena=0;
+  var ps=_pagos(c), total=0, cobrado=0, sena=0, vencido=0;
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
   ps.forEach(function(x){
     var m=parseFloat(x.monto)||0;
     total+=m;
-    if(x.pagadoAt){ cobrado+=m; if(x.concepto==='sena') sena+=m; }
+    if(x.pagadoAt){ cobrado+=m; if(x.concepto==='sena') sena+=m; return; }
+    if(x.tipo==='hito' || !String(x.fecha||'')) return;
+    var p2=String(x.fecha).slice(0,10).split('-');
+    var fd=new Date(Number(p2[0]), Number(p2[1])-1, Number(p2[2]));
+    if(!isNaN(fd.getTime()) && fd<hoy) vencido+=m;
   });
   var contrato=parseFloat(c.contractValue)||0;
-  return {n:ps.length, total:total, cobrado:cobrado, sena:sena, pendiente:total-cobrado,
+  return {n:ps.length, total:total, cobrado:cobrado, sena:sena, vencido:vencido,
+          pendiente:total-cobrado,
           contrato:contrato, descuadre:(contrato&&ps.length)?(contrato-total):0};
 }
 // El proximo pago con fecha que sigue sin cobrarse. Se copia a nextPaymentDate
@@ -22208,6 +22214,8 @@ function _pagosTotalesHtml(c){
     +'<span style="color:var(--text3)"> de '+plata(r.total)+'</span>'
     +(r.pendiente>0?('<span style="color:var(--text2)"> · falta cobrar '
       +plata(r.pendiente)+'</span>'):'')
+    +(r.vencido>0?('<span style="color:var(--amberx)"> · '+plata(r.vencido)
+      +' con la fecha pasada sin tildar</span>'):'')
     // Un plan que no suma el contrato es el error que hace que la proyeccion
     // diga otra cosa que la factura, y no se ve solo.
     +(r.descuadre?('<span style="color:var(--amberx)"> · '
@@ -22221,8 +22229,18 @@ function _pagosHtml(c){
   var est='box-sizing:border-box;font-size:12px;padding:4px 7px;border-radius:var(--radius);'
     +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
     +'font-family:var(--font);color-scheme:dark';
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
   var filas=ps.map(function(x,i){
     var pago=!!x.pagadoAt;
+    // Una cuota con la fecha pasada y sin tildar es ambigua: no se sabe si te
+    // pagaron y falta marcarla, o si esta atrasada. Sin decirlo, el total dice
+    // cero cobrado y parece que la app no leyo nada.
+    var vence=null;
+    if(!pago && x.tipo!=='hito' && String(x.fecha||'')){
+      var p2=String(x.fecha).slice(0,10).split('-');
+      var fd=new Date(Number(p2[0]), Number(p2[1])-1, Number(p2[2]));
+      if(!isNaN(fd.getTime()) && fd<hoy) vence=Math.round((hoy-fd)/86400000);
+    }
     return '<div style="display:flex;gap:7px;align-items:center;padding:5px 0;'
         +'border-top:1px solid var(--border)">'
       +'<input type="checkbox"'+(pago?' checked':'')+' style="flex:none" '
@@ -22256,6 +22274,9 @@ function _pagosHtml(c){
         : ('<input type="date" value="'+esc(String(x.fecha||'').slice(0,10))+'" '
           +'onchange="pagoCampo('+c.id+','+i+',\'fecha\',this.value)" '
           +'style="'+est+';flex:1;min-width:0">'))
+      +(vence!==null?('<span style="flex:none;font-size:10.5px;color:var(--amberx);'
+        +'white-space:nowrap" title="Si ya te pagaron, tildala a la izquierda">'
+        +'vencio hace '+vence+(vence===1?' dia':' dias')+'</span>'):'')
       +'<button onclick="pagoBorrar('+c.id+','+i+')" aria-label="Sacar la cuota" '
         +'title="Sacar la cuota" style="flex:none;border:0;background:none;color:var(--text3);'
         +'cursor:pointer;font-size:15px;line-height:1;padding:0 2px">&times;</button>'
