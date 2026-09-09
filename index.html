@@ -11509,6 +11509,37 @@ function _eerrCuenta(c){
   if(!c.archived || c.bajaAt) return true;
   return !!_bajaPorArchivo(c);
 }
+// ---- Lo vendido ----
+// El ticket firmado: la implementacion mas los meses de abono comprometidos.
+// A proposito no usa _ltvTicket, que multiplica el abono por los meses que ya
+// pasaron: con eso una venta de agosto cambiaria de monto todos los meses, y
+// lo que se vendio en agosto se vendio una sola vez.
+function _ventaMesesAbono(c){
+  var d=_eerrDesde(c); if(!d) return 0;
+  var h=_eerrHastaContrato(c);
+  if(!h) return 0;                      // abono sin fin: no hay total que firmar
+  var n=(h.a*12+h.m)-(d.a*12+d.m)+1;
+  return n>0?n:0;
+}
+function _ventaTicket(c){
+  var valor=parseFloat(c.contractValue)||0;
+  var fee=_feeMensual(c);
+  var meses=_ventaMesesAbono(c);
+  return {
+    monto: valor+fee*meses,
+    // Un abono que se renueva solo no tiene un total: sumarle un horizonte
+    // inventado seria peor que no sumarlo. Se cuenta lo cerrado y se avisa
+    // aparte cuanto queda afuera por mes.
+    abiertoMensual: (fee>0 && !meses) ? fee : 0
+  };
+}
+// Lo vendido ese mes: el ticket entero de cada cliente que entro.
+function eerrVendidoMes(anio, mes){
+  return eerrNuevos(anio, mes).map(function(c){
+    var t=_ventaTicket(c);
+    return {c:c, monto:t.monto, abiertoMensual:t.abiertoMensual};
+  });
+}
 // Bajas confirmadas de ese mes.
 function eerrBajas(anio, mes){
   return (DB.clients||[]).filter(function(c){
@@ -12940,6 +12971,43 @@ function eerrHtml(){
             }).join('');
           })()
         +seccion('Ingresos')
+        +(function(){
+            // Lo que se firmo, contado entero en el mes en que entro el cliente.
+            // No cierra contra Ingreso neto y no tiene por que: uno es la venta
+            // y el otro el contrato repartido mes a mes.
+            var tot=0, hayAbiertos=false;
+            var tds=EERR_MESES.map(function(_,i){
+              var lista=eerrVendidoMes(eerrAnio(), i);
+              var monto=lista.reduce(function(s,x){ return s+x.monto; },0);
+              var abiertos=lista.filter(function(x){ return x.abiertoMensual>0; });
+              if(abiertos.length) hayAbiertos=true;
+              tot+=monto;
+              var tit=lista.map(function(x){
+                return x.c.name+': '+_eerrPlata(x.monto)
+                  +(x.abiertoMensual
+                    ?(' más '+_eerrPlata(x.abiertoMensual)+'/mes sin fecha de fin'):'');
+              }).join(' \u00b7 ');
+              return '<td style="'+cel+';color:'+(monto?'var(--text)':'var(--text3)')+'" '
+                +(tit?('title="'+esc(tit)+'"'):'')+'>'
+                +(monto?_eerrPlata(monto):'&mdash;')
+                +(abiertos.length
+                  ?('<span style="font-size:9px;color:var(--text3)"> +'+abiertos.length+'/mes</span>')
+                  :'')
+              +'</td>';
+            }).join('');
+            return '<tr><td style="'+rot+'" title="El ticket completo de cada cliente '
+                +'que entró ese mes: la implementación más los meses de abono comprometidos.">'
+                +'Facturado</td>'
+              +tds+'<td style="'+cel+';color:var(--text2);font-weight:600">'
+              +_eerrPlata(tot)+'</td></tr>'
+            +'<tr><td colspan="14" style="padding:2px 10px 8px 26px;font-size:10.5px;'
+              +'color:var(--text3);line-height:1.55">'
+              +'Lo que se <b>vendió</b> ese mes, cobrado o no. No cierra contra Ingreso neto: '
+              +'ahí el contrato va repartido entre los meses que dura.'
+              +(hayAbiertos?(' El <b>+N/mes</b> son abonos que se renuevan solos: no tienen '
+                +'un total que sumar, así que el número de al lado los deja afuera.'):'')
+            +'</td></tr>';
+          })()
         +filaEdit('ingresos','Ingresos totales')
         +filaEdit('otrosIngresos','Otros ingresos', true)
         +filaCalc('Ingreso neto', function(i){ return eerrIngreso(i)+(eerrVal(i,'otrosIngresos')||0); }, {fuerte:true, borde:true})
