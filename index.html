@@ -12570,26 +12570,41 @@ function closerGuardar(clientId){
   save(); closeModal();
   if(typeof renderClient==='function') renderClient();
 }
-function eerrComisionesMes(anio, mes){
-  var porMail={};
+// Cuanto le toca a cada closer ese mes, y por que clientes. Se devuelve el
+// desglose y el total sale de sumarlo: es el mismo numero visto de dos formas.
+function eerrComisionesDetalle(anio, mes){
+  var quien={};
   (DB.personas||[]).forEach(function(p){
     var pct=parseFloat(p&&p.comision)||0;
-    if(pct>0 && p.email) porMail[String(p.email).toLowerCase()]=pct;
+    if(pct>0 && p.email)
+      quien[String(p.email).toLowerCase()]={pct:pct, nombre:(p.nombre||p.email)};
   });
-  if(!Object.keys(porMail).length) return 0;
-  return (DB.clients||[]).reduce(function(s,c){
-    // Antes miraba el responsable, que es quien lo maneja y no siempre quien
-    // lo cerro. La comision es de quien cierra.
-    var pct=porMail[String(_closerDe(c)||c.owner||'').toLowerCase()];
-    if(!pct) return s;
+  if(!Object.keys(quien).length) return [];
+  var acum={};
+  (DB.clients||[]).forEach(function(c){
+    // El responsable es quien lo maneja y no siempre quien lo cerro. La
+    // comision es de quien cierra.
+    var mail=String(_closerDe(c)||c.owner||'').toLowerCase();
+    var q=quien[mail];
+    if(!q) return;
     var cobrado=(_pagos(c)||[]).reduce(function(a,x){
       var f=_pagoFecha(x); if(!f) return a;
       var pp=f.split('-');
       if(Number(pp[0])!==anio || Number(pp[1])-1!==mes) return a;
       return a+(parseFloat(x.monto)||0);
     },0);
-    return s+cobrado*pct/100;
-  },0);
+    if(!cobrado) return;
+    if(!acum[mail]) acum[mail]={nombre:q.nombre, pct:q.pct, cobrado:0, monto:0, clientes:[]};
+    acum[mail].cobrado+=cobrado;
+    acum[mail].monto+=cobrado*q.pct/100;
+    acum[mail].clientes.push(c.name||'');
+  });
+  return Object.keys(acum).map(function(k){ return acum[k]; })
+    .sort(function(a,b){ return b.monto-a.monto; });
+}
+function eerrComisionesMes(anio, mes){
+  return eerrComisionesDetalle(anio, mes)
+    .reduce(function(s,x){ return s+x.monto; },0);
 }
 function eerrAbonos(){
   var h=new Date();
@@ -12704,12 +12719,20 @@ function eerrHtml(){
     var total=0;
     var tds=EERR_MESES.map(function(_,i){
       var v=eerrVal(i,campo); total+=(v||0);
-      var ph='—';
-      if(campo==='comisiones'){
-        var com=eerrComisionesMes(eerrAnio(), i);
-        if(com>0) ph=String(Math.round(com));
+      var ph='—', ayuda='';
+      if(campo==='equipoVentas'){
+        var det=eerrComisionesDetalle(eerrAnio(), i);
+        var com=det.reduce(function(t,x){ return t+x.monto; },0);
+        if(com>0){
+          ph=String(Math.round(com));
+          ayuda='Comisiones de los closers sobre lo cobrado este mes: '
+            +det.map(function(x){
+              return x.nombre+' '+_eerrPlata(x.monto)+' ('+x.pct+'% de '
+                +_eerrPlata(x.cobrado)+' de '+x.clientes.join(', ')+')';
+            }).join(' \u00b7 ')
+            +'. Escribí el número real si pagaste otra cosa.';
+        }
       }
-      var ayuda='';
       if(campo==='ingresos'){
         // El placeholder muestra exactamente lo que usa el Ingreso neto, asi la
         // columna no se contradice, y dice de donde sale cada numero.
