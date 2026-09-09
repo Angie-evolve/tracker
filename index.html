@@ -11475,11 +11475,19 @@ function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // unica prueba de que el cliente entro. Antes de eso hay un contrato cargado y
 // nada mas, y contar eso llenaba el cuadro de ventas que nunca se hicieron
 // efectivas: Picasso nunca pago y figuraba como cliente nuevo de agosto.
+// Cuando entro la plata de una cuota. Manda la fecha pactada de la cuota sobre
+// el dia en que se tildo: tildar es registrar, no cobrar. pagoTildar guardaba
+// el dia del clic, asi que al tildar todo de una un cliente de marzo figuraba
+// entrando hoy y el ano entero quedaba vacio hacia atras. Los hitos no tienen
+// fecha pactada, y ahi el dia del tilde es lo unico que hay.
+function _pagoFecha(x){
+  if(!x||!x.pagadoAt) return '';
+  return String(x.fecha||'').slice(0,10) || String(x.pagadoAt).slice(0,10);
+}
 function _primerCobro(c){
   var min=null;
   ((typeof _pagos==='function'?_pagos(c):c&&c.pagos)||[]).forEach(function(x){
-    if(!x||!x.pagadoAt) return;
-    var t=String(x.pagadoAt).slice(0,10);
+    var t=_pagoFecha(x);
     if(t && (!min || t<min)) min=t;
   });
   return min;
@@ -12430,8 +12438,8 @@ function eerrAbonosMes(anio, mes, soloFiables){
 function eerrCobradoMes(anio, mes){
   return (DB.clients||[]).reduce(function(s,c){
     return s+(_pagos(c)||[]).reduce(function(a,x){
-      if(!x.pagadoAt) return a;
-      var p=String(x.pagadoAt).slice(0,10).split('-');
+      var f=_pagoFecha(x); if(!f) return a;
+      var p=f.split('-');
       var y=Number(p[0]), m=Number(p[1])-1;
       if(y!==anio || m!==mes) return a;
       return a+(parseFloat(x.monto)||0);
@@ -12575,8 +12583,8 @@ function eerrComisionesMes(anio, mes){
     var pct=porMail[String(_closerDe(c)||c.owner||'').toLowerCase()];
     if(!pct) return s;
     var cobrado=(_pagos(c)||[]).reduce(function(a,x){
-      if(!x.pagadoAt) return a;
-      var pp=String(x.pagadoAt).slice(0,10).split('-');
+      var f=_pagoFecha(x); if(!f) return a;
+      var pp=f.split('-');
       if(Number(pp[0])!==anio || Number(pp[1])-1!==mes) return a;
       return a+(parseFloat(x.monto)||0);
     },0);
@@ -22765,7 +22773,8 @@ function pagoTildar(clientId, i, v){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var x=_pagos(c)[i]; if(!x) return;
-  x.pagadoAt=v?(_isoLocal(new Date())):'';
+  // La cuota se cobro el dia que estaba pactada, no el dia que la tildaste.
+  x.pagadoAt=v?(String(x.fecha||'').slice(0,10) || _isoLocal(new Date())):'';
   _pagosSync(c); save(); pagoRepintar(clientId);
 }
 function pagoRepintar(clientId){
@@ -22819,7 +22828,7 @@ function _pagosHtml(c){
       // Era un checkbox pelado: sin tildar no se veia sobre el fondo oscuro y no
       // habia forma de darse cuenta de que eso era lo que hacia contar la plata.
       +'<button onclick="pagoTildar('+c.id+','+i+','+(pago?'false':'true')+')" '
-        +'title="'+(pago?('Cobrada el '+esc(x.pagadoAt)+'. Tocala para desmarcarla.')
+        +'title="'+(pago?('Cobrada el '+esc(_pagoFecha(x))+'. Tocala para desmarcarla.')
                         :'Marcarla como cobrada')+'" '
         +'style="flex:none;width:74px;font-size:10.5px;padding:3px 0;cursor:pointer;'
         +'border-radius:99px;font-family:var(--font);'
