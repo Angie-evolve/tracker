@@ -4256,6 +4256,9 @@ function _overviewMetricsHtml(_ovDonde){
   var mrr=(typeof eerrAbonos==='function')
     ? eerrAbonos()
     : recurrentes.reduce(function(s,cl){return s+_feeMensual(cl);},0);
+  // El detalle de la tarjeta sale de la misma cuenta que el total.
+  var mrrDet=(typeof eerrAbonosDetalle==='function')
+    ? eerrAbonosDetalle(now.getFullYear(), now.getMonth()) : [];
   var conLtv=activos.filter(function(cl){
     return (cl.serviceType!=='recurrente'||!!cl.contractValue)
       && (parseFloat(cl.contractValue)||0)>0;
@@ -4280,11 +4283,16 @@ function _overviewMetricsHtml(_ovDonde){
             :('vence '+((cl.contract&&cl.contract.endDate)||'-'))); }),
                'Contrato con fin futuro o recurrencia activa.')
       +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
-          return _nom(cl, cl.monthlyFee?(_plata(parseFloat(cl.monthlyFee))+'/mes'):'sin monto'); }),
+          // _feeMensual y no monthlyFee: el fee que es un % de lo que factura el
+          // cliente vive en otros campos y salia como "sin monto".
+          var f=_feeMensual(cl);
+          return _nom(cl, f?(_plata(f)+'/mes'):'sin monto'); }),
                'Clientes con servicio recurrente.')
-      +_ovCard('Ingresos recurrentes', _plata(mrr), recurrentes.map(function(cl){
-          return _nom(cl, cl.monthlyFee?_plata(parseFloat(cl.monthlyFee)):'sin monto cargado'); }),
-               'Suma de los abonos mensuales.', 'var(--accent)')
+      +_ovCard('Ingresos recurrentes', _plata(mrr), mrrDet.map(function(x){
+          return _nom(x.c, x.monto>0?(_plata(x.monto)+'/mes'):'sin monto cargado'); }),
+               'Lo comprometido para este mes: el abono de los recurrentes más los contratos '
+               +'repartidos entre los meses que duran. Es el mismo número que el Ingreso neto '
+               +'de este mes.', 'var(--accent)')
       +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
           return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
                'Valor de contrato de los clientes por garantia.', 'var(--accent)')
@@ -12356,7 +12364,11 @@ function _eerrCubre(c, anio, mes){
 // Comprometido para ese mes. Entran los recurrentes por su abono y los de
 // garantia por el prorrateo del contrato: un contrato de 2400 en 3 meses son
 // 800 por mes reales, no cero.
-function eerrAbonosMes(anio, mes, soloFiables){
+// Quien aporta y cuanto, cliente por cliente. El total sale de sumar esto y no
+// de una cuenta paralela: la tarjeta de Ingresos recurrentes listaba a los
+// recurrentes con su monthlyFee mientras el titulo venia de aca, asi que ocho
+// renglones que sumaban $2.297 aparecian abajo de un $6.297.
+function eerrAbonosDetalle(anio, mes, soloFiables){
   return (DB.clients||[])
     .filter(_eerrCuenta)
     .filter(function(c){ return !soloFiables || (typeof clienteAltaFiable!=='function') || clienteAltaFiable(c); })
@@ -12366,12 +12378,18 @@ function eerrAbonosMes(anio, mes, soloFiables){
       return esRec||tieneContrato;
     })
     .filter(function(c){ return _eerrCubre(c, anio, mes); })
-    .reduce(function(s,c){
+    .map(function(c){
       var m=(typeof rtMensualEn==='function')
         ? rtMensualEn(c, anio, mes)
         : _feeMensual(c);
-      return s+(m||0);
-    },0);
+      return {c:c, monto:m||0};
+    })
+    .sort(function(a,b){ return (b.monto-a.monto)
+      || String(a.c.name||'').localeCompare(String(b.c.name||'')); });
+}
+function eerrAbonosMes(anio, mes, soloFiables){
+  return eerrAbonosDetalle(anio, mes, soloFiables)
+    .reduce(function(s,x){ return s+x.monto; },0);
 }
 // El MRR de hoy, para los textos.
 // Lo que de verdad entro ese mes: las cuotas del plan de pagos tildadas como
