@@ -11471,8 +11471,40 @@ function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // los numeros. Vale la misma regla que en el sidebar, asi que el prospecto que
 // el tablero ya movio hasta Alta cliente si cuenta, aunque nadie le haya tocado
 // "Pasar a cliente".
+// El primer cobro de verdad: la cuota mas vieja tildada como cobrada. Es la
+// unica prueba de que el cliente entro. Antes de eso hay un contrato cargado y
+// nada mas, y contar eso llenaba el cuadro de ventas que nunca se hicieron
+// efectivas: Picasso nunca pago y figuraba como cliente nuevo de agosto.
+function _primerCobro(c){
+  var min=null;
+  ((typeof _pagos==='function'?_pagos(c):c&&c.pagos)||[]).forEach(function(x){
+    if(!x||!x.pagadoAt) return;
+    var t=String(x.pagadoAt).slice(0,10);
+    if(t && (!min || t<min)) min=t;
+  });
+  return min;
+}
+// Para el estado de resultados el cliente arranca cuando entro la primera
+// plata, no cuando se cargo el contrato. Si el alta quedo antes, manda el cobro.
+function _eerrAltaEfectiva(c){
+  var d=(typeof clienteAlta==='function')?clienteAlta(c):null;
+  var f=_primerCobro(c);
+  if(!f) return d;
+  var cob=(typeof _fecha==='function')?_fecha(f):null;
+  if(!cob) return d;
+  return (!d || cob.getTime()>d.getTime()) ? cob : d;
+}
+// Una fecha anclada a un cobro real no es una estimacion, venga de donde venga
+// el "Cliente desde": hay un recibo detras.
+function _eerrAltaFiable(c){
+  if(_primerCobro(c)) return true;
+  return (typeof clienteAltaFiable==='function') ? clienteAltaFiable(c) : true;
+}
 function _eerrEsCartera(c){
   if(!c || esAgencia(c)) return false;
+  // Sin un cobro tildado no hay cliente: hay una venta cargada. Es la regla que
+  // deja afuera a los que firmaron y todavia no pagaron.
+  if(!_primerCobro(c)) return false;
   if(!esProspecto(c)) return true;
   // Para la plata no alcanza con _llegoAAlta, que acepta la etapa automatica:
   // esa sube un lead a la columna de pago porque en la llamada se hablo de
@@ -11486,7 +11518,7 @@ function _eerrEsCartera(c){
 function eerrNuevos(anio, mes){
   return (DB.clients||[]).filter(function(c){
     if(!_eerrEsCartera(c)) return false;
-    var d=clienteAlta(c);
+    var d=_eerrAltaEfectiva(c);
     return d && d.getFullYear()===anio && d.getMonth()===mes;
   });
 }
@@ -11598,7 +11630,7 @@ function _bajaProbableMotivo(c){
 function eerrNuevosAnio(anio){
   return (DB.clients||[]).filter(function(c){
     if(!_eerrEsCartera(c)) return false;
-    var d=clienteAlta(c);
+    var d=_eerrAltaEfectiva(c);
     return d && d.getFullYear()===anio;
   });
 }
@@ -12277,8 +12309,7 @@ function eerrSet(m, campo, valor){
 // arranco en marzo sumaba de agosto en adelante, o sea todos los meses menos los
 // que en realidad cubria.
 function _eerrDesde(c){
-  var i=(typeof clienteAltaInfo==='function')?clienteAltaInfo(c):null;
-  var d=i&&i.fecha;
+  var d=_eerrAltaEfectiva(c);
   if(!d) return null;
   return {a:d.getFullYear(), m:d.getMonth()};
 }
@@ -12371,7 +12402,7 @@ function _eerrCubre(c, anio, mes){
 function eerrAbonosDetalle(anio, mes, soloFiables){
   return (DB.clients||[])
     .filter(_eerrCuenta)
-    .filter(function(c){ return !soloFiables || (typeof clienteAltaFiable!=='function') || clienteAltaFiable(c); })
+    .filter(function(c){ return !soloFiables || _eerrAltaFiable(c); })
     .filter(function(c){
       var esRec=(c.serviceType==='recurrente'||c.recurrente);
       var tieneContrato=(parseFloat(c.contractValue)||0)>0;
@@ -12771,7 +12802,9 @@ function eerrHtml(){
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
       +'Los meses <b>desde este en adelante</b> se estiman con los abonos comprometidos, en gris cursiva. '
-      +'Los pasados quedan vacios: la cartera era otra. Escribi el cobro real de cada mes para reemplazarlos.</div>'
+      +'Los pasados quedan vacios: la cartera era otra. Escribi el cobro real de cada mes para reemplazarlos. '
+      +'Un cliente entra recien cuando tiene <b>una cuota tildada como cobrada</b> en su plan de pagos, '
+      +'y cuenta desde ese mes: hasta que entra la primera plata hay un contrato cargado, no un cliente.</div>'
     +(function(){
         var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
         var v=eerrVencen();
@@ -12897,7 +12930,7 @@ function eerrHtml(){
             var tds=EERR_MESES.map(function(_,i){
               var lista=eerrNuevos(eerrAnio(), i);
               var n=lista.length; tot+=n;
-              var fiables=lista.filter(clienteAltaFiable).length;
+              var fiables=lista.filter(_eerrAltaFiable).length;
               var estim=n-fiables;
               // Un mes estimado no puede verse igual que uno confirmado: siete
               // clientes el mismo mes suele ser el dia que se cargaron, no altas.
