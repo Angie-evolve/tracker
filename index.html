@@ -11291,6 +11291,9 @@ function eerrSinAporte(){
   var out=[];
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
+    // Ya esta dado de baja: que no aporte a la proyeccion no es un dato faltante,
+    // es el resultado correcto. Avisarlo lo unico que hace es tapar los reales.
+    if(c.bajaAt) return;
     var esRec=(c.serviceType==='recurrente'||c.recurrente);
     var valor=parseFloat(c.contractValue)||0;
     var fee=parseFloat(c.monthlyFee)||0;
@@ -11339,11 +11342,21 @@ function _eerrAvisoSinAporte(){
   Object.keys(grupos).forEach(function(k){
     var ls=l.filter(function(x){return x.motivo===k;});
     if(!ls.length) return;
+    // Un contrato terminado es la pregunta "se fue o renovo?", y se contesta
+    // aca mismo: el nombre abre la baja en vez de mandarte a buscar la ficha.
+    var pregunta=(k==='vencido'||k==='termina');
     var nombres=ls.slice(0,8).map(function(x){
-      return esc(x.c.name)+(x.h?(' ('+EERR_MESES[x.h.m]+' '+x.h.a+')'):'');
+      var t=esc(x.c.name)+(x.h?(' ('+EERR_MESES[x.h.m]+' '+x.h.a+')'):'');
+      return pregunta
+        ? ('<span onclick="bajaModal('+x.c.id+')" style="cursor:pointer;'
+            +'text-decoration:underline;text-decoration-style:dotted;'
+            +'text-underline-offset:2px" title="Marcarlo de baja">'+t+'</span>')
+        : t;
     }).join(', ');
     h+='<div style="margin-top:6px"><b style="color:var(--amberx)">'+ls.length+' cliente'+(ls.length===1?'':'s')+' '
-      +grupos[k].t+'</b>. '+grupos[k].d+' '+nombres+(ls.length>8?(' y '+(ls.length-8)+' mas'):'')+'.</div>';
+      +grupos[k].t+'</b>. '+grupos[k].d+' '+nombres+(ls.length>8?(' y '+(ls.length-8)+' mas'):'')+'.'
+      +(pregunta?' <span style="color:var(--text3)">Toca el nombre para darlo de baja.</span>':'')
+      +'</div>';
   });
   if(!h) return '';
   return '<div style="font-size:11px;color:var(--text2);line-height:1.7;margin-bottom:10px;'
@@ -11427,6 +11440,9 @@ function eerrEnServicio(anio, mes){
 function eerrActivos(anio, mes){
   return (DB.clients||[]).filter(function(c){
     if(c.archived) return false;
+    // Se fue: cuenta hasta el mes de la baja inclusive y despues no.
+    var b=_bajaMes(c);
+    if(b && ((anio>b.a)||(anio===b.a&&mes>b.m))) return false;
     var d=_eerrDesde(c);
     if(!d) return true;                      // sin fecha de alta, se asume que ya estaba
     return (anio>d.a)||(anio===d.a&&mes>=d.m);
@@ -11439,6 +11455,34 @@ function eerrNuevos(anio, mes){
   return (DB.clients||[]).filter(function(c){
     var d=clienteAlta(c);
     return d && d.getFullYear()===anio && d.getMonth()===mes;
+  });
+}
+// La baja se carga a mano y a proposito: la app no puede saber sola si un
+// contrato vencido es alguien que se fue o alguien que renovo sin avisar.
+// Inventarla seria borrar clientes que siguen pagando.
+function _bajaMes(c){
+  var f=c&&c.bajaAt; if(!f) return null;
+  var pp=String(f).slice(0,10).split('-');
+  if(pp.length<2) return null;
+  var a=Number(pp[0]), m=Number(pp[1])-1;
+  if(!isFinite(a)||!isFinite(m)||m<0||m>11) return null;
+  return {a:a, m:m};
+}
+// Bajas confirmadas de ese mes.
+function eerrBajas(anio, mes){
+  return (DB.clients||[]).filter(function(c){
+    var b=_bajaMes(c);
+    return !!b && b.a===anio && b.m===mes;
+  });
+}
+// Sin baja cargada, pero ese mes se les termina el contrato: pueden haberse ido
+// o haber renovado sin que nadie lo cargue. Van aparte de las confirmadas para
+// no dar por perdido a alguien que sigue.
+function eerrBajasProbables(anio, mes){
+  return (DB.clients||[]).filter(function(c){
+    if(c.archived||c.bajaAt) return false;
+    var h=_eerrHasta(c);
+    return !!h && h.a===anio && h.m===mes;
   });
 }
 function eerrNuevosAnio(anio){
@@ -12141,6 +12185,18 @@ function _eerrFinVencidoAntesDeEmpezar(c){
 }
 
 function _eerrHasta(c){
+  // La baja manda sobre todo lo demas: sobre la renovacion automatica y sobre
+  // el fee del mixto, que si no seguirian sumando para siempre. El mes de la
+  // baja se cobra igual, por eso es el ultimo cubierto y no el anterior.
+  // Si el contrato ya habia terminado antes, gana el contrato: los meses que
+  // siguio sin nada firmado no se facturaron.
+  var _cto=_eerrHastaContrato(c);
+  var _b=_bajaMes(c);
+  if(!_b) return _cto;
+  if(_cto && (_cto.a*12+_cto.m)<(_b.a*12+_b.m)) return _cto;
+  return {a:_b.a, m:_b.m, porBaja:true};
+}
+function _eerrHastaContrato(c){
   // Ojo con la diferencia: la fecha FIN DE CONTRATO cubre ese mes; el PROXIMO
   // PAGO es plata que todavia no entro, asi que lo cubierto termina el mes
   // anterior. Contarlo igual sumaba un mes que nadie pago.
@@ -12257,6 +12313,60 @@ function _closerFuente(c){
   if(c.closer) return 'cargado a mano';
   return _closerDe(c) ? 'de quién grabó la llamada de venta' : '';
 }
+// Dar de baja es lo unico que corta la proyeccion de un cliente. Se pide la
+// fecha porque el mes importa: es el ultimo que se factura.
+function bajaModal(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var h=(typeof _eerrHastaContrato==='function')?_eerrHastaContrato(c):null;
+  var sug=c.bajaAt||(h?_isoLocal(new Date(h.a, h.m+1, 0)):_isoLocal(new Date()));
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">'+(c.bajaAt?'Baja de ':'Dar de baja a ')+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Desde el mes siguiente deja de sumar a la proyección '
+        +'y sale de En servicio y de Activos. El mes de la baja se factura igual.</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Último mes facturado</div>'
+      +'<input type="date" id="bj-fecha" value="'+esc(sug)+'" style="'+_FORM_INP
+        +';color-scheme:dark;margin-bottom:12px">'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Motivo (opcional)</div>'
+      +'<input type="text" id="bj-motivo" value="'+esc(c.bajaMotivo||'')+'" '
+        +'placeholder="no renovó, se fue con otra agencia, dejó de pagar..." '
+        +'style="'+_FORM_INP+'">'
+      +'<div class="modal-footer">'
+        +(c.bajaAt?('<button class="btn" onclick="bajaQuitar('+c.id+')" '
+          +'style="margin-right:auto;color:var(--accent)">Sigue siendo cliente</button>'):'')
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="bajaGuardar('+c.id+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function bajaGuardar(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var f=String((document.getElementById('bj-fecha')||{}).value||'').trim();
+  if(!f){ alert('Poné la fecha de la baja: sin el mes no se sabe hasta cuándo facturó.'); return; }
+  c.bajaAt=f;
+  var mot=String((document.getElementById('bj-motivo')||{}).value||'').trim();
+  if(mot) c.bajaMotivo=mot; else delete c.bajaMotivo;
+  save(); closeModal(); _bajaRepintar(clientId);
+}
+function bajaQuitar(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  delete c.bajaAt; delete c.bajaMotivo;
+  save(); closeModal(); _bajaRepintar(clientId);
+}
+// La baja se toca desde la ficha, desde el popup de facturacion y desde la torre.
+// Cada una la dibuja otra funcion, asi que se repinta la que este a la vista.
+function _bajaTexto(c){
+  var d=(typeof _fecha==='function')?_fecha(c&&c.bajaAt):null;
+  return d?d.toLocaleDateString('es-AR'):String((c&&c.bajaAt)||'');
+}
+function _bajaRepintar(clientId){
+  if(S.view==='tickets' && typeof showTickets==='function') showTickets();
+  else if(typeof renderClient==='function') renderClient();
+}
 // Fijarlo a mano cuando graba uno y cierra otro. Vacio vuelve a derivarlo.
 function closerModal(clientId){
   var c=DB.clients.find(function(x){ return x.id===clientId; });
@@ -12330,6 +12440,9 @@ function eerrVencen(){
   return (DB.clients||[])
     .filter(function(c){
       if(c.archived) return false;
+      // Ya se dio de baja: su fecha no esta "vencida", termino cuando tenia que
+      // terminar. Avisarlo mandaria a renovar a alguien que se fue.
+      if(c.bajaAt) return false;
       return (c.serviceType==='recurrente'||c.recurrente)||((parseFloat(c.contractValue)||0)>0);
     })
     .map(function(c){ return {c:c, h:_eerrHasta(c)}; })
@@ -12533,12 +12646,15 @@ function eerrHtml(){
             +'<b style="color:var(--redx)">'+vencidos.length+' cliente'+(vencidos.length===1?'':'s')
             +' con la fecha vencida</b> y por eso no entra'+(vencidos.length===1?'':'n')+' en la proyeccion: '
             +vencidos.map(function(x){
-                return esc(x.c.name)+' ('+MES[x.h.m]+' '+x.h.a
+                return '<span onclick="bajaModal('+x.c.id+')" style="cursor:pointer;'
+                    +'text-decoration:underline;text-decoration-style:dotted;'
+                    +'text-underline-offset:2px" title="Marcarlo de baja">'
+                  +esc(x.c.name)+' ('+MES[x.h.m]+' '+x.h.a
                   +((typeof rtMensual==='function'&&rtMensual(x.c).monto)
-                     ?(', '+_eerrPlata(rtMensual(x.c).monto)+'/mes'):'')+')';
+                     ?(', '+_eerrPlata(rtMensual(x.c).monto)+'/mes'):'')+')</span>';
               }).join(' &middot; ')
-            +'. Si siguen mes a mes, abri su ficha y marca <b>&laquo;Se renueva sola&raquo;</b>: la fecha avanza sola '
-            +'y no vuelve a vencerse. Si se fueron, pasalos a no recurrentes.</div>';
+            +'. Si siguen mes a mes, abrí su ficha y marcá <b>&laquo;Se renueva sola&raquo;</b>: la fecha avanza sola '
+            +'y no vuelve a vencerse. Si se fueron, tocá el nombre y dalos de baja.</div>';
         }
         if(vigentes.length){
           out+='<div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:10px;'
@@ -12658,6 +12774,42 @@ function eerrHtml(){
             return '<tr><td style="'+rot+borde+';color:var(--strong);font-weight:500">Clientes nuevos</td>'
               +tds.replace(/padding:/g, borde?'border-top:1px solid var(--border);padding:':'padding:')
               +'<td style="'+cel+';color:var(--accent);font-weight:600">'+(tot||'&mdash;')+'</td></tr>';
+          })()
+        +(function(){
+            // La contracara de Clientes nuevos. Sin esta fila, que "En servicio"
+            // pase de 9 a 7 no dice si se fue alguien o si vencio un contrato que
+            // en realidad se renovo.
+            var tot=0, totCiertas=0;
+            var tds=EERR_MESES.map(function(_,i){
+              var ciertas=eerrBajas(eerrAnio(), i);
+              var probables=eerrBajasProbables(eerrAnio(), i);
+              var n=ciertas.length+probables.length;
+              tot+=n; totCiertas+=ciertas.length;
+              var tit=ciertas.map(function(c){
+                  return c.name+(c.bajaMotivo?(' \u2013 '+c.bajaMotivo):'');
+                }).concat(probables.map(function(c){
+                  return c.name+' (se le termina el contrato, sin confirmar)';
+                })).join(', ');
+              // Solo probables se muestra apagado: es una hipotesis, no una baja.
+              var soloProb=(n>0 && !ciertas.length);
+              var col=!n?'var(--text3)':(soloProb?'var(--text3)':'var(--redx)');
+              return '<td style="'+cel+';color:'+col
+                +';font-weight:'+(ciertas.length?'600':'400')
+                +(soloProb?';font-style:italic':'')+'" '
+                +(tit?('title="'+esc(tit)+'"'):'')+'>'
+                +(n?('-'+n):'&mdash;')
+                +((probables.length&&ciertas.length)
+                  ?('<span style="font-size:9px;color:var(--text3)"> ('+probables.length+'?)</span>')
+                  :'')
+              +'</td>';
+            }).join('');
+            return '<tr><td style="'+rot+';color:var(--strong);font-weight:500" '
+                +'title="Clientes que se dieron de baja ese mes. En gris y en itálica, '
+                +'los que solo tienen el contrato terminado sin que nadie haya confirmado '
+                +'si se fueron o renovaron.">Bajas</td>'
+              +tds
+              +'<td style="'+cel+';color:'+(totCiertas?'var(--redx)':'var(--text3)')
+                +';font-weight:600">'+(tot?('-'+tot):'&mdash;')+'</td></tr>';
           })()
         +(function(){
             // Se muestran dos filas hermanas: la de arriba es lo que se cobra,
@@ -22648,6 +22800,16 @@ function _factCamposHtml(c){
             </div>`:''}
           </div>`}
         </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+          <span style="flex:1;min-width:180px;font-size:11px;color:${c.bajaAt?'var(--redx)':'var(--text3)'};line-height:1.55">
+            ${c.bajaAt
+              ? ('De baja desde '+_bajaTexto(c)+(c.bajaMotivo?(' &middot; '+esc(c.bajaMotivo)):'')
+                 +'. Ese mes se factura; después sale de la proyección.')
+              : 'Si el cliente se fue, dalo de baja: es lo único que corta la proyección sin borrar lo que ya facturó.'}
+          </span>
+          <button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:3px 9px${c.bajaAt?'':';color:var(--redx)'}"
+            onclick="bajaModal(${c.id})">${c.bajaAt?'Editar la baja':'Dar de baja'}</button>
+        </div>
 `;
 }
 // Lo que salio de leer las llamadas. Cuando saque el bloque de la hoja me lleve
@@ -27892,6 +28054,22 @@ function _fichaHtml(c){
     '<a href="https://app.gohighlevel.com/v2/location/'+esc(g)+'/settings/staff" target="_blank" '
     +'rel="noopener" class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;text-decoration:none" '
     +'title="Abrir el equipo de esta subcuenta en GHL">Abrir en GHL</a></div>');
+
+  // Solo aparece cuando se fue: una fila que diga "activo" en todos los clientes
+  // no informa nada y le saca lugar a lo que si cambia.
+  if(c.bajaAt){
+    filas.push('<div style="display:flex;align-items:center;gap:12px;padding:9px 0;'
+        +'border-bottom:1px solid var(--border)">'
+      +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3)">Baja</span>'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--redx)">'
+        +esc(_bajaTexto(c))
+        +(c.bajaMotivo?('<span style="color:var(--text3);font-size:11px"> \u00b7 '
+          +esc(c.bajaMotivo)+'</span>'):'')
+      +'</span>'
+      +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+        +'onclick="bajaModal('+c.id+')">Editar</button>'
+    +'</div>');
+  }
 
   // De quien es el cierre. Se deriva de las llamadas, pero se puede fijar.
   (function(){
