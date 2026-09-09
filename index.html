@@ -3615,6 +3615,9 @@ function personas(){
              fathomHookId:d.fathomHookId||'',
              fathomKeyGuardada:!!d.fathomKeyGuardada,
              notifAlarmas:!!_enAlarmas[String(mail).toLowerCase()],
+             // Mismo caso que fathomAt: sin arrastrarla, la comision se guarda
+             // pero la lista la descarta al rearmar, y no se ve ni al editar.
+             comision:(parseFloat(d.comision)||0)||undefined,
              notifEod:!!d.notifEod };
   });
 }
@@ -3628,7 +3631,7 @@ function personaNombre(mail){
   var p=personaDe(mail);
   return (p&&p.nombre)?p.nombre:(mail||'');
 }
-function personaGuardar(mailOriginal, mail, nombre, tel, fbMail, socioId){
+function personaGuardar(mailOriginal, mail, nombre, tel, fbMail, socioId, comision){
   mail=String(mail||'').trim();
   if(!mail){ if(typeof toast==='function') toast('Falta el mail'); return false; }
   DB.equipo=Array.isArray(DB.equipo)?DB.equipo:[];
@@ -3651,6 +3654,7 @@ function personaGuardar(mailOriginal, mail, nombre, tel, fbMail, socioId){
   DB.personas.push({ email:mail, nombre:String(nombre||'').trim(), tel:telLimpio,
                      fbMail:String(fbMail||'').trim()||undefined,
                      socioId:String(socioId||'').trim()||undefined,
+                     comision:(parseFloat(comision)||0)||undefined,
                      fathomAt:_prev.fathomAt, fathomMail:_prev.fathomMail,
                      fathomHookId:_prev.fathomHookId,
                      fathomKeyGuardada:_prev.fathomKeyGuardada,
@@ -3696,6 +3700,8 @@ function personasModal(){
             +'<div style="font-size:12.5px;color:var(--strong)">'+esc(p.nombre||p.email)+'</div>'
             +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+esc(p.email)
               +(p.tel?(' &middot; '+esc(p.tel)):' &middot; <span style="color:var(--amberx)">sin telefono</span>')
+              +(p.comision?(' &middot; <span style="color:var(--accent)">'+p.comision
+                +'% de comision</span>'):'')
               +(clientes?(' &middot; '+clientes+' cliente'+(clientes>1?'s':'')):'')+'</div>'
         +((p.fbMail||p.socioId)?('<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
           +(p.fbMail?('Meta: '+esc(p.fbMail)):'')
@@ -3790,6 +3796,15 @@ function personasModal(){
         +'value="'+esc((ed&&ed.fbMail)||'')+'" style="'+inp+'">'
       +'<input id="pe-socio" placeholder="ID de socio del Business Manager" '
         +'value="'+esc((ed&&ed.socioId)||'')+'" style="'+inp+'">'
+      // Quien cierra cobra un porcentaje de lo que entra. Vivia en la cabeza de
+      // cada uno y se recalculaba a mano cada mes.
+      +'<div style="display:flex;gap:8px;align-items:center">'
+        +'<input id="pe-comision" type="number" step="0.5" placeholder="0" '
+          +'value="'+esc(String((ed&&ed.comision)||''))+'" style="'+inp+';width:90px;flex:none">'
+        +'<span style="font-size:11.5px;color:var(--text3);line-height:1.5">% de comision '
+          +'sobre lo que se cobra de los clientes que cierra. Dejalo vacio si no cobra '
+          +'comision.</span>'
+      +'</div>'
         +'</div>'
         +'<div style="display:flex;gap:8px;margin-top:11px">'
           +'<button class="btn btn-sm btn-primary" onclick="personasGuardarForm()">'+(ed?'Guardar':'Agregar')+'</button>'
@@ -3924,7 +3939,8 @@ function personasEditar(mail){
 function personasGuardarForm(){
   var v=function(id){ var e=document.getElementById(id); return e?e.value:''; };
   var orig=(S._personaEdit&&S._personaEdit.email)||'';
-  if(personaGuardar(orig, v('pe-mail'), v('pe-nombre'), v('pe-tel'), v('pe-fbmail'), v('pe-socio'))){
+  if(personaGuardar(orig, v('pe-mail'), v('pe-nombre'), v('pe-tel'), v('pe-fbmail'), v('pe-socio'),
+                    v('pe-comision'))){
     S._personaEdit=null;
     personasModal();
     if(typeof toast==='function') toast('Persona guardada');
@@ -12213,6 +12229,29 @@ function eerrCobradoMes(anio, mes){
     },0);
   },0);
 }
+// La comision de cada closer sobre lo que se cobro ese mes de SUS clientes. El
+// vinculo es el responsable del cliente: es el unico que ya existe, y es quien
+// lo cerro en la practica. Sale de lo cobrado y no de lo proyectado: no se paga
+// comision sobre plata que todavia no entro.
+function eerrComisionesMes(anio, mes){
+  var porMail={};
+  (DB.personas||[]).forEach(function(p){
+    var pct=parseFloat(p&&p.comision)||0;
+    if(pct>0 && p.email) porMail[String(p.email).toLowerCase()]=pct;
+  });
+  if(!Object.keys(porMail).length) return 0;
+  return (DB.clients||[]).reduce(function(s,c){
+    var pct=porMail[String(c.owner||'').toLowerCase()];
+    if(!pct) return s;
+    var cobrado=(_pagos(c)||[]).reduce(function(a,x){
+      if(!x.pagadoAt) return a;
+      var pp=String(x.pagadoAt).slice(0,10).split('-');
+      if(Number(pp[0])!==anio || Number(pp[1])-1!==mes) return a;
+      return a+(parseFloat(x.monto)||0);
+    },0);
+    return s+cobrado*pct/100;
+  },0);
+}
 function eerrAbonos(){
   var h=new Date();
   return eerrAbonosMes(h.getFullYear(), h.getMonth());
@@ -12312,6 +12351,10 @@ function eerrHtml(){
     var tds=EERR_MESES.map(function(_,i){
       var v=eerrVal(i,campo); total+=(v||0);
       var ph='—';
+      if(campo==='comisiones'){
+        var com=eerrComisionesMes(eerrAnio(), i);
+        if(com>0) ph=String(Math.round(com));
+      }
       if(campo==='ingresos'){
         if(!eerrEsPasado(i)) ph=String(Math.round(eerrAbonosMes(eerrAnio(),i)));
         else {
