@@ -3701,7 +3701,7 @@ function personasModal(){
             +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+esc(p.email)
               +(p.tel?(' &middot; '+esc(p.tel)):' &middot; <span style="color:var(--amberx)">sin telefono</span>')
               +(p.comision?(' &middot; <span style="color:var(--accent)">'+p.comision
-                +'% de comision</span>'):'')
+                +'% de comisión</span>'):'')
               +(clientes?(' &middot; '+clientes+' cliente'+(clientes>1?'s':'')):'')+'</div>'
         +((p.fbMail||p.socioId)?('<div style="font-size:10.5px;color:var(--text3);margin-top:2px">'
           +(p.fbMail?('Meta: '+esc(p.fbMail)):'')
@@ -3801,9 +3801,9 @@ function personasModal(){
       +'<div style="display:flex;gap:8px;align-items:center">'
         +'<input id="pe-comision" type="number" step="0.5" placeholder="0" '
           +'value="'+esc(String((ed&&ed.comision)||''))+'" style="'+inp+';width:90px;flex:none">'
-        +'<span style="font-size:11.5px;color:var(--text3);line-height:1.5">% de comision '
-          +'sobre lo que se cobra de los clientes que cierra. Dejalo vacio si no cobra '
-          +'comision.</span>'
+        +'<span style="font-size:11.5px;color:var(--text3);line-height:1.5">% de comisión '
+          +'sobre lo que se cobra de los clientes que cierra. Dejalo vacío si no cobra '
+          +'comisión.</span>'
       +'</div>'
         +'</div>'
         +'<div style="display:flex;gap:8px;margin-top:11px">'
@@ -12233,6 +12233,72 @@ function eerrCobradoMes(anio, mes){
 // vinculo es el responsable del cliente: es el unico que ya existe, y es quien
 // lo cerro en la practica. Sale de lo cobrado y no de lo proyectado: no se paga
 // comision sobre plata que todavia no entro.
+// Quien cerro al cliente: la persona del equipo que grabo su llamada de venta.
+// El webhook de Fathom ya trae ese mail y no lo usaba nadie. Se puede pisar a
+// mano, porque a veces graba uno y cierra otro.
+function _closerDe(c){
+  if(!c) return '';
+  if(c.closer) return c.closer;
+  var mails={};
+  (DB.personas||[]).forEach(function(p){
+    if(p&&p.email) mails[String(p.email).toLowerCase()]=p.email; });
+  var lls=(c.fathomCalls||[]).filter(function(x){
+    return _esLlamadaDeVenta(x) && String(x.grabo||'').trim(); });
+  // La mas nueva manda: si hubo varias, la ultima es la que cerro.
+  lls.sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  for(var i=0;i<lls.length;i++){
+    var m=String(lls[i].grabo).trim().toLowerCase();
+    if(mails[m]) return mails[m];
+  }
+  return '';
+}
+function _closerFuente(c){
+  if(!c) return '';
+  if(c.closer) return 'cargado a mano';
+  return _closerDe(c) ? 'de quién grabó la llamada de venta' : '';
+}
+// Fijarlo a mano cuando graba uno y cierra otro. Vacio vuelve a derivarlo.
+function closerModal(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  // Lo que daria la derivacion, ignorando lo fijado a mano: es el dato que
+  // deja decidir si conviene volver a derivarlo.
+  var solo={}; for(var k in c) if(k!=='closer') solo[k]=c[k];
+  var deriva=_closerDe(solo);
+  var nomDeriva=deriva;
+  (DB.personas||[]).forEach(function(p){
+    if(String(p.email||'').toLowerCase()===String(deriva).toLowerCase())
+      nomDeriva=p.nombre||p.email; });
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">Quién cerró a '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Por defecto sale de quién grabó la llamada de venta. '
+        +'Fijalo solo si esa persona no es la que cerró.</div>'
+      +'<select id="cl-quien" style="'+_FORM_INP+'">'
+        +'<option value="">Derivarlo de las llamadas'
+          +(deriva?(' \u00b7 hoy da '+esc(nomDeriva)):' \u00b7 hoy no da a nadie')+'</option>'
+        +(DB.personas||[]).map(function(p){
+          return '<option value="'+esc(p.email)+'"'
+            +((String(c.closer||'').toLowerCase()===String(p.email).toLowerCase())?' selected':'')
+            +'>'+esc(p.nombre||p.email)
+            +(p.comision?(' \u00b7 '+p.comision+'%'):'')+'</option>';
+        }).join('')
+      +'</select>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="closerGuardar('+c.id+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function closerGuardar(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var v=String((document.getElementById('cl-quien')||{}).value||'').trim();
+  if(v) c.closer=v; else delete c.closer;
+  save(); closeModal();
+  if(typeof renderClient==='function') renderClient();
+}
 function eerrComisionesMes(anio, mes){
   var porMail={};
   (DB.personas||[]).forEach(function(p){
@@ -12241,7 +12307,9 @@ function eerrComisionesMes(anio, mes){
   });
   if(!Object.keys(porMail).length) return 0;
   return (DB.clients||[]).reduce(function(s,c){
-    var pct=porMail[String(c.owner||'').toLowerCase()];
+    // Antes miraba el responsable, que es quien lo maneja y no siempre quien
+    // lo cerro. La comision es de quien cierra.
+    var pct=porMail[String(_closerDe(c)||c.owner||'').toLowerCase()];
     if(!pct) return s;
     var cobrado=(_pagos(c)||[]).reduce(function(a,x){
       if(!x.pagadoAt) return a;
@@ -27824,6 +27892,27 @@ function _fichaHtml(c){
     '<a href="https://app.gohighlevel.com/v2/location/'+esc(g)+'/settings/staff" target="_blank" '
     +'rel="noopener" class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;text-decoration:none" '
     +'title="Abrir el equipo de esta subcuenta en GHL">Abrir en GHL</a></div>');
+
+  // De quien es el cierre. Se deriva de las llamadas, pero se puede fijar.
+  (function(){
+    var cl=_closerDe(c), fuente=_closerFuente(c);
+    var per=(DB.personas||[]).filter(function(p){
+      return String(p.email||'').toLowerCase()===String(cl).toLowerCase(); })[0];
+    var nom=(per&&per.nombre)||cl;
+    var pct=parseFloat(per&&per.comision)||0;
+    filas.push('<div style="display:flex;align-items:center;gap:12px;padding:9px 0;'
+        +'border-bottom:1px solid var(--border)">'
+      +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3)">Cerró</span>'
+      +'<span style="flex:1;min-width:0;font-size:12.5px;color:'+(cl?'var(--text)':'var(--text3)')+'">'
+        +(cl?esc(nom):'Sin identificar')
+        +(fuente?('<span style="color:var(--text3);font-size:11px"> \u00b7 '+fuente+'</span>'):'')
+        +(pct?('<span style="color:var(--accent);font-size:11px"> \u00b7 '+pct
+          +'% de comisión</span>'):'')
+      +'</span>'
+      +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+        +'onclick="closerModal('+c.id+')">'+(c.closer?'Cambiar':'Fijar')+'</button>'
+    +'</div>');
+  })();
 
   var eq=(c.equipo||[]);
   // El equipo pasa a ser una fila mas de la ficha, con su rotulo, en vez de
