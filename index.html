@@ -11465,7 +11465,14 @@ function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
 // "Pasar a cliente".
 function _eerrEsCartera(c){
   if(!c || esAgencia(c)) return false;
-  return (typeof _llegoAAlta==='function') ? _llegoAAlta(c) : !esProspecto(c);
+  if(!esProspecto(c)) return true;
+  // Para la plata no alcanza con _llegoAAlta, que acepta la etapa automatica:
+  // esa sube un lead a la columna de pago porque en la llamada se hablo de
+  // pago, y hablar de pago no es haber pagado. Con eso entraban leads sueltos
+  // a Clientes nuevos. Cuenta solo si alguien movio la tarjeta hasta ahi, que
+  // es una decision de una persona y no una palabra de una transcripcion.
+  var iA=(typeof _iAltaCliente==='function')?_iAltaCliente():-1;
+  return iA>=0 && (typeof c.prospectoEtapa==='number') && c.prospectoEtapa>=iA;
 }
 // Clientes que entraron en ese mes.
 function eerrNuevos(anio, mes){
@@ -24014,12 +24021,26 @@ function p360BorrarProspecto(clientId){
     if(DB.prospectosNo.indexOf(mail)<0) DB.prospectosNo.push(mail);
   }
   DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
+  delete _sbHuellas[clientId];
   if(S.p360Abierto===clientId) S.p360Abierto=null;
   save();
   // El panel vive en la torre: renderTab repinta la ficha de un cliente y
   // dejaba la tarjeta en pantalla como si no se hubiera borrado.
   showTickets();
-  toast('Prospecto borrado');
+  // Sin esto la tarjeta volvia sola en la siguiente recarga, y borrarla de
+  // nuevo no servia de nada. sbSubir solo manda lo que cambio y nunca borra,
+  // asi que la fila seguia en Supabase y sbBajar la devolvia entera. La lista
+  // de borrados frenaba a Fathom, pero el que la recreaba era el sync.
+  if(SB && SB.listo){
+    sbFetch('clientes?id=eq.'+encodeURIComponent(clientId), {method:'DELETE'})
+      .then(function(){ toast('Prospecto borrado'); })
+      .catch(function(e){
+        toast('Se borro aca pero no en la nube: '+(e&&e.message||'')
+          +'. Al recargar puede volver.','red');
+      });
+  } else {
+    toast('Prospecto borrado de este navegador');
+  }
 }
 // Por si se borro de mas: sin esto, un mail en la lista queda sin forma de
 // volver, y el unico camino seria tocar la base a mano.
