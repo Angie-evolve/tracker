@@ -11430,7 +11430,7 @@ function _ltvValorReal(c){
 // servicio sin nada firmado que lo respalde.
 function eerrEnServicio(anio, mes){
   return (DB.clients||[]).filter(function(c){
-    if(c.archived) return false;
+    if(!_eerrCuenta(c)) return false;
     var esRec=(c.serviceType==='recurrente'||c.recurrente);
     var tiene=(parseFloat(c.contractValue)||0)>0||(parseFloat(c.monthlyFee)||0)>0;
     if(!esRec&&!tiene) return false;
@@ -11439,9 +11439,9 @@ function eerrEnServicio(anio, mes){
 }
 function eerrActivos(anio, mes){
   return (DB.clients||[]).filter(function(c){
-    if(c.archived) return false;
+    if(!_eerrCuenta(c)) return false;
     // Se fue: cuenta hasta el mes de la baja inclusive y despues no.
-    var b=_bajaMes(c);
+    var b=_bajaEfectiva(c);
     if(b && ((anio>b.a)||(anio===b.a&&mes>b.m))) return false;
     var d=_eerrDesde(c);
     if(!d) return true;                      // sin fecha de alta, se asume que ya estaba
@@ -11468,6 +11468,29 @@ function _bajaMes(c){
   if(!isFinite(a)||!isFinite(m)||m<0||m>11) return null;
   return {a:a, m:m};
 }
+// Antes de que existiera la baja, sacar a un cliente era archivarlo, asi que
+// para los que ya se fueron esa es la unica marca que quedo. Vale como baja
+// solo para quien llego a ser cliente: los leads descartados nacen archivados
+// y no son la baja de nada. La fecha es estimada, porque uno archiva cuando se
+// acuerda y no el dia que el cliente se fue.
+function _bajaPorArchivo(c){
+  if(!c || !c.archived || c.bajaAt) return null;
+  if(typeof _llegoAAlta==='function' && !_llegoAAlta(c)) return null;
+  var d=(typeof _fecha==='function')?_fecha(String(c.archivedAt||'').slice(0,10)):null;
+  if(!d) return null;
+  return {a:d.getFullYear(), m:d.getMonth(), estimada:true};
+}
+// La que mandan los calculos: la cargada a mano gana sobre la del archivo.
+function _bajaEfectiva(c){ return _bajaMes(c) || _bajaPorArchivo(c); }
+// Quien entra en las filas de cartera y de plata. Un archivado que fue cliente
+// entra por los meses en que lo fue: sacarlo de todo el ano le borraba a los
+// meses viejos plata que si habian facturado. Queda afuera solo el que no se
+// puede ubicar en el tiempo y el lead que nunca fue cliente.
+function _eerrCuenta(c){
+  if(!c) return false;
+  if(!c.archived || c.bajaAt) return true;
+  return !!_bajaPorArchivo(c);
+}
 // Bajas confirmadas de ese mes.
 function eerrBajas(anio, mes){
   return (DB.clients||[]).filter(function(c){
@@ -11480,10 +11503,20 @@ function eerrBajas(anio, mes){
 // no dar por perdido a alguien que sigue.
 function eerrBajasProbables(anio, mes){
   return (DB.clients||[]).filter(function(c){
-    if(c.archived||c.bajaAt) return false;
+    if(c.bajaAt) return false;
+    var ar=_bajaPorArchivo(c);
+    if(ar) return ar.a===anio && ar.m===mes;
+    if(c.archived) return false;
     var h=_eerrHasta(c);
     return !!h && h.a===anio && h.m===mes;
   });
+}
+// Por que esta ese nombre en las probables: no es lo mismo "lo archivaste y no
+// sabemos el dia" que "se le termina el contrato y nadie dijo nada".
+function _bajaProbableMotivo(c){
+  return _bajaPorArchivo(c)
+    ? 'archivado en la app, la fecha es estimada'
+    : 'se le termina el contrato, sin confirmar';
 }
 function eerrNuevosAnio(anio){
   return (DB.clients||[]).filter(function(c){
@@ -12191,7 +12224,7 @@ function _eerrHasta(c){
   // Si el contrato ya habia terminado antes, gana el contrato: los meses que
   // siguio sin nada firmado no se facturaron.
   var _cto=_eerrHastaContrato(c);
-  var _b=_bajaMes(c);
+  var _b=_bajaEfectiva(c);
   if(!_b) return _cto;
   if(_cto && (_cto.a*12+_cto.m)<(_b.a*12+_b.m)) return _cto;
   return {a:_b.a, m:_b.m, porBaja:true};
@@ -12254,7 +12287,7 @@ function _eerrCubre(c, anio, mes){
 // 800 por mes reales, no cero.
 function eerrAbonosMes(anio, mes, soloFiables){
   return (DB.clients||[])
-    .filter(function(c){ return !c.archived; })
+    .filter(_eerrCuenta)
     .filter(function(c){ return !soloFiables || (typeof clienteAltaFiable!=='function') || clienteAltaFiable(c); })
     .filter(function(c){
       var esRec=(c.serviceType==='recurrente'||c.recurrente);
@@ -12788,7 +12821,7 @@ function eerrHtml(){
               var tit=ciertas.map(function(c){
                   return c.name+(c.bajaMotivo?(' \u2013 '+c.bajaMotivo):'');
                 }).concat(probables.map(function(c){
-                  return c.name+' (se le termina el contrato, sin confirmar)';
+                  return c.name+' ('+_bajaProbableMotivo(c)+')';
                 })).join(', ');
               // Solo probables se muestra apagado: es una hipotesis, no una baja.
               var soloProb=(n>0 && !ciertas.length);
