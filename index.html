@@ -12471,6 +12471,20 @@ function _closerDe(c){
   }
   return '';
 }
+// En una venta puede cobrar mas de uno: el setter que consiguio la reunion y el
+// closer que la cerro. Cada uno cobra su propio porcentaje sobre lo mismo, asi
+// que la comision de un cliente es la suma de los dos y no la de uno solo.
+function _comisionistasDe(c){
+  var out=[], visto={};
+  var poner=function(mail, rol){
+    var m=String(mail||'').trim().toLowerCase();
+    if(!m || visto[m]) return;
+    visto[m]=1; out.push({mail:m, rol:rol});
+  };
+  poner(_closerDe(c), 'closer');
+  poner(c&&c.setter, 'setter');
+  return out;
+}
 function _closerFuente(c){
   if(!c) return '';
   if(c.closer) return 'cargado a mano';
@@ -12545,15 +12559,27 @@ function closerModal(clientId){
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:520px">'
-      +'<div class="modal-title">Quién cerró a '+esc(c.name||'')+'</div>'
-      +'<div class="modal-sub">Por defecto sale de quién grabó la llamada de venta. '
-        +'Fijalo solo si esa persona no es la que cerró.</div>'
-      +'<select id="cl-quien" style="'+_FORM_INP+'">'
+      +'<div class="modal-title">Quién vendió a '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">El closer sale por defecto de quién grabó la llamada de venta. '
+        +'El setter se carga siempre a mano: cobra su propio porcentaje sobre la misma '
+        +'venta, así que los dos suman a la comisión del mes.</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Closer</div>'
+      +'<select id="cl-quien" style="'+_FORM_INP+';margin-bottom:12px">'
         +'<option value="">Derivarlo de las llamadas'
           +(deriva?(' \u00b7 hoy da '+esc(nomDeriva)):' \u00b7 hoy no da a nadie')+'</option>'
         +(DB.personas||[]).map(function(p){
           return '<option value="'+esc(p.email)+'"'
             +((String(c.closer||'').toLowerCase()===String(p.email).toLowerCase())?' selected':'')
+            +'>'+esc(p.nombre||p.email)
+            +(p.comision?(' \u00b7 '+p.comision+'%'):'')+'</option>';
+        }).join('')
+      +'</select>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Setter</div>'
+      +'<select id="cl-setter" style="'+_FORM_INP+'">'
+        +'<option value="">Sin setter</option>'
+        +(DB.personas||[]).map(function(p){
+          return '<option value="'+esc(p.email)+'"'
+            +((String(c.setter||'').toLowerCase()===String(p.email).toLowerCase())?' selected':'')
             +'>'+esc(p.nombre||p.email)
             +(p.comision?(' \u00b7 '+p.comision+'%'):'')+'</option>';
         }).join('')
@@ -12569,6 +12595,8 @@ function closerGuardar(clientId){
   if(!c) return;
   var v=String((document.getElementById('cl-quien')||{}).value||'').trim();
   if(v) c.closer=v; else delete c.closer;
+  var st=String((document.getElementById('cl-setter')||{}).value||'').trim();
+  if(st) c.setter=st; else delete c.setter;
   save(); closeModal();
   if(typeof renderClient==='function') renderClient();
 }
@@ -12584,11 +12612,10 @@ function eerrComisionesDetalle(anio, mes){
   if(!Object.keys(quien).length) return [];
   var acum={};
   (DB.clients||[]).forEach(function(c){
-    // El responsable es quien lo maneja y no siempre quien lo cerro. La
-    // comision es de quien cierra.
-    var mail=String(_closerDe(c)||c.owner||'').toLowerCase();
-    var q=quien[mail];
-    if(!q) return;
+    // El responsable es quien lo maneja y no siempre quien lo vendio.
+    var gente=_comisionistasDe(c);
+    if(!gente.length && c.owner) gente=[{mail:String(c.owner).toLowerCase(), rol:'closer'}];
+    if(!gente.length) return;
     var cobrado=(_pagos(c)||[]).reduce(function(a,x){
       var f=_pagoFecha(x); if(!f) return a;
       var pp=f.split('-');
@@ -12596,10 +12623,16 @@ function eerrComisionesDetalle(anio, mes){
       return a+(parseFloat(x.monto)||0);
     },0);
     if(!cobrado) return;
-    if(!acum[mail]) acum[mail]={nombre:q.nombre, pct:q.pct, cobrado:0, monto:0, clientes:[]};
-    acum[mail].cobrado+=cobrado;
-    acum[mail].monto+=cobrado*q.pct/100;
-    acum[mail].clientes.push(c.name||'');
+    gente.forEach(function(g){
+      var q=quien[g.mail];
+      if(!q) return;
+      if(!acum[g.mail])
+        acum[g.mail]={nombre:q.nombre, pct:q.pct, cobrado:0, monto:0, clientes:[], roles:{}};
+      acum[g.mail].cobrado+=cobrado;
+      acum[g.mail].monto+=cobrado*q.pct/100;
+      acum[g.mail].clientes.push(c.name||'');
+      acum[g.mail].roles[g.rol]=1;
+    });
   });
   return Object.keys(acum).map(function(k){ return acum[k]; })
     .sort(function(a,b){ return b.monto-a.monto; });
@@ -12624,7 +12657,10 @@ function eerrComisionesPorQue(anio, mes){
   var mails={};
   conPct.forEach(function(p){ mails[String(p.email).toLowerCase()]=1; });
   var huerfanos=cobraron.filter(function(c){
-    return !mails[String(_closerDe(c)||c.owner||'').toLowerCase()]; });
+    var gente=_comisionistasDe(c);
+    if(!gente.length && c.owner) gente=[{mail:String(c.owner).toLowerCase()}];
+    return !gente.some(function(g){ return mails[g.mail]; });
+  });
   if(huerfanos.length===cobraron.length)
     return 'Este mes cobraste de '+huerfanos.map(function(c){ return c.name; }).join(', ')
       +', pero ninguno tiene un closer con comisión cargada. El closer se fija en la '
@@ -12652,7 +12688,10 @@ function eerrSinCloserAnio(anio){
     },0);
     return {c:c, cobrado:cobrado};
   }).filter(function(x){
-    return x.cobrado>0 && !mails[String(_closerDe(x.c)||x.c.owner||'').toLowerCase()];
+    if(!(x.cobrado>0)) return false;
+    var gente=_comisionistasDe(x.c);
+    if(!gente.length && x.c.owner) gente=[{mail:String(x.c.owner).toLowerCase()}];
+    return !gente.some(function(g){ return mails[g.mail]; });
   }).sort(function(a,b){ return b.cobrado-a.cobrado; });
 }
 // Asignarlos todos juntos. Es el mismo dato que la fila "Cerro" de cada ficha,
@@ -12664,25 +12703,34 @@ function comisionAsignarModal(anio){
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:620px;max-height:82vh;overflow-y:auto">'
-      +'<div class="modal-title">Quién cerró cada cliente</div>'
-      +'<div class="modal-sub">Estos cobraron en '+anio+' y no tienen closer, así que no '
-        +'generan comisión. Las llamadas de venta anteriores a conectar Fathom no dicen '
-        +'quién las grabó, por eso hay que cargarlo a mano.</div>'
+      +'<div class="modal-title">Quién vendió cada cliente</div>'
+      +'<div class="modal-sub">Estos cobraron en '+anio+' y no tienen a nadie que cobre '
+        +'comisión. Pueden ser dos: el setter que consiguió la reunión y el closer que la '
+        +'cerró; cada uno cobra su porcentaje sobre lo mismo. Las llamadas de venta '
+        +'anteriores a conectar Fathom no dicen quién las grabó, por eso van a mano.</div>'
       +(faltan.length
         ? faltan.map(function(x){
-            return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;'
-                +'border-bottom:1px solid var(--border)">'
-              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text)">'
+            var sel=function(id, rol, valor){
+              return '<label style="flex:1;min-width:0;font-size:10px;color:var(--text3)">'+rol
+                +'<select id="'+id+'" style="'+_FORM_INP+';margin-top:2px">'
+                  +'<option value="">— sin asignar —</option>'
+                  +personas.map(function(p){
+                    return '<option value="'+esc(p.email)+'"'
+                      +((String(valor||'').toLowerCase()===String(p.email).toLowerCase())
+                        ?' selected':'')
+                      +'>'+esc(p.nombre||p.email)+' · '+p.comision+'%</option>';
+                  }).join('')
+                +'</select></label>';
+            };
+            return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">'
+              +'<div style="font-size:12.5px;color:var(--text);margin-bottom:5px">'
                 +esc(x.c.name||'')
                 +'<span style="color:var(--text3);font-size:11px"> · cobrado '
-                +_eerrPlata(x.cobrado)+'</span></span>'
-              +'<select id="ca-'+x.c.id+'" style="flex:none;width:190px;'+_FORM_INP+'">'
-                +'<option value="">— sin asignar —</option>'
-                +personas.map(function(p){
-                  return '<option value="'+esc(p.email)+'">'+esc(p.nombre||p.email)
-                    +' · '+p.comision+'%</option>';
-                }).join('')
-              +'</select>'
+                +_eerrPlata(x.cobrado)+'</span></div>'
+              +'<div style="display:flex;gap:10px">'
+                +sel('ca-'+x.c.id, 'Closer', x.c.closer)
+                +sel('cs-'+x.c.id, 'Setter', x.c.setter)
+              +'</div>'
             +'</div>';
           }).join('')
         : '<div style="font-size:12px;color:var(--text3);padding:8px 0">'
@@ -12697,9 +12745,14 @@ function comisionAsignarModal(anio){
 function comisionAsignarGuardar(anio){
   var n=0;
   eerrSinCloserAnio(anio).forEach(function(x){
-    var el=document.getElementById('ca-'+x.c.id);
-    var v=el?String(el.value||'').trim():'';
-    if(v){ x.c.closer=v; n++; }
+    var leer=function(pre){
+      var el=document.getElementById(pre+x.c.id);
+      return el?String(el.value||'').trim():'';
+    };
+    var cl=leer('ca-'), st=leer('cs-');
+    if(cl) x.c.closer=cl; else delete x.c.closer;
+    if(st) x.c.setter=st; else delete x.c.setter;
+    if(cl||st) n++;
   });
   save(); closeModal();
   if(typeof showTickets==='function') showTickets();
@@ -12830,7 +12883,7 @@ function eerrHtml(){
         var falta=eerrComisionesPorQue(eerrAnio(), i);
         if(com>0){
           ph=String(Math.round(com));
-          ayuda='Comisiones de los closers sobre lo cobrado este mes: '
+          ayuda='Comisiones del equipo de ventas sobre lo cobrado este mes: '
             +det.map(function(x){
               return x.nombre+' '+_eerrPlata(x.monto)+' ('+x.pct+'% de '
                 +_eerrPlata(x.cobrado)+' de '+x.clientes.join(', ')+')';
@@ -28462,10 +28515,20 @@ function _fichaHtml(c){
   // De quien es el cierre. Se deriva de las llamadas, pero se puede fijar.
   (function(){
     var cl=_closerDe(c), fuente=_closerFuente(c);
-    var per=(DB.personas||[]).filter(function(p){
-      return String(p.email||'').toLowerCase()===String(cl).toLowerCase(); })[0];
+    var quien=function(mail){
+      return (DB.personas||[]).filter(function(p){
+        return String(p.email||'').toLowerCase()===String(mail||'').toLowerCase(); })[0];
+    };
+    var per=quien(cl);
     var nom=(per&&per.nombre)||cl;
     var pct=parseFloat(per&&per.comision)||0;
+    // El setter cobra su propia comision sobre la misma venta, asi que va al lado.
+    var ps=quien(c.setter);
+    var setterTxt=c.setter
+      ? ('<span style="color:var(--text3);font-size:11px"> \u00b7 setter '
+          +esc((ps&&ps.nombre)||c.setter)
+          +(ps&&ps.comision?(' '+ps.comision+'%'):'')+'</span>')
+      : '';
     filas.push('<div style="display:flex;align-items:center;gap:12px;padding:9px 0;'
         +'border-bottom:1px solid var(--border)">'
       +'<span style="width:104px;flex:none;font-size:11px;color:var(--text3)">Cerró</span>'
@@ -28474,9 +28537,10 @@ function _fichaHtml(c){
         +(fuente?('<span style="color:var(--text3);font-size:11px"> \u00b7 '+fuente+'</span>'):'')
         +(pct?('<span style="color:var(--accent);font-size:11px"> \u00b7 '+pct
           +'% de comisión</span>'):'')
+        +setterTxt
       +'</span>'
       +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
-        +'onclick="closerModal('+c.id+')">'+(c.closer?'Cambiar':'Fijar')+'</button>'
+        +'onclick="closerModal('+c.id+')">'+((c.closer||c.setter)?'Cambiar':'Fijar')+'</button>'
     +'</div>');
   })();
 
