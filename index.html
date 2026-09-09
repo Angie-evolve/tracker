@@ -11201,7 +11201,15 @@ function rtMensual(c){
 }
 
 function _rtFilas(){
-  return (DB.clients||[]).filter(function(c){ return !c.archived; })
+  // Esta tabla es la cartera de HOY: la agencia no se factura a si misma, el
+  // prospecto todavia no paga, y el que ya se dio de baja dejo de aportar.
+  return (DB.clients||[]).filter(function(c){
+      if(c.archived || !_eerrEsCartera(c)) return false;
+      var b=_bajaEfectiva(c);
+      if(!b) return true;
+      var h=new Date();
+      return (b.a>h.getFullYear())||(b.a===h.getFullYear()&&b.m>=h.getMonth());
+    })
     .map(function(c){
       var men=rtMensual(c);
       var fee=men.monto;
@@ -11290,7 +11298,7 @@ function eerrSinAporte(){
   var hoy=new Date(), anio=eerrAnio();
   var out=[];
   (DB.clients||[]).forEach(function(c){
-    if(c.archived) return;
+    if(c.archived || !_eerrEsCartera(c)) return;
     // Ya esta dado de baja: que no aporte a la proyeccion no es un dato faltante,
     // es el resultado correcto. Avisarlo lo unico que hace es tapar los reales.
     if(c.bajaAt) return;
@@ -11450,9 +11458,19 @@ function eerrActivos(anio, mes){
 }
 
 function clienteAltaFiable(c){ return clienteAltaInfo(c).fuente!=='app'; }
+// Quien es cartera para el estado de resultados. La agencia no se factura a si
+// misma y un prospecto todavia no paga: contarlo antes de que pague infla todos
+// los numeros. Vale la misma regla que en el sidebar, asi que el prospecto que
+// el tablero ya movio hasta Alta cliente si cuenta, aunque nadie le haya tocado
+// "Pasar a cliente".
+function _eerrEsCartera(c){
+  if(!c || esAgencia(c)) return false;
+  return (typeof _llegoAAlta==='function') ? _llegoAAlta(c) : !esProspecto(c);
+}
 // Clientes que entraron en ese mes.
 function eerrNuevos(anio, mes){
   return (DB.clients||[]).filter(function(c){
+    if(!_eerrEsCartera(c)) return false;
     var d=clienteAlta(c);
     return d && d.getFullYear()===anio && d.getMonth()===mes;
   });
@@ -11487,13 +11505,14 @@ function _bajaEfectiva(c){ return _bajaMes(c) || _bajaPorArchivo(c); }
 // meses viejos plata que si habian facturado. Queda afuera solo el que no se
 // puede ubicar en el tiempo y el lead que nunca fue cliente.
 function _eerrCuenta(c){
-  if(!c) return false;
+  if(!c || !_eerrEsCartera(c)) return false;
   if(!c.archived || c.bajaAt) return true;
   return !!_bajaPorArchivo(c);
 }
 // Bajas confirmadas de ese mes.
 function eerrBajas(anio, mes){
   return (DB.clients||[]).filter(function(c){
+    if(!_eerrEsCartera(c)) return false;
     var b=_bajaMes(c);
     return !!b && b.a===anio && b.m===mes;
   });
@@ -11503,7 +11522,7 @@ function eerrBajas(anio, mes){
 // no dar por perdido a alguien que sigue.
 function eerrBajasProbables(anio, mes){
   return (DB.clients||[]).filter(function(c){
-    if(c.bajaAt) return false;
+    if(!_eerrEsCartera(c) || c.bajaAt) return false;
     var ar=_bajaPorArchivo(c);
     if(ar) return ar.a===anio && ar.m===mes;
     if(c.archived) return false;
@@ -11520,6 +11539,7 @@ function _bajaProbableMotivo(c){
 }
 function eerrNuevosAnio(anio){
   return (DB.clients||[]).filter(function(c){
+    if(!_eerrEsCartera(c)) return false;
     var d=clienteAlta(c);
     return d && d.getFullYear()===anio;
   });
@@ -11527,7 +11547,8 @@ function eerrNuevosAnio(anio){
 // Cuantos no se pueden ubicar en el tiempo: sin esto, un cero se lee como
 // "no entro nadie" cuando en realidad falta el dato.
 function eerrSinFechaAlta(){
-  return (DB.clients||[]).filter(function(c){ return !c.archived && !clienteAlta(c); }).length;
+  return (DB.clients||[]).filter(function(c){
+    return !c.archived && _eerrEsCartera(c) && !clienteAlta(c); }).length;
 }
 
 function eerrAnio(){ return S._eerrAnio||new Date().getFullYear(); }
@@ -12472,7 +12493,7 @@ function eerrAbonos(){
 function eerrVencen(){
   return (DB.clients||[])
     .filter(function(c){
-      if(c.archived) return false;
+      if(c.archived || !_eerrEsCartera(c)) return false;
       // Ya se dio de baja: su fecha no esta "vencida", termino cuando tenia que
       // terminar. Avisarlo mandaria a renovar a alguien que se fue.
       if(c.bajaAt) return false;
