@@ -217,6 +217,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
 .p3card.frena{border-left:2px solid var(--redx)}
+/* Un placeholder que avisa que falta cargar algo, no que el mes es cero. */
+.eerr-falta::placeholder{color:var(--amberx);opacity:.85;font-size:10px}
 .p3card.espera{border-left:2px solid var(--amberx)}
 .p3n{font-size:12.5px;color:var(--text);line-height:1.35;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
@@ -12602,6 +12604,37 @@ function eerrComisionesDetalle(anio, mes){
   return Object.keys(acum).map(function(k){ return acum[k]; })
     .sort(function(a,b){ return b.monto-a.monto; });
 }
+// Un guion en Equipo Ventas puede ser "no cobraste nada" o "falta un dato", y
+// son cosas muy distintas. Esto dice cual de las dos.
+function eerrComisionesPorQue(anio, mes){
+  var conPct=(DB.personas||[]).filter(function(p){
+    return p && p.email && (parseFloat(p.comision)||0)>0; });
+  // Clientes de los que si entro plata ese mes.
+  var cobraron=(DB.clients||[]).filter(function(c){
+    return (_pagos(c)||[]).some(function(x){
+      var f=_pagoFecha(x); if(!f) return false;
+      var pp=f.split('-');
+      return Number(pp[0])===anio && Number(pp[1])-1===mes;
+    });
+  });
+  if(!cobraron.length) return '';
+  if(!conPct.length)
+    return 'Ningún usuario tiene cargado su % de comisión, así que no hay con qué calcularla. '
+      +'Se carga en el usuario de cada closer.';
+  var mails={};
+  conPct.forEach(function(p){ mails[String(p.email).toLowerCase()]=1; });
+  var huerfanos=cobraron.filter(function(c){
+    return !mails[String(_closerDe(c)||c.owner||'').toLowerCase()]; });
+  if(huerfanos.length===cobraron.length)
+    return 'Este mes cobraste de '+huerfanos.map(function(c){ return c.name; }).join(', ')
+      +', pero ninguno tiene un closer con comisión cargada. El closer se fija en la '
+      +'ficha del cliente, en la fila «Cerró».';
+  if(huerfanos.length)
+    return 'No entra'+(huerfanos.length===1?'':'n')+' '
+      +huerfanos.map(function(c){ return c.name; }).join(', ')
+      +': no tiene'+(huerfanos.length===1?'':'n')+' un closer con comisión cargada.';
+  return '';
+}
 function eerrComisionesMes(anio, mes){
   return eerrComisionesDetalle(anio, mes)
     .reduce(function(s,x){ return s+x.monto; },0);
@@ -12723,6 +12756,7 @@ function eerrHtml(){
       if(campo==='equipoVentas'){
         var det=eerrComisionesDetalle(eerrAnio(), i);
         var com=det.reduce(function(t,x){ return t+x.monto; },0);
+        var falta=eerrComisionesPorQue(eerrAnio(), i);
         if(com>0){
           ph=String(Math.round(com));
           ayuda='Comisiones de los closers sobre lo cobrado este mes: '
@@ -12730,7 +12764,13 @@ function eerrHtml(){
               return x.nombre+' '+_eerrPlata(x.monto)+' ('+x.pct+'% de '
                 +_eerrPlata(x.cobrado)+' de '+x.clientes.join(', ')+')';
             }).join(' \u00b7 ')
-            +'. Escribí el número real si pagaste otra cosa.';
+            +'. Escribí el número real si pagaste otra cosa.'
+            +(falta?(' '+falta):'');
+        } else if(falta){
+          // Ambar y no un guion mas: hubo plata este mes y la comision no se
+          // pudo calcular. Es un dato que falta, no un cero.
+          ph='falta';
+          ayuda=falta;
         }
       }
       if(campo==='ingresos'){
@@ -12745,9 +12785,12 @@ function eerrHtml(){
             +'Escribí el cobro real para reemplazarlo.'
         }[g.fuente]||'';
       }
+      var avisa=(ph==='falta');
       return '<td style="'+cel+';padding:2px 3px">'
-        +'<input value="'+(v==null?'':v)+'" placeholder="'+ph+'" inputmode="numeric" '
+        +'<input value="'+(v==null?'':v)+'" placeholder="'+esc(ph)+'" '
+        +(avisa?'':'inputmode="numeric" ')
         +(ayuda?('title="'+esc(ayuda)+'" '):'')
+        +(avisa?'class="eerr-falta" ':'')
         +'onchange="eerrSet('+i+',\''+campo+'\',this.value)" '
         +'style="width:100%;min-width:62px;text-align:right;font-size:11.5px;padding:4px 6px;'
         +'border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);'
