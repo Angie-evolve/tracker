@@ -28342,7 +28342,8 @@ async function acordadoLeer(clientId){
   // Lo acordado es lo que se hablo con NOSOTROS: sus llamadas de venta a
   // terceros traen otros precios y otras cuotas, y el analisis las leia
   // como si fueran el acuerdo.
-  var mat=_llamadasParaIA(c, {sinComerciales:true, ventaPrimero:true});
+  var mat=_llamadasParaIA(c, {sinComerciales:true, ventaPrimero:true,
+    maxCall:90000, maxTotal:280000, guardarElFinal:true});
   if(!mat.items.length){ decir('No hay llamadas con transcripcion.','var(--amberx)'); return; }
   if(b){ b.disabled=true; b.textContent='Leyendo...'; }
   decir('<span style="display:inline-flex;align-items:center;gap:8px">'
@@ -44064,6 +44065,19 @@ function _llamadasParaIA(c, opt){
   // prospectos. Para casi todo suman, pero para saber que acordamos NOSOTROS
   // con el no: ahi el precio y las cuotas son las que el le pone a otro.
   var sinComerciales=!!(opt&&opt.sinComerciales);
+  var maxCall=(opt&&opt.maxCall)||_ENTREG_MAXCALL;
+  var maxTotal=(opt&&opt.maxTotal)||_ENTREG_MAXTOTAL;
+  // Cortar por el principio pierde justo el final, que es donde se cierran los
+  // acuerdos: en una llamada de 74 minutos, 20 mil caracteres son los primeros
+  // 18. Por eso el analisis citaba siempre el minuto 12 y decia que del precio
+  // no se hablo. Cuando hace falta cortar, se deja el arranque y el final.
+  var recortar=function(t){
+    if(t.length<=maxCall) return t;
+    if(!(opt&&opt.guardarElFinal)) return t.slice(0, maxCall);
+    var cab=Math.round(maxCall*0.3), cola=maxCall-cab;
+    return t.slice(0, cab)+'\n\n[... se corto el medio de la transcripcion ...]\n\n'
+      +t.slice(t.length-cola);
+  };
   var total=0, omitidas=[], items=[];
   // Las de venta primero: asi son las que entran seguro cuando el material no
   // cabe entero, y el que lee sabe cual mirar antes que las demas.
@@ -44077,8 +44091,8 @@ function _llamadasParaIA(c, opt){
       +((opt&&opt.ventaPrimero&&_esLlamadaDeVenta(cl))?'  [DE VENTA]':'');
     var cuerpo=cl.transcript||cl.summary||'';
     if(!cuerpo){ omitidas.push(titulo+': sin material'); return; }
-    if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
-    if(total+cuerpo.length>_ENTREG_MAXTOTAL){
+    cuerpo=recortar(cuerpo);
+    if(total+cuerpo.length>maxTotal){
       // Se descarta por tamaño, no por falta de datos. Decirlo importa: la
       // respuesta sale de menos llamadas de las que el cliente tiene.
       omitidas.push(titulo+': no entro por tamaño');
@@ -44109,8 +44123,8 @@ function _llamadasParaIA(c, opt){
     var titulo=(com?'LLAMADA DE VENTA DEL CLIENTE: ':'DOCUMENTO: ')+(d.titulo||'sin titulo');
     var cuerpo=String(d.texto||'');
     if(!cuerpo){ omitidas.push(titulo+': vacio'); return; }
-    if(cuerpo.length>_ENTREG_MAXCALL) cuerpo=cuerpo.slice(0,_ENTREG_MAXCALL);
-    if(total+cuerpo.length>_ENTREG_MAXTOTAL){ omitidas.push(titulo+': no entro por tamaño'); return; }
+    cuerpo=recortar(cuerpo);
+    if(total+cuerpo.length>maxTotal){ omitidas.push(titulo+': no entro por tamaño'); return; }
     total+=cuerpo.length;
     items.push({titulo:titulo, texto:cuerpo, doc:true});
   });
