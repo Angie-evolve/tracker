@@ -7232,9 +7232,13 @@ function _fathomAlias(c){
     if(t) out.push(t);
   };
   meter(c.name);
-  // Cada palabra del nombre por separado: "Red Zeppelin" tiene que reconocer
-  // un titulo que solo diga "Zeppelin".
-  _n(c.name).split(/\s+/).forEach(meter);
+  // Cada palabra del nombre por separado, MENOS la primera: "Red Zeppelin"
+  // tiene que reconocer un titulo que diga solo "Zeppelin", pero "Martin Oyola"
+  // no puede quedarse con "Martin". En una marca la primera palabra casi nunca
+  // es la distintiva; en el nombre de una persona es el nombre de pila, y las
+  // reuniones internas se titulan justamente asi: "Mela y Martin", "Dani y
+  // Martin". Con eso, seis llamadas ajenas cayeron en la ficha de un cliente.
+  _n(c.name).split(/\s+/).filter(Boolean).slice(1).forEach(meter);
   meter((c.marca||{}).de);
   meter((c.contract||{}).fileName);
   // El dominio solo sirve cuando es propio. De un gmail sale "gmail", que no
@@ -7247,9 +7251,16 @@ function _fathomAlias(c){
   });
   (c.docs||[]).forEach(function(d){ meter(d.titulo||d.nombre); });
   var gen=/^(diagnostico|venta|onboarding|reunion|llamada|meeting|call|strategy|seguimiento|contrato|propuesta|brief|transcripcion|documento|copia|final|firmado|pdf|docx|cliente|empresa|proyecto|sitio|web|www|com|landing)$/;
+  // Ninguna palabra del nombre de alguien del equipo puede identificar a un
+  // cliente: son las que encabezan los titulos de las reuniones internas, asi
+  // que enganchan todo lo que no tiene nada que ver.
+  var equipo={};
+  (DB.personas||[]).forEach(function(p){
+    _n(p&&p.nombre).split(/\s+/).forEach(function(w){ if(w) equipo[w]=1; });
+  });
   var vistas={};
   return out.filter(function(t){
-    if(t.length<4 || gen.test(t) || vistas[t]) return false;
+    if(t.length<4 || gen.test(t) || vistas[t] || equipo[t]) return false;
     vistas[t]=1; return true;
   });
 }
@@ -7265,6 +7276,68 @@ function _fathomAliasUnicos(c){
   });
   return _fathomAlias(c).filter(function(t){ return !otros[t]; });
 }
+// Las llamadas cargadas en la ficha que no mencionan al cliente por ninguna de
+// sus palabras. No son necesariamente un error -una reunion puede titularse de
+// cualquier forma- pero ahi estan las que entraron mal.
+function _llNoCalzan(c){
+  var palabras=_fathomAlias(c)
+    .concat(((c.fathomKeywords||[])).map(function(k){ return _n(k); }))
+    .filter(Boolean);
+  var nom=_n(c.name);
+  if(nom) palabras.push(nom);
+  return (c.fathomCalls||[]).filter(function(cl){
+    var t=_n(cl.title||'');
+    if(!t) return false;
+    return !palabras.some(function(w){ return _fathomContiene(t, w); });
+  });
+}
+// Sacarlas de la ficha en una sola pasada. Borrar de a una, con su confirmacion
+// cada vez, no es razonable cuando entraron seis juntas.
+function llRevisarModal(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var raras=_llNoCalzan(c);
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px;max-height:82vh;overflow-y:auto">'
+      +'<div class="modal-title">Llamadas que no mencionan a '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Ninguna de estas dice el nombre del cliente en el título. '
+        +'Destildá las que sí sean de él; el resto sale de esta ficha. La grabación no se '
+        +'borra de Fathom.</div>'
+      +raras.map(function(cl,i){
+        return '<label style="display:flex;align-items:flex-start;gap:9px;padding:8px 0;'
+            +'border-bottom:1px solid var(--border);cursor:pointer">'
+          +'<input type="checkbox" class="sw" id="lr-'+i+'" checked style="margin-top:2px">'
+          +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text)">'
+            +esc(cl.title||'sin titulo')
+            +'<span style="display:block;color:var(--text3);font-size:11px;margin-top:2px">'
+              +esc(cl.date||'')+(cl.duration?(' · '+esc(String(cl.duration))):'')+'</span>'
+          +'</span>'
+        +'</label>';
+      }).join('')
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="llRevisarGuardar('+c.id+')">'
+          +'Sacar las tildadas</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function llRevisarGuardar(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var raras=_llNoCalzan(c), fuera={};
+  raras.forEach(function(cl,i){
+    var el=document.getElementById('lr-'+i);
+    if(el&&el.checked) fuera[cl.id]=1;
+  });
+  var n=Object.keys(fuera).length;
+  c.fathomCalls=(c.fathomCalls||[]).filter(function(cl){ return !fuera[cl.id]; });
+  c.milestones=(c.milestones||[]).filter(function(m){ return !fuera[m.fathomId]; });
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  if(typeof toast==='function')
+    toast(n?(n+' llamada'+(n===1?'':'s')+' fuera de esta ficha'):'No saque ninguna');
+}
 // La caja deja de estar siempre a la vista: se abre solo si hace falta, y
 // arriba muestra lo que ya reconoce sin que nadie escriba nada.
 function _fathomMapeoHtml(c){
@@ -7277,6 +7350,9 @@ function _fathomMapeoHtml(c){
     return '<span style="font-size:10.5px;color:var(--text2);background:var(--bg3);'
       +'border-radius:99px;padding:2px 8px">'+esc(t)+'</span>';
   };
+  // Cuantas de las que ya estan cargadas no calzan con ninguna palabra de esta
+  // ficha. Son las candidatas a haber entrado por error.
+  var raras=(typeof _llNoCalzan==='function')?_llNoCalzan(c).length:0;
   var cuerpo='<div style="font-size:10px;color:var(--text3);margin-bottom:6px;'
       +'font-weight:500">Mapeo de cliente - palabras clave en titulo de reunion</div>'
     +'<div style="display:flex;gap:8px">'
@@ -7286,11 +7362,20 @@ function _fathomMapeoHtml(c){
     +'</div>'
     +'<div style="font-size:10.5px;color:var(--text3);line-height:1.55;margin-top:7px">'
       +'Solo hace falta si las reuniones se titulan distinto del nombre de la ficha. '
-      +'Lo que escribas aca le gana a todo lo demas.</div>';
+      +'Lo que escribas aca le gana a todo lo demas.</div>'
+    +(raras?('<div style="font-size:10.5px;color:var(--text3);line-height:1.55;margin-top:9px;'
+        +'padding-top:9px;border-top:1px solid var(--border)">'
+      +'<b style="color:var(--amberx)">'+raras+' llamada'+(raras===1?'':'s')+'</b> de esta ficha '
+      +'no menciona'+(raras===1?'':'n')+' a este cliente por ningun lado. '
+      +'<span onclick="llRevisarModal('+c.id+')" style="cursor:pointer;color:var(--accent);'
+        +'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'
+      +'Revisarlas</span>.</div>'):'');
   return '<details style="margin-top:10px">'
     +'<summary style="font-size:11px;color:var(--text3);cursor:pointer">'
       +'Como se reconocen sus reuniones'
       +(man.length?(' · '+man.length+' palabra'+(man.length===1?'':'s')+' a mano'):'')
+      +(raras?(' · <span style="color:var(--amberx)">'+raras
+        +' que no menciona'+(raras===1?'':'n')+' a este cliente</span>'):'')
     +'</summary>'
     +'<div style="background:var(--bg2);border:1px solid var(--border);'
       +'border-radius:var(--radius-md);padding:10px 12px;margin-top:7px">'
