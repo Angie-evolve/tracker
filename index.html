@@ -2166,6 +2166,10 @@ function _normalizarClientes(){
     // Las que ya estaban cargadas antes de que esto fuera automatico: se
     // completan al abrir, sin que haya que ir cliente por cliente a pedirlo.
     if(typeof _llDuracionesDe==='function'){ try{ _llDuracionesDe(c); }catch(e){} }
+    // La garantia no es un tipo de servicio: es una condicion que puede tener
+    // cualquiera de los tres. Los que quedaron con serviceType 'garantia' pasan
+    // a one-time —que calcula igual, valor sobre plazo— con la garantia aparte.
+    if(c.serviceType==='garantia'){ c.serviceType='one-time'; c.garantia=true; }
   });
 }
 async function load(){
@@ -4237,7 +4241,7 @@ function _overviewMetricsHtml(_ovDonde){
     ? eerrAbonos()
     : recurrentes.reduce(function(s,cl){return s+_feeMensual(cl);},0);
   var conLtv=activos.filter(function(cl){
-    return (cl.serviceType==='garantia'||cl.serviceType==='mixto'||!cl.serviceType)
+    return (cl.serviceType!=='recurrente'||!!cl.contractValue)
       && (parseFloat(cl.contractValue)||0)>0;
   });
   var ltv=conLtv.reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
@@ -4332,7 +4336,7 @@ function _clientListHtml(){
     +'</div>';
   var rows=(S.showArchived?DB.clients:activeClients()).map(function(c){
     var isActivo=hasCurrentlyActiveLine(c.conversionLines||[]);
-    var tipoLabel=(c.serviceType==='recurrente'||c.recurrente)?'Recurrente':(c.serviceType==='one-time'?'One-time':'Garantía');
+    var tipoLabel=_tipoServicioLabel(c);
     var now3=new Date();
     var contratoVencido=c.contract&&c.contract.endDate&&new Date(c.contract.endDate)<now3&&isActivo;
     var sub2='', money='';
@@ -4412,7 +4416,7 @@ function _showOverviewOLD(){
       <div style="display:flex;flex-direction:column;gap:0">
         ${(S.showArchived?DB.clients:activeClients()).map(c=>{
           var isActivo=hasCurrentlyActiveLine(c.conversionLines||[]);
-          var tipoLabel=(c.serviceType==='recurrente'||c.recurrente)?'Recurrente':(c.serviceType==='one-time'?'One-time':'Garantía');
+          var tipoLabel=_tipoServicioLabel(c);
           var now3=new Date();
           var contratoVencido=c.contract&&c.contract.endDate&&new Date(c.contract.endDate)<now3&&isActivo;
           var sub2='', money='';
@@ -4446,6 +4450,20 @@ function _showOverviewOLD(){
 }
 
 // Client view
+// El nombre del tipo, con la garantia como agregado y no como reemplazo.
+function _tipoServicioLabel(c){
+  var t=(c.serviceType==='recurrente'||c.recurrente)?'Recurrente'
+      :(c.serviceType==='mixto'?'Implementacion + fee':'One-time');
+  return t+(c.garantia?' con garantia':'');
+}
+function setGarantia(clientId, valor){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  c.garantia=!!valor;
+  save();
+  _factRepintarSiAbierto(clientId);
+  if(typeof renderTab==='function') renderTab();
+}
 function setClientServiceType(clientId, type){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -22400,10 +22418,14 @@ function _factCamposHtml(c){
             </span>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-            <button onclick="setClientServiceType(${c.id},'garantia')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${(c.serviceType||'garantia')==='garantia'?'background:rgba(29,158,117,0.15);border-color:var(--accent);color:var(--accent);font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Garantia</button>
-            <button onclick="setClientServiceType(${c.id},'recurrente')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='recurrente'?'background:rgba(55,138,221,0.15);border-color:#378ADD;color:#378ADD;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Recurrente</button>
+            <button onclick="setClientServiceType(${c.id},'recurrente')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${(c.serviceType==='recurrente'||c.recurrente)?'background:rgba(55,138,221,0.15);border-color:#378ADD;color:#378ADD;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">Recurrente</button>
             <button onclick="setClientServiceType(${c.id},'mixto')" style="font-size:11px;padding:4px 12px;border-radius:99px;cursor:pointer;font-family:var(--font);border:1px solid ${c.serviceType==='mixto'?'var(--amberx)':'var(--border2)'};background:transparent;color:${c.serviceType==='mixto'?'var(--amberx)':'var(--text3)'}">Implementacion + fee</button>
-            <button onclick="setClientServiceType(${c.id},'one-time')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${c.serviceType==='one-time'?'background:rgba(186,117,23,0.15);border-color:#BA7517;color:#BA7517;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">One-time</button>
+            <button onclick="setClientServiceType(${c.id},'one-time')" style="font-size:11px;padding:4px 12px;border-radius:20px;border:0.5px solid;cursor:pointer;${(c.serviceType!=='recurrente'&&c.serviceType!=='mixto'&&!c.recurrente)?'background:rgba(186,117,23,0.15);border-color:#BA7517;color:#BA7517;font-weight:500':'background:var(--bg3);border-color:var(--border);color:var(--text3)'}">One-time</button>
+            <span style="flex:1"></span>
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:11.5px;color:${c.garantia?'var(--accent)':'var(--text3)'}">
+              <input type="checkbox" class="sw" ${c.garantia?'checked':''} onchange="setGarantia(${c.id},this.checked)">
+              Con garantia de resultados
+            </label>
           </div>
           ${!verPlata()?`
           <div style="font-size:11px;color:var(--text3);background:var(--bg3);border-radius:var(--radius);padding:9px 11px;margin-top:4px;line-height:1.6">
@@ -22651,8 +22673,7 @@ function factCerrar(){
   if(typeof renderTab==='function') renderTab();
 }
 function _factResumenHtml(c){
-  var tipo={garantia:'Garantia', recurrente:'Recurrente', mixto:'Implementacion + fee',
-            'one-time':'One-time'}[c.serviceType||'garantia']||'Garantia';
+  var tipo=_tipoServicioLabel(c);
   var lapiz='<button onclick="event.stopPropagation();factModal('+c.id+')" '
     +'title="Editar la facturacion" aria-label="Editar la facturacion" '
     +'style="flex:none;border:0;background:none;padding:0 0 0 4px;cursor:pointer;line-height:0;'
