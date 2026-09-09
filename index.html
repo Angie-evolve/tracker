@@ -4508,6 +4508,41 @@ function setClientServiceType(clientId, type){
 // vencidos y desaparecian de la proyeccion sin que nadie lo notara.
 // Cambia la forma de los campos, asi que repinta. setClientFee no repinta a
 // proposito —se escribe letra por letra— y por eso este va aparte.
+// El plazo de un contrato no siempre es tiempo: puede ser una entrega, "hasta
+// el lanzamiento" o "hasta tener las campañas prendidas". Mientras el hito no
+// se cumple no hay duracion que prorratear; cuando se marca la fecha, esa es la
+// duracion real y el contrato se reparte sobre lo que efectivamente tardo.
+function _contratoDias(c){
+  var ct=(c&&c.contract)||{};
+  if(ct.plazoTipo==='hito'){
+    var f=(typeof _fecha==='function')?_fecha(String(ct.hitoAt||'').slice(0,10)):null;
+    var d=(typeof clienteAlta==='function')?clienteAlta(c):null;
+    if(!f||!d) return 0;
+    var n=Math.round((f.getTime()-d.getTime())/86400000);
+    return n>0?n:1;
+  }
+  return parseFloat(ct.durationDays)||0;
+}
+function setPlazoTipo(clientId, tipo){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  if(!c.contract) c.contract={};
+  c.contract.plazoTipo=(tipo==='hito')?'hito':'dias';
+  save();
+  _factRepintarSiAbierto(clientId);
+  if(typeof renderTab==='function') renderTab();
+}
+function setContratoHito(clientId, campo, valor){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  if(!c.contract) c.contract={};
+  var v=String(valor||'').trim();
+  if(v) c.contract[campo]=v; else delete c.contract[campo];
+  save();
+  // Cumplir el hito cambia el plazo, y con el la proyeccion entera.
+  if(campo==='hitoAt') _factRepintarSiAbierto(clientId);
+  if(typeof renderTab==='function') renderTab();
+}
 function setFeeTipo(clientId, tipo){
   var c=DB.clients.find(function(x){ return x.id===clientId; });
   if(!c) return;
@@ -11239,7 +11274,7 @@ function _feeEsEstimado(c){
 }
 function _rtMesesImpl(c){
   var ct=c.contract||{};
-  var dias=parseFloat(ct.durationDays)||0;
+  var dias=_contratoDias(c);
   if(!dias && ct.startDate && ct.endDate){
     var d1=new Date(ct.startDate), d2=new Date(ct.endDate);
     if(!isNaN(d1)&&!isNaN(d2)) dias=Math.round((d2-d1)/86400000);
@@ -11276,7 +11311,7 @@ function rtMensual(c){
     return {monto:0, origen:null};
   }
   var ct=c.contract||{};
-  var dias=parseFloat(ct.durationDays)||0;
+  var dias=_contratoDias(c);
   if(!dias && ct.startDate && ct.endDate){
     var d1=new Date(ct.startDate), d2=new Date(ct.endDate);
     if(!isNaN(d1)&&!isNaN(d2)) dias=Math.round((d2-d1)/86400000);
@@ -12454,7 +12489,7 @@ function _eerrHastaContrato(c){
   // real del servicio, que es el dato que vos curas en "Cliente desde"; la fecha
   // del PDF suele venir de otro ciclo o de una firma anterior. Si cargas 90 dias
   // tienen que ser 3 meses, no los 4 que salian de una fecha heredada.
-  var dias=parseFloat(c.contract&&c.contract.durationDays)||0;
+  var dias=_contratoDias(c);
   var ini=_eerrDesde(c);
   if(dias>0 && ini){
     var meses=Math.max(1, Math.round(dias/30));
@@ -23225,13 +23260,35 @@ function _factCamposHtml(c){
             </div>
             ${c.serviceType!=='recurrente'?`
             <div>
-              <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Duracion</div>
+              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+                <span style="font-size:11px;color:var(--text3)">Plazo</span>
+                <select onchange="setPlazoTipo(${c.id},this.value)" style="font-size:10.5px;padding:1px 4px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text3);font-family:var(--font)">
+                  <option value="dias"${(c.contract&&c.contract.plazoTipo==='hito')?'':' selected'}>por tiempo</option>
+                  <option value="hito"${(c.contract&&c.contract.plazoTipo==='hito')?' selected':''}>por hito</option>
+                </select>
+              </div>
+              ${(c.contract&&c.contract.plazoTipo==='hito')?`
+              <input type="text" list="ct-hitos" value="${esc((c.contract&&c.contract.hito)||'')}"
+                placeholder="lanzamiento, campañas prendidas..."
+                onchange="setContratoHito(${c.id},'hito',this.value)"
+                style="width:100%;box-sizing:border-box;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font)">
+              <datalist id="ct-hitos">
+                <option value="lanzamiento"><option value="campañas prendidas">
+                <option value="primera venta"><option value="sistema implementado">
+                <option value="entrega final">
+              </datalist>
+              <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+                <span style="font-size:11px;color:var(--text3);white-space:nowrap">cumplido el</span>
+                <input type="date" value="${(c.contract&&c.contract.hitoAt)||''}"
+                  onchange="setContratoHito(${c.id},'hitoAt',this.value)"
+                  style="flex:1;min-width:0;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font);color-scheme:dark">
+              </div>`:`
               <div style="display:flex;gap:6px;align-items:center">
                 <input type="number" value="${(c.contract&&c.contract.durationDays)||''}" placeholder="90"
                   oninput="setContratoDias(${c.id},this.value)" onchange="setContratoDias(${c.id},this.value)"
                   style="width:100%;font-size:12px;padding:5px 8px;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font)">
                 <span style="font-size:11px;color:var(--text3);white-space:nowrap">dias</span>
-              </div>
+              </div>`}
               <div style="font-size:10px;color:var(--text3);margin-top:3px;line-height:1.45">${
                 (function(){
                   var m=(typeof rtMensual==='function')?rtMensual(c):null;
@@ -23242,6 +23299,12 @@ function _factCamposHtml(c){
                       +(m.meses>1?'es':'')+': $'+Math.round(m.impl)+'/mes.'
                       +(m.fee>0?(' Despues queda el fee de $'+Math.round(m.fee)+'/mes.'):'');
                   if(m&&m.monto>0&&m.meses) return 'Se prorratea en '+m.meses+' mes'+(m.meses>1?'es':'')+': $'+Math.round(m.monto)+'/mes';
+                  // Con un hito pendiente no falta cargar un dato: todavia no
+                  // paso. Decir "sin esto no entra" seria echarle la culpa a ella.
+                  if(c.contract&&c.contract.plazoTipo==='hito')
+                    return 'Mientras el hito no se cumpla no se puede prorratear. '
+                      +'Marca la fecha cuando pase y el contrato entra repartido '
+                      +'sobre lo que tardo.';
                   if((parseFloat(c.contractValue)||0)>0) return 'Sin esto el contrato no entra en la proyeccion';
                   return 'Ej: 90 dias';
                 })()
