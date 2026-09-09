@@ -12570,16 +12570,28 @@ function eerrEsFuturo(m){
 }
 // Ingresos del mes: lo cargado a mano. Si no hay nada cargado, solo se estima
 // del mes actual en adelante, y eso se marca como proyeccion en la tabla.
-function eerrIngreso(m){
-  var v=eerrVal(m,'ingresos');
-  if(v!=null) return v;
+// El numero que la app propone para un mes sin nada escrito a mano. Lo usan la
+// fila Ingresos totales (como placeholder) y el Ingreso neto: si cada una saca
+// el suyo por su lado, la columna se contradice. Pasaba en agosto: arriba
+// figuraba un guion, abajo $11.200, y las dos decian la verdad por separado.
+function _eerrIngresoSugerido(m){
+  if(!eerrEsPasado(m)) return {monto:eerrAbonosMes(eerrAnio(), m), fuente:'proyeccion'};
+  // Mes cerrado. Si hay cuotas tildadas como cobradas, eso es plata que entro
+  // de verdad y le gana al contrato prorrateado, que es una estimacion.
+  var cob=(typeof eerrCobradoMes==='function')?eerrCobradoMes(eerrAnio(), m):0;
+  if(cob>0) return {monto:cob, fuente:'cobrado'};
   // Un mes pasado no se completa con la cartera de HOY: eso multiplicaba el MRR
   // actual por doce. Pero ahora cada contrato tiene inicio y fin, asi que si
   // sabemos que alguien estaba bajo contrato ese mes, ese numero es real.
   // Solo cuentan los de fecha de alta confiable: las estimadas del id inventan
   // un historico que nunca paso.
-  if(eerrEsPasado(m)) return eerrAbonosMes(eerrAnio(), m, true) || null;
-  return eerrAbonosMes(eerrAnio(), m);
+  return {monto:eerrAbonosMes(eerrAnio(), m, true)||0, fuente:'devengado'};
+}
+function eerrIngreso(m){
+  var v=eerrVal(m,'ingresos');
+  if(v!=null) return v;
+  var g=_eerrIngresoSugerido(m);
+  return eerrEsPasado(m) ? (g.monto||null) : g.monto;
 }
 function eerrEsProyectado(m){
   return eerrVal(m,'ingresos')==null && !eerrEsPasado(m);
@@ -12640,15 +12652,22 @@ function eerrHtml(){
         var com=eerrComisionesMes(eerrAnio(), i);
         if(com>0) ph=String(Math.round(com));
       }
+      var ayuda='';
       if(campo==='ingresos'){
-        if(!eerrEsPasado(i)) ph=String(Math.round(eerrAbonosMes(eerrAnio(),i)));
-        else {
-          var cob=eerrCobradoMes(eerrAnio(), i);
-          if(cob>0) ph=String(Math.round(cob));
-        }
+        // El placeholder muestra exactamente lo que usa el Ingreso neto, asi la
+        // columna no se contradice, y dice de donde sale cada numero.
+        var g=_eerrIngresoSugerido(i);
+        if(g.monto>0) ph=String(Math.round(g.monto));
+        ayuda={
+          proyeccion:'Proyectado con los abonos comprometidos de este mes en adelante.',
+          cobrado:'Las cuotas del plan de pagos tildadas como cobradas en este mes.',
+          devengado:'Los contratos prorrateados: nadie tildó cuotas cobradas en este mes. '
+            +'Escribí el cobro real para reemplazarlo.'
+        }[g.fuente]||'';
       }
       return '<td style="'+cel+';padding:2px 3px">'
         +'<input value="'+(v==null?'':v)+'" placeholder="'+ph+'" inputmode="numeric" '
+        +(ayuda?('title="'+esc(ayuda)+'" '):'')
         +'onchange="eerrSet('+i+',\''+campo+'\',this.value)" '
         +'style="width:100%;min-width:62px;text-align:right;font-size:11.5px;padding:4px 6px;'
         +'border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);'
