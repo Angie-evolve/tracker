@@ -24310,14 +24310,30 @@ function p360Soltar(ev, el, etapa){
 // busqueda a mano y la automatica: si fueran dos copias, arreglar el filtro en
 // una dejaria a la otra trayendo cualquier cosa.
 function _fathomFiltro(c){
-  var mails=[c.email, c.contactoEmail].filter(Boolean)
-    .map(function(m){ return String(m).trim().toLowerCase(); });
+  // Del lado del cliente casi nunca hay una sola persona: en Razor Tech son
+  // tres socios y a la reunion entra cualquiera de ellos. Buscar solo por el
+  // mail de la ficha fallaba cuando el que estuvo fue otro, asi que entran
+  // tambien los del equipo cargado.
+  var crudos=[c.email, c.contactoEmail];
+  (c.equipo||[]).forEach(function(x){ crudos.push(_eqMail(x)); });
+  var visto={}, mails=[];
+  crudos.forEach(function(m){
+    var t=String(m||'').trim().toLowerCase();
+    if(t.indexOf('@')<0 || visto[t]) return;
+    visto[t]=1; mails.push(t);
+  });
   if(!mails.length) return null;
   // Del mail sale el dominio, salvo que sea una casilla personal: filtrar por
   // gmail.com traeria todas las reuniones de todos los clientes.
   var genericos=/^(gmail|hotmail|outlook|yahoo|icloud|live|proton(mail)?)\./i;
-  var doms=mails.map(function(m){ return String(m).split('@')[1]||''; })
-    .filter(function(d){ return d && !genericos.test(d+'.'); });
+  // Los tres socios comparten dominio: sin deduplicar se manda tres veces el
+  // mismo y el mensaje de error lo repite.
+  var vd={}, doms=[];
+  mails.forEach(function(m){
+    var d=String(m).split('@')[1]||'';
+    if(!d || genericos.test(d+'.') || vd[d]) return;
+    vd[d]=1; doms.push(d);
+  });
   return {mails:mails, doms:doms};
 }
 async function p360Buscar(clientId, etapa){
@@ -44527,9 +44543,14 @@ async function fcArreglarLink(clientId, callId){
         toast(!cuentas
           ? 'Ninguna cuenta de Fathom contesto. Nadie tiene la key guardada: se conecta '
             +'desde Personas, con la fila de cada uno.'
-          : ('Busque en '+cuentas+' cuenta'+(cuentas===1?'':'s')+' de Fathom y ninguna tiene '
-            +'reuniones con '+(f.mails.join(', '))+'. La grabo alguien que no conecto su '
-            +'Fathom, o el mail del cliente en la ficha no es el que estuvo en la reunion.')
+          // Decir con que se busco, y no solo que no encontro: asi se ve de una
+          // si el mail tiene un error de tipeo, que es la causa mas comun.
+          : ('Busque en '+cuentas+' cuenta'+(cuentas===1?'':'s')+' de Fathom por '
+            +f.mails.join(', ')
+            +(f.doms.length?(' y por el dominio '+f.doms.join(', ')):'')
+            +' y no aparece ninguna reunion. Revisa que esos mails esten bien escritos '
+            +'y que este el de quien estuvo en la llamada: se agregan en la ficha, en '
+            +'Equipo. Si estan bien, la grabo alguien que no conecto su Fathom.')
           +(fallos.length?(' '+fallos.length+' cuenta'+(fallos.length===1
             ?' no respondio.':'s no respondieron.')):''),'amber');
         return;
