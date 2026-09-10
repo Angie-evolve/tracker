@@ -49219,14 +49219,16 @@ async function fetchMetaMensual(clientId){
   if(c._metaMensual){ delete c._metaMensual; save(); }   // limpiar el cache viejo que quedo en disco
   const al=getActiveLine(c.conversionLines||[]);
   const excl=((al&&al.excludedCampaigns)||[]).map(String);
-  const cacheKey='v2|'+excl.slice().sort().join(',');
+  // v3: se sumo reach a los campos pedidos. Con la clave vieja, una respuesta
+  // cacheada sin alcance dejaba la fila de frecuencia vacia hasta recargar.
+  const cacheKey='v3|'+excl.slice().sort().join(',');
   const prev=_mmCache[clientId];
   if(prev && prev.key===cacheKey && (Date.now()-prev.at)<10*60*1000) return prev;
 
   const hoy=new Date();
   const desde=new Date(hoy.getFullYear(), hoy.getMonth()-11, 1);
   const tr='{"since":"'+isoDate(desde)+'","until":"'+isoDate(hoy)+'"}';
-  const campos='campaign_id,spend,impressions,clicks,actions';
+  const campos='campaign_id,spend,impressions,clicks,actions,reach';
   var url='https://graph.facebook.com/v25.0/act_'+c.metaAccountId+'/insights'
     +'?level=campaign&time_increment=monthly'
     +'&time_range='+encodeURIComponent(tr)
@@ -49250,11 +49252,15 @@ async function fetchMetaMensual(clientId){
       const y=parseInt(p[0],10), mes=parseInt(p[1],10)-1;
       if(isNaN(y)||isNaN(mes)) return;
       const k=y+'-'+mes;
-      const m=meses[k]||(meses[k]={spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0});
+      const m=meses[k]||(meses[k]={spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0,reach:0});
       const a=_mmActions(row);
       m.spend+=parseFloat(row.spend||0)||0;
       m.impressions+=parseInt(row.impressions||0)||0;
       m.clicks+=parseInt(row.clicks||0)||0;
+      // Ojo: el alcance no se suma limpio entre campanas. La misma persona puede
+      // estar en dos, y Meta lo deduplica solo a nivel cuenta. Sumado queda mas
+      // alto que el real, asi que la frecuencia que sale de aca es un piso.
+      m.reach+=parseInt(row.reach||0)||0;
       m.leads+=a.leads; m.landing+=a.landing; m.results+=a.results;
     });
     url=(data.paging&&data.paging.next)||null;
@@ -49286,11 +49292,14 @@ function mmTopHtml(cache){
   if(!meses.length) return '';
 
   const col=meses.map(function(mm){
-    const d=datos[mm.y+'-'+mm.m]||{spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0};
+    const d=datos[mm.y+'-'+mm.m]||{spend:0,impressions:0,clicks:0,leads:0,landing:0,results:0,reach:0};
     return {
       spend:d.spend,
       impressions:d.impressions,
       clicks:d.clicks,
+      reach:d.reach,
+      // Cuantas veces vio el anuncio, en promedio, cada persona alcanzada.
+      frecuencia:(d.reach? d.impressions/d.reach : null),
       ctr:d.impressions? d.clicks/d.impressions*100 : null,
       cpm:d.impressions? d.spend/d.impressions*1000 : null,
       cpc:d.clicks? d.spend/d.clicks : null,
@@ -49308,9 +49317,12 @@ function mmTopHtml(cache){
   const fNum=function(v){ return v==null?null:Math.round(v).toLocaleString('es-AR'); };
   const fPct=function(v){ return v==null?null:(Math.round(v*100)/100).toFixed(2).replace('.',',')+'%'; };
   const fMon=function(v){ return v==null?null:money(v); };
+  const fFrec=function(v){ return v==null?null:(Math.round(v*100)/100).toFixed(2).replace('.',','); };
   var FILAS=[
     {k:'spend',l:'Inversion',f:fMon},
     {k:'impressions',l:'Impresiones',f:fNum},
+    {k:'reach',l:'Alcance',f:fNum},
+    {k:'frecuencia',l:'Frecuencia',f:fFrec},
     {k:'clicks',l:'Clics',f:fNum},
     {k:'ctr',l:'CTR',f:fPct},
     {k:'cpm',l:'CPM',f:fMon},
@@ -49351,7 +49363,11 @@ function mmTopHtml(cache){
           +'</tr>';
       }).join('')
     +'</tbody></table></div>'
-    +'<div class="mm-foot">Desglose mensual pedido a Meta aparte de la sincronizacion, que trae un rango unico. '
+    +'<div class="mm-foot">La <b>frecuencia</b> es cuantas veces vio el anuncio cada persona '
+    +'alcanzada: impresiones sobre alcance. Meta deduplica el alcance dentro de una campana '
+    +'pero no entre varias, asi que si una persona esta en dos el alcance sumado queda alto y '
+    +'la frecuencia que ves es un piso: la real es esa o mayor. '
+    +'Desglose mensual pedido a Meta aparte de la sincronizacion, que trae un rango unico. '
     +'Suma solo las campanas tildadas arriba y el mes en curso va sombreado porque todavia esta gastando.</div>'
     +'</div>';
 }
