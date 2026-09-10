@@ -442,6 +442,9 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 /* Dia de guion. Va con borde y no con fondo lleno para que se distinga de un
    dia de rodaje incluso cuando cae adentro de la ventana del rodaje. */
 .cp-d.gui{outline:1px solid var(--accent);outline-offset:-1px;color:var(--accent);opacity:1}
+/* Mejor marca de la fila. Una linea arriba y no un fondo lleno: la tabla tiene
+   veintipico de filas y otros tantos fondos la volverian ilegible. */
+.mm-tab td.mm-rec{color:var(--accent);box-shadow:inset 0 2px 0 var(--accent)}
 .cp-d.rod.gui{color:#0d0d0d}
 /* Calendario para elegir el rango del rodaje. Antes eran tres campos —mes, del
    dia, al dia— y habia que saber de memoria en que dia de la semana cae cada
@@ -46710,7 +46713,10 @@ function embudoSubNav(){
       +b('informes','Informes')
       +'<span class="ebsep"></span>'
       +topConMenu(sel)+middleConMenu(sel)+bottomConMenu(sel)
-      +b('records','Records')
+      // Records salio del dock: las mejores marcas ahora van marcadas en el mes
+      // a mes, sobre los meses de verdad, en vez de en una lista aparte. El
+      // libro guardado (c.records) queda intacto por si hay que volver.
+      
       +((sel==='middle')?abDockAcciones():'')
       +((sel==='landing')?lpDockAcciones():'')
       // Quiz queda archivado, no borrado: la landing con mecanica Quiz hace lo
@@ -49212,6 +49218,26 @@ function _mmActions(row){
 // DB entero a localStorage, el desglose quedaba grabado en disco: al recargar volvia
 // "fresco" y el codigo nuevo nunca le preguntaba nada a Meta. Son 12 meses en una
 // sola consulta, rehacerla al abrir la pestana no cuesta nada.
+// Cual de los meses a la vista es la mejor marca de una fila. Solo para metricas
+// donde "mejor" no es discutible: tasas, costos y valor por unidad. Los volumenes
+// quedan afuera a proposito -el mes con mas leads suele ser el mes que mas se
+// gasto- y es el mismo criterio con el que se armo el libro de records.
+// El mes en curso no compite: va por la mitad, y un costo de tres dias siempre
+// gana contra uno de treinta.
+function _mmMejor(col, dir, key, esCurso){
+  if(!dir) return -1;
+  var mejor=-1, val=null;
+  col.forEach(function(cc,i){
+    if(esCurso(i)) return;
+    var v=cc[key];
+    if(v==null || !isFinite(v) || v===0) return;
+    if(val==null || (dir==='min' ? v<val : v>val)){ val=v; mejor=i; }
+  });
+  // Con un solo mes con dato no hay record que marcar: seria "el mejor de uno".
+  var conDato=col.filter(function(cc,i){
+    return !esCurso(i) && cc[key]!=null && isFinite(cc[key]) && cc[key]!==0; }).length;
+  return conDato>1 ? mejor : -1;
+}
 const _mmCache={};
 async function fetchMetaMensual(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
@@ -49324,15 +49350,15 @@ function mmTopHtml(cache){
     {k:'reach',l:'Alcance',f:fNum},
     {k:'frecuencia',l:'Frecuencia',f:fFrec},
     {k:'clicks',l:'Clics',f:fNum},
-    {k:'ctr',l:'CTR',f:fPct},
-    {k:'cpm',l:'CPM',f:fMon},
-    {k:'cpc',l:'CPC',f:fMon},
+    {k:'ctr',l:'CTR',f:fPct,dir:'max'},
+    {k:'cpm',l:'CPM',f:fMon,dir:'min'},
+    {k:'cpc',l:'CPC',f:fMon,dir:'min'},
     {k:'landing',l:'Visitas a la landing',f:fNum},
-    {k:'cpLanding',l:'Costo por visita',f:fMon},
+    {k:'cpLanding',l:'Costo por visita',f:fMon,dir:'min'},
     {k:'leads',l:'Leads',f:fNum},
-    {k:'cpl',l:'CPL',f:fMon},
+    {k:'cpl',l:'CPL',f:fMon,dir:'min'},
     {k:'results',l:'Resultados',f:fNum},
-    {k:'cpr',l:'Costo por resultado',f:fMon}
+    {k:'cpr',l:'Costo por resultado',f:fMon,dir:'min'}
   ].filter(function(f){
     // sin el evento configurado en Meta la fila es toda ceros: no aporta nada
     return col.some(function(cc){ return cc[f.k]!=null && cc[f.k]!==0; });
@@ -49354,11 +49380,17 @@ function mmTopHtml(cache){
       }).join('')
     +'</tr></thead><tbody>'
     +FILAS.map(function(f){
+        // La mejor marca de la fila entre los meses a la vista.
+        var rec=_mmMejor(col, f.dir, f.k, function(i){ return enCurso(meses[i]); });
         return '<tr><td class="mm-met">'+f.l+'</td>'
           +col.map(function(cc,i){
               var v=f.f(cc[f.k]);
               var zero=(v==null||cc[f.k]===0);
-              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')+'">'+(v==null?'&mdash;':v)+'</td>';
+              var esRec=(i===rec);
+              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')
+                +(esRec?' mm-rec':'')+'"'
+                +(esRec?(' title="Mejor marca de los '+col.length+' meses a la vista"'):'')+'>'
+                +(v==null?'&mdash;':v)+'</td>';
             }).join('')
           +'</tr>';
       }).join('')
@@ -49368,7 +49400,8 @@ function mmTopHtml(cache){
     +'pero no entre varias, asi que si una persona esta en dos el alcance sumado queda alto y '
     +'la frecuencia que ves es un piso: la real es esa o mayor. '
     +'Desglose mensual pedido a Meta aparte de la sincronizacion, que trae un rango unico. '
-    +'Suma solo las campanas tildadas arriba y el mes en curso va sombreado porque todavia esta gastando.</div>'
+    +'Suma solo las campanas tildadas arriba y el mes en curso va sombreado porque todavia esta gastando. '
+    +'Lo marcado en verde es la <b>mejor marca</b> de la fila entre los meses a la vista. Se marca solo donde mejor no es discutible -tasas y costos-, no en los volumenes: el mes con mas leads suele ser el mes que mas se gasto. El mes en curso no compite, que va por la mitad. '+'</div>'
     +'</div>';
 }
 
@@ -49570,34 +49603,34 @@ function mensualMatrizHtml(ops, rules, money, c){
   var FILAS=[
     {k:'leads',l:'Oportunidades',f:fNum},
     {k:'agendas',l:'Agendas',f:fNum},
-    {k:'califica',l:'Agendan (%)',f:fPct},
+    {k:'califica',l:'Agendan (%)',f:fPct,dir:'max'},
     {k:'pend',l:'Shows pendientes',f:fNum},
     {k:'asistencias',l:'Asistencias',f:fNum},
     {k:'noshow',l:'No shows',f:fNum},
-    {k:'noshowPct',l:'No shows (%)',f:fPct},
-    {k:'show',l:'Show rate',f:fPct},
+    {k:'noshowPct',l:'No shows (%)',f:fPct,dir:'min'},
+    {k:'show',l:'Show rate',f:fPct,dir:'max'},
     {k:'viva',l:'Llamadas en vivo',f:fNum},
     {k:'calif',l:'Llamadas calificadas',f:fNum},
-    {k:'califVivo',l:'% Calificado en vivo',f:fPct},
+    {k:'califVivo',l:'% Calificado en vivo',f:fPct,dir:'max'},
     {k:'pres',l:'Presentaciones',f:fNum},
     {k:'cierres',l:'Cierres',f:fNum},
     {k:'perdidos',l:'Perdidos',f:fNum},
-    {k:'closeCalif',l:'Close rate (calificadas)',f:fPct},
-    {k:'closePres',l:'Close rate (presentacion)',f:fPct},
-    {k:'tasa',l:'Close rate (asistencias)',f:fPct},
-    {k:'ttc',l:'Time to cierre',f:fDias},
+    {k:'closeCalif',l:'Close rate (calificadas)',f:fPct,dir:'max'},
+    {k:'closePres',l:'Close rate (presentacion)',f:fPct,dir:'max'},
+    {k:'tasa',l:'Close rate (asistencias)',f:fPct,dir:'max'},
+    {k:'ttc',l:'Time to cierre',f:fDias,dir:'min'},
     {k:'pipeline',l:'Valor pipeline',f:fMon},
     {k:'valor',l:'Facturacion',f:fMon},
-    {k:'revPerShow',l:'Revenue per show',f:fMon},
+    {k:'revPerShow',l:'Revenue per show',f:fMon,dir:'max'},
     {k:'inversion',l:'Inversion en pauta',f:fMon},
-    {k:'roas',l:'ROAS',f:fRoas},
-    {k:'cpAgenda',l:'Costo por agenda',f:fMon},
-    {k:'cpViva',l:'Costo por llamada en vivo',f:fMon},
-    {k:'cpCalif',l:'Costo por calificada',f:fMon},
-    {k:'cpPres',l:'Costo por presentacion',f:fMon},
-    {k:'cac',l:'CAC',f:fMon},
-    {k:'ticket',l:'Ticket promedio',f:fMon},
-    {k:'porAgenda',l:'Facturacion por agenda',f:fMon}
+    {k:'roas',l:'ROAS',f:fRoas,dir:'max'},
+    {k:'cpAgenda',l:'Costo por agenda',f:fMon,dir:'min'},
+    {k:'cpViva',l:'Costo por llamada en vivo',f:fMon,dir:'min'},
+    {k:'cpCalif',l:'Costo por calificada',f:fMon,dir:'min'},
+    {k:'cpPres',l:'Costo por presentacion',f:fMon,dir:'min'},
+    {k:'cac',l:'CAC',f:fMon,dir:'min'},
+    {k:'ticket',l:'Ticket promedio',f:fMon,dir:'max'},
+    {k:'porAgenda',l:'Facturacion por agenda',f:fMon,dir:'max'}
   ].filter(function(f){
     return col.some(function(cc){ return cc[f.k]!=null; });   // sin regla configurada, no hay fila
   });
@@ -49618,11 +49651,17 @@ function mensualMatrizHtml(ops, rules, money, c){
       }).join('')
     +'</tr></thead><tbody>'
     +FILAS.map(function(f){
+        // La mejor marca de la fila entre los meses a la vista.
+        var rec=_mmMejor(col, f.dir, f.k, function(i){ return enCurso(meses[i]); });
         return '<tr><td class="mm-met">'+f.l+'</td>'
           +col.map(function(cc,i){
               var v=f.f(cc[f.k]);
               var zero=(v==null||v==='0'||v==='$0'||v==='0,0%');
-              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')+'">'+(v==null?'&mdash;':v)+'</td>';
+              var esRec=(i===rec);
+              return '<td class="'+(enCurso(meses[i])?'mm-hoy':'')+(zero?' mm-zero':'')
+                +(esRec?' mm-rec':'')+'"'
+                +(esRec?(' title="Mejor marca de los '+col.length+' meses a la vista"'):'')+'>'
+                +(v==null?'&mdash;':v)+'</td>';
             }).join('')
           +'</tr>';
       }).join('')
@@ -49638,7 +49677,8 @@ function mensualMatrizHtml(ops, rules, money, c){
     +'la semana cae en dos meses. El <b>CAC</b> es esa misma inversion dividida por los cierres '
     +'del mes: lo que costo traer cada cliente. Los <b>costos por etapa</b> son esa misma '
     +'inversion dividida por cuantos llegaron a cada paso, igual que las barras de arriba. '
-    +'Un mes sin nadie en una etapa va en guion, porque cero no salen cero pesos.</div>'
+    +'Un mes sin nadie en una etapa va en guion, porque cero no salen cero pesos. '
+    +'Lo marcado en verde es la <b>mejor marca</b> de la fila entre los meses a la vista. Se marca solo donde mejor no es discutible -tasas y costos-, no en los volumenes: el mes con mas leads suele ser el mes que mas se gasto. El mes en curso no compite, que va por la mitad. '+'</div>'
     +'</div>';
 }
 
