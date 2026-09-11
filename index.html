@@ -7169,6 +7169,23 @@ function _p360Senal(c){
 }
 function _p360Pago(c){ return !!_p360Senal(c).tipo; }
 
+// Desde cuando esta en la columna en la que esta. Lo mejor que haya: el dia en
+// que lo arrastraste, si no el dia en que la IA lo leyo, si no la ultima llamada,
+// que es lo que lo movio.
+function _p360Desde(c){
+  var f=null;
+  if(c.prospectoEtapaAt) f=new Date(c.prospectoEtapaAt);
+  else if(c.p360IA&&c.p360IA.at) f=new Date(c.p360IA.at);
+  else {
+    (c.fathomCalls||[]).forEach(function(l){
+      var d=(typeof _fecha==='function')?_fecha(l.date):null;
+      if(d && (!f || d.getTime()>f.getTime())) f=d;
+    });
+  }
+  if(!f || isNaN(f.getTime())) return null;
+  var dias=Math.floor((Date.now()-f.getTime())/86400000);
+  return {fecha:f, dias:dias<0?0:dias};
+}
 // ---- Leer el lead con IA -------------------------------------------------
 // Los patrones de frases aciertan lo obvio y se pierden todo lo demas: "lo hablo
 // con mi socio y te confirmo el viernes" no es un no, y "me encanta" sin fecha
@@ -24772,6 +24789,9 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
     var cols=rutaColumnas();
     var j=cols.map(function(e){return e.l;}).indexOf(etapa);
     if(j<0) return;
+    // Se anota el dia: "hace cuanto esta aca" es la pregunta que uno se hace
+    // mirando la columna, y sin esta marca no habia de donde sacarla.
+    if(c.prospectoEtapa!==j) c.prospectoEtapaAt=new Date().toISOString();
     c.prospectoEtapa=j;
     save();
     if(typeof renderTab==='function') renderTab();
@@ -26906,18 +26926,23 @@ function p360Html(){
       // Un prospecto que nunca va a moverse solo tiene que decirlo. Sin
       // transcripcion no hay nada que leer, y "sin frenos" se lee como que esta
       // todo bien cuando en realidad el lead se queda ahi para siempre.
-      if(esProspecto(d.c) && typeof d.c.prospectoEtapa!=='number'){
+      // "Sin frenos" no dice nada de un prospecto: lo que se quiere saber es
+      // hace cuanto esta ahi y que quedo hablado.
+      if(esProspecto(d.c)){
         var ia=d.c.p360IA;
+        var ds=_p360Desde(d.c);
+        var partes=[];
+        if(ds) partes.push(ds.dias===0?'hoy':('hace '+ds.dias+' d'));
         if(ia && ia.at){
-          // El limite es lo unico accionable de toda la tarjeta: es el dia en
-          // que hay que volver a escribirle.
-          mt=ia.limite ? ('confirma '+esc(ia.limite))
-            : (ia.avanza ? 'dijo que avanza' : 'todavia no');
-        } else {
+          if(ia.limite) partes.push('confirma '+esc(ia.limite));
+          else if(ia.avanza) partes.push('dijo que avanza');
+          else partes.push('todavia no');
+        } else if(typeof d.c.prospectoEtapa!=='number'){
           var sn=_p360Senal(d.c);
-          if(sn.sinTexto) mt='sin transcripcion';
-          else if(!(d.c.fathomCalls||[]).length) mt='sin llamadas';
+          if(sn.sinTexto) partes.push('sin transcripcion');
+          else if(!(d.c.fathomCalls||[]).length) partes.push('sin llamadas');
         }
+        if(partes.length) mt=partes.join(' \u00b7 ');
       }
     }
     // La proxima reunion de cualquier etapa: con la fecha ya agendada, un chip
