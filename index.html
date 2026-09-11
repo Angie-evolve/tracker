@@ -7074,14 +7074,40 @@ function _fathomPorQueNoLead(fila){
 // Las que no matchean quedan sin procesar, asi que la tarjeta se rearma sola.
 async function fathomReponerMail(mail){
   var m=String(mail||'').trim().toLowerCase();
+  if(!m) return;
   var L=DB.prospectosNo||[];
   var i=L.indexOf(m);
-  if(i<0) return;
-  L.splice(i,1); save();
-  toast('Permitido de nuevo. Bajando la llamada\u2026');
+  if(i>=0){ L.splice(i,1); save(); }
+  // Sacarlo de la lista no alcanzaba: las llamadas con las que se habia armado
+  // la tarjeta ya estaban marcadas procesadas, asi que la sincronizacion no las
+  // volvia a bajar y el lead no reaparecia nunca. Hay que destildarlas.
+  toast('Buscando sus llamadas\u2026');
+  var filas=[];
+  try{ filas=await sbFetch('llamadas_fathom?order=recibida_at.desc&limit=300')||[]; }
+  catch(e){ toast('No pude leer las llamadas: '+e.message,'red'); return; }
+  var suyas=filas.filter(function(f){
+    return (typeof _fathomMails==='function') && _fathomMails(f).indexOf(m)>=0;
+  });
+  if(!suyas.length){
+    toast('Lo saque de la lista, pero no hay ninguna llamada guardada con ese '
+      +'mail: la tarjeta se va a armar con la proxima.','amber');
+    return;
+  }
+  var ids=suyas.filter(function(f){ return f.procesada; })
+               .map(function(f){ return f.recording_id; });
+  if(ids.length){
+    try{
+      await sbFetch('llamadas_fathom?recording_id=in.('+ids.map(function(x){
+        return '"'+String(x).replace(/"/g,'')+'"'; }).join(',')+')',
+        {method:'PATCH', body:JSON.stringify({procesada:false})});
+    }catch(e){ toast('No pude destildarlas: '+e.message,'red'); return; }
+  }
   try{ await fathomWebhookSync(true); }catch(e){}
   if(typeof showTickets==='function') showTickets();
-  fathomSinClienteModal();
+  var mr=document.getElementById('modal-root');
+  if(mr && /Llamadas sin cliente/.test(mr.innerHTML||'')) fathomSinClienteModal();
+  toast(suyas.length+' llamada'+(suyas.length===1?'':'s')+' recuperada'
+    +(suyas.length===1?'':'s')+'. Buscalo en el tablero del Panel 360.');
 }
 // Las que llegaron pero no matchean con ningun cliente. Se asignan a mano y a
 // la vez se aprende la palabra clave, para que la proxima entre sola.
@@ -24939,10 +24965,9 @@ function p360ProspectosNoHtml(){
 function p360Reponer(i){
   var L=(DB.prospectosNo||[]);
   if(!L[i]) return;
-  L.splice(i,1);
-  save();
-  showTickets();
-  toast('Va a volver a aparecer con la proxima llamada');
+  // Misma puerta que el link de "Llamadas sin cliente": ademas de sacarlo de la
+  // lista, recupera las llamadas ya procesadas para que la tarjeta vuelva.
+  fathomReponerMail(L[i]);
 }
 function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
