@@ -7186,6 +7186,47 @@ function _p360Desde(c){
   var dias=Math.floor((Date.now()-f.getTime())/86400000);
   return {fecha:f, dias:dias<0?0:dias};
 }
+// ---- Cuenta regresiva al lanzamiento -------------------------------------
+// El sprint no es un lugar donde el cliente esta: es un reloj que arranca con el
+// onboarding y termina en el lanzamiento. Como etapa no dice nada -entra y se
+// queda-, como cuenta dice cuantos dias quedan.
+function _lanzaCuenta(c){
+  if(!c || esProspecto(c)) return null;
+  var cols=rutaColumnas();
+  var iOnb=-1, dLanz=null;
+  cols.forEach(function(e,i){
+    if(iOnb<0 && /onboarding/i.test(String(e.l||''))) iOnb=i;
+    if(/lanzam|launch/i.test(String(e.l||'')) && e.dia!==null && e.dia!==undefined)
+      dLanz=+e.dia;
+  });
+  if(iOnb<0) return null;
+  if(dLanz===null) dLanz=30;   // los 30 dias que promete la propuesta
+  // Cuando empezo el onboarding: la reunion que lo marco, la que quedo agendada,
+  // o el alta del cliente. Sin ninguna de las tres no hay reloj que correr.
+  var onb=cols[iOnb].l;
+  var f=null;
+  var ct=(c.citas||{})[onb];
+  if(ct && ct.inicio && String(ct.estado||'')!=='cancelled'){
+    var d1=new Date(ct.inicio); if(!isNaN(d1)) f=d1;
+  }
+  if(!f && (c.rutaAgenda||{})[onb]) f=parseDDMMYYYY(c.rutaAgenda[onb]);
+  if(!f){
+    var re=(typeof _rutaRe==='function')?_rutaRe(cols[iOnb]):null;
+    (c.fathomCalls||[]).forEach(function(l){
+      if(re && !re.test(String(l.title||''))) return;
+      var d2=parseDDMMYYYY(l.date);
+      if(d2 && (!f || d2.getTime()<f.getTime())) f=d2;
+    });
+  }
+  if(!f && typeof clienteAlta==='function') f=clienteAlta(c);
+  if(!f || isNaN(f.getTime())) return null;
+  var hoy=new Date(); hoy.setHours(0,0,0,0);
+  var ini=new Date(f.getFullYear(), f.getMonth(), f.getDate());
+  var fin=new Date(ini.getTime()+dLanz*86400000);
+  var faltan=Math.round((fin-hoy)/86400000);
+  return {ini:ini, fin:fin, total:dLanz, faltan:faltan,
+          dia:Math.round((hoy-ini)/86400000)};
+}
 // ---- Alta automatica al pasar a onboarding -------------------------------
 // Pasar un lead a onboarding es convertirlo en cliente, y hasta ahora eso dejaba
 // la ficha entera vacia: habia que volver a escuchar las mismas llamadas para
@@ -27090,6 +27131,19 @@ function p360Html(){
       +'</span>'
       // La frase del lead que lo justifica: sin esto la IA mueve tarjetas y no
       // hay forma de saber si leyo bien.
+      // El reloj del lanzamiento: para un cliente en marcha es el dato que
+      // ordena la semana, mas que cualquier etapa.
+      +(function(){
+        var q=(typeof _lanzaCuenta==='function')?_lanzaCuenta(d.c):null;
+        if(!q) return '';
+        var col=(q.faltan<0)?'var(--text3)':(q.faltan<=7?'var(--amberx)':'var(--text3)');
+        return '<span class="mt" style="color:'+col+'" title="Dia '+q.dia+' de '+q.total
+          +' desde el onboarding. Lanzamiento estimado el '
+          +q.fin.toLocaleDateString('es-AR')+'">'
+          +(q.faltan<0 ? ('lanzo hace '+Math.abs(q.faltan)+' d')
+            : (q.faltan===0 ? 'lanza hoy' : ('faltan '+q.faltan+' d para lanzar')))
+        +'</span>';
+      })()
       +'<span class="mt"'+((d.c.p360IA&&d.c.p360IA.senal)
         ?(' title="'+esc(d.c.p360IA.senal)
           +(d.c.p360IA.porque?(' \u2014 '+esc(d.c.p360IA.porque)):'')+'"')
