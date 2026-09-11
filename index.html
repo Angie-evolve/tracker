@@ -7168,6 +7168,113 @@ function _p360Senal(c){
   return {tipo:null};
 }
 function _p360Pago(c){ return !!_p360Senal(c).tipo; }
+
+// ---- Leer el lead con IA -------------------------------------------------
+// Los patrones de frases aciertan lo obvio y se pierden todo lo demas: "lo hablo
+// con mi socio y te confirmo el viernes" no es un no, y "me encanta" sin fecha
+// casi siempre si lo es. Esto le da a la IA los leads que SI avanzaron como
+// referencia y le pide que compare, en vez de buscar palabras sueltas.
+function _p360Referencias(tope){
+  var iA=(typeof _iAltaCliente==='function')?_iAltaCliente():-1;
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    if(out.length>=(tope||4)) return;
+    // Avanzo de verdad: alguien lo movio hasta Alta, o dejo de ser prospecto.
+    var avanzo=(!esProspecto(c))
+      || (iA>=0 && typeof c.prospectoEtapa==='number' && c.prospectoEtapa>=iA);
+    if(!avanzo) return;
+    var v=(c.fathomCalls||[]).filter(function(l){
+      return _esLlamadaDeVenta(l) && String(l.transcript||'').trim(); })[0];
+    if(!v) return;
+    out.push({nombre:c.name||'', texto:String(v.transcript).slice(0,3000)});
+  });
+  return out;
+}
+// Quienes tienen algo que leer y todavia no se leyeron.
+function _p360Pendientes(){
+  return (DB.clients||[]).filter(function(c){
+    if(!esProspecto(c)) return false;
+    if(typeof c.prospectoEtapa==='number') return false;   // ya lo moviste a mano
+    if(c.p360IA && c.p360IA.at) return false;              // ya leido
+    return (c.fathomCalls||[]).some(function(l){ return String(l.transcript||'').trim(); });
+  });
+}
+async function p360LeerLead(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return {error:'no existe'};
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaPorOtroLado()) return {error:'Falta la clave de Anthropic o el puente.'};
+  var lls=(c.fathomCalls||[]).filter(function(l){ return String(l.transcript||'').trim(); });
+  if(!lls.length) return {error:'sin transcripcion'};
+  var refs=_p360Referencias(4);
+  var hoy=new Date();
+  var pedido='Sos parte de una agencia. Tenes que decidir si un lead va a avanzar a cliente.\n\n'
+    +'Hoy es '+hoy.toLocaleDateString('es-AR')+'.\n\n'
+    +(refs.length
+      ? ('Primero, ejemplos de leads de esta misma agencia que SI terminaron avanzando. Fijate '
+        +'que senales daban, con las palabras que usan de verdad:\n\n'
+        +refs.map(function(r){
+            return '--- SI AVANZO: '+r.nombre+' ---\n'+r.texto; }).join('\n\n')+'\n\n')
+      : '')
+    +'REGLAS:\n'
+    +'- Avanza es que el lead dijo que si, aunque todavia no haya pagado. Decir "dale, '
+    +'arranquemos" es avanzar; pagar no hace falta.\n'
+    +'- "Lo pienso y te aviso" sin fecha NO es avanzar. Con fecha concreta tampoco es avanzar '
+    +'todavia, pero si es un compromiso: eso va en limite.\n'
+    +'- Si dice que lo confirma por fuera (lo habla con un socio, lo consulta, te escribe por '
+    +'WhatsApp), poné la fecha y hora hasta cuando quedo en confirmar, resuelta contra la fecha '
+    +'de la llamada. "El viernes" es el viernes siguiente a esa llamada.\n'
+    +'- senal: la frase textual del lead que mejor lo muestra, corta.\n'
+    +'- No inventes. Si no hay senal clara, avanza false y senal vacia.\n'
+    +'- Devolve SOLO un JSON, sin markdown:\n'
+    +'{"avanza":true,"senal":"","confirmaAfuera":false,"limite":"YYYY-MM-DD HH:MM","porque":""}\n'
+    +'limite en null si no quedo en confirmar para una fecha.\n\n'
+    +'LEAD A EVALUAR: '+(c.name||'')+'\n\n'
+    +lls.map(function(l){
+        return '### '+(l.title||'llamada')+(l.date?(' ('+l.date+')'):'')+'\n'
+          +String(l.transcript).slice(0,12000); }).join('\n\n');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey||'',
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:400,
+        messages:[{role:'user', content:pedido}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var txt=String(((d.content||[])[0]||{}).text||'').trim()
+      .replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+    var j=JSON.parse(txt);
+    c.p360IA={
+      avanza:!!j.avanza,
+      senal:String(j.senal||'').slice(0,240),
+      confirmaAfuera:!!j.confirmaAfuera,
+      limite:(j.limite&&String(j.limite).trim())?String(j.limite).trim():null,
+      porque:String(j.porque||'').slice(0,300),
+      at:new Date().toISOString()
+    };
+    save();
+    return {ok:true, ia:c.p360IA};
+  }catch(e){
+    return {error:e.message||'no pude leerlo'};
+  }
+}
+// Los lee de a uno: el puente procesa un pedido por vez, y mandarlos todos
+// juntos solo llena la cola.
+async function p360LeerTodos(){
+  var pend=_p360Pendientes();
+  if(!pend.length){ toast('No hay leads con transcripcion sin leer.'); return; }
+  var ok=0, mal=0;
+  for(var i=0;i<pend.length;i++){
+    toast('Leyendo '+(i+1)+' de '+pend.length+': '+(pend[i].name||''));
+    var r=await p360LeerLead(pend[i].id);
+    if(r&&r.ok) ok++; else mal++;
+    if(typeof showTickets==='function') showTickets();
+  }
+  toast(ok+' leido'+(ok===1?'':'s')+(mal?(' \u00b7 '+mal+' sin poder leer'):''));
+}
 // Donde cae un prospecto. Por posicion y no por nombre: la ruta se edita y las
 // etiquetas de las columnas no son las del default.
 function _p360EtapaProspecto(c){
@@ -7177,9 +7284,12 @@ function _p360EtapaProspecto(c){
   // Si la arrastraste a una columna, esa manda. La regla automatica mira si en
   // la transcripcion se habla de pago, y eso no siempre pasa aunque el lead
   // haya confirmado que avanza: quien escucho la llamada sabe mas.
-  var i=(typeof c.prospectoEtapa==='number')
-    ? c.prospectoEtapa
-    : (_p360Pago(c) ? 2 : (n>=2 ? 1 : 0));
+  // Orden de confianza: lo que moviste a mano, despues lo que leyo la IA, y
+  // recien al final los patrones de frases, que aciertan lo obvio nomas.
+  var i;
+  if(typeof c.prospectoEtapa==='number') i=c.prospectoEtapa;
+  else if(c.p360IA && c.p360IA.at) i=(c.p360IA.avanza ? 2 : (n>=2 ? 1 : 0));
+  else i=(_p360Pago(c) ? 2 : (n>=2 ? 1 : 0));
   if(i<0) i=0;
   if(i>cols.length-1) i=cols.length-1;
   return {l:cols[i].l, i:i, total:cols.length, estado:'hecho', hechas:i+1};
@@ -26797,9 +26907,17 @@ function p360Html(){
       // transcripcion no hay nada que leer, y "sin frenos" se lee como que esta
       // todo bien cuando en realidad el lead se queda ahi para siempre.
       if(esProspecto(d.c) && typeof d.c.prospectoEtapa!=='number'){
-        var sn=_p360Senal(d.c);
-        if(sn.sinTexto) mt='sin transcripcion';
-        else if(!(d.c.fathomCalls||[]).length) mt='sin llamadas';
+        var ia=d.c.p360IA;
+        if(ia && ia.at){
+          // El limite es lo unico accionable de toda la tarjeta: es el dia en
+          // que hay que volver a escribirle.
+          mt=ia.limite ? ('confirma '+esc(ia.limite))
+            : (ia.avanza ? 'dijo que avanza' : 'todavia no');
+        } else {
+          var sn=_p360Senal(d.c);
+          if(sn.sinTexto) mt='sin transcripcion';
+          else if(!(d.c.fathomCalls||[]).length) mt='sin llamadas';
+        }
       }
     }
     // La proxima reunion de cualquier etapa: con la fecha ya agendada, un chip
@@ -26851,10 +26969,16 @@ function p360Html(){
             +'style="float:right;color:var(--text3);cursor:pointer;padding:0 2px">\u00d7</span>')
           : '')
       +'</span>'
-      +'<span class="mt">'+mt+'</span>'
+      // La frase del lead que lo justifica: sin esto la IA mueve tarjetas y no
+      // hay forma de saber si leyo bien.
+      +'<span class="mt"'+((d.c.p360IA&&d.c.p360IA.senal)
+        ?(' title="'+esc(d.c.p360IA.senal)
+          +(d.c.p360IA.porque?(' \u2014 '+esc(d.c.p360IA.porque)):'')+'"')
+        :'')+'>'+mt+'</span>'
       +prox
     +'</button>';
   };
+  var pendIA=(typeof _p360Pendientes==='function')?_p360Pendientes().length:0;
   var vacias=cols.filter(function(x){ return !x.cards.length; }).length;
   // El reparto es la vista principal. La primera pregunta al abrir el panel es
   // quien tiene que mover a cada cliente; en que columna esta se contesta
@@ -26867,7 +26991,13 @@ function p360Html(){
       +'Lo unico que se pinta es lo que ya paso su plazo.',
     etapas:'En que etapa esta cada uno y que le impide avanzar. '
       +'<span style="color:var(--redx)">Rojo</span> depende de nosotros, '
-      +'<span style="color:var(--amberx)">ambar</span> del cliente.',
+      +'<span style="color:var(--amberx)">ambar</span> del cliente.'
+      // Con transcripciones sin leer, la columna de Diagnostico miente: hay
+      // leads ahi que ya dijeron que si.
+      +(pendIA?(' <button class="btn btn-sm" style="margin-left:8px;font-size:10.5px;'
+        +'padding:2px 9px" onclick="p360LeerTodos()" title="Compara cada lead contra los que '
+        +'si avanzaron y saca si dijo que si, y hasta cuando quedo en confirmar">'
+        +'Leer '+pendIA+' lead'+(pendIA===1?'':'s')+' con IA</button>'):''),
     faltan:'Lo que el panel no puede ubicar solo, y por eso no aparece en '
       +'ninguna de las dos vistas.'
   };
