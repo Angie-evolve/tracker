@@ -8126,6 +8126,116 @@ function _fathomImportar(c, m){
     _cid:c.id, importada:true, url:m.url||'', transcript:m.transcripcion||''
   });
 }
+// Todas las llamadas que quedaron con el link privado, de todos los clientes.
+// El backfill arregla de a un cliente por vuelta y nunca reintenta lo que fallo,
+// asi que la cola crece mas rapido de lo que se vacia: por eso una llamada la
+// abre cualquiera y la de al lado da cartel de permisos.
+function _fathomPrivadasTodas(){
+  return (DB.clients||[]).map(function(c){
+    return {c:c, calls:_fathomPrivadas(c)};
+  }).filter(function(g){ return g.calls.length>0; });
+}
+function _fathomPrivadasCuenta(){
+  var n=0;
+  _fathomPrivadasTodas().forEach(function(g){ n+=g.calls.length; });
+  return n;
+}
+// Un pedido por cliente y no uno por llamada: la API devuelve todas las
+// reuniones de esos mails juntas, y pedirlas de a una solo multiplica la espera.
+async function fathomArreglarTodos(){
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec){ toast('Falta configurar el webhook en Integraciones.','amber'); return; }
+  var grupos=_fathomPrivadasTodas();
+  if(!grupos.length){ toast('No hay ningun link privado.'); return; }
+  var arreglados=0, noAparecen=0, sinMail=[], cuentas=0;
+  for(var i=0;i<grupos.length;i++){
+    var g=grupos[i];
+    var f=_fathomFiltro(g.c);
+    if(!f){ sinMail.push(g.c.name||''); continue; }
+    toast('Revisando '+(i+1)+' de '+grupos.length+': '+(g.c.name||''));
+    var d=null;
+    try{
+      var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)
+          +'&accion=buscar',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({emails:f.mails, dominios:f.doms, transcripcion:false})});
+      d=await r.json();
+    }catch(e){ d=null; }
+    if(!d||!d.ok) continue;
+    if(d.cuentas) cuentas=Math.max(cuentas, Number(d.cuentas)||0);
+    var porId={};
+    (d.items||[]).forEach(function(m){
+      if(m&&m.url&&String(m.url).indexOf('/share/')>=0) porId[String(m.recording_id||'')]=m.url;
+    });
+    g.calls.forEach(function(cl){
+      var rid=String(cl.id||'').replace(/^(fw|fathom)-/,'');
+      if(!porId[rid]){ noAparecen++; return; }
+      cl.url=porId[rid]; arreglados++;
+      // Se saca de la lista de intentos: quedo arreglada, no fallada.
+      g.c.fathomLinksTry=(g.c.fathomLinksTry||[]).filter(function(x){
+        return x!==String(cl.id||''); });
+    });
+  }
+  if(arreglados) save();
+  var msg=arreglados+' link'+(arreglados===1?'':'s')+' arreglado'+(arreglados===1?'':'s');
+  if(noAparecen) msg+=' \u00b7 '+noAparecen+' sin link publico en Fathom';
+  if(sinMail.length) msg+=' \u00b7 '+sinMail.length+' cliente'
+    +(sinMail.length===1?'':'s')+' sin mail en la ficha';
+  if(!cuentas && !arreglados) msg='Ninguna cuenta de Fathom contesto. Se conectan desde '
+    +'Personas, con la fila de cada uno.';
+  toast(msg, arreglados?undefined:'amber');
+  if(typeof renderTab==='function') renderTab();
+  var mr=document.getElementById('modal-root');
+  if(mr&&/Links privados/.test(mr.innerHTML||'')) fathomLinksModal();
+}
+// La pantalla que junta todo: cuantos quedan, de que cliente son, y por que uno
+// no se puede arreglar. Antes esto solo se veia llamada por llamada, adentro de
+// cada ficha, que es justo donde no se mira.
+function fathomLinksModal(){
+  var grupos=_fathomPrivadasTodas();
+  var total=0; grupos.forEach(function(g){ total+=g.calls.length; });
+  var hook=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var cuerpo;
+  if(!total){
+    cuerpo='<div style="font-size:12.5px;color:var(--text3);padding:10px 0">'
+      +'No queda ninguna. Todas las llamadas guardadas tienen link publico.</div>';
+  } else {
+    cuerpo=grupos.map(function(g){
+      var f=_fathomFiltro(g.c);
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="display:flex;align-items:baseline;gap:8px">'
+          +'<span style="font-size:12.5px;color:var(--text)">'+esc(g.c.name||'')+'</span>'
+          +'<span style="font-size:11px;color:var(--text3)">'+g.calls.length
+            +(g.calls.length===1?' llamada':' llamadas')+'</span>'
+          +(f?'':'<span style="font-size:11px;color:var(--amberx)">'
+            +'sin mail en la ficha \u2014 no hay con que buscarla</span>')
+        +'</div>'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:3px;line-height:1.6">'
+          +g.calls.map(function(cl){
+            return esc(cl.title||'Llamada')+(cl.date?(' \u00b7 '+esc(cl.date)):'');
+          }).join('<br>')
+        +'</div>'
+      +'</div>';
+    }).join('');
+  }
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;max-height:86vh;overflow-y:auto">'
+      +'<div class="modal-title">Links privados</div>'
+      +'<div class="modal-sub">El webhook guarda el link que Fathom manda, y ese solo lo abre '
+        +'quien grabo: al resto del equipo le sale un cartel de permisos. El link publico '
+        +'(<span class="mono">/share/</span>) hay que pedirselo a la API de Fathom, y para eso '
+        +'la persona que grabo tiene que tener su cuenta conectada en Personas. '
+        +'La transcripcion y el resumen se ven igual sin el link.</div>'
+      +cuerpo
+      +'<div class="modal-footer">'
+        +(total&&hook?'<button class="btn btn-primary" onclick="fathomArreglarTodos()">'
+          +'Arreglar los '+total+'</button>':'')
+        +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+    +'</div></div>';
+}
 async function _fathomBackfillUno(){
   var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
   var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
@@ -9637,6 +9747,9 @@ function integracionesAppHtml(){
   var pill=function(st){
     if(st==='ok') return '<span class="pill pill-green" style="font-size:10px">Conectado</span>';
     if(st==='partial') return '<span class="pill pill-amber" style="font-size:10px">Parcial</span>';
+    // 'warn' se usaba sin estar contemplado, asi que una integracion conectada
+    // pero con algo pendiente mostraba el pill de "No conectado".
+    if(st==='warn') return '<span class="pill pill-amber" style="font-size:10px">Revisar</span>';
     if(st==='sug') return '<span class="pill pill-gray" style="font-size:10px">Sugerida</span>';
     return '<span class="pill pill-gray" style="font-size:10px">No conectado</span>';
   };
@@ -9700,11 +9813,15 @@ function integracionesAppHtml(){
     (function(){
       var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
       var n=+(localStorage.getItem('evold-fathom-hook-pend')||0);
-      return card({name:'Fathom por webhook', st:url?(n?'warn':'ok'):'no',
+      var priv=(typeof _fathomPrivadasCuenta==='function')?_fathomPrivadasCuenta():0;
+      return card({name:'Fathom por webhook', st:url?((n||priv)?'warn':'ok'):'no',
         desc:'Cada uno pone un webhook en su propio Fathom y las llamadas caen solas apenas '
           +'terminan, con el nombre de quien las grabo. Sin Gmail y sin sincronizar a mano.',
-        detail:url?('Conectado'+(n?(' \u00b7 '+n+' sin cliente'):'')):'Sin configurar',
-        action:'fathomHookModal()', actionLabel:url?'Ver instrucciones':'Conectar'});
+        detail:url?('Conectado'+(n?(' \u00b7 '+n+' sin cliente'):'')
+          +(priv?(' \u00b7 '+priv+' con link privado'):'')):'Sin configurar',
+        action:'fathomHookModal()', actionLabel:url?'Ver instrucciones':'Conectar',
+        action2:priv?'fathomLinksModal()':'',
+        action2Label:'Links privados'});
     })(),
 
     card({name:'Anthropic', st:iaPuenteOn()?'ok':(iaSinApi()?'warn':(anth?'ok':'no')),
@@ -21627,6 +21744,9 @@ function renderTab(){
     const pill=function(st){
       if(st==='ok') return '<span class="pill pill-green" style="font-size:10px">Conectado</span>';
       if(st==='partial') return '<span class="pill pill-amber" style="font-size:10px">Parcial</span>';
+    // 'warn' se usaba sin estar contemplado, asi que una integracion conectada
+    // pero con algo pendiente mostraba el pill de "No conectado".
+    if(st==='warn') return '<span class="pill pill-amber" style="font-size:10px">Revisar</span>';
       if(st==='sug') return '<span class="pill pill-gray" style="font-size:10px">Sugerida</span>';
       return '<span class="pill pill-gray" style="font-size:10px">No conectado</span>';
     };
