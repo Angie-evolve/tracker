@@ -217,6 +217,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* La barra de color dice de quien depende, que es la pregunta que se hace
    cualquiera mirando el tablero. */
 .p3card.frena{border-left:2px solid var(--redx)}
+.p3mas{display:block;width:100%;margin-top:5px;padding:5px 0;border:0;background:none;
+  color:var(--text3);font-size:10.5px;font-family:var(--font);cursor:pointer;border-radius:5px}
+.p3mas:hover{color:var(--text);background:var(--bg3)}
 /* Un placeholder que avisa que falta cargar algo, no que el mes es cero. */
 .eerr-falta::placeholder{color:var(--amberx);opacity:.85;font-size:10px}
 .p3card.espera{border-left:2px solid var(--amberx)}
@@ -7138,12 +7141,33 @@ function _fathomNombreDe(fila, mail){
 // Lo que dice el lead cuando ya decidio. Se busca en la transcripcion, no en
 // el resumen: el resumen lo escribe la IA y suaviza, la transcripcion trae la
 // frase textual.
-var P360_PAGO=/(\bla se[nñ]a\b|\bya (te )?transferi|\bya te (paso|mande|mando) el pago\b|\bhice (el|la) (pago|transferencia|deposito)\b|\bmande la transferencia\b|\bacepto la propuesta\b)/i;
-function _p360Pago(c){
-  return (c.fathomCalls||[]).some(function(l){
-    return P360_PAGO.test(String(l.transcript||''));
-  });
+// Se compara sin acentos: el patron decia "transferi" y la transcripcion dice
+// "transferi" con tilde, asi que "ya te transferi el dinero" no matcheaba nada.
+function _p360Norm(t){
+  return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 }
+// Plata que ya se movio.
+var P360_PAGO=/(\bla sena\b|\bya (te )?transferi|\bya te (paso|mande|mando) el pago\b|\bhic(e|imos) (el|la) (pago|transferencia|deposito)\b|\bmande la transferencia\b|\bya (te )?pague\b|\bte deposite\b)/;
+// Dijo que avanza. Es lo que pasa en la mayoria de las ventas: nadie transfiere
+// en la llamada, dicen "dale, arranquemos" y la plata llega despues. Con solo el
+// patron de plata movida, esos leads se quedaban en Diagnostico para siempre.
+var P360_AVANZA=/(\bacepto la propuesta\b|\b(dale|listo|perfecto),? (vamos|arrancamos|arranquemos|empecemos|lo hacemos)\b|\b(quiero|queremos) (arrancar|empezar|avanzar|contratar)\b|\barranquemos\b|\bavancemos\b|\bcuando (empezamos|arrancamos)\b|\bmanda(me)? (los datos|la factura|el link) (para|de) (pagar|el pago)\b|\bcomo (hago|hacemos) para (pagar|contratar)\b|\bdonde (te )?(deposito|transfiero)\b|\bmandame los datos\b)/;
+// Devuelve que encontro, no solo si encontro: la tarjeta del board lo muestra y
+// deja de ser una caja negra que mueve leads sin decir por que.
+function _p360Senal(c){
+  var lls=(c.fathomCalls||[]);
+  var conTx=lls.filter(function(l){ return String(l.transcript||'').trim(); });
+  if(!conTx.length) return {tipo:null, sinTexto:lls.length>0};
+  for(var i=0;i<conTx.length;i++){
+    var t=_p360Norm(conTx[i].transcript);
+    if(P360_PAGO.test(t)) return {tipo:'pago'};
+  }
+  for(var j=0;j<conTx.length;j++){
+    if(P360_AVANZA.test(_p360Norm(conTx[j].transcript))) return {tipo:'avanza'};
+  }
+  return {tipo:null};
+}
+function _p360Pago(c){ return !!_p360Senal(c).tipo; }
 // Donde cae un prospecto. Por posicion y no por nombre: la ruta se edita y las
 // etiquetas de las columnas no son las del default.
 function _p360EtapaProspecto(c){
@@ -25231,6 +25255,14 @@ function rutaRestaurar(){
     return {l:e.l, kw:e.kw||'', dia:e.dia, sub:false}; });
   save(); rutaModal();
 }
+// Desplegar o plegar una columna larga. Por nombre y no por indice: si se
+// reordena la ruta, el que estaba abierto sigue siendo el mismo.
+function p360VerMas(col){
+  S._p3ColAbierta=S._p3ColAbierta||{};
+  if(S._p3ColAbierta[col]) delete S._p3ColAbierta[col];
+  else S._p3ColAbierta[col]=true;
+  if(typeof showTickets==='function') showTickets();
+}
 function p360AbrirCol(etapa){
   S.p360Col=(S.p360Col===etapa)?null:etapa;
   showTickets();
@@ -26761,6 +26793,14 @@ function p360Html(){
         +((f.dias!==null&&f.dias!==undefined)?(' \u00b7 '+f.dias+' d'):'');
     } else {
       mt=(d.et&&d.et.estado==='tarde')?'etapa atrasada':'sin frenos';
+      // Un prospecto que nunca va a moverse solo tiene que decirlo. Sin
+      // transcripcion no hay nada que leer, y "sin frenos" se lee como que esta
+      // todo bien cuando en realidad el lead se queda ahi para siempre.
+      if(esProspecto(d.c) && typeof d.c.prospectoEtapa!=='number'){
+        var sn=_p360Senal(d.c);
+        if(sn.sinTexto) mt='sin transcripcion';
+        else if(!(d.c.fathomCalls||[]).length) mt='sin llamadas';
+      }
     }
     // La proxima reunion de cualquier etapa: con la fecha ya agendada, un chip
     // rojo se lee como "esto esta parado" cuando en realidad espera un dia que
@@ -26872,7 +26912,21 @@ function p360Html(){
           +'onclick="p360AbrirCol(\''+esc(col.l).replace(/'/g,"\\'")+'\')" '
           +'title="Ver por donde va cada uno dentro de '+esc(col.l)+'">'
           +'<span>'+esc(col.l)+'</span><b>'+(col.cards.length||'')+'</b></div>'
-        +(col.cards.length?col.cards.map(tarjeta).join('')
+        // Una columna con quince leads estira el tablero entero y las demas
+        // quedan flotando arriba de un vacio. Se muestran las primeras y el
+        // resto se abre desde el pie de la columna.
+        +(col.cards.length?(function(){
+            var tope=6;
+            var abierta=((S._p3ColAbierta||{})[col.l]);
+            var ver=abierta?col.cards:col.cards.slice(0,tope);
+            var ocultas=col.cards.length-ver.length;
+            return ver.map(tarjeta).join('')
+              +((ocultas>0||abierta)
+                ? ('<button class="p3mas" onclick="event.stopPropagation();p360VerMas(\''
+                    +lb+'\')">'
+                  +(abierta?'ver menos':('ver '+ocultas+' mas'))+'</button>')
+                : '');
+          })()
           :'<div class="p3nada"></div>')
       +'</div>';
     }).join('')
