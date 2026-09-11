@@ -7186,6 +7186,85 @@ function _p360Desde(c){
   var dias=Math.floor((Date.now()-f.getTime())/86400000);
   return {fecha:f, dias:dias<0?0:dias};
 }
+// ---- Alta automatica al pasar a onboarding -------------------------------
+// Pasar un lead a onboarding es convertirlo en cliente, y hasta ahora eso dejaba
+// la ficha entera vacia: habia que volver a escuchar las mismas llamadas para
+// cargar a mano lo que ya estaba dicho ahi.
+function _iOnboarding(){
+  var cols=rutaColumnas();
+  for(var i=0;i<cols.length;i++){
+    if(/onboarding/i.test(String(cols[i].l||''))) return i;
+  }
+  return -1;
+}
+// Los datos duros del cliente, de las mismas llamadas. Solo completa lo que esta
+// vacio: lo que cargaste a mano nunca se pisa.
+async function p360DatosLeer(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return {error:'no existe'};
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaPorOtroLado()) return {error:'Falta la clave o el puente.'};
+  var mat=_llamadasParaIA(c);
+  if(!mat.items.length) return {error:'sin material'};
+  var pedido='Abajo estan las llamadas y documentos del cliente '+(c.name||'')+'.\n\n'
+    +'Sacá SOLO los datos duros que se digan explicitamente. No deduzcas.\n\n'
+    +'REGLAS:\n'
+    +'- contacto: nombre y apellido de la persona con la que hablamos.\n'
+    +'- email y telefono: solo si se dictan o se leen en voz alta.\n'
+    +'- industria: en dos o tres palabras, en castellano. Nada de jerga.\n'
+    +'- web: el dominio, sin http.\n'
+    +'- Campo que no aparezca, string vacio. Un vacio es mejor que un invento.\n'
+    +'- Devolve SOLO un JSON, sin markdown:\n'
+    +'{"contacto":"","email":"","phone":"","industry":"","web":""}\n\n'
+    +'MATERIAL:\n\n'
+    +mat.items.map(function(x){ return '### '+x.titulo+'\n'+x.texto; }).join('\n\n');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey||'',
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:300,
+        messages:[{role:'user', content:pedido}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var j=JSON.parse(String(((d.content||[])[0]||{}).text||'').trim()
+      .replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim());
+    var puestos=[];
+    [['contacto','contacto'],['email','email'],['phone','phone'],
+     ['industry','industry'],['web','web']].forEach(function(par){
+      var v=String(j[par[0]]||'').trim();
+      // Nunca pisa lo cargado a mano.
+      if(v && !String(c[par[1]]||'').trim()){ c[par[1]]=v; puestos.push(par[1]); }
+    });
+    save();
+    return {ok:true, puestos:puestos};
+  }catch(e){ return {error:e.message||'no pude leerlo'}; }
+}
+// Todo junto, al pasar a onboarding. De a uno porque el puente atiende un
+// pedido por vez.
+async function p360AltaAutomatica(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var hechas=[];
+  if(!_queHace(c)){
+    toast('Leyendo que hace '+(c.name||'')+'...');
+    try{ await queHaceLeer(clientId); if(_queHace(c)) hechas.push('que hace'); }catch(e){}
+  }
+  toast('Buscando los datos del cliente...');
+  var d=await p360DatosLeer(clientId);
+  if(d&&d.ok&&d.puestos.length) hechas.push(d.puestos.length+' datos de la ficha');
+  if(!_acordado(c)){
+    toast('Leyendo lo que se acordo...');
+    try{ await acordadoLeer(clientId); if(_acordado(c)) hechas.push('lo acordado'); }catch(e){}
+  }
+  if(typeof renderTab==='function') renderTab();
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+  toast(hechas.length
+    ? ('Listo: '+hechas.join(', ')+'. Revisa la facturacion antes de darla por buena.')
+    : 'No pude sacar nada de las llamadas.');
+}
 // ---- Leer el lead con IA -------------------------------------------------
 // Los patrones de frases aciertan lo obvio y se pierden todo lo demas: "lo hablo
 // con mi socio y te confirmo el viernes" no es un no, y "me encanta" sin fecha
@@ -24792,10 +24871,15 @@ function p360ConfirmarMover(clientId, etapa, _reabrir){
     // Se anota el dia: "hace cuanto esta aca" es la pregunta que uno se hace
     // mirando la columna, y sin esta marca no habia de donde sacarla.
     if(c.prospectoEtapa!==j) c.prospectoEtapaAt=new Date().toISOString();
+    var antes=(typeof c.prospectoEtapa==='number')?c.prospectoEtapa:-1;
     c.prospectoEtapa=j;
     save();
     if(typeof renderTab==='function') renderTab();
     toast(c.name+' \u2192 '+etapa);
+    // Cruzar a onboarding es volverse cliente: lo que ya se dijo en las llamadas
+    // se carga solo en vez de volver a escucharlas para tipearlo a mano.
+    var iOnb=_iOnboarding();
+    if(iOnb>=0 && antes<iOnb && j>=iOnb) p360AltaAutomatica(c.id);
     return;
   }
   S._p360Destino=etapa;
