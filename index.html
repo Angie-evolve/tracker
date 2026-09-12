@@ -14829,9 +14829,12 @@ function _edMaxMin(){
   return Math.floor((ED_LIMITE_MB*0.92*8*1048576)/(300000+64000)/60);
 }
 
+// Sin fijar perfil ni nivel. avc1.42E01E es Baseline 3.0, que topa cerca de
+// 720x576: con un video vertical de 1080x1920 isTypeSupported decia que si
+// —mira el string, no la resolucion— y despues el encoder tiraba EncodingError
+// y grababa cero bytes. Probado con un video real: 'video/mp4' pelado anda.
 function _edTipoSalida(){
-  var op=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4',
-          'video/webm;codecs=vp9,opus','video/webm'];
+  var op=['video/mp4','video/webm;codecs=vp9,opus','video/webm'];
   for(var i=0;i<op.length;i++) if(MediaRecorder.isTypeSupported(op[i])) return op[i];
   return '';
 }
@@ -14866,8 +14869,12 @@ function _edComprimir(f, onProg){
         return;
       }
       if(bVideo>2500000) bVideo=2500000;
-      var ancho=Math.min(v.videoWidth||1280, 1280);
-      var alto=Math.round((v.videoHeight||720)*ancho/(v.videoWidth||1280));
+      // Se limita el lado LARGO. Mirando solo el ancho, un video vertical de
+      // 1080x1920 pasaba sin achicarse nada.
+      var vw=v.videoWidth||1280, vh=v.videoHeight||720;
+      var largo=Math.max(vw,vh);
+      var esc=(largo>1280)?(1280/largo):1;
+      var ancho=Math.round(vw*esc), alto=Math.round(vh*esc);
       if(ancho%2) ancho++;
       if(alto%2) alto++;
       var cv=document.createElement('canvas'); cv.width=ancho; cv.height=alto;
@@ -14882,12 +14889,19 @@ function _edComprimir(f, onProg){
         mr=new MediaRecorder(salida,{mimeType:tipo, videoBitsPerSecond:bVideo,
                                      audioBitsPerSecond:bAudio});
       }catch(e){ limpiar(); rej(new Error('no pude arrancar la compresión: '+e.message)); return; }
-      var trozos=[];
+      var trozos=[], falla='';
       mr.ondataavailable=function(ev){ if(ev.data&&ev.data.size) trozos.push(ev.data); };
+      // Sin esto el encoder podia fallar en silencio y la promesa resolvia con
+      // un blob vacio, que despues se subia como archivo de 0 bytes.
+      mr.onerror=function(ev){ falla=(ev&&ev.error&&ev.error.name)||'error del encoder'; };
+      v.addEventListener('error', function(){ if(!falla) falla='el navegador soltó el video'; });
       mr.onstop=function(){
         var base=tipo.indexOf('mp4')>=0?'.mp4':'.webm';
         var blob=new Blob(trozos,{type:tipo.split(';')[0]});
         limpiar();
+        if(falla) return rej(new Error('la compresión falló ('+falla+')'));
+        if(blob.size<1024) return rej(new Error('la compresión salió vacía: el navegador no '
+          +'pudo codificar este video'));
         res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
       };
       var pintar=function(){
@@ -14982,6 +14996,7 @@ async function edSubir(modo){
         throw new Error('Aun comprimido quedó en '+_matTam(datos.size)+', y el tope es '
           +ED_LIMITE_MB+' MB. Cortalo en partes más cortas.');
     }
+    if(!datos.size) throw new Error('el archivo quedó en 0 bytes, no lo subo');
     var path=uid+'/'+Date.now()+'-'+_matSlug(nombre);
     await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
       e.pct=p; decir('Subiendo… '+Math.round(p*100)+'%');
