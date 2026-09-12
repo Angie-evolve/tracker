@@ -19,6 +19,6 @@ ENV WHISPER_MODELO=${WHISPER_MODELO}
 RUN python -c "from faster_whisper import WhisperModel; \
 WhisperModel('${WHISPER_MODELO}', device='cpu', compute_type='int8')"
 
-COPY auto_editor.py transcribe.py worker.py ./
+COPY auto_editor.py transcribe.py decisiones.py worker.py ./
 
 CMD ["python", "-u", "worker.py"]

@@ -14772,6 +14772,157 @@ function sbUid(){
   }catch(e){ return ''; }
 }
 
+// ---- Formatos de edicion -------------------------------------------------
+// Dos perillas sueltas no guardan un criterio: cada video arrancaba de cero y
+// el gusto se perdia. Un formato es el gusto con nombre, y es donde despues se
+// va a apoyar todo lo demas (el guion, y el criterio escrito).
+var ED_FORMATOS_BASE=[
+  {id:'reel', nombre:'Reel dinámico', umbralDb:-30, minSilencio:0.4, aire:0.06, clipMin:0.25,
+   quitarMuletillas:true, muletillas:'eh, ehh, em, este, o sea, digamos, tipo, viste',
+   tomasRepetidas:true,
+   subtitulo:{palabras:3, tam:34, pos:'medio', mayusculas:true, margen:70, borde:3},
+   criterio:''},
+  {id:'testimonio', nombre:'Testimonio', umbralDb:-33, minSilencio:0.9, aire:0.18, clipMin:0.5,
+   quitarMuletillas:true, muletillas:'eh, ehh, em',
+   tomasRepetidas:true,
+   subtitulo:{palabras:6, tam:24, pos:'abajo', mayusculas:false, margen:60, borde:2},
+   criterio:''},
+  {id:'clase', nombre:'Clase larga', umbralDb:-35, minSilencio:1.5, aire:0.25, clipMin:1,
+   quitarMuletillas:false, muletillas:'',
+   tomasRepetidas:false,
+   subtitulo:{palabras:8, tam:22, pos:'abajo', mayusculas:false, margen:50, borde:2},
+   criterio:''}
+];
+function edFormatos(){
+  if(!Array.isArray(DB.formatosEdicion) || !DB.formatosEdicion.length){
+    // Copia profunda: si se guardara la constante, editar un formato pisaria el
+    // default y no habria a que volver.
+    DB.formatosEdicion=JSON.parse(JSON.stringify(ED_FORMATOS_BASE));
+  }
+  return DB.formatosEdicion;
+}
+function edFormatoSel(){
+  var l=edFormatos();
+  var id='';
+  try{ id=localStorage.getItem('evold-ed-formato')||''; }catch(e){}
+  return l.filter(function(x){ return x.id===id; })[0] || l[0];
+}
+function edElegirFormato(id){
+  try{ localStorage.setItem('evold-ed-formato', id); }catch(e){}
+  _edPintar();
+}
+// Lo que viaja al worker. Es la traduccion del formato a los nombres que espera
+// del otro lado; la pantalla no manda su estructura interna.
+function _edOpciones(){
+  var f=edFormatoSel();
+  var mul=String(f.muletillas||'').split(',').map(function(x){ return x.trim(); })
+    .filter(Boolean);
+  return {
+    umbral_db:+f.umbralDb, min_silencio:+f.minSilencio,
+    aire:+f.aire, clip_min:+f.clipMin,
+    muletillas:(f.quitarMuletillas && mul.length)?mul:null,
+    tomas_repetidas:!!f.tomasRepetidas,
+    subtitulo:{
+      palabras:+((f.subtitulo||{}).palabras||8),
+      tam:+((f.subtitulo||{}).tam||24),
+      pos:((f.subtitulo||{}).pos||'abajo'),
+      mayusculas:!!((f.subtitulo||{}).mayusculas),
+      margen:+((f.subtitulo||{}).margen||60),
+      borde:+((f.subtitulo||{}).borde||2)
+    },
+    formato:f.nombre
+  };
+}
+function _edResumen(f){
+  var p=[];
+  p.push(f.minSilencio+'s de silencio');
+  p.push(f.aire+'s de aire');
+  if(f.quitarMuletillas && String(f.muletillas||'').trim()) p.push('sin muletillas');
+  if(f.tomasRepetidas) p.push('descarta tomas repetidas');
+  var sb=f.subtitulo||{};
+  p.push('subtítulo '+(sb.palabras||8)+' palabras'+(sb.mayusculas?', mayúsculas':''));
+  return p.join(' · ');
+}
+function edFormatoModal(){
+  var f=edFormatoSel(), sb=f.subtitulo||(f.subtitulo={});
+  var campo=function(id, label, val, tipo, extra){
+    return '<div class="ed-campo"><label>'+label+'</label>'
+      +'<input id="'+id+'" type="'+(tipo||'text')+'" value="'+esc(String(val))+'" '
+      +(extra||'')+' style="width:100%;box-sizing:border-box"></div>';
+  };
+  var tick=function(id, label, on){
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;'
+      +'color:var(--text2);cursor:pointer;padding:6px 0">'
+      +'<input id="'+id+'" type="checkbox"'+(on?' checked':'')+'>'+label+'</label>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:720px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">'+esc(f.nombre)+'</div>'
+      +'<div class="modal-sub">Lo que cambies acá queda guardado en el formato y se usa '
+        +'en todos los videos que edites con él.</div>'
+      +'<div class="ed-row">'+campo('fmt-nombre','Nombre',f.nombre)+'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.05em;margin:14px 0 8px">El corte</div>'
+      +'<div class="ed-row">'
+        +campo('fmt-umbral','Sensibilidad (dB)',f.umbralDb,'number','step="1" min="-45" max="-15"')
+        +campo('fmt-minsil','Silencio mínimo (s)',f.minSilencio,'number','step="0.1" min="0.2" max="3"')
+      +'</div>'
+      +'<div class="ed-row">'
+        +campo('fmt-aire','Aire en cada corte (s)',f.aire,'number','step="0.02" min="0" max="0.5"')
+        +campo('fmt-clipmin','Clip más corto (s)',f.clipMin,'number','step="0.05" min="0.1" max="3"')
+      +'</div>'
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.05em;margin:18px 0 8px">Lo que se dice</div>'
+      +tick('fmt-mul','Sacar muletillas', f.quitarMuletillas)
+      +'<div class="ed-row">'+campo('fmt-mullista','Cuáles (separadas por coma)',f.muletillas||'')+'</div>'
+      +tick('fmt-rep','Si repetís una frase, quedarse con la última', f.tomasRepetidas)
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.05em;margin:18px 0 8px">El subtítulo</div>'
+      +'<div class="ed-row">'
+        +campo('fmt-palabras','Palabras por línea',sb.palabras||8,'number','step="1" min="1" max="14"')
+        +campo('fmt-tam','Tamaño',sb.tam||24,'number','step="1" min="10" max="72"')
+      +'</div>'
+      +'<div class="ed-row">'
+        +'<div class="ed-campo"><label>Posición</label>'
+          +'<select id="fmt-pos" style="width:100%;box-sizing:border-box">'
+          +['abajo','medio','arriba'].map(function(v){
+            return '<option value="'+v+'"'+((sb.pos||'abajo')===v?' selected':'')+'>'+v+'</option>';
+          }).join('')+'</select></div>'
+        +campo('fmt-margen','Margen al borde',sb.margen||60,'number','step="5" min="0" max="300"')
+      +'</div>'
+      +tick('fmt-mayus','En mayúsculas', sb.mayusculas)
+      +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.05em;margin:18px 0 8px">Cómo editás vos</div>'
+      +'<textarea id="fmt-criterio" rows="5" style="width:100%;box-sizing:border-box;'
+        +'font-family:var(--font);font-size:12.5px" placeholder="Ej: no cortes la respiración '
+        +'antes de un remate. Arrancá directo, sin saludo. Si dudo y me corrijo, quedate con lo '
+        +'segundo.">'+esc(f.criterio||'')+'</textarea>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.55">'
+        +'Esto todavía no lo lee nadie: es el texto que va a leer Claude cuando conectemos '
+        +'la parte que decide los cortes por criterio. Podés ir escribiéndolo.</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="edFormatoGuardar()">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function edFormatoGuardar(){
+  var f=edFormatoSel();
+  var v=function(id){ var el=document.getElementById(id); return el?el.value:''; };
+  var ck=function(id){ var el=document.getElementById(id); return !!(el&&el.checked); };
+  f.nombre=String(v('fmt-nombre')||'').trim()||f.nombre;
+  f.umbralDb=+v('fmt-umbral'); f.minSilencio=+v('fmt-minsil');
+  f.aire=+v('fmt-aire'); f.clipMin=+v('fmt-clipmin');
+  f.quitarMuletillas=ck('fmt-mul'); f.muletillas=v('fmt-mullista');
+  f.tomasRepetidas=ck('fmt-rep');
+  f.subtitulo={palabras:+v('fmt-palabras'), tam:+v('fmt-tam'), pos:v('fmt-pos'),
+               margen:+v('fmt-margen'), mayusculas:ck('fmt-mayus'),
+               borde:(f.subtitulo||{}).borde||2};
+  f.criterio=v('fmt-criterio');
+  save(); closeModal(); _edPintar();
+  toast('Formato guardado');
+}
 function _edEstado(){ return (S.ed=S.ed||{}); }
 
 // Repinta solo el bloque del editor. Volver a correr showTickets() entero
@@ -14789,18 +14940,6 @@ function edElegir(inp){
   // repintar, el <input type=file> se crea de cero y pierde la seleccion.
   e.fila=null; e.jobId=null; e.error='';
   _edPintar();
-}
-
-function edPerilla(cual, v){
-  var e=_edEstado();
-  e[cual]=+v;
-  var el=document.getElementById('ed-'+cual+'-val');
-  if(!el) return;
-  // Se toca solo la etiqueta: repintar entero le saca el foco al slider en
-  // medio del arrastre.
-  el.textContent=(cual==='umbral')
-    ? (e.umbral+' dB · mas negativo = mas estricto')
-    : (e.minsil.toFixed(1)+'s seguidos');
 }
 
 function edLimpiar(){
@@ -15006,8 +15145,7 @@ async function edSubir(modo){
       headers:{'Prefer':'return=representation'},
       body:JSON.stringify({
         video_path:path, modo:modo,
-        opciones:{ umbral_db:(e.umbral!==undefined?e.umbral:-30),
-                   min_silencio:(e.minsil!==undefined?e.minsil:0.6) }
+        opciones:_edOpciones()
       })
     });
     var fila=(filas&&filas[0])||null;
@@ -15160,8 +15298,6 @@ function _edCuerpo(){
   if(e.hist===undefined){ e.hist=null; edCargar(); }
 
   var f=e.archivo;
-  var umbral=(e.umbral!==undefined?e.umbral:-30);
-  var minsil=(e.minsil!==undefined?e.minsil:0.6);
   var corriendo=!!(e.fila && (e.fila.estado==='pendiente'||e.fila.estado==='procesando'));
   var h='';
 
@@ -15188,16 +15324,22 @@ function _edCuerpo(){
       +'</div>';
   }
 
-  h+='<div class="ed-row">'
-    +'<div class="ed-campo"><label>Sensibilidad de silencio</label>'
-      +'<input type="range" min="-45" max="-15" step="1" value="'+umbral+'" '
-        +'oninput="edPerilla(\'umbral\',this.value)">'
-      +'<div class="val" id="ed-umbral-val">'+umbral+' dB · más negativo = más estricto</div></div>'
-    +'<div class="ed-campo"><label>Silencio mínimo para cortar</label>'
-      +'<input type="range" min="0.2" max="2" step="0.1" value="'+minsil+'" '
-        +'oninput="edPerilla(\'minsil\',this.value)">'
-      +'<div class="val" id="ed-minsil-val">'+minsil.toFixed(1)+'s seguidos</div></div>'
-    +'</div>';
+  var fmt=edFormatoSel();
+  h+='<div style="margin-bottom:8px"><label style="display:block;font-size:10.5px;'
+      +'color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">'
+      +'Formato de edición</label>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +edFormatos().map(function(x){
+      var on=(x.id===fmt.id);
+      return '<button class="btn btn-sm" onclick="edElegirFormato(\''+esc(x.id)+'\')" style="'
+        +(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
+        +esc(x.nombre)+'</button>';
+    }).join('')
+    +'<button class="btn btn-sm" onclick="edFormatoModal()" style="color:var(--text3);'
+      +'border-style:dashed">Ajustar</button>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-top:8px">'+esc(_edResumen(fmt))+'</div>'
+    +'</div><div style="height:14px"></div>';
 
   var quieto=(!f||e.subiendo||corriendo);
   h+='<div class="ed-acciones">'

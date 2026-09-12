@@ -16,6 +16,7 @@ import requests
 
 import auto_editor
 import transcribe
+import decisiones as D
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -99,15 +100,17 @@ def subir(local, path, tipo="application/octet-stream"):
 
 # ------------------------------------------------------------ el trabajo ----
 
-def transcribir(video, tmp, out_srt):
+def transcribir(video, tmp):
     """
-    transcribir_video() deja audio_16k.wav en el CWD del proceso. Se llaman los
-    tres pasos por separado para que lo temporal quede en la carpeta del
-    trabajo y se borre con ella.
+    Devuelve las palabras con sus tiempos, no un .srt: sobre eso se deciden los
+    cortes, y el .srt se arma despues.
+
+    transcribir_video() ademas deja audio_16k.wav en el CWD del proceso, asi que
+    se llaman los pasos por separado para que lo temporal quede en la carpeta
+    del trabajo y se borre con ella.
     """
     wav = transcribe.extraer_audio(video, os.path.join(tmp, "audio_16k.wav"))
-    palabras = transcribe.transcribir_local(wav, modelo=MODELO)
-    return transcribe.palabras_a_srt(palabras, out_srt=out_srt)
+    return transcribe.transcribir_local(wav, modelo=MODELO)
 
 
 _FILTROS = None
@@ -126,7 +129,29 @@ def hay_filtro(nombre):
     return f" {nombre} " in _FILTROS
 
 
-def quemar_subtitulos(video, srt, salida):
+def escribir_srt(palabras, sub, ruta):
+    """El .srt con el agrupado y las mayusculas que pida el formato."""
+    if sub.get("mayusculas"):
+        palabras = [dict(w, word=str(w.get("word", "")).upper()) for w in palabras]
+    return transcribe.palabras_a_srt(
+        palabras, max_palabras_por_linea=int(sub.get("palabras", 8)), out_srt=ruta)
+
+
+def _force_style(sub):
+    """
+    El aspecto del cartel quemado, en el formato que entiende libass. Sin esto
+    ffmpeg usa su default: Arial 16 pegado abajo, que en vertical no se lee.
+    """
+    partes = ["Alignment=%d" % {"abajo": 2, "medio": 5, "arriba": 8}.get(sub.get("pos"), 2),
+              "MarginV=%d" % int(sub.get("margen", 60)),
+              "Outline=%d" % int(sub.get("borde", 2)),
+              "FontSize=%d" % int(sub.get("tam", 24))]
+    if sub.get("fuente"):
+        partes.append("FontName=%s" % sub["fuente"])
+    return ",".join(partes)
+
+
+def quemar_subtitulos(video, srt, salida, sub=None):
     """
     Los subtitulos van pegados en la imagen. El filtro se corre con cwd en la
     carpeta del srt: el nombre del archivo entra crudo en el string del filtro
@@ -139,9 +164,10 @@ def quemar_subtitulos(video, srt, salida):
             "resuelve con: apt-get install -y ffmpeg")
     # Solo el srt entra crudo en el string del filtro, asi que ese es el unico
     # que va relativo; la entrada y la salida van con path completo.
+    filtro = "subtitles=%s:force_style='%s'" % (os.path.basename(srt), _force_style(sub or {}))
     subprocess.run(
         ["ffmpeg", "-y", "-i", os.path.abspath(video),
-         "-vf", f"subtitles={os.path.basename(srt)}",
+         "-vf", filtro,
          "-c:a", "copy", os.path.abspath(salida), "-loglevel", "error"],
         cwd=os.path.dirname(os.path.abspath(srt)), check=True)
     return salida
@@ -152,25 +178,45 @@ def procesar(fila, tmp):
     base    = os.path.join(tmp, "fuente.mp4")
     bajar(fila["video_path"], base)
 
-    # Las perillas de la pantalla. Si el trabajo es viejo o vino sin opciones,
-    # se usan los mismos defaults que tiene auto_editor por su cuenta.
-    op        = fila.get("opciones") or {}
-    dur       = auto_editor.ffprobe_duration(base)
-    silencios = auto_editor.detectar_silencios(
-                    base,
-                    umbral_db=float(op.get("umbral_db", -30)),
-                    min_silencio=float(op.get("min_silencio", 0.6)))
-    clips     = auto_editor.armar_cortes(dur, silencios)
-    final_s   = auto_editor.duracion_total(clips)
+    op      = fila.get("opciones") or {}
+    sub     = op.get("subtitulo") or {}
+    aire    = float(op.get("aire", 0.12))
+    clipmin = float(op.get("clip_min", 0.3))
+    # None = no tocar las muletillas. Lista vacia tambien, para que apagarlo
+    # desde la pantalla sea mandar [] y no haya que inventar otro campo.
+    muletillas = op.get("muletillas")
+    repetidas  = bool(op.get("tomas_repetidas"))
 
-    # Se guarda apenas se calcula: la pantalla puede mostrar los numeros reales
-    # mientras todavia falta la parte lenta, que es Whisper.
+    dur = auto_editor.ffprobe_duration(base)
+
+    # Se transcribe ANTES de cortar, y siempre. Es al reves de como estaba, y es
+    # lo que permite decidir por lo que se dice —muletillas, tomas repetidas— y
+    # no solo por donde baja el audio. Los subtitulos del modo render se corren
+    # despues a la linea de tiempo del cortado.
+    palabras = transcribir(base, tmp)
+
+    silencios = auto_editor.detectar_silencios(
+        base,
+        umbral_db=float(op.get("umbral_db", -30)),
+        min_silencio=float(op.get("min_silencio", 0.6)))
+
+    t_mul = D.tramos_muletillas(palabras, muletillas) if muletillas else []
+    t_rep = D.tramos_tomas_repetidas(palabras) if repetidas else []
+    # Los silencios llevan aire; lo que sale de la transcripcion, no.
+    clips   = D.conservar(dur, list(silencios), aire=aire, clip_min=clipmin,
+                          exacto=t_mul + t_rep)
+    final_s = D.duracion_total(clips)
+
     marcar(fila["id"], analisis={
         "duracion": round(dur, 2),
         "silencios": [{"inicio": round(a, 2), "fin": round(b, 2)} for a, b in silencios],
         "clips": [{"inicio": a, "fin": b} for a, b in clips],
         "duracion_final": final_s,
         "ahorro_pct": round(100 * (dur - final_s) / dur) if dur else 0,
+        # De donde salio cada corte. Sin esto, ver "67% mas corto" no dice si
+        # sobraba aire o si se comio media charla.
+        "porque": {"silencios": len(silencios), "muletillas": len(t_mul),
+                   "repetidas": len(t_rep), "palabras": len(palabras)},
     })
 
     sello = str(int(time.time()))
@@ -178,17 +224,17 @@ def procesar(fila, tmp):
     if fila["modo"] == "render":
         cortado = os.path.join(tmp, "cortado.mp4")
         auto_editor.render_final(base, clips, cortado)
-        # Se transcribe el video YA CORTADO: los tiempos del srt tienen que
-        # coincidir con el video que se entrega, no con el crudo.
-        srt = transcribir(cortado, tmp, os.path.join(tmp, "subs.srt"))
+        # Los tiempos pasan a la linea del video cortado: se calcularon sobre el
+        # crudo, pero se muestran sobre el que se entrega.
+        srt = escribir_srt(D.remapear(palabras, clips), sub, os.path.join(tmp, "subs.srt"))
         listo = os.path.join(tmp, "final.mp4")
-        quemar_subtitulos(cortado, srt, listo)
+        quemar_subtitulos(cortado, srt, listo, sub)
         p_video = subir(listo, f"{carpeta}/{sello}_final.mp4", "video/mp4")
         p_srt   = subir(srt,   f"{carpeta}/{sello}_final.srt", "text/plain")
     else:
-        # En CapCut se importa el video CRUDO y se le aplica el plan, asi que
-        # el srt tiene que estar en la linea de tiempo del crudo.
-        srt = transcribir(base, tmp, os.path.join(tmp, "subs.srt"))
+        # En CapCut se importa el video CRUDO y se le aplica el plan, asi que el
+        # srt va en la linea de tiempo del crudo: sin remapear.
+        srt = escribir_srt(palabras, sub, os.path.join(tmp, "subs.srt"))
         plan = os.path.join(tmp, "plan_de_corte.json")
         with open(srt, encoding="utf-8") as f:
             texto_srt = f.read()
