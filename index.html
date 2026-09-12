@@ -14997,17 +14997,117 @@ function edGuionTexto(v){
 // Leer el guion de un archivo. Se acepta texto plano; un .docx o un .pdf se
 // avisan por nombre en vez de dejar que FileReader devuelva basura binaria y
 // que despues el motor "no encuentre" ningun bloque sin decir por que.
+// Un .docx es un zip con XML adentro. Se abre a mano —el navegador sabe
+// inflar con DecompressionStream— para no depender de ninguna libreria.
+async function _edLeerDocx(file){
+  var buf=new Uint8Array(await file.arrayBuffer());
+  var dv=new DataView(buf.buffer);
+  // Se recorre el directorio central del zip, que es donde estan los nombres y
+  // la posicion de cada archivo. Leer las cabeceras locales de corrido falla
+  // cuando el tamano viene en el descriptor de atras.
+  var fin=-1;
+  for(var i=buf.length-22;i>=0 && i>buf.length-70000;i--){
+    if(dv.getUint32(i,true)===0x06054b50){ fin=i; break; }
+  }
+  if(fin<0) throw new Error('no parece un .docx');
+  var n=dv.getUint16(fin+10,true), off=dv.getUint32(fin+16,true);
+  var td=new TextDecoder();
+  for(var k=0;k<n;k++){
+    if(dv.getUint32(off,true)!==0x02014b50) break;
+    var metodo=dv.getUint16(off+10,true);
+    var comp=dv.getUint32(off+20,true);
+    var lname=dv.getUint16(off+28,true), lex=dv.getUint16(off+30,true),
+        lcom=dv.getUint16(off+32,true), lhead=dv.getUint32(off+42,true);
+    var nombre=td.decode(buf.subarray(off+46, off+46+lname));
+    if(nombre==='word/document.xml'){
+      var lnameL=dv.getUint16(lhead+26,true), lexL=dv.getUint16(lhead+28,true);
+      var datos=buf.subarray(lhead+30+lnameL+lexL, lhead+30+lnameL+lexL+comp);
+      var xml;
+      if(metodo===0){ xml=td.decode(datos); }
+      else {
+        var st=new Blob([datos]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        xml=await new Response(st).text();
+      }
+      // Cada <w:p> es un parrafo: es justo la division en bloques que necesita
+      // el guion, asi que se conserva como salto doble.
+      return xml.replace(/<\/w:p>/g,'\n\n').replace(/<[^>]+>/g,'')
+                .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+                .replace(/\n{3,}/g,'\n\n').trim();
+    }
+    off += 46 + lname + lex + lcom;
+  }
+  throw new Error('el .docx no tiene texto adentro');
+}
+
+// pdf.js se baja recien cuando hace falta: son 1.4 MB y la mayoria de los
+// guiones no son PDF.
+var _EDPDF=null;
+function _edCargarPdfJs(){
+  if(_EDPDF) return _EDPDF;
+  _EDPDF=new Promise(function(res, rej){
+    var base='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+    var sc=document.createElement('script');
+    sc.src=base+'pdf.min.js';
+    sc.onload=function(){
+      var lib=window.pdfjsLib;
+      if(!lib) return rej(new Error('no cargó pdf.js'));
+      lib.GlobalWorkerOptions.workerSrc=base+'pdf.worker.min.js';
+      res(lib);
+    };
+    sc.onerror=function(){ rej(new Error('no pude bajar el lector de PDF. ¿Estás sin internet?')); };
+    document.head.appendChild(sc);
+  });
+  return _EDPDF;
+}
+async function _edLeerPdf(file){
+  var lib=await _edCargarPdfJs();
+  var doc=await lib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  var partes=[];
+  for(var p=1;p<=doc.numPages;p++){
+    var c=await (await doc.getPage(p)).getTextContent();
+    // El PDF no tiene parrafos, tiene posiciones. Se corta por salto de linea
+    // real: cuando la Y baja mas que el alto de una linea, es parrafo nuevo.
+    var linea='', y=null, texto='';
+    c.items.forEach(function(it){
+      var ny=it.transform[5];
+      if(y!==null && Math.abs(ny-y)>2){
+        texto+=linea.trim()+(Math.abs(ny-y)>16?'\n\n':'\n');
+        linea='';
+      }
+      linea+=it.str;
+      y=ny;
+    });
+    texto+=linea.trim();
+    partes.push(texto);
+  }
+  return partes.join('\n\n').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
+}
+
 function edGuionArchivo(inp){
   var f=inp&&inp.files&&inp.files[0];
   if(inp) inp.value='';
   if(!f) return;
   var n=String(f.name||'').toLowerCase();
-  if(/\.(docx?|pdf|pages|key|rtf)$/.test(n)){
-    toast('Ese formato no lo puedo leer. Abrilo y guardalo como texto (.txt) o '
-      +'copiá y pegá el contenido acá abajo.','amber');
+  if(f.size>20*1048576){ toast('El archivo pesa demasiado para ser un guion.','amber'); return; }
+  if(/\.(pdf|docx)$/.test(n)){
+    var esPdf=/\.pdf$/.test(n);
+    toast('Leyendo el '+(esPdf?'PDF':'documento')+'…');
+    (esPdf?_edLeerPdf(f):_edLeerDocx(f)).then(function(t){
+      t=String(t||'').trim();
+      if(!t){ toast('No encontré texto adentro. Si es un PDF escaneado, es una '
+        +'imagen y no tiene texto que leer.','amber'); return; }
+      var e=_edEstado();
+      e.guion=t; e.guionId='';
+      _edPintar();
+      toast('Guion cargado desde '+f.name+' · '
+        +t.split(/\n\s*\n/).filter(Boolean).length+' bloques');
+    }).catch(function(err){ toast('No pude leerlo: '+(err&&err.message||''),'red'); });
     return;
   }
-  if(f.size>2*1048576){ toast('El archivo pesa demasiado para ser un guion.','amber'); return; }
+  if(/\.(doc|pages|key|rtf)$/.test(n)){
+    toast('Ese formato no lo puedo leer. Guardalo como PDF, .docx o texto.','amber');
+    return;
+  }
   var r=new FileReader();
   r.onerror=function(){ toast('No pude leer el archivo.','red'); };
   r.onload=function(){
@@ -15065,13 +15165,14 @@ function _edGuionHtml(){
       +(e.guionId?('<button class="btn btn-sm" onclick="edGuionBorrar(\''+esc(String(e.guionId))
         +'\')" style="color:var(--text3);border-style:dashed">Borrar</button>'):'')
       +'</div>'):'')
-    +'<input type="file" id="ed-guion-file" accept=".txt,.md,.markdown,.srt,text/*" '
+    +'<input type="file" id="ed-guion-file" accept=".txt,.md,.markdown,.srt,.pdf,.docx,text/*" '
       +'style="display:none" onchange="edGuionArchivo(this)">'
     +'<textarea id="ed-guion" rows="4" oninput="edGuionTexto(this.value)" '
       +'ondragover="event.preventDefault()" ondrop="edGuionSoltar(event)" '
       +'style="width:100%;box-sizing:border-box;font-family:var(--font);font-size:12.5px" '
-      +'placeholder="Pegá lo que ibas a decir, un párrafo por bloque. O arrastrá un .txt acá. '
-      +'Con esto elige mejor entre dos tomas de la misma frase y te avisa si te salteaste un bloque.">'
+      +'placeholder="Pegá lo que ibas a decir, un párrafo por bloque. O arrastrá el archivo acá. '
+      +'También lee PDF y Word. Con esto elige mejor entre dos tomas de la misma frase '
+      +'y te avisa si te salteaste un bloque.">'
       +esc(e.guion||'')+'</textarea>'
     +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">'
       +'<button class="btn btn-sm" onclick="document.getElementById(\'ed-guion-file\').click()" '
