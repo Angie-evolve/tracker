@@ -14752,7 +14752,10 @@ function showTickets(){
 // trabajos_video y mira esa fila hasta que el worker la termina. El corte lo
 // hace ffmpeg y los subtitulos Whisper, los dos corriendo en el worker.
 var ED_BUCKET='videos';
-var ED_MAX_MB=800;
+// Tope de la subida directa de Supabase Storage. El limite que manda igual es
+// el del proyecto (Settings -> Storage), que arranca bajo: si lo rechaza el
+// servidor, el mensaje de abajo lo dice en vez de tirar el HTTP crudo.
+var ED_MAX_MB=5000;
 
 // El uuid del usuario sale del token. Storage guarda cada video en una carpeta
 // con ese nombre y la policy no deja escribir en la de otro; SB solo tiene el
@@ -14807,6 +14810,36 @@ function edLimpiar(){
   _edPintar();
 }
 
+// fetch no informa progreso de subida, y con archivos de un giga eso importa:
+// sin porcentaje no hay forma de distinguir "va lento" de "se colgo".
+function _edPost(url, f, onProg){
+  return new Promise(function(res, rej){
+    var x=new XMLHttpRequest();
+    x.open('POST', url, true);
+    x.setRequestHeader('apikey', SB_KEY);
+    x.setRequestHeader('Authorization', 'Bearer '+SB.token);
+    x.setRequestHeader('x-upsert', 'false');
+    x.setRequestHeader('Content-Type', f.type||'application/octet-stream');
+    x.upload.onprogress=function(ev){ if(ev.lengthComputable) onProg(ev.loaded/ev.total); };
+    x.onload=function(){
+      if(x.status>=200 && x.status<300) return res('');
+      var t=x.responseText||'';
+      if(/Bucket not found/i.test(t))
+        return rej(new Error('Falta crear el bucket "'+ED_BUCKET+'" en Supabase → Storage.'));
+      if(x.status===413||/exceeded the maximum allowed size|Payload too large/i.test(t))
+        return rej(new Error('El proyecto no acepta un archivo de este tamaño. Se sube en '
+          +'Supabase → Settings → Storage, en "Upload file size limit".'));
+      if(x.status===403||/row-level security|Unauthorized/i.test(t))
+        return rej(new Error('El bucket existe pero no te deja escribir: faltan las policies '
+          +'de editor-ia/01-tabla.sql.'));
+      rej(new Error(t||('HTTP '+x.status)));
+    };
+    x.onerror=function(){ rej(new Error('se corto la conexion durante la subida')); };
+    x.onabort=function(){ rej(new Error('subida cancelada')); };
+    x.send(f);
+  });
+}
+
 async function edSubir(modo){
   var e=_edEstado();
   if(!SB.token){ toast('Entra con tu cuenta para usar el editor.','amber'); return; }
@@ -14818,22 +14851,16 @@ async function edSubir(modo){
     toast('El video pesa '+_matTam(f.size)+'. El maximo es '+ED_MAX_MB+' MB.','red');
     return;
   }
-  e.subiendo=true; e.error=''; _edPintar();
+  e.subiendo=true; e.pct=0; e.error=''; _edPintar();
   var path=uid+'/'+Date.now()+'-'+_matSlug(f.name);
   try{
-    var r=await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path),{
-      method:'POST',
-      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
-                'x-upsert':'false',
-                'Content-Type':f.type||'application/octet-stream' },
-      body:f
+    await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), f, function(p){
+      e.pct=p;
+      var el=document.getElementById('ed-pct');
+      // Solo el numero: repintar entero en cada evento de progreso hace
+      // parpadear la pantalla varias veces por segundo.
+      if(el) el.textContent='Subiendo… '+Math.round(p*100)+'%';
     });
-    if(!r.ok){
-      var t=await r.text();
-      if(/Bucket not found/i.test(t)) throw new Error('Falta crear el bucket "'+ED_BUCKET+'" en Supabase → Storage.');
-      if(r.status===403||/row-level security|Unauthorized/i.test(t)) throw new Error('El bucket existe pero no te deja escribir: faltan las policies de editor-ia/01-tabla.sql.');
-      throw new Error(t||('HTTP '+r.status));
-    }
     var filas=await sbFetch('trabajos_video',{
       method:'POST',
       headers:{'Prefer':'return=representation'},
@@ -14858,7 +14885,10 @@ async function edSubir(modo){
 // pasar de verdad evita mandarla a buscar el codigo 42P01 a Google.
 function _edMsg(m){
   m=String(m||'');
-  if(/relation|does not exist|42P01/i.test(m))
+  // PostgREST no dice "relation does not exist": dice "Could not find the table
+  // ... in the schema cache" (PGRST205). Con el otro patron solo, el cartel
+  // pasaba el error crudo en ingles.
+  if(/relation|does not exist|42P01|PGRST205|could not find the table/i.test(m))
     return 'Todavia no existe la tabla trabajos_video: corre editor-ia/01-tabla.sql en el SQL Editor de Supabase.';
   if(/permission denied|42501/i.test(m))
     return 'La tabla existe pero falta el GRANT. Esta al final de editor-ia/01-tabla.sql.';
@@ -15032,7 +15062,8 @@ function _edCuerpo(){
     +'<button class="btn"'+(quieto?' disabled style="opacity:.45"':'')
       +' onclick="edSubir(\'capcut\')">Exportar para CapCut'
       +'<span class="d">plan de corte + .srt para importar y ajustar</span></button>'
-    +(e.subiendo?'<span style="align-self:center;font-size:11.5px;color:var(--text3)">Subiendo…</span>':'')
+    +(e.subiendo?('<span id="ed-pct" style="align-self:center;font-size:11.5px;color:var(--text3)">'
+      +'Subiendo… '+Math.round((e.pct||0)*100)+'%</span>'):'')
     +'</div>';
 
   if(e.fila) h+='<div style="margin-top:20px"></div>'+_edTrabajoHtml(e.fila);
