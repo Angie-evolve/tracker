@@ -24,6 +24,9 @@ KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 MODELO = os.environ.get("WHISPER_MODELO", "small")
 CADA   = int(os.environ.get("INTERVALO", "8"))
 BUCKET = "videos"
+# Tope por archivo del bucket. El resultado se sube al mismo lugar que la
+# fuente, asi que tiene que entrar igual que ella.
+LIMITE_MB = int(os.environ.get("LIMITE_MB", "50"))
 
 # Las keys nuevas (sb_secret_...) no son JWT: mandarlas tambien en
 # Authorization: Bearer hace que Supabase rechace todo con 401.
@@ -91,11 +94,19 @@ def bajar(path, destino):
 
 
 def subir(local, path, tipo="application/octet-stream"):
+    mb = os.path.getsize(local) / 1048576.0
     with open(local, "rb") as f:
         r = requests.post(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
                           headers={**H, "Content-Type": tipo, "x-upsert": "true"},
                           data=f, timeout=600)
-    r.raise_for_status()
+    if not r.ok:
+        # raise_for_status solo dice "400 Bad Request" y esconde el cuerpo, que
+        # es lo unico que explica si fue el tamano, el bucket o los permisos.
+        detalle = (r.text or "")[:300]
+        if "EntityTooLarge" in detalle or "maximum allowed size" in detalle:
+            raise RuntimeError("el resultado pesa %.1f MB y el bucket acepta %d MB"
+                               % (mb, LIMITE_MB))
+        raise RuntimeError("no pude subir %s (HTTP %d): %s" % (path, r.status_code, detalle))
     return path
 
 
@@ -214,7 +225,21 @@ def _force_style(sub):
     return ",".join(partes)
 
 
-def quemar_subtitulos(video, srt, salida, sub=None):
+def kbps_para(duracion, audio_kbps=128):
+    """
+    A que bitrate hay que encodear para entrar en el bucket.
+
+    El default de libx264 (CRF 23) para un vertical de trece minutos da bastante
+    mas de 50 MB, asi que el render terminaba bien y explotaba al subir, despues
+    de veinte minutos de trabajo. Mejor apuntar al tamano desde el encode.
+    """
+    if not duracion or duracion <= 0:
+        return None
+    total = (LIMITE_MB * 0.92 * 8 * 1024) / duracion
+    return int(max(total - audio_kbps, 0))
+
+
+def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
     """
     Los subtitulos van pegados en la imagen. El filtro se corre con cwd en la
     carpeta del srt: el nombre del archivo entra crudo en el string del filtro
@@ -228,11 +253,14 @@ def quemar_subtitulos(video, srt, salida, sub=None):
     # Solo el srt entra crudo en el string del filtro, asi que ese es el unico
     # que va relativo; la entrada y la salida van con path completo.
     filtro = "subtitles=%s:force_style='%s'" % (os.path.basename(srt), _force_style(sub or {}))
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", os.path.abspath(video),
-         "-vf", filtro,
-         "-c:a", "copy", os.path.abspath(salida), "-loglevel", "error"],
-        cwd=os.path.dirname(os.path.abspath(srt)), check=True)
+    cmd = ["ffmpeg", "-y", "-i", os.path.abspath(video), "-vf", filtro]
+    if kbps:
+        cmd += ["-b:v", "%dk" % kbps, "-maxrate", "%dk" % int(kbps * 1.35),
+                "-bufsize", "%dk" % (kbps * 2), "-c:a", "aac", "-b:a", "128k"]
+    else:
+        cmd += ["-c:a", "copy"]
+    cmd += [os.path.abspath(salida), "-loglevel", "error"]
+    subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(srt)), check=True)
     return salida
 
 
@@ -321,7 +349,12 @@ def procesar(fila, tmp):
         # crudo, pero se muestran sobre el que se entrega.
         srt = escribir_srt(D.remapear(palabras, clips), sub, os.path.join(tmp, "subs.srt"))
         listo = os.path.join(tmp, "final.mp4")
-        quemar_subtitulos(cortado, srt, listo, sub)
+        kb = kbps_para(final_s)
+        if kb is not None and kb < 250:
+            raise RuntimeError(
+                "el video final dura %d min y no entra en %d MB ni bajando la "
+                "calidad. Cortalo en piezas mas cortas." % (final_s / 60, LIMITE_MB))
+        quemar_subtitulos(cortado, srt, listo, sub, kbps=kb)
         p_video = subir(listo, f"{carpeta}/{sello}_final.mp4", "video/mp4")
         p_srt   = subir(srt,   f"{carpeta}/{sello}_final.srt", "text/plain")
     else:
