@@ -15302,6 +15302,152 @@ function _edTlHtml(an){
     +'</div>';
 }
 
+// ---- Banco de ejemplos ---------------------------------------------------
+// Cuando un corte sale mal, hoy la correccion pasa por CapCut y se pierde. Acá
+// queda: cada marca es una senal del gusto real, y es de lo unico que se puede
+// aprender despues —para mover los defaults, y para darle ejemplos a la IA
+// cuando conectemos la parte que decide por criterio.
+var ED_MOTIVOS={silencio:'silencio', muletilla:'muletilla', repetida:'toma repetida',
+                plano:'plano'};
+
+function _edClave(c){ return c.motivo+'|'+c.inicio+'|'+c.fin; }
+
+async function edMarcas(jobId){
+  var e=_edEstado();
+  e.marcas=e.marcas||{};
+  try{
+    var r=await sbFetch('ejemplos_edicion?select=*&trabajo_id=eq.'+encodeURIComponent(jobId))||[];
+    var m={};
+    r.forEach(function(x){ m[x.motivo+'|'+(+x.inicio)+'|'+(+x.fin)]=x; });
+    e.marcas[jobId]=m;
+  }catch(err){ e.marcasError=_edMsg(err.message); }
+}
+
+async function edMarcar(jobId, idx, veredicto){
+  var e=_edEstado();
+  var f=(e.fila&&e.fila.id===jobId)?e.fila:((e.hist||[]).filter(function(x){return x.id===jobId;})[0]);
+  var c=((f&&f.analisis&&f.analisis.cortes)||[])[idx];
+  if(!c) return;
+  var m=(e.marcas&&e.marcas[jobId])||{};
+  var ya=m[_edClave(c)];
+  try{
+    if(ya && ya.veredicto===veredicto){
+      // Volver a tocar el mismo boton saca la marca: equivocarse marcando tiene
+      // que costar un clic, no obligar a ir a buscar la fila a Supabase.
+      await sbFetch('ejemplos_edicion?id=eq.'+encodeURIComponent(ya.id), {method:'DELETE'});
+    } else if(ya){
+      await sbFetch('ejemplos_edicion?id=eq.'+encodeURIComponent(ya.id), {method:'PATCH',
+        body:JSON.stringify({veredicto:veredicto})});
+    } else {
+      await sbFetch('ejemplos_edicion', {method:'POST',
+        headers:{'Prefer':'return=representation'},
+        body:JSON.stringify({
+          trabajo_id:jobId, formato:((f.opciones||{}).formato||''),
+          motivo:c.motivo, inicio:c.inicio, fin:c.fin, texto:c.texto||'',
+          veredicto:veredicto })});
+    }
+  }catch(err){ toast(_edMsg(err.message),'red'); return; }
+  await edMarcas(jobId);
+  edRevisarModal(jobId);
+  edBancoCargar();
+}
+
+function _edSeg(t){
+  t=Math.max(0, Math.round(+t||0));
+  return Math.floor(t/60)+':'+('0'+(t%60)).slice(-2);
+}
+
+function edRevisarModal(jobId){
+  var e=_edEstado();
+  var f=(e.fila&&e.fila.id===jobId)?e.fila:((e.hist||[]).filter(function(x){return x.id===jobId;})[0]);
+  var cortes=((f&&f.analisis&&f.analisis.cortes)||[]);
+  var m=(e.marcas&&e.marcas[jobId])||{};
+  if(!cortes.length){
+    document.getElementById('modal-root').innerHTML=
+      '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">'
+      +'<div class="modal-title">Revisar los cortes</div>'
+      +'<div class="modal-sub">Este trabajo se procesó antes de que se guardara el detalle, '
+      +'así que no hay nada que revisar. Los próximos sí.</div>'
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cerrar</button></div>'
+      +'</div></div>';
+    return;
+  }
+  var boton=function(i, v, label, col){
+    var c=cortes[i], on=(m[_edClave(c)]||{}).veredicto===v;
+    return '<button class="btn btn-sm" onclick="edMarcar(\''+esc(jobId)+'\','+i+',\''+v+'\')" '
+      +'style="'+(on?('border-color:'+col+';color:'+col):'color:var(--text3)')+'">'+label+'</button>';
+  };
+  var filas=cortes.map(function(c,i){
+    var mk=m[_edClave(c)];
+    return '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;'
+      +'border-top:1px solid var(--border)'+(mk?';background:rgba(255,255,255,.02)':'')+'">'
+      +'<span class="mono" style="font-size:10.5px;color:var(--text3);width:64px;flex:none;'
+        +'padding-top:3px">'+_edSeg(c.inicio)+'</span>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:11px;color:var(--text3)">'+esc(ED_MOTIVOS[c.motivo]||c.motivo)
+          +' · '+((+c.fin)-(+c.inicio)).toFixed(1)+'s</div>'
+        +'<div style="font-size:12.5px;color:'+(c.texto?'var(--text2)':'var(--text3)')+';margin-top:2px">'
+          +(c.texto?esc(c.texto):'(sin palabras: era aire)')+'</div>'
+      +'</div>'
+      +'<div style="display:flex;gap:6px;flex:none">'
+        +boton(i,'bien','Bien','var(--accent)')
+        +boton(i,'no_iba','No iba','var(--redx)')
+      +'</div>'
+    +'</div>';
+  }).join('');
+  var marcados=Object.keys(m).length;
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:820px;max-height:88vh;overflow-y:auto">'
+      +'<div class="modal-title">Revisar los cortes</div>'
+      +'<div class="modal-sub">Marcá los que estuvieron mal. No hace falta marcarlos todos: '
+        +'con los que te molestaron alcanza. '+cortes.length+' cortes, '+marcados+' marcado'
+        +(marcados===1?'':'s')+'.</div>'
+      +filas
+      +'<div class="modal-footer"><button class="btn btn-primary" onclick="closeModal()">Listo</button></div>'
+    +'</div></div>';
+}
+
+async function edBancoCargar(){
+  var e=_edEstado();
+  try{
+    e.banco=await sbFetch('ejemplos_edicion?select=formato,motivo,veredicto&limit=1000')||[];
+    e.bancoError='';
+  }catch(err){ e.banco=[]; e.bancoError=_edMsg(err.message); }
+  _edPintar();
+}
+
+// El resumen es lo que convierte las marcas en algo accionable: si de diez
+// cortes por toma repetida marcaste ocho como malos, el problema no es ese
+// corte, es el umbral.
+function _edBancoHtml(){
+  var e=_edEstado();
+  var b=e.banco;
+  if(b===undefined){ e.banco=null; edBancoCargar(); return ''; }
+  if(!b || !b.length) return '';
+  var por={};
+  b.forEach(function(x){
+    var k=(x.formato||'—')+' · '+(ED_MOTIVOS[x.motivo]||x.motivo);
+    por[k]=por[k]||{bien:0, no_iba:0};
+    if(por[k][x.veredicto]!==undefined) por[k][x.veredicto]++;
+  });
+  var filas=Object.keys(por).sort().map(function(k){
+    var v=por[k], tot=v.bien+v.no_iba;
+    var mal=tot?Math.round(100*v.no_iba/tot):0;
+    return '<div class="ed-hist">'
+      +'<span style="flex:1;min-width:0;color:var(--text2)">'+esc(k)+'</span>'
+      +'<span style="font-size:11px;color:var(--text3)">'+v.bien+' bien · '+v.no_iba+' no iba</span>'
+      +'<span style="font-size:11px;width:80px;text-align:right;color:'
+        +(mal>=50?'var(--redx)':(mal>0?'var(--amberx)':'var(--accent)'))+'">'
+        +mal+'% mal</span>'
+    +'</div>';
+  }).join('');
+  return '<div class="ed-panel" style="margin-top:20px"><h3>Banco de ejemplos</h3>'
+    +'<div class="s">Lo que marcaste, junto. Cuando un motivo pasa el 50% de "no iba", '
+      +'el que está mal es el parámetro, no el corte.</div>'
+    +filas+'</div>';
+}
+
 function _edTrabajoHtml(f){
   var an=f.analisis||null;
   var cab={pendiente:'En cola', procesando:'Procesando', listo:'Listo', error:'Falló'}[f.estado]||f.estado;
@@ -15326,6 +15472,9 @@ function _edTrabajoHtml(f){
         +(esRender?'Descargar el video':'Descargar el plan de corte')+'</button>'
       +'<button class="btn" onclick="edBajar(\''+esc(f.resultado_srt_path||'')+'\',\'subtitulos.srt\')">'
         +'Descargar el .srt</button>'
+      +((f.analisis&&(f.analisis.cortes||[]).length)
+        ?('<button class="btn" onclick="edRevisar(\''+esc(f.id)+'\')" style="color:var(--text3)">'
+          +'Revisar los '+f.analisis.cortes.length+' cortes</button>'):'')
       +'</div>';
   }
   return h+'</div>';
@@ -15417,7 +15566,13 @@ function _edCuerpo(){
       }).join('')
       +'</div>';
   }
+  h+=_edBancoHtml();
   return h;
+}
+
+async function edRevisar(jobId){
+  await edMarcas(jobId);
+  edRevisarModal(jobId);
 }
 
 function editorIaHtml(){

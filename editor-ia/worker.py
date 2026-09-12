@@ -167,6 +167,30 @@ def render_planos(video, planos, salida):
     return salida
 
 
+def texto_en(palabras, a, b):
+    """Lo que se dice adentro de un tramo. Por punto medio, igual que remapear."""
+    return " ".join(
+        str(w.get("word", "")) for w in (palabras or [])
+        if a <= (float(w.get("start", 0)) + float(w.get("end", 0))) / 2.0 < b
+    ).strip()
+
+
+def detalle_cortes(palabras, grupos):
+    """
+    Cada tramo que se saca, con su motivo y con lo que se decia ahi.
+
+    Sin el texto, un corte es un par de numeros y no hay forma de decir si
+    estuvo bien o mal. Es lo que despues permite marcarlos de a uno.
+    """
+    cortes = []
+    for motivo, tramos in grupos:
+        for a, b in tramos:
+            cortes.append({"inicio": round(float(a), 2), "fin": round(float(b), 2),
+                           "motivo": motivo, "texto": texto_en(palabras, a, b)[:300]})
+    cortes.sort(key=lambda c: c["inicio"])
+    return cortes
+
+
 def escribir_srt(palabras, sub, ruta):
     """El .srt con el agrupado y las mayusculas que pida el formato."""
     if sub.get("mayusculas"):
@@ -267,6 +291,12 @@ def procesar(fila, tmp):
                    "repetidas": len(t_rep), "palabras": len(palabras)},
         "planos": len(planos),
         "broll": broll,
+        # El detalle de cada corte y la transcripcion entera. Ocupan, pero sin
+        # esto no hay forma de revisar una decision: solo queda el porcentaje.
+        "cortes": detalle_cortes(palabras, [("silencio", silencios),
+                                            ("muletilla", t_mul),
+                                            ("repetida", t_rep)]),
+        "texto": " ".join(str(w.get("word", "")) for w in palabras)[:20000],
     })
 
     sello = str(int(time.time()))
