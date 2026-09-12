@@ -17,6 +17,7 @@ import requests
 import auto_editor
 import transcribe
 import decisiones as D
+import guion as Guion
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -264,8 +265,17 @@ def procesar(fila, tmp):
         base, umbral_db=float(op.get("umbral_db", -30)), min_silencio=minsil
     ) if minsil > 0 else []
 
+    # El guion, si lo cargo. Cambia dos cosas: cual de dos tomas se queda, y que
+    # bloques se marcan. Sin guion todo sigue funcionando igual que antes.
+    txt_guion = str(op.get("guion") or "").strip()
+    elegir = (lambda i1, i2, L: Guion.elegir_peor(palabras, i1, i2, L, txt_guion)) \
+        if txt_guion else None
+
     t_mul = D.tramos_muletillas(palabras, muletillas) if muletillas else []
-    t_rep = D.tramos_tomas_repetidas(palabras) if repetidas else []
+    t_rep = D.tramos_tomas_repetidas(
+        palabras, minimo=int(op.get("repetidas_min", 6)), elegir=elegir
+    ) if repetidas else []
+    bloques = Guion.mapa(palabras, txt_guion) if txt_guion else []
     # Los silencios llevan aire; lo que sale de la transcripcion, no.
     clips   = D.conservar(dur, list(silencios), aire=aire, clip_min=clipmin,
                           exacto=t_mul + t_rep)
@@ -291,6 +301,9 @@ def procesar(fila, tmp):
                    "repetidas": len(t_rep), "palabras": len(palabras)},
         "planos": len(planos),
         "broll": broll,
+        # Que bloque del guion se dijo y cual no. Enterarse de que te salteaste
+        # uno despues de publicar no sirve de nada.
+        "bloques": bloques,
         # El detalle de cada corte y la transcripcion entera. Ocupan, pero sin
         # esto no hay forma de revisar una decision: solo queda el porcentaje.
         "cortes": detalle_cortes(palabras, [("silencio", silencios),

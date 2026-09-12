@@ -14845,6 +14845,8 @@ function _edOpciones(){
     aire:+f.aire, clip_min:+f.clipMin,
     muletillas:(f.quitarMuletillas && mul.length)?mul:null,
     tomas_repetidas:!!f.tomasRepetidas,
+    guion:String(_edEstado().guion||'').trim()||null,
+    repetidas_min:+(f.repetidasMin||6),
     presentacion:{
       tipo:((f.presentacion||{}).tipo||'take_unico'),
       cadencia:+((f.presentacion||{}).cadencia||0),
@@ -14917,7 +14919,10 @@ function edFormatoModal(){
         +'letter-spacing:.05em;margin:18px 0 8px">Lo que se dice</div>'
       +tick('fmt-mul','Sacar muletillas', f.quitarMuletillas)
       +'<div class="ed-row">'+campo('fmt-mullista','Cuáles (separadas por coma)',f.muletillas||'')+'</div>'
-      +tick('fmt-rep','Si repetís una frase, quedarse con la última', f.tomasRepetidas)
+      +tick('fmt-rep','Descartar el intento fallido cuando repetís una frase', f.tomasRepetidas)
+      +'<div class="ed-row">'
+        +campo('fmt-repmin','Palabras que tienen que coincidir',f.repetidasMin||6,'number','step="1" min="3" max="14"')
+      +'</div>'
       +'<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.05em;margin:18px 0 8px">El subtítulo</div>'
       +'<div class="ed-row">'
@@ -14956,7 +14961,7 @@ function edFormatoGuardar(){
   f.umbralDb=+v('fmt-umbral'); f.minSilencio=+v('fmt-minsil');
   f.aire=+v('fmt-aire'); f.clipMin=+v('fmt-clipmin');
   f.quitarMuletillas=ck('fmt-mul'); f.muletillas=v('fmt-mullista');
-  f.tomasRepetidas=ck('fmt-rep');
+  f.tomasRepetidas=ck('fmt-rep'); f.repetidasMin=+v('fmt-repmin')||6;
   f.presentacion={tipo:v('fmt-pres'), cadencia:+v('fmt-cadencia'), zoom:+v('fmt-zoom')};
   f.subtitulo={palabras:+v('fmt-palabras'), tam:+v('fmt-tam'), pos:v('fmt-pos'),
                margen:+v('fmt-margen'), mayusculas:ck('fmt-mayus'),
@@ -14964,6 +14969,78 @@ function edFormatoGuardar(){
   f.criterio=v('fmt-criterio');
   save(); closeModal(); _edPintar();
   toast('Formato guardado');
+}
+// ---- Guion del video -----------------------------------------------------
+// Ojo: DB.guiones son los guiones de LLAMADA (las preguntas de una reunion de
+// ventas). Estos son otra cosa y viven aparte.
+//
+// El guion es por video y no por formato: el formato es el gusto, que se repite;
+// el guion cambia en cada pieza. Y va antes de mandar, no despues, porque el
+// worker lo necesita en el momento de decidir los cortes.
+function guionesVideo(){
+  if(!Array.isArray(DB.guionesVideo)) DB.guionesVideo=[];
+  return DB.guionesVideo;
+}
+function edGuionElegir(id){
+  var e=_edEstado();
+  var g=guionesVideo().filter(function(x){ return String(x.id)===String(id); })[0];
+  e.guion=g?g.texto:'';
+  e.guionId=g?g.id:'';
+  _edPintar();
+}
+function edGuionTexto(v){
+  // Sin repintar: el textarea perderia el cursor en cada tecla.
+  var e=_edEstado();
+  e.guion=v;
+  if(e.guionId) e.guionId='';
+}
+function edGuionGuardar(){
+  var e=_edEstado();
+  var t=String(e.guion||'').trim();
+  if(!t){ toast('Pegá el guion primero.','amber'); return; }
+  var titulo=(t.split(/\n/)[0]||'Guion').trim().slice(0,60);
+  var g={id:Date.now(), titulo:titulo, texto:t, at:new Date().toISOString()};
+  guionesVideo().unshift(g);
+  e.guionId=g.id;
+  save(); _edPintar();
+  toast('Guion guardado como "'+titulo+'"');
+}
+function edGuionBorrar(id){
+  var l=guionesVideo();
+  var i=l.map(function(x){ return String(x.id); }).indexOf(String(id));
+  if(i<0) return;
+  if(!confirm('Borrar el guion "'+(l[i].titulo||'')+'"?')) return;
+  l.splice(i,1); save(); _edPintar();
+}
+function _edGuionHtml(){
+  var e=_edEstado();
+  var l=guionesVideo();
+  return '<div style="margin-bottom:18px">'
+    +'<label style="display:block;font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.05em;margin-bottom:8px">Guion de este video (opcional)</label>'
+    +(l.length?('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+      +l.slice(0,6).map(function(g){
+        var on=String(e.guionId||'')===String(g.id);
+        return '<button class="btn btn-sm" onclick="edGuionElegir(\''+esc(String(g.id))+'\')" '
+          +'style="'+(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
+          +esc(g.titulo)+'</button>';
+      }).join('')
+      +(e.guionId?('<button class="btn btn-sm" onclick="edGuionBorrar(\''+esc(String(e.guionId))
+        +'\')" style="color:var(--text3);border-style:dashed">Borrar</button>'):'')
+      +'</div>'):'')
+    +'<textarea id="ed-guion" rows="4" oninput="edGuionTexto(this.value)" '
+      +'style="width:100%;box-sizing:border-box;font-family:var(--font);font-size:12.5px" '
+      +'placeholder="Pegá lo que ibas a decir, un párrafo por bloque. Con esto elige mejor '
+      +'entre dos tomas de la misma frase y te avisa si te salteaste un bloque.">'
+      +esc(e.guion||'')+'</textarea>'
+    +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center">'
+      +(String(e.guion||'').trim()&&!e.guionId
+        ?'<button class="btn btn-sm" onclick="edGuionGuardar()" style="color:var(--text3)">Guardar este guion</button>':'')
+      +'<span style="font-size:11px;color:var(--text3)">'
+        +(String(e.guion||'').trim()
+          ?(String(e.guion).trim().split(/\n\s*\n/).filter(Boolean).length+' bloques')
+          :'Sin guion también funciona: se queda con la última toma.')+'</span>'
+    +'</div></div>';
 }
 function _edEstado(){ return (S.ed=S.ed||{}); }
 
@@ -15464,6 +15541,23 @@ function _edTrabajoHtml(f){
       +(f.estado==='listo'?'':'Falta la parte lenta: Whisper transcribiendo.')+'</div>'
       +_edTlHtml(an);
   }
+  var bl=(an&&an.bloques)||[];
+  if(bl.length){
+    var faltan=bl.filter(function(x){ return !x.encontrado; });
+    h+='<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:6px">Bloques del guion</div>'
+      +bl.map(function(x){
+        return '<div style="display:flex;gap:10px;font-size:11.5px;padding:3px 0">'
+          +'<span style="width:52px;flex:none;color:'+(x.encontrado?'var(--accent)':'var(--redx)')+'">'
+            +(x.encontrado?'dicho':'falta')+'</span>'
+          +'<span style="flex:1;min-width:0;color:var(--text3)">'+esc(x.titulo)+'</span>'
+        +'</div>';
+      }).join('')
+      +(faltan.length?('<div style="font-size:11px;color:var(--amberx);margin-top:6px">'
+        +faltan.length+' bloque'+(faltan.length===1?'':'s')+' del guion no aparece'
+        +(faltan.length===1?'':'n')+' en lo que dijiste.</div>'):'')
+      +'</div>';
+  }
   if(f.estado==='listo'){
     var esRender=(f.modo==='render');
     h+='<div class="ed-acciones" style="margin-top:16px">'
@@ -15531,6 +15625,8 @@ function _edCuerpo(){
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);margin-top:8px">'+esc(_edResumen(fmt))+'</div>'
     +'</div><div style="height:14px"></div>';
+
+  h+=_edGuionHtml();
 
   var quieto=(!f||e.subiendo||corriendo);
   h+='<div class="ed-acciones">'

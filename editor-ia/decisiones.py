@@ -13,6 +13,7 @@ La forma de razonar es siempre la misma: se junta una lista de tramos a SACAR
 conserva. Asi cada criterio nuevo es una funcion que agrega tramos, y no hay que
 tocar el resto.
 """
+import difflib
 import re
 import unicodedata
 
@@ -125,37 +126,62 @@ def tramos_muletillas(palabras, lista=None, margen=0.03):
 
 # ------------------------------------------------------- tomas repetidas ----
 
-def tramos_tomas_repetidas(palabras, minimo=4, ventana=25.0):
+def tramos_tomas_repetidas(palabras, minimo=6, ventana=25.0, elegir=None,
+                           umbral=0.8):
     """
-    Cuando una frase se dice dos veces seguidas es que la primera salio mal.
-    Se marca la anterior para sacar y se deja la ultima, que es la buena.
+    Detecta cuando arrancaste una frase, te trabaste y volviste a arrancarla.
 
-    minimo: cuantas palabras iguales seguidas hacen falta para creer que es la
-    misma frase y no una coincidencia.
-    ventana: si pasaron mas segundos, ya no es un retake, es el tema volviendo.
+    La primera version pedia que los dos intentos fueran identicos palabra por
+    palabra. En la vida real nunca lo son —cambia una palabra, o el segundo
+    intento arranca con un "eh"— asi que se perdia casi todo lo que importaba y
+    solo agarraba lo que la transcripcion habia normalizado igual.
+
+    Ahora se busca un RE-ARRANQUE: se toma el comienzo de una frase y se busca
+    mas adelante otro comienzo parecido. Lo que hay en el medio es el intento
+    que no salio, y se saca entero, con el traspie incluido.
+
+    minimo: palabras del arranque que se comparan. Con cuatro gatillaba de mas.
+    ventana: pasado ese tiempo ya no es un retake, es el tema volviendo.
+    umbral: cuanto se tienen que parecer los dos arranques (0 a 1).
+    elegir: (i1, i2, largo) -> cual de los dos intentos sacar. Sin esto se saca
+    el primero. Con el guion cargado se saca el que menos se le parece.
     """
     n = len(palabras or [])
     if n < minimo * 2:
         return []
     claves = [_n(w.get("word")) for w in palabras]
+    t = [float(w.get("start", 0)) for w in palabras]
     fuera = []
     i = 0
     while i + minimo * 2 <= n:
-        largo = 0
-        # El tramo mas largo que se repite justo despues de si mismo.
-        for L in range(minimo, (n - i) // 2 + 1):
-            if claves[i:i + L] == claves[i + L:i + 2 * L]:
-                largo = L
-            elif largo:
+        arranque = claves[i:i + minimo]
+        j = None
+        for k in range(i + minimo, n - minimo + 1):
+            if t[k] - t[i] > ventana:
                 break
-        if largo:
-            a = float(palabras[i].get("start", 0))
-            b = float(palabras[i + largo - 1].get("end", 0))
-            if b - a <= ventana:
-                fuera.append((a, b))
-                i += largo
-                continue
-        i += 1
+            if difflib.SequenceMatcher(a=arranque, b=claves[k:k + minimo],
+                                       autojunk=False).ratio() >= umbral:
+                j = k
+                break
+        if j is None:
+            i += 1
+            continue
+        # Por defecto se va el primer intento: va de i hasta donde vuelve a
+        # arrancar. Si el guion dice que el bueno era ese, se va el segundo, y
+        # se le da el mismo largo porque no hay un tercer arranque que lo cierre.
+        largo = j - i
+        cual = i
+        if elegir:
+            try:
+                cual = elegir(i, j, minimo)
+            except Exception:
+                cual = i
+        ini = cual
+        fin_i = min(ini + largo, n) - 1
+        a, b = t[ini], float(palabras[fin_i].get("end", 0))
+        if b > a and (b - a) <= ventana:
+            fuera.append((a, b))
+        i = j + minimo
     return unir(fuera)
 
 
