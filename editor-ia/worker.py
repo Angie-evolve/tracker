@@ -11,7 +11,7 @@ Variables de entorno (ninguna va nunca al frontend):
     WHISPER_MODELO               opcional, default 'small'
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
-import os, time, json, tempfile, subprocess, traceback
+import os, sys, time, json, argparse, tempfile, subprocess, traceback
 import requests
 
 import auto_editor
@@ -40,6 +40,14 @@ def _rest(metodo, ruta, extra=None, **kw):
                          headers=cab, timeout=60, **kw)
     r.raise_for_status()
     return r.json() if r.text else None
+
+
+def hay_pendiente():
+    """
+    Solo mira si hay algo, no lo reclama. Es lo que corre el primer step del
+    workflow: si contesta que no, la corrida termina ahi y no se instala nada.
+    """
+    return bool(_rest("GET", "trabajos_video?estado=eq.pendiente&limit=1&select=id"))
 
 
 def tomar_pendiente():
@@ -194,40 +202,59 @@ def procesar(fila, tmp):
            resultado_path=p_video, resultado_srt_path=p_srt)
 
 
-def main():
-    print(f"Worker andando contra {SB_URL} (modelo Whisper: {MODELO})", flush=True)
+def una_vuelta():
+    """Procesa como mucho un trabajo. Devuelve si hizo algo."""
+    fila = tomar_pendiente()
+    if not fila:
+        return False
+    print(f"-> {fila['id']} modo={fila['modo']}", flush=True)
+    t0 = time.time()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            procesar(fila, tmp)
+            print(f"listo {fila['id']} en {int(time.time()-t0)}s", flush=True)
+        except Exception as e:
+            traceback.print_exc()
+            # El detalle completo va al log; en la fila queda el mensaje, que es
+            # lo que ve quien subio el video.
+            try:
+                marcar(fila["id"], estado="error", listo_at=_ahora(),
+                       error=f"{type(e).__name__}: {e}"[:500])
+            except Exception:
+                pass
+    return True
+
+
+def avisar_libass():
     # Se avisa al arrancar y no cuando falla el primer render: asi el problema
-    # aparece en el log del deploy, no despues de que alguien espero media hora.
+    # aparece arriba del log y no despues de que alguien espero media hora.
     if not hay_filtro("subtitles"):
         print("AVISO: este ffmpeg no tiene libass. El modo 'render' va a fallar "
               "al quemar los subtitulos; el modo 'capcut' anda igual.", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Worker del Editor con IA.")
+    ap.add_argument("--una-pasada", action="store_true",
+                    help="procesa como mucho un trabajo y termina. Es lo que usa "
+                         "GitHub Actions, donde el cron hace de loop.")
+    args = ap.parse_args()
+
+    if args.una_pasada:
+        avisar_libass()
+        if not una_vuelta():
+            print("sin trabajos pendientes", flush=True)
+        return
+
+    print(f"Worker andando contra {SB_URL} (modelo Whisper: {MODELO})", flush=True)
+    avisar_libass()
     while True:
         try:
-            fila = tomar_pendiente()
+            if not una_vuelta():
+                time.sleep(CADA)
         except Exception as e:
             print("no pude leer la cola:", e, flush=True)
             time.sleep(CADA)
-            continue
-
-        if not fila:
-            time.sleep(CADA)
-            continue
-
-        print(f"-> {fila['id']} modo={fila['modo']}", flush=True)
-        t0 = time.time()
-        with tempfile.TemporaryDirectory() as tmp:
-            try:
-                procesar(fila, tmp)
-                print(f"listo {fila['id']} en {int(time.time()-t0)}s", flush=True)
-            except Exception as e:
-                traceback.print_exc()
-                # El detalle completo va al log; en la fila queda el mensaje,
-                # que es lo que ve quien subio el video.
-                try:
-                    marcar(fila["id"], estado="error", listo_at=_ahora(),
-                           error=f"{type(e).__name__}: {e}"[:500])
-                except Exception:
-                    pass
 
 
 if __name__ == "__main__":

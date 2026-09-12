@@ -9,32 +9,59 @@ Supabase → SQL Editor → New query → pegar `01-tabla.sql` → Run.
 Antes de correrlo, crear el bucket: Storage → New bucket, nombre **videos**,
 **privado** (sin marcar "Public bucket"). El SQL asume eso.
 
-## 2. El worker
+## 2. El worker (GitHub Actions)
 
-Necesita estar siempre prendido: es un loop que pregunta cada 8 segundos si hay
-algo pendiente. Railway, Render o Fly sirven igual; con el `Dockerfile` de esta
-carpeta se despliega sin configurar nada mas.
+No hace falta una maquina prendida. El worker corre como workflow
+(`.github/workflows/editor-ia-worker.yml`): cada 10 minutos se levanta un runner,
+mira si hay algo en cola y se apaga. El repo es publico, asi que los minutos de
+Actions no se cobran.
 
-Variables de entorno:
+Lo unico que falta cargar son los secrets, en
+**GitHub -> Settings -> Secrets and variables -> Actions -> New repository secret**:
 
-| variable | que va |
+| secret | que va |
 |---|---|
 | `SUPABASE_URL` | `https://onnysveksgxtmspxgbow.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Settings → API → `service_role`. **Secreta.** No es la anon que ya esta en index.html |
-| `WHISPER_MODELO` | opcional, default `small` |
-| `INTERVALO` | opcional, segundos entre vueltas, default `8` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Settings -> API -> `service_role`. **Secreta.** No es la anon que ya esta en index.html |
 
-El Dockerfile baja el modelo de Whisper en el build, no en el primer video: si
-se dejara para despues, la primera transcripcion del dia se come una descarga
-de ~150 MB y desde afuera parece que el worker se colgo.
+El workflow esta armado en dos tiempos para no gastar una maquina en vano:
 
-**No lo pongas con auto-sleep.** Si la maquina se duerme, la cola queda quieta.
+1. Un chequeo barato (`chequear_pendiente.py`) que solo consulta la tabla. Si no
+   hay nada pendiente, la corrida termina en segundos.
+2. Recien si hay trabajo se instala ffmpeg y faster-whisper y se corre
+   `worker.py --una-pasada`, que procesa un trabajo y sale. El cron hace de loop.
+
+El modelo de Whisper queda cacheado entre corridas (`actions/cache` sobre
+`~/.cache/huggingface`, clave `whisper-model-base-v1`). Sin eso se bajarian
+~150 MB en cada video. Si se cambia el modelo hay que cambiar tambien esa clave.
+
+Se usa **`base`** y no `small`: el runner tiene 2 nucleos y sin GPU la diferencia
+de tiempo pesa mucho mas que la de precision.
+
+### Lo que hay que saber de esto
+
+- **El cron de GitHub es "cuando pueda", no "a los 10 minutos".** En horas
+  cargadas se atrasa, a veces bastante. El trabajo no se pierde: espera en cola.
+- **Los workflows programados se apagan solos** despues de 60 dias sin actividad
+  en el repo. GitHub avisa por mail; se reactivan con un boton.
+- **El secret y el repo publico.** Un fork no puede leerlo (los secrets no se
+  pasan a workflows de forks), pero cualquiera con permiso de push al repo si
+  podria. Hoy eso sos vos.
+- Para probarlo sin esperar al cron: pestana **Actions -> Editor con IA - worker
+  -> Run workflow**.
+
+### Alternativa: el Dockerfile
+
+Sigue estando, por si algun dia conviene una maquina propia (Railway, Render,
+Fly). Ahi `worker.py` corre sin `--una-pasada` y loopea con `sleep`, y las
+mismas dos variables van como variables de entorno. No lo pongas con auto-sleep.
 
 ## 3. Probar
 
 1. Subir un video corto desde la pestana.
 2. Mirar que aparezca la fila en `trabajos_video` con `estado='pendiente'`.
-3. En el log del worker tiene que salir `-> <id> modo=...` y despues `listo`.
+3. Correr el workflow a mano (Actions -> Run workflow). En el log tiene que
+   salir `hay un trabajo en cola`, despues `-> <id> modo=...` y `listo`.
 4. Descargar el resultado desde la pantalla.
 5. Repetir con la cuenta de tu colaboradora: cada una ve solo lo suyo.
 
