@@ -123,3 +123,93 @@ def elegir_peor(palabras, i1, i2, largo, texto_guion):
         u = _ubicar(ref, trozo)
         return (u or {}).get("score", 0)
     return i1 if parecido(i1) <= parecido(i2) else i2
+
+
+# ------------------------------------------------------- varios en uno ------
+
+# Como se separa un guion del siguiente adentro del mismo archivo. En orden de
+# confianza: lo mas explicito primero. El renglon en blanco NO sirve como
+# separador porque ya separa bloques adentro de un guion.
+_SEPARADORES = [
+    # ## Titulo   /   # Titulo
+    (r"^\s{0,3}#{1,4}\s+(?P<t>\S.*?)\s*$", "titulo"),
+    # GUION 3 - algo   /   Guion 3:   /   Pieza 2   /   Reel 4
+    (r"^\s{0,3}(?P<t>(?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*"
+     r"(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$", "titulo"),
+    # 1. Titulo corto   /   2) Titulo corto
+    (r"^\s{0,3}(?P<t>\d{1,2}\s*[.)]\s+\S.{0,70})\s*$", "titulo"),
+    # --- o ***  (raya sola: el titulo es el primer renglon de lo que sigue)
+    (r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$", "raya"),
+]
+
+
+def _por_encabezado(lineas, rx):
+    """El marcador ARRANCA cada guion, asi que hacen falta dos para creerlo."""
+    cortes = [(i, (m.groupdict().get("t") or "").strip())
+              for i, l in enumerate(lineas) for m in [rx.match(l)] if m]
+    if len(cortes) < 2:
+        return []
+    partes = []
+    for k, (i, titulo) in enumerate(cortes):
+        fin = cortes[k + 1][0] if k + 1 < len(cortes) else len(lineas)
+        cuerpo = "\n".join(lineas[i + 1:fin]).strip()
+        if cuerpo:
+            partes.append({"titulo": titulo, "texto": cuerpo})
+    return partes
+
+
+def _por_raya(lineas, rx):
+    """
+    La raya va ENTRE guiones, no al principio: con dos guiones hay una sola.
+    Ademas lo que esta antes de la primera raya tambien es un guion, al reves
+    que con los encabezados.
+    """
+    grupos, actual = [], []
+    hubo = False
+    for l in lineas:
+        if rx.match(l):
+            hubo = True
+            grupos.append(actual)
+            actual = []
+        else:
+            actual.append(l)
+    grupos.append(actual)
+    if not hubo:
+        return []
+    partes = []
+    for g in grupos:
+        vivos = [c for c in g if c.strip()]
+        if not vivos:
+            continue
+        partes.append({"titulo": vivos[0].strip(), "texto": "\n".join(g).strip()})
+    return partes
+
+
+def separar(texto):
+    """
+    Parte un archivo con varios guiones adentro.
+
+    Los clientes reciben una lista de guiones en un solo documento y lo
+    devuelven asi, sin rotular nada mas. Se prueba un separador por vez y se usa
+    el primero que encuentre al menos dos partes: mezclar criterios parte de
+    mas, y un guion cortado al medio despues no calza con ningun video.
+
+    Si no encuentra ninguno, devuelve el archivo entero como un solo guion, que
+    es lo correcto: mejor una pieza larga que cinco pedazos arbitrarios.
+    """
+    txt = str(texto or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not txt:
+        return []
+    lineas = txt.split("\n")
+
+    for patron, clase in _SEPARADORES:
+        rx = re.compile(patron, re.I)
+        partes = (_por_raya if clase == "raya" else _por_encabezado)(lineas, rx)
+        # Lo que hubiera antes del primer encabezado es titulo del documento, no
+        # un guion: _por_encabezado lo descarta a proposito.
+        if len(partes) >= 2:
+            for k, p in enumerate(partes):
+                p["titulo"] = (p["titulo"] or ("Guion %d" % (k + 1)))[:80]
+            return partes
+
+    return [{"titulo": (lineas[0].strip() or "Guion")[:80], "texto": txt}]
