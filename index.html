@@ -14810,6 +14810,115 @@ function edLimpiar(){
   _edPintar();
 }
 
+// ---- Comprimir antes de subir -------------------------------------------
+// El tope de Supabase es por archivo, y el iPhone graba a ~22 Mbps: para
+// alguien hablando eso es como seis veces mas de lo necesario. Se recomprime
+// en el navegador apuntando a entrar en el tope, en vez de rebotar la subida.
+var ED_LIMITE_MB=50;
+
+function _edSoporte(){
+  return !!(window.MediaRecorder
+    && HTMLCanvasElement.prototype.captureStream
+    && (HTMLMediaElement.prototype.captureStream || HTMLMediaElement.prototype.mozCaptureStream));
+}
+
+// Cuanto video entra en el tope, con el piso de calidad puesto arriba. Se
+// muestra antes de elegir el archivo: enterarse despues de esperar la
+// compresion entera es la peor forma de saberlo.
+function _edMaxMin(){
+  return Math.floor((ED_LIMITE_MB*0.92*8*1048576)/(300000+64000)/60);
+}
+
+function _edTipoSalida(){
+  var op=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4',
+          'video/webm;codecs=vp9,opus','video/webm'];
+  for(var i=0;i<op.length;i++) if(MediaRecorder.isTypeSupported(op[i])) return op[i];
+  return '';
+}
+
+// Se reproduce el video contra un canvas y se graba la salida. Va a velocidad
+// real —no hay forma de apurarlo sin acelerar tambien el audio—, pero igual
+// termina antes que subir dos giga, y el worker recibe algo que entra.
+function _edComprimir(f, onProg){
+  return new Promise(function(res, rej){
+    var url=URL.createObjectURL(f);
+    var v=document.createElement('video');
+    v.src=url; v.muted=true; v.playsInline=true; v.preload='auto';
+    v.style.cssText='position:fixed;left:-9999px;width:2px;height:2px';
+    document.body.appendChild(v);
+    var limpiar=function(){ try{ URL.revokeObjectURL(url); v.remove(); }catch(e){} };
+    v.onerror=function(){ limpiar(); rej(new Error('el navegador no puede leer este video')); };
+    v.onloadedmetadata=function(){
+      var dur=v.duration;
+      if(!isFinite(dur)||dur<=0){ limpiar(); rej(new Error('no pude leer la duración del video')); return; }
+      var tipo=_edTipoSalida();
+      if(!tipo){ limpiar(); rej(new Error('este navegador no sabe comprimir video')); return; }
+      // El presupuesto sale del tope del bucket, menos un margen y el audio.
+      var bAudio=64000;
+      var bTotal=(ED_LIMITE_MB*0.92*8*1048576)/dur;
+      var bVideo=Math.round(bTotal-bAudio);
+      if(bVideo<300000){
+        limpiar();
+        var cuanto=(dur>=60)?(Math.round(dur/60)+' min'):(Math.round(dur)+' s');
+        rej(new Error('El video dura '+cuanto+'. Para entrar en '+ED_LIMITE_MB
+          +' MB habría que bajarlo tanto que no se vería nada: el máximo es '
+          +_edMaxMin()+' minutos. Cortalo en partes.'));
+        return;
+      }
+      if(bVideo>2500000) bVideo=2500000;
+      var ancho=Math.min(v.videoWidth||1280, 1280);
+      var alto=Math.round((v.videoHeight||720)*ancho/(v.videoWidth||1280));
+      if(ancho%2) ancho++;
+      if(alto%2) alto++;
+      var cv=document.createElement('canvas'); cv.width=ancho; cv.height=alto;
+      var ctx=cv.getContext('2d');
+      var salida=cv.captureStream(30);
+      try{
+        var orig=v.captureStream?v.captureStream():v.mozCaptureStream();
+        (orig.getAudioTracks()||[]).forEach(function(t){ salida.addTrack(t); });
+      }catch(e){}
+      var mr;
+      try{
+        mr=new MediaRecorder(salida,{mimeType:tipo, videoBitsPerSecond:bVideo,
+                                     audioBitsPerSecond:bAudio});
+      }catch(e){ limpiar(); rej(new Error('no pude arrancar la compresión: '+e.message)); return; }
+      var trozos=[];
+      mr.ondataavailable=function(ev){ if(ev.data&&ev.data.size) trozos.push(ev.data); };
+      mr.onstop=function(){
+        var base=tipo.indexOf('mp4')>=0?'.mp4':'.webm';
+        var blob=new Blob(trozos,{type:tipo.split(';')[0]});
+        limpiar();
+        res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
+      };
+      var pintar=function(){
+        if(v.ended) return;
+        ctx.drawImage(v,0,0,ancho,alto);
+        onProg(Math.min(v.currentTime/dur,1));
+        if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(pintar);
+        else requestAnimationFrame(pintar);
+      };
+      v.onended=function(){ try{ mr.stop(); }catch(e){} };
+      // La grabacion arranca recien con el primer cuadro pintado, no antes de
+      // play(): lo que tarda en empezar a reproducir se grababa igual y la
+      // copia salia mas larga que el original. En modo CapCut eso corre todo
+      // el plan de corte contra el video real.
+      var arranco=false;
+      var primerCuadro=function(){
+        if(arranco) return;
+        arranco=true;
+        try{ mr.start(1000); }catch(e){ limpiar(); rej(new Error(e.message)); return; }
+        pintar();
+      };
+      v.play().then(function(){
+        if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(primerCuadro);
+        else requestAnimationFrame(primerCuadro);
+      }).catch(function(e){
+        limpiar(); rej(new Error('no pude reproducirlo para comprimir: '+e.message));
+      });
+    };
+  });
+}
+
 // fetch no informa progreso de subida, y con archivos de un giga eso importa:
 // sin porcentaje no hay forma de distinguir "va lento" de "se colgo".
 function _edPost(url, f, onProg){
@@ -14852,14 +14961,30 @@ async function edSubir(modo){
     return;
   }
   e.subiendo=true; e.pct=0; e.error=''; _edPintar();
-  var path=uid+'/'+Date.now()+'-'+_matSlug(f.name);
+  var decir=function(t){
+    var el=document.getElementById('ed-pct');
+    // Solo el texto: repintar entero en cada evento de progreso hace parpadear
+    // la pantalla varias veces por segundo.
+    if(el) el.textContent=t;
+  };
   try{
-    await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), f, function(p){
-      e.pct=p;
-      var el=document.getElementById('ed-pct');
-      // Solo el numero: repintar entero en cada evento de progreso hace
-      // parpadear la pantalla varias veces por segundo.
-      if(el) el.textContent='Subiendo… '+Math.round(p*100)+'%';
+    // Comprimir solo cuando no entra. Recomprimir uno que ya entra es tiempo
+    // regalado —va a velocidad real— y calidad perdida al pedo.
+    var datos=f, nombre=f.name;
+    if(f.size > ED_LIMITE_MB*1048576){
+      if(!_edSoporte()) throw new Error('El video pesa '+_matTam(f.size)+' y el tope es '
+        +ED_LIMITE_MB+' MB, pero este navegador no puede comprimirlo. Probá desde Chrome.');
+      var r=await _edComprimir(f, function(p){
+        decir('Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video'); });
+      datos=r.datos; nombre=r.nombre;
+      e.comprimido={de:f.size, a:datos.size};
+      if(datos.size > ED_LIMITE_MB*1048576)
+        throw new Error('Aun comprimido quedó en '+_matTam(datos.size)+', y el tope es '
+          +ED_LIMITE_MB+' MB. Cortalo en partes más cortas.');
+    }
+    var path=uid+'/'+Date.now()+'-'+_matSlug(nombre);
+    await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
+      e.pct=p; decir('Subiendo… '+Math.round(p*100)+'%');
     });
     var filas=await sbFetch('trabajos_video',{
       method:'POST',
@@ -15033,12 +15158,17 @@ function _edCuerpo(){
   h+='<input type="file" id="ed-file" accept="video/*" style="display:none" onchange="edElegir(this)">';
   if(!f){
     h+='<div class="ed-drop" onclick="document.getElementById(\'ed-file\').click()">'
-      +'<b>Elegí el video</b>Se sube a tu carpeta privada del bucket. '
-      +'Máximo '+ED_MAX_MB+' MB.</div>';
+      +'<b>Elegí el video</b>Se sube a tu carpeta privada. Si pesa más de '
+      +ED_LIMITE_MB+' MB se comprime solo antes de subir, así que el tamaño no '
+      +'importa: lo que importa es la duración, hasta '+_edMaxMin()+' minutos.</div>';
   } else {
     h+='<div class="ed-file"><div class="ic">🎬</div><div style="flex:1;min-width:0">'
       +'<div class="nm">'+esc(f.name)+'</div>'
-      +'<div class="mt">'+_matTam(f.size)+' · sin subir todavía</div></div>'
+      +'<div class="mt">'+_matTam(f.size)
+        +(f.size>ED_LIMITE_MB*1048576
+          ? (' · pesa más de '+ED_LIMITE_MB+' MB, se comprime antes de subir')
+          : ' · sin subir todavía')
+        +(e.comprimido?(' · quedó en '+_matTam(e.comprimido.a)):'')+'</div></div>'
       +'<button class="btn btn-sm" onclick="edLimpiar()" style="color:var(--text3)">Cambiar</button>'
       +'</div>';
   }
@@ -15063,7 +15193,7 @@ function _edCuerpo(){
       +' onclick="edSubir(\'capcut\')">Exportar para CapCut'
       +'<span class="d">plan de corte + .srt para importar y ajustar</span></button>'
     +(e.subiendo?('<span id="ed-pct" style="align-self:center;font-size:11.5px;color:var(--text3)">'
-      +'Subiendo… '+Math.round((e.pct||0)*100)+'%</span>'):'')
+      +'Preparando…</span>'):'')
     +'</div>';
 
   if(e.fila) h+='<div style="margin-top:20px"></div>'+_edTrabajoHtml(e.fila);

@@ -53,3 +53,28 @@ El modo `render` quema los subtitulos con el filtro `subtitles` de ffmpeg, que
 lo aporta **libass**. El ffmpeg de Debian lo trae; hay builds que no (la de
 Homebrew en Mac, por ejemplo). El worker lo chequea al arrancar y lo avisa en el
 log en vez de fallar recien en el primer render.
+
+## Compresion antes de subir
+
+El tope de subida del proyecto es **50 MB por archivo** (medido: acepta 50, rechaza
+100). Es el techo del plan Free; con Pro sube hasta 50 GB.
+
+Un iPhone graba 1080p60 a ~22 Mbps = 168 MB por minuto, asi que en 50 MB entran
+18 segundos. Por eso la pantalla recomprime sola cuando el archivo no entra:
+reproduce el video contra un canvas de 1280 de ancho y graba la salida con
+MediaRecorder, apuntando al bitrate que hace que entre.
+
+Dos cosas que se sienten:
+
+- **Tarda lo que dura el video.** No hay forma de apurarlo sin acelerar tambien
+  el audio. Igual termina antes que subir dos giga.
+- **El maximo es la duracion, no el peso**: ~17 minutos. Pasado eso el bitrate
+  necesario baja tanto que no se veria nada, y en vez de entregar un video
+  ilegible lo rechaza y pide cortarlo en partes.
+
+La copia comprimida dura lo mismo que el original (medido: 12.06s contra 12.00s).
+Importa para el modo `capcut`, donde el plan de corte se aplica al video original
+en CapCut: si la copia durara distinto, todos los cortes quedarian corridos.
+
+Si se pasa a Pro o el video se sube directo al worker, subir `ED_LIMITE_MB` en
+index.html alcanza para que deje de comprimir.
