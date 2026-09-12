@@ -200,3 +200,63 @@ def remapear(palabras, clips):
                 })
                 break
     return salida
+
+
+# --------------------------------------------------------------- planos ----
+
+def subdividir(clips, palabras, cadencia=1.8, zooms=(1.0, 1.12)):
+    """
+    Parte lo conservado en planos de ~cadencia segundos y le da a cada uno un
+    encuadre distinto.
+
+    Esto NO saca tiempo: es un corte visual sobre material que se queda. Es la
+    diferencia entre "sacar los silencios" y "editar": un take unico de una
+    persona hablando de frente cansa a los veinte segundos aunque no tenga aire
+    muerto, y lo que lo sostiene es el cambio de encuadre.
+
+    Se corta en el borde de una palabra y no en el medio: partir una silaba se
+    escucha, aunque el audio sea continuo.
+    """
+    if not clips:
+        return []
+    if not cadencia or cadencia <= 0:
+        return [{"inicio": a, "fin": b, "zoom": zooms[0]} for a, b in clips]
+
+    bordes = sorted(float(w.get("end", 0)) for w in (palabras or []))
+    planos = []
+    for a, b in clips:
+        cortes = [a]
+        objetivo = a + cadencia
+        for t in bordes:
+            if t <= cortes[-1] + 0.2 or t >= b - 0.2:
+                continue
+            if t >= objetivo:
+                cortes.append(t)
+                objetivo = t + cadencia
+        cortes.append(b)
+        # Sin transcripcion en ese tramo se reparte parejo, para no dejar un
+        # plano de treinta segundos en el medio de un video cortado a 1.8.
+        if len(cortes) == 2 and (b - a) > cadencia * 1.6:
+            n = max(2, int(round((b - a) / cadencia)))
+            paso = (b - a) / n
+            cortes = [a + i * paso for i in range(n)] + [b]
+        for i in range(len(cortes) - 1):
+            planos.append({"inicio": round(cortes[i], 3),
+                           "fin": round(cortes[i + 1], 3),
+                           "zoom": zooms[len(planos) % len(zooms)]})
+    return planos
+
+
+def bloque_central(clips, porcion=0.34):
+    """
+    Donde va el b-roll: el tramo del medio, que es donde el plano fijo mas se
+    cae. Se devuelve en tiempos del video YA cortado, que es contra el que se
+    monta.
+    """
+    total = duracion_total(clips)
+    if total <= 0:
+        return None
+    largo = total * porcion
+    ini = (total - largo) / 2.0
+    return {"inicio": round(ini, 2), "fin": round(ini + largo, 2),
+            "duracion": round(largo, 2)}

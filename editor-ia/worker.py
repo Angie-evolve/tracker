@@ -129,6 +129,44 @@ def hay_filtro(nombre):
     return f" {nombre} " in _FILTROS
 
 
+def _dims(video):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", video],
+        capture_output=True, text=True, check=True).stdout.strip()
+    w, h = out.split("x")[:2]
+    return int(w), int(h)
+
+
+def render_planos(video, planos, salida):
+    """
+    Como render_final de auto_editor, pero cada plano puede tener su encuadre.
+
+    El zoom se hace recortando el centro y volviendo a escalar al tamano
+    original. Al reves —escalar primero y recortar despues— se pierde nitidez al
+    pedo, porque se agranda todo el cuadro para tirar los bordes.
+    """
+    w, h = _dims(video)
+    carpeta = os.path.splitext(salida)[0] + "_planos"
+    os.makedirs(carpeta, exist_ok=True)
+    lista = os.path.join(carpeta, "list.txt")
+    with open(lista, "w") as f:
+        for i, p in enumerate(planos):
+            parte = os.path.join(carpeta, "p_%04d.mp4" % i)
+            cmd = ["ffmpeg", "-y", "-ss", str(p["inicio"]), "-to", str(p["fin"]),
+                   "-i", video]
+            z = float(p.get("zoom") or 1)
+            if z > 1.001:
+                cmd += ["-vf", "crop=iw/%.4f:ih/%.4f,scale=%d:%d" % (z, z, w, h)]
+            cmd += ["-c:v", "libx264", "-c:a", "aac",
+                    "-avoid_negative_ts", "make_zero", parte, "-loglevel", "error"]
+            subprocess.run(cmd, check=True)
+            f.write("file '%s'\n" % os.path.abspath(parte))
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lista,
+                    "-c", "copy", salida, "-loglevel", "error"], check=True)
+    return salida
+
+
 def escribir_srt(palabras, sub, ruta):
     """El .srt con el agrupado y las mayusculas que pida el formato."""
     if sub.get("mayusculas"):
@@ -195,10 +233,12 @@ def procesar(fila, tmp):
     # despues a la linea de tiempo del cortado.
     palabras = transcribir(base, tmp)
 
+    # min_silencio en 0 es "no cortes nada": el modo take unico, donde el valor
+    # esta en que no se note ni una costura.
+    minsil = float(op.get("min_silencio", 0.6))
     silencios = auto_editor.detectar_silencios(
-        base,
-        umbral_db=float(op.get("umbral_db", -30)),
-        min_silencio=float(op.get("min_silencio", 0.6)))
+        base, umbral_db=float(op.get("umbral_db", -30)), min_silencio=minsil
+    ) if minsil > 0 else []
 
     t_mul = D.tramos_muletillas(palabras, muletillas) if muletillas else []
     t_rep = D.tramos_tomas_repetidas(palabras) if repetidas else []
@@ -206,6 +246,14 @@ def procesar(fila, tmp):
     clips   = D.conservar(dur, list(silencios), aire=aire, clip_min=clipmin,
                           exacto=t_mul + t_rep)
     final_s = D.duracion_total(clips)
+
+    # Como se muestra lo que queda. Es un eje aparte del de "que se saca": un
+    # take unico sin aire muerto sigue siendo un plano fijo de trece minutos.
+    pres     = op.get("presentacion") or {}
+    cadencia = float(pres.get("cadencia", 0) or 0)
+    zoom     = float(pres.get("zoom", 1.12) or 1.12)
+    planos   = D.subdividir(clips, palabras, cadencia=cadencia, zooms=(1.0, zoom))
+    broll    = D.bloque_central(clips) if pres.get("tipo") == "b_roll" else None
 
     marcar(fila["id"], analisis={
         "duracion": round(dur, 2),
@@ -217,13 +265,15 @@ def procesar(fila, tmp):
         # sobraba aire o si se comio media charla.
         "porque": {"silencios": len(silencios), "muletillas": len(t_mul),
                    "repetidas": len(t_rep), "palabras": len(palabras)},
+        "planos": len(planos),
+        "broll": broll,
     })
 
     sello = str(int(time.time()))
 
     if fila["modo"] == "render":
         cortado = os.path.join(tmp, "cortado.mp4")
-        auto_editor.render_final(base, clips, cortado)
+        render_planos(base, planos, cortado)
         # Los tiempos pasan a la linea del video cortado: se calcularon sobre el
         # crudo, pero se muestran sobre el que se entrega.
         srt = escribir_srt(D.remapear(palabras, clips), sub, os.path.join(tmp, "subs.srt"))
@@ -240,6 +290,17 @@ def procesar(fila, tmp):
             texto_srt = f.read()
         auto_editor.exportar_capcut(clips, plan, os.path.join(tmp, "plan.srt"),
                                     fuente_srt=texto_srt)
+        # exportar_capcut solo escribe los tramos a conservar. El encuadre de
+        # cada plano y donde va el b-roll son justo lo que hay que ejecutar a
+        # mano en CapCut, asi que se agregan al mismo archivo.
+        with open(plan, encoding="utf-8") as f:
+            _p = json.load(f)
+        _p["planos"] = planos
+        if broll:
+            _p["b_roll"] = broll
+        _p["formato"] = op.get("formato", "")
+        with open(plan, "w", encoding="utf-8") as f:
+            json.dump(_p, f, indent=2, ensure_ascii=False)
         p_video = subir(plan, f"{carpeta}/{sello}_plan.json", "application/json")
         p_srt   = subir(os.path.join(tmp, "plan.srt"), f"{carpeta}/{sello}_plan.srt",
                         "text/plain")
