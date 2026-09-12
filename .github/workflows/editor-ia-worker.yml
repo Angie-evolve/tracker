@@ -1,0 +1,67 @@
+name: Editor con IA - worker
+
+# El cron hace de loop: en vez de una maquina prendida todo el dia, se levanta
+# una cada 10 minutos, mira si hay algo y se apaga. El repo es publico, asi que
+# los minutos de Actions no se cobran.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+# Dos corridas a la vez se pisarian sobre el mismo trabajo. El worker ya se
+# defiende (reclama la fila con un filtro por estado), pero si igual se
+# solapan, la segunda gasta una maquina para nada.
+concurrency:
+  group: editor-ia-worker
+  cancel-in-progress: false
+
+jobs:
+  procesar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # 'base' y no 'small': el runner tiene 2 nucleos y sin GPU la diferencia
+      # de tiempo se nota mucho mas que la de precision. La clave del cache de
+      # abajo nombra este modelo; si se cambia uno hay que cambiar la otra.
+      WHISPER_MODELO: base
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Barato a proposito: sin ffmpeg, sin whisper, solo una consulta.
+      - name: Hay algo pendiente?
+        id: chequeo
+        run: |
+          pip install requests -q
+          python editor-ia/chequear_pendiente.py
+
+      # De aca para abajo, solo si hay trabajo de verdad.
+      - name: Instalar ffmpeg
+        if: steps.chequeo.outputs.hay_trabajo == 'true'
+        # El de Debian trae libass, que es lo que habilita el filtro 'subtitles'
+        # para quemar los carteles. Sin eso el modo 'render' no puede terminar.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Cache del modelo de Whisper
+        if: steps.chequeo.outputs.hay_trabajo == 'true'
+        uses: actions/cache@v4
+        with:
+          # Cada corrida es una maquina nueva: sin esto se bajarian los ~150 MB
+          # del modelo en cada video. La clave es fija porque el modelo no
+          # cambia con el codigo del repo.
+          path: ~/.cache/huggingface
+          key: whisper-model-base-v1
+
+      - name: Instalar dependencias Python
+        if: steps.chequeo.outputs.hay_trabajo == 'true'
+        run: pip install faster-whisper requests -q
+
+      - name: Procesar el trabajo
+        if: steps.chequeo.outputs.hay_trabajo == 'true'
+        run: python editor-ia/worker.py --una-pasada
