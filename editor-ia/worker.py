@@ -11,7 +11,7 @@ Variables de entorno (ninguna va nunca al frontend):
     WHISPER_MODELO               opcional, default 'small'
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
-import os, sys, re, time, json, argparse, tempfile, subprocess, traceback
+import os, sys, re, time, json, array, argparse, tempfile, subprocess, traceback
 import requests
 
 import auto_editor
@@ -273,32 +273,75 @@ def _dims(video):
     return w, h
 
 
+def _sin_zoom(planos):
+    return all(float(p.get("zoom") or 1) <= 1.001 for p in planos)
+
+
+def _seleccion(planos):
+    """
+    La expresion que le dice a ffmpeg que tramos conservar, en una sola pasada.
+
+    El final va con "lt" y no con "between": between incluye los dos extremos y
+    dejaba un cuadro de mas por tramo. Con treinta tramos eso es un segundo de
+    corrimiento contra los subtitulos, que se calculan sobre estos mismos
+    numeros.
+    """
+    return "+".join("gte(t,%.4f)*lt(t,%.4f)" % (float(p["inicio"]), float(p["fin"]))
+                    for p in planos)
+
+
 def render_planos(video, planos, salida):
     """
-    Como render_final de auto_editor, pero cada plano puede tener su encuadre.
+    Deja solo los tramos elegidos, cada uno con su encuadre.
+
+    Se hace en UNA pasada y no cortando a archivos sueltos para despues
+    pegarlos: cortar y pegar codifica dos veces el mismo material, y cada
+    generacion de x264 se come detalle que ya no vuelve. El resultado de aca es
+    ademas el archivo que se entrega para CapCut, donde lo van a exportar una
+    vez mas.
 
     El zoom se hace recortando el centro y volviendo a escalar al tamano
     original. Al reves —escalar primero y recortar despues— se pierde nitidez al
     pedo, porque se agranda todo el cuadro para tirar los bordes.
     """
+    if not planos:
+        raise RuntimeError("no quedo ningun tramo para renderizar")
+
+    if _sin_zoom(planos):
+        # Sin encuadres distintos alcanza con seleccionar cuadros: un solo
+        # decodificado, un solo encode y ninguna union.
+        sel = _seleccion(planos)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video,
+             "-vf", "select='%s',setpts=N/FRAME_RATE/TB" % sel,
+             "-af", "aselect='%s',asetpts=N/SR/TB" % sel,
+             "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+             salida, "-loglevel", "error"],
+            check=True)
+        return salida
+
+    # Con zoom cada tramo lleva su propio recorte, asi que se arma el grafo a
+    # mano. Sigue siendo una sola pasada: el concat va por filtro, no por
+    # archivos intermedios.
     w, h = _dims(video)
-    carpeta = os.path.splitext(salida)[0] + "_planos"
-    os.makedirs(carpeta, exist_ok=True)
-    lista = os.path.join(carpeta, "list.txt")
-    with open(lista, "w") as f:
-        for i, p in enumerate(planos):
-            parte = os.path.join(carpeta, "p_%04d.mp4" % i)
-            cmd = ["ffmpeg", "-y", "-ss", str(p["inicio"]), "-to", str(p["fin"]),
-                   "-i", video]
-            z = float(p.get("zoom") or 1)
-            if z > 1.001:
-                cmd += ["-vf", "crop=iw/%.4f:ih/%.4f,scale=%d:%d" % (z, z, w, h)]
-            cmd += ["-c:v", "libx264", "-c:a", "aac",
-                    "-avoid_negative_ts", "make_zero", parte, "-loglevel", "error"]
-            subprocess.run(cmd, check=True)
-            f.write("file '%s'\n" % os.path.abspath(parte))
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lista,
-                    "-c", "copy", salida, "-loglevel", "error"], check=True)
+    n = len(planos)
+    partes, etiquetas = ["[0:v]split=%d%s" % (n, "".join("[v%d]" % i for i in range(n))),
+                         "[0:a]asplit=%d%s" % (n, "".join("[a%d]" % i for i in range(n)))], []
+    for i, p in enumerate(planos):
+        z = float(p.get("zoom") or 1)
+        corte = ("crop=iw/%.4f:ih/%.4f,scale=%d:%d," % (z, z, w, h)) if z > 1.001 else ""
+        partes.append("[v%d]trim=start=%.4f:end=%.4f,setpts=PTS-STARTPTS,%ssetsar=1[x%d]"
+                      % (i, float(p["inicio"]), float(p["fin"]), corte, i))
+        partes.append("[a%d]atrim=start=%.4f:end=%.4f,asetpts=PTS-STARTPTS[y%d]"
+                      % (i, float(p["inicio"]), float(p["fin"]), i))
+        etiquetas.append("[x%d][y%d]" % (i, i))
+    partes.append("%sconcat=n=%d:v=1:a=1[v][a]" % ("".join(etiquetas), n))
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video, "-filter_complex", ";".join(partes),
+         "-map", "[v]", "-map", "[a]",
+         "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+         salida, "-loglevel", "error"],
+        check=True)
     return salida
 
 
@@ -416,29 +459,86 @@ def concatenar(tramos, salida, dims=None):
     Pega varios tramos —de archivos distintos— en un solo video.
 
     Una pieza se arma con un clip por parrafo, asi que casi nunca sale de un
-    archivo solo. Se reencoda cada tramo al mismo tamano antes de pegar: dos
+    archivo solo. Se normaliza cada tramo al mismo tamano antes de pegar: dos
     clips de la misma camara suelen coincidir, pero uno grabado de costado o con
-    otra resolucion rompe el concat sin decir por que.
+    otra resolucion rompe el pegado sin decir por que.
+
+    Todo va en una sola pasada, por filtro y no por archivos intermedios: asi
+    el material se codifica una vez sola en lugar de dos.
     """
-    carpeta = os.path.splitext(salida)[0] + "_tramos"
-    os.makedirs(carpeta, exist_ok=True)
-    lista = os.path.join(carpeta, "list.txt")
+    if not tramos:
+        raise RuntimeError("no hay tramos para concatenar")
     w, h = dims or _dims(tramos[0]["archivo"])
-    with open(lista, "w") as f:
-        for i, t in enumerate(tramos):
-            parte = os.path.join(carpeta, "t_%03d.mp4" % i)
-            subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(t["inicio"]), "-to", str(t["fin"]),
-                 "-i", t["archivo"],
-                 "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,"
-                        "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1" % (w, h, w, h),
-                 "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
-                 "-avoid_negative_ts", "make_zero", parte, "-loglevel", "error"],
-                check=True)
-            f.write("file '%s'\n" % os.path.abspath(parte))
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lista,
-                    "-c", "copy", salida, "-loglevel", "error"], check=True)
+    entradas, partes, etiquetas = [], [], []
+    for i, t in enumerate(tramos):
+        # Un -i por tramo aunque se repita el archivo: asi cada uno decodifica
+        # su propio rango y no hace falta partir el stream.
+        entradas += ["-ss", str(t["inicio"]), "-to", str(t["fin"]), "-i", t["archivo"]]
+        partes.append(
+            "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,setpts=PTS-STARTPTS[v%d]"
+            % (i, w, h, w, h, i))
+        partes.append("[%d:a]aresample=48000,asetpts=PTS-STARTPTS[a%d]" % (i, i))
+        etiquetas.append("[v%d][a%d]" % (i, i))
+    partes.append("%sconcat=n=%d:v=1:a=1[v][a]" % ("".join(etiquetas), len(tramos)))
+    subprocess.run(
+        ["ffmpeg", "-y"] + entradas
+        + ["-filter_complex", ";".join(partes), "-map", "[v]", "-map", "[a]",
+           "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+           salida, "-loglevel", "error"],
+        check=True)
     return salida
+
+
+# Cuanto se busca de silencio pegado al arranque. Mas que esto ya no es el
+# arranque de la grabacion: es una pausa de verdad y no hay que comersela.
+MUDO_MAX = 0.20
+
+
+def mudo_inicial(archivo, desde):
+    """
+    Cuanto silencio digital —no bajo: cero— hay pegado al arranque de un tramo.
+
+    Los clips del celular empiezan con 9 a 29 ms de nada, y su pista de audio
+    termina algunos ms antes que la de video. Pegados uno atras de otro las dos
+    cosas se suman y dejan un bache audible justo donde una frase engancha con
+    la siguiente. Medido sobre una pieza real: 28, 16 y 31 ms en las tres
+    junturas.
+    """
+    try:
+        crudo = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(desde), "-t", str(MUDO_MAX),
+             "-i", archivo, "-ac", "1", "-ar", "48000", "-f", "s16le", "-"],
+            check=True, stdout=subprocess.PIPE).stdout
+    except Exception:
+        # Si no se puede medir, no se toca nada: un bache se escucha, un
+        # subtitulo corrido se ve.
+        return 0.0
+    m = array.array("h")
+    m.frombytes(crudo[:len(crudo) // 2 * 2])
+    for i, v in enumerate(m):
+        if abs(v) >= 8:          # ~-72 dBFS: el ruido de sala siempre lo pasa
+            return round(i / 48000.0, 4)
+    return 0.0
+
+
+def sacar_mudo_inicial(tramos):
+    """
+    Corre el arranque de cada tramo hasta donde empieza a haber sonido.
+
+    Se mueve el tramo entero y no el audio suelto para que el video se corra lo
+    mismo: mover solo el audio desincronizaria la boca. Son milisegundos donde
+    todavia no se dijo nada, asi que no se pierde imagen util.
+
+    Tiene que pasar ANTES de concatenar y de mapear las palabras: las dos cosas
+    leen el mismo inicio, y si una se entera y la otra no, los subtitulos quedan
+    corridos.
+    """
+    for t in tramos:
+        m = mudo_inicial(t["archivo"], t["inicio"])
+        if m and (t["fin"] - t["inicio"] - m) > 0.2:
+            t["inicio"] = round(t["inicio"] + m, 4)
+    return tramos
 
 
 def _palabras_pegadas(tramos):
@@ -704,6 +804,7 @@ def procesar(fila, tmp):
             trs = [dict(t, archivo=porRuta[t["video"]]["archivo"],
                         palabras=porRuta[t["video"]]["palabras"])
                    for t in pz["tramos"]]
+            sacar_mudo_inicial(trs)
             armado = concatenar(trs, os.path.join(tmp, nombre + "_crudo.mp4"))
             pal = _palabras_pegadas(trs)
             gtxt = next((g.get("texto") for g in guiones
