@@ -11,6 +11,7 @@ ASS: cada linea reemplaza a la anterior, el efecto es el mismo, y no depende de
 que la version de libass del runner soporte bien el karaoke nativo.
 """
 import re
+import unicodedata
 
 # Cuanto puede quedar una palabra sola en pantalla antes de que se sienta
 # colgada. Si la persona duda tres segundos, el cartel no se queda esperando.
@@ -25,31 +26,112 @@ def _txt(w):
     return t.replace("\\", "").replace("{", "(").replace("}", ")")
 
 
+# Palabras que se apoyan en la que viene despues. Cortar el cartel justo aca
+# deja colgado un "a la" o un "de los" que no significa nada solo. Van sin
+# acento: la comparacion normaliza antes.
+LIGADURAS = set("""
+el la los las un una unos unas lo al del
+a ante bajo con contra de desde durante en entre hacia hasta mediante para por
+segun sin sobre tras
+y e o u ni que si pero aunque porque como cuando donde mientras
+mi tu su mis tus sus nuestro nuestra su sus
+me te se nos le les lo la
+muy mas tan
+""".split())
+
+# Cuanto se puede apartar del largo ideal. Menos de dos palabras el cartel
+# parpadea; mas de cuatro deja de ser el karaoke corto y pasa a ser un
+# subtitulo de frase entera.
+MIN_BLOQUE, MAX_BLOQUE = 2, 4
+
+
+def _limpio(t):
+    t = unicodedata.normalize("NFD", str(t or "").lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]+", "", t)
+
+
+def _cierre(t):
+    """Con que signo termina la palabra, si termina con alguno."""
+    t = str(t or "").strip()
+    if t.endswith((".", "?", "!", "\u2026")):
+        return "fuerte"
+    if t.endswith((",", ";", ":")):
+        return "flojo"
+    return ""
+
+
+def _puntaje(palabras, i, j, ideal):
+    """
+    Que tan bien queda cortar el cartel despues de la palabra j.
+
+    Se puntua el LUGAR del corte, no la cantidad: el problema de contar de a
+    tres fijo era que partia frases al medio ("que hacer? Un" / "mal lider
+    no"). El largo entra igual, pero como preferencia y no como regla.
+    """
+    p = 0.0
+    fin = _cierre(palabras[j].get("word"))
+    if fin == "fuerte":
+        p += 3.0
+    elif fin == "flojo":
+        p += 2.0
+    # Nunca dejar colgada una palabra que se apoya en la siguiente.
+    if _limpio(palabras[j].get("word")) in LIGADURAS:
+        p -= 3.0
+    # Una pausa real es el mejor lugar posible: ahi la persona ya separo.
+    if j + 1 < len(palabras):
+        hueco = float(palabras[j + 1].get("start", 0)) - float(palabras[j].get("end", 0))
+        if hueco > 0.25:
+            p += 1.5
+    # Y que no quede una sola palabra suelta al final de todo.
+    if len(palabras) - (j + 1) == 1 and fin != "fuerte":
+        p -= 1.5
+    p -= 0.5 * abs((j - i + 1) - ideal)
+    return p
+
+
 def bloques(palabras, por_bloque=3):
     """
-    Agrupa las palabras en bloques cortos. Corta antes de tiempo cuando hay una
-    pausa: juntar dos ideas separadas por un silencio en el mismo cartel se lee
-    mal aunque entren las tres palabras.
+    Agrupa las palabras en carteles cortos, cortando donde conviene.
+
+    Antes cortaba cada N palabras exactas, y eso partia las frases al medio. Lo
+    que se elige ahora es el LUGAR: despues de un punto o una coma, en una
+    pausa, y nunca despues de un articulo o una preposicion, que no significan
+    nada separados de lo que viene. El largo sigue rondando N, pero como
+    preferencia.
     """
-    salida, actual = [], []
-    for i, w in enumerate(palabras or []):
-        if not _txt(w.get("word")):
-            continue
-        actual.append(w)
-        ultimo = (i + 1 >= len(palabras))
-        hueco = 0 if ultimo else (float(palabras[i + 1].get("start", 0))
-                                  - float(w.get("end", 0)))
-        if len(actual) >= por_bloque or ultimo or hueco > PAUSA_CORTA:
-            salida.append(actual)
-            actual = []
-    if actual:
-        salida.append(actual)
-    # Un bloque de una sola palabra se lee como un error, no como un remate.
-    # Se pega al anterior salvo que los separe una pausa, que ahi si era a
-    # proposito.
+    palabras = [w for w in (palabras or []) if _txt(w.get("word"))]
+    if not palabras:
+        return []
+    tope = max(MAX_BLOQUE, por_bloque)
+    piso = min(MIN_BLOQUE, por_bloque)
+
+    salida, i = [], 0
+    n = len(palabras)
+    while i < n:
+        # Una pausa larga corta si o si: son dos ideas, no una, y juntarlas en
+        # el mismo cartel se lee mal aunque entren.
+        corte = None
+        for j in range(i, min(i + tope, n)):
+            if j + 1 < n and (float(palabras[j + 1].get("start", 0))
+                              - float(palabras[j].get("end", 0))) > PAUSA_CORTA:
+                corte = j
+                break
+        if corte is None:
+            ultimo = min(i + tope, n) - 1
+            if ultimo >= n - 1:
+                corte = n - 1
+            else:
+                opciones = range(min(i + piso, n) - 1, ultimo + 1)
+                corte = max(opciones, key=lambda j: _puntaje(palabras, i, j, por_bloque))
+        salida.append(palabras[i:corte + 1])
+        i = corte + 1
+
+    # Un cartel de una sola palabra se lee como un error y no como un remate. Se
+    # pega al anterior salvo que los separe una pausa, que ahi si era a proposito.
     juntos = []
     for b in salida:
-        if (juntos and len(b) == 1 and len(juntos[-1]) <= por_bloque
+        if (juntos and len(b) == 1 and len(juntos[-1]) < tope
                 and float(b[0].get("start", 0)) - float(juntos[-1][-1].get("end", 0))
                 <= PAUSA_CORTA):
             juntos[-1].extend(b)
