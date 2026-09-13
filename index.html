@@ -1424,6 +1424,7 @@ body.light .btn-primary{background:var(--accent);border-color:var(--accent);colo
 .ed-drop{border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:26px;
   text-align:center;color:var(--text2);font-size:12.5px;margin-bottom:20px;cursor:pointer}
 .ed-drop:hover{border-color:var(--accent)}
+.ed-drop.ed-sobre{border-color:var(--accent);background:var(--bg2)}
 .ed-drop b{color:var(--text);display:block;font-size:13.5px;margin-bottom:4px;font-weight:500}
 .ed-file{display:flex;align-items:center;gap:12px;background:var(--bg2);
   border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:20px}
@@ -15349,6 +15350,49 @@ function edElegir(inp){
   _edPintar();
 }
 
+// La zona decia "tirá el zip acá" pero no habia nada escuchando: soltar algo
+// encima hacia que el navegador abriera el archivo y se perdiera la pagina.
+function edSobre(ev, el){ ev.preventDefault(); if(el) el.classList.add('ed-sobre'); }
+function edSale(ev, el){ if(el) el.classList.remove('ed-sobre'); }
+
+// Soltar una carpeta no da archivos: da una entrada de directorio que hay que
+// recorrer a mano. Sin esto, arrastrar la carpeta entera —que es como llega el
+// material del cliente— no traia nada.
+function _edEntradas(entry, salida){
+  return new Promise(function(res){
+    if(!entry) return res();
+    if(entry.isFile) return entry.file(function(f){ salida.push(f); res(); },
+                                       function(){ res(); });
+    var lector=entry.createReader();
+    var seguir=function(){
+      // readEntries viene de a tandas y hay que pedirlo hasta que llegue vacio:
+      // con una sola llamada se pierden los archivos a partir del numero 100.
+      lector.readEntries(function(hijos){
+        if(!hijos.length) return res();
+        Promise.all(hijos.map(function(h){ return _edEntradas(h, salida); })).then(seguir);
+      }, function(){ res(); });
+    };
+    seguir();
+  });
+}
+
+async function edSoltar(ev, el){
+  ev.preventDefault();
+  edSale(ev, el);
+  var dt=ev.dataTransfer; if(!dt) return;
+  // Los items hay que leerlos ya: despues del primer await el dataTransfer
+  // queda vacio y no hay forma de recuperarlos.
+  var entradas=Array.prototype.slice.call(dt.items||[]).map(function(it){
+    return it.webkitGetAsEntry?it.webkitGetAsEntry():null; }).filter(Boolean);
+  var sueltos=Array.prototype.slice.call(dt.files||[]);
+  if(entradas.length){
+    var salida=[];
+    for(var i=0;i<entradas.length;i++) await _edEntradas(entradas[i], salida);
+    if(salida.length) return edElegir({files:salida});
+  }
+  if(sueltos.length) edElegir({files:sueltos});
+}
+
 function edLimpiar(){
   var e=_edEstado();
   if(e.timer) clearTimeout(e.timer);
@@ -16149,12 +16193,21 @@ function _edCuerpo(){
   h+='<input type="file" id="ed-file" accept="video/*,.zip" multiple style="display:none" onchange="edElegir(this)">'
     +'<input type="file" id="ed-carpeta" webkitdirectory directory multiple style="display:none" onchange="edElegir(this)">';
   if(!fs.length){
-    h+='<div class="ed-drop" onclick="document.getElementById(\'ed-file\').click()">'
-      +'<b>Elegí los videos</b>Podés marcar varios a la vez, o tirar el .zip tal cual te llegó. '
+    h+='<div class="ed-drop" onclick="document.getElementById(\'ed-file\').click()" '
+        +'ondragover="edSobre(event,this)" ondragleave="edSale(event,this)" '
+        +'ondrop="edSoltar(event,this)">'
+      +'<b>Elegí los videos</b>Podés marcar varios a la vez, o arrastrar acá la carpeta '
+      +'entera o el .zip tal cual te llegó. '
       +'Los que pesen más de '+ED_LIMITE_MB+' MB se comprimen solos antes de subir.'
+      // El boton abre el selector de CARPETAS, que no deja elegir un archivo:
+      // si lo que hay es un zip, hay que decirlo antes y no despues de que el
+      // dialogo no la deje apretar Upload.
       +'<div style="margin-top:8px"><button class="btn btn-sm" '
         +'onclick="event.stopPropagation();document.getElementById(\'ed-carpeta\').click()" '
-        +'style="color:var(--text3)">O elegir una carpeta entera</button></div></div>';
+        +'style="color:var(--text3)">O elegir una carpeta entera</button>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:6px">'
+        +'Ese botón solo deja elegir carpetas. Si tenés un .zip, usá el de arriba.</div>'
+      +'</div></div>';
   } else if(fs.length===1){
     h+='<div class="ed-file"><div class="ic">🎬</div><div style="flex:1;min-width:0">'
       +'<div class="nm">'+esc(f.name)+'</div>'
