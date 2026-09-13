@@ -143,12 +143,32 @@ def hay_filtro(nombre):
 
 
 def _dims(video):
+    """
+    El tamano COMO SE VE, no como esta guardado.
+
+    Un celular graba de costado y deja la rotacion en los metadatos: el archivo
+    dice 1920x1080 pero se ve 1080x1920. ffmpeg aplica la rotacion al decodificar,
+    asi que pedirle 1920x1080 de salida metia el video vertical adentro de un
+    cuadro apaisado, con dos barras negras enormes a los costados.
+    """
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", video],
-        capture_output=True, text=True, check=True).stdout.strip()
-    w, h = out.split("x")[:2]
-    return int(w), int(h)
+         "-show_streams", "-of", "json", video],
+        capture_output=True, text=True, check=True).stdout
+    st = (json.loads(out).get("streams") or [{}])[0]
+    w, h = int(st.get("width") or 0), int(st.get("height") or 0)
+    rot = 0
+    for sd in (st.get("side_data_list") or []):
+        if "rotation" in sd:
+            rot = int(sd["rotation"])
+    if not rot:
+        try:
+            rot = int((st.get("tags") or {}).get("rotate") or 0)
+        except ValueError:
+            rot = 0
+    if abs(rot) % 180 == 90:
+        w, h = h, w
+    return w, h
 
 
 def render_planos(video, planos, salida):
@@ -274,6 +294,48 @@ def _palabras_en(palabras, a, b):
             salida.append({"word": w.get("word", ""),
                            "start": round(max(ini - a, 0.0), 3),
                            "end": round(max(fin - a, 0.0), 3)})
+    return salida
+
+
+def concatenar(tramos, salida, dims=None):
+    """
+    Pega varios tramos —de archivos distintos— en un solo video.
+
+    Una pieza se arma con un clip por parrafo, asi que casi nunca sale de un
+    archivo solo. Se reencoda cada tramo al mismo tamano antes de pegar: dos
+    clips de la misma camara suelen coincidir, pero uno grabado de costado o con
+    otra resolucion rompe el concat sin decir por que.
+    """
+    carpeta = os.path.splitext(salida)[0] + "_tramos"
+    os.makedirs(carpeta, exist_ok=True)
+    lista = os.path.join(carpeta, "list.txt")
+    w, h = dims or _dims(tramos[0]["archivo"])
+    with open(lista, "w") as f:
+        for i, t in enumerate(tramos):
+            parte = os.path.join(carpeta, "t_%03d.mp4" % i)
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", str(t["inicio"]), "-to", str(t["fin"]),
+                 "-i", t["archivo"],
+                 "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,"
+                        "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1" % (w, h, w, h),
+                 "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+                 "-avoid_negative_ts", "make_zero", parte, "-loglevel", "error"],
+                check=True)
+            f.write("file '%s'\n" % os.path.abspath(parte))
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lista,
+                    "-c", "copy", salida, "-loglevel", "error"], check=True)
+    return salida
+
+
+def _palabras_pegadas(tramos):
+    """Las palabras de los tramos, corridas como quedan una atras de la otra."""
+    salida, offset = [], 0.0
+    for t in tramos:
+        salida += [{"word": w["word"],
+                    "start": round(w["start"] + offset, 3),
+                    "end": round(w["end"] + offset, 3)}
+                   for w in _palabras_en(t["palabras"], t["inicio"], t["fin"])]
+        offset += (t["fin"] - t["inicio"])
     return salida
 
 
@@ -418,15 +480,17 @@ def procesar(fila, tmp):
                         "duracion": auto_editor.ffprobe_duration(f)})
 
     if guiones:
-        encontradas, sin_grabar, descartados = Piezas.repartir(locales, guiones)
+        encontradas, sin_grabar, descartados = Piezas.armar(locales, guiones)
     else:
         # Carpeta sin guiones: cada video es su propia pieza, entero. Es lo que
         # promete el arrastrable y lo que espera cualquiera que tire una carpeta
         # de clips sueltos; sin esto repartir() devolvia cero y no se entregaba
         # nada.
-        encontradas = [{"video": v["id"],
-                        "titulo": os.path.splitext(os.path.basename(v["id"]))[0],
-                        "inicio": 0.0, "fin": float(v["duracion"]), "score": 1.0}
+        encontradas = [{"titulo": os.path.splitext(os.path.basename(v["id"]))[0],
+                        "tramos": [{"video": v["id"], "inicio": 0.0,
+                                    "fin": float(v["duracion"]), "score": 1.0}],
+                        "duracion": float(v["duracion"]), "score": 1.0,
+                        "bloques": 1, "bloques_total": 1}
                        for v in locales if v.get("duracion")]
         sin_grabar, descartados = [], []
     sueltos = Piezas.huerfanos(locales, encontradas)
@@ -439,28 +503,28 @@ def procesar(fila, tmp):
     porRuta = {v["id"]: v for v in locales}
     salida = []
     for i, pz in enumerate(encontradas):
-        v = porRuta[pz["video"]]
         nombre = "%s_%s" % (sello, _slug(pz["titulo"], i))
-        print("  pieza %d/%d: %s" % (i + 1, len(encontradas), pz["titulo"]), flush=True)
-        trozo = recortar(v["archivo"], pz["inicio"], pz["fin"],
-                         os.path.join(tmp, nombre + "_crudo.mp4"))
-        pal = _palabras_en(v["palabras"], pz["inicio"], pz["fin"])
-        gtxt = next((g.get("texto") for g in guiones
-                     if (g.get("titulo") or "") == pz["titulo"]), "")
+        print("  pieza %d/%d: %s (%d tramos)" % (i + 1, len(encontradas),
+                                                 pz["titulo"], len(pz["tramos"])), flush=True)
+        base = {"titulo": pz["titulo"], "tramos": pz["tramos"],
+                "bloques": pz.get("bloques"), "bloques_total": pz.get("bloques_total")}
         try:
-            an, res, srt = _editar(trozo, pal, dict(op, guion=gtxt), tmp,
+            trs = [dict(t, archivo=porRuta[t["video"]]["archivo"],
+                        palabras=porRuta[t["video"]]["palabras"])
+                   for t in pz["tramos"]]
+            armado = concatenar(trs, os.path.join(tmp, nombre + "_crudo.mp4"))
+            pal = _palabras_pegadas(trs)
+            gtxt = next((g.get("texto") for g in guiones
+                         if (g.get("titulo") or "") == pz["titulo"]), "")
+            an, res, srt = _editar(armado, pal, dict(op, guion=gtxt), tmp,
                                    carpeta, nombre, modo)
         except Exception as e:
             # Una pieza que falla no puede llevarse la tanda entera: se anota y
             # se sigue con las demas.
-            salida.append({"titulo": pz["titulo"], "video": pz["video"],
-                           "inicio": pz["inicio"], "fin": pz["fin"],
-                           "error": "%s: %s" % (type(e).__name__, e)})
+            salida.append(dict(base, error="%s: %s" % (type(e).__name__, e)))
             continue
-        salida.append({"titulo": pz["titulo"], "video": pz["video"],
-                       "inicio": pz["inicio"], "fin": pz["fin"],
-                       "duracion": an["duracion_final"], "ahorro_pct": an["ahorro_pct"],
-                       "path": res, "srt_path": srt})
+        salida.append(dict(base, duracion=an["duracion_final"],
+                           ahorro_pct=an["ahorro_pct"], path=res, srt_path=srt))
         marcar(fila["id"], piezas=salida)
 
     marcar(fila["id"], estado="listo", listo_at=_ahora(), piezas=salida,

@@ -117,8 +117,11 @@ def huerfanos(videos, piezas, minimo=8.0):
         dur = float(v.get("duracion") or 0)
         if dur <= 0:
             continue
-        tomados = sorted([(p["inicio"], p["fin"]) for p in piezas
-                          if p["video"] == v.get("id")])
+        # Una pieza se arma con tramos de varios clips, asi que lo tomado de
+        # este video hay que juntarlo de todas las piezas que lo usan.
+        tomados = sorted([(t["inicio"], t["fin"])
+                          for p in piezas for t in (p.get("tramos") or [])
+                          if t.get("video") == v.get("id")])
         cursor = 0.0
         for a, b in tomados:
             if a - cursor >= minimo:
@@ -129,3 +132,109 @@ def huerfanos(videos, piezas, minimo=8.0):
             fuera.append({"video": v.get("id"), "inicio": round(cursor, 2),
                           "fin": round(dur, 2)})
     return fuera
+
+
+# ------------------------------------------------------------- ensamblar ----
+
+def _tiempos(palabras, i, size):
+    return (round(float(palabras[i].get("start", 0)), 2),
+            round(float(palabras[min(i + size - 1, len(palabras) - 1)].get("end", 0)), 2))
+
+
+def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
+    """
+    Arma cada guion juntando los clips que dicen sus bloques, en orden.
+
+    Es como filma la gente de verdad: un parrafo por toma, se corta, se acomoda
+    y se graba el siguiente. Medido sobre un rodaje real de 31 clips y 6
+    guiones, cada bloque cayo en un archivo distinto y consecutivo.
+
+    La version anterior buscaba el guion ENTERO adentro de un solo video. Con
+    este material no encontraba nada, porque ningun clip contiene un guion
+    completo.
+
+    minimo: cuanto tiene que reconocerse un bloque para darlo por dicho. Va bajo
+    a proposito: la transcripcion automatica destroza los nombres propios —"En
+    Potential" sale "Empotencia"— y exigir mucho deja todo afuera.
+    min_palabras: un bloque de una o dos palabras calza con cualquier cosa. Casi
+    siempre es un titulo que quedo partido en el PDF, no algo que alguien diga.
+    """
+    # Los clips vienen en orden de rodaje, y un guion se graba de arriba abajo:
+    # el bloque 2 se filmo despues del bloque 1. Esa restriccion es la que
+    # permite bajar el umbral sin empezar a inventar coincidencias, y de paso
+    # evita que un mismo clip de cierre se lo lleven tres guiones distintos
+    # porque los tres terminan parecido.
+    claves = [G._claves(v.get("palabras") or []) for v in (videos or [])]
+
+    porBloque = []
+    for gi, g in enumerate(guiones or []):
+        cursor = 0
+        for bi, b in enumerate(G.bloques(g.get("texto") or "")):
+            if len(b["palabras"]) < min_palabras:
+                continue
+            mejor, mejorGlobal = None, None
+            for k, v in enumerate(videos or []):
+                u = G._ubicar(claves[k], b["palabras"])
+                if not u:
+                    continue
+                cand = dict(u, video=v.get("id"), k=k)
+                if not mejorGlobal or u["score"] > mejorGlobal["score"]:
+                    mejorGlobal = cand
+                if k >= cursor and (not mejor or u["score"] > mejor["score"]):
+                    mejor = cand
+            # Primero el mejor de aca en adelante. Si ninguno llega, se acepta
+            # el mejor de todos pero exigiendole mas: puede ser una toma que se
+            # rehizo fuera de orden.
+            elegido = None
+            if mejor and mejor["score"] >= minimo:
+                elegido = mejor
+            elif mejorGlobal and mejorGlobal["score"] >= minimo * 2:
+                elegido = mejorGlobal
+            if not elegido:
+                continue
+            cursor = elegido["k"] + 1
+            porBloque.append({"guion": gi, "orden": bi, "video": elegido["video"],
+                              "i": elegido["i"], "size": elegido["size"],
+                              "score": round(elegido["score"], 3),
+                              "titulo": b["titulo"]})
+
+    porId = {v.get("id"): v for v in (videos or [])}
+
+    # Cuanto del clip se lleva cada bloque. Si el clip entero es ese bloque
+    # —que es el caso normal— se toma completo: recortar por donde calzo la
+    # transcripcion se come el arranque y el cierre de la frase.
+    for vid, v in porId.items():
+        mios = sorted([x for x in porBloque if x["video"] == vid], key=lambda x: x["i"])
+        dur = float(v.get("duracion") or 0)
+        pal = v.get("palabras") or []
+        for k, x in enumerate(mios):
+            a, b = _tiempos(pal, x["i"], x["size"])
+            if len(mios) == 1:
+                x["inicio"], x["fin"] = 0.0, dur
+            else:
+                x["inicio"] = 0.0 if (k == 0 and a <= borde) else a
+                x["fin"] = dur if (k == len(mios) - 1 and dur - b <= borde) else b
+
+    piezas, sin_grabar = [], []
+    for gi, g in enumerate(guiones or []):
+        tramos = sorted([x for x in porBloque if x["guion"] == gi],
+                        key=lambda x: x["orden"])
+        if not tramos:
+            sin_grabar.append({"titulo": g.get("titulo") or "Guion", "score": 0})
+            continue
+        total = sorted(set(b["titulo"] for b in G.bloques(g.get("texto") or "")
+                           if len(b["palabras"]) >= min_palabras))
+        piezas.append({
+            "titulo": g.get("titulo") or "Guion",
+            "tramos": [{"video": t["video"], "inicio": t["inicio"], "fin": t["fin"],
+                        "score": t["score"], "bloque": t["titulo"][:70]} for t in tramos],
+            "duracion": round(sum(t["fin"] - t["inicio"] for t in tramos), 2),
+            "bloques": len(tramos), "bloques_total": len(total),
+            "score": round(sum(t["score"] for t in tramos) / float(len(tramos)), 3),
+        })
+
+    usados = set(x["video"] for x in porBloque)
+    descartados = [{"video": v.get("id"),
+                    "duracion": round(float(v.get("duracion") or 0), 1)}
+                   for v in (videos or []) if v.get("id") not in usados]
+    return piezas, sin_grabar, descartados
