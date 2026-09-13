@@ -15265,9 +15265,87 @@ function _edPintar(){
   if(el) el.innerHTML=_edCuerpo();
 }
 
+// Un zip de Google Takeout es lo que llega cuando el cliente comparte el
+// rodaje, y pedirle a alguien que lo descomprima antes es un paso de mas. Se
+// abre acá: se lee el directorio central del final y se saca cada video por
+// separado, sin cargar los 400 MB enteros en memoria.
+async function _edLeerZip(file, onProg){
+  var td=new TextDecoder();
+  var leer=async function(a, b){
+    return new DataView(await file.slice(a, b).arrayBuffer());
+  };
+  // El fin del directorio central esta al final, despues de un comentario que
+  // puede medir hasta 64 KB. Se busca la firma hacia atras.
+  var colaN=Math.min(file.size, 66000);
+  var cola=await leer(file.size-colaN, file.size);
+  var eocd=-1;
+  for(var i=colaN-22;i>=0;i--) if(cola.getUint32(i,true)===0x06054b50){ eocd=i; break; }
+  if(eocd<0) throw new Error('no parece un .zip');
+  var n=cola.getUint16(eocd+10,true);
+  var cdTam=cola.getUint32(eocd+12,true), cdOff=cola.getUint32(eocd+16,true);
+  var cd=await leer(cdOff, cdOff+cdTam);
+
+  var entradas=[], off=0;
+  for(var k=0;k<n && off+46<=cdTam;k++){
+    if(cd.getUint32(off,true)!==0x02014b50) break;
+    var metodo=cd.getUint16(off+10,true);
+    var comp=cd.getUint32(off+20,true);
+    var lname=cd.getUint16(off+28,true), lex=cd.getUint16(off+30,true),
+        lcom=cd.getUint16(off+32,true), lhead=cd.getUint32(off+42,true);
+    var nombre=td.decode(new Uint8Array(cd.buffer, cd.byteOffset+off+46, lname));
+    off += 46+lname+lex+lcom;
+    var corto=nombre.split('/').pop();
+    if(!corto || corto.charAt(0)==='.' || nombre.indexOf('__MACOSX')>=0) continue;
+    if(!/\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(corto)) continue;
+    entradas.push({nombre:corto, metodo:metodo, comp:comp, lhead:lhead});
+  }
+  entradas.sort(function(a,b){ return a.nombre.localeCompare(b.nombre); });
+
+  var salida=[];
+  for(var j=0;j<entradas.length;j++){
+    var en=entradas[j];
+    // La cabecera local repite los largos, y no coinciden con los del
+    // directorio: hay que leerla para saber donde arrancan los datos.
+    var lh=await leer(en.lhead, en.lhead+30);
+    var ini=en.lhead+30+lh.getUint16(26,true)+lh.getUint16(28,true);
+    var trozo=file.slice(ini, ini+en.comp);
+    var datos=trozo;
+    if(en.metodo===8){
+      datos=await new Response(
+        trozo.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+    } else if(en.metodo!==0){
+      continue;   // otro metodo de compresion: no lo se abrir
+    }
+    salida.push(new File([datos], en.nombre, {type:'video/mp4'}));
+    if(onProg) onProg((j+1)/entradas.length, en.nombre);
+  }
+  return salida;
+}
+
 function edElegir(inp){
   var e=_edEstado();
   var fs=Array.prototype.slice.call((inp&&inp.files)||[]);
+  var zips=fs.filter(function(f){ return /\.zip$/i.test(f.name); });
+  if(zips.length){
+    e.subiendo=true; _edPintar();
+    var el=document.getElementById('ed-pct');
+    if(el) el.textContent='Abriendo el zip…';
+    Promise.all(zips.map(function(z){
+      return _edLeerZip(z, function(p, nombre){
+        var x=document.getElementById('ed-pct');
+        if(x) x.textContent='Abriendo el zip… '+Math.round(p*100)+'% · '+nombre;
+      });
+    })).then(function(listas){
+      var todos=[].concat.apply([], listas);
+      e.subiendo=false;
+      if(!todos.length){ toast('No encontré videos adentro del zip.','amber'); _edPintar(); return; }
+      edElegir({files:todos.concat(fs.filter(function(f){ return !/\.zip$/i.test(f.name); }))});
+      toast(todos.length+' videos sacados del zip');
+    }).catch(function(err){
+      e.subiendo=false; e.error='No pude abrir el zip: '+(err&&err.message||''); _edPintar();
+    });
+    return;
+  }
   // Elegir una carpeta trae de todo: solo los videos entran, y ordenados por
   // nombre, que en un rodaje es el orden en que se filmo. Ese orden despues es
   // lo que le permite al worker saber que bloque va antes que cual.
@@ -15905,11 +15983,11 @@ function _edCuerpo(){
     +'<div style="font-size:12px;color:var(--amberx)">'+esc(e.histError)+'</div></div>';
 
   var fs=e.archivos||[];
-  h+='<input type="file" id="ed-file" accept="video/*" multiple style="display:none" onchange="edElegir(this)">'
+  h+='<input type="file" id="ed-file" accept="video/*,.zip" multiple style="display:none" onchange="edElegir(this)">'
     +'<input type="file" id="ed-carpeta" webkitdirectory directory multiple style="display:none" onchange="edElegir(this)">';
   if(!fs.length){
     h+='<div class="ed-drop" onclick="document.getElementById(\'ed-file\').click()">'
-      +'<b>Elegí los videos</b>Podés marcar varios a la vez. '
+      +'<b>Elegí los videos</b>Podés marcar varios a la vez, o tirar el .zip tal cual te llegó. '
       +'Los que pesen más de '+ED_LIMITE_MB+' MB se comprimen solos antes de subir.'
       +'<div style="margin-top:8px"><button class="btn btn-sm" '
         +'onclick="event.stopPropagation();document.getElementById(\'ed-carpeta\').click()" '
