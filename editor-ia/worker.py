@@ -20,6 +20,7 @@ import decisiones as D
 import guion as Guion
 import piezas as Piezas
 import subtitulos as Sub
+import correcciones as Corr
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -484,7 +485,57 @@ def _slug(t, i):
     return ("%02d-%s" % (i + 1, t)) if t else ("pieza-%02d" % (i + 1))
 
 
+def procesar_correccion(fila, tmp):
+    """
+    Alguien subio su corte final. No hay que editar nada: hay que comparar.
+
+    Se pide el video TERMINADO y no una grabacion del proceso porque el
+    resultado es una respuesta exacta —que quedo y que no— y el proceso hay que
+    interpretarlo.
+    """
+    orig = (_rest("GET", "trabajos_video?id=eq.%s&select=*" % fila["corrige"]) or [None])[0]
+    if not orig:
+        raise RuntimeError("no encuentro el trabajo que corrige")
+    if not orig.get("palabras"):
+        raise RuntimeError("ese trabajo se proceso antes de que se guardaran las "
+                           "palabras, asi que no hay contra que comparar")
+
+    base = os.path.join(tmp, "corregido.mp4")
+    bajar(fila["video_path"], base)
+    print("  transcribiendo la version corregida", flush=True)
+    pal = transcribir(base, tmp)
+
+    clips = ((orig.get("analisis") or {}).get("clips")) or []
+    difs = Corr.comparar(orig["palabras"], clips, pal)
+
+    # Cada diferencia entra al banco sola. Es la misma tabla que se llena
+    # marcando a mano: un ejemplo es un ejemplo, venga de donde venga.
+    filas = [{
+        "usuario_id": fila["usuario_id"],
+        "pedido_por": fila.get("pedido_por"),
+        "trabajo_id": orig["id"],
+        "formato": (fila.get("opciones") or {}).get("formato")
+                   or (orig.get("opciones") or {}).get("formato"),
+        "motivo": "correccion",
+        "inicio": d["inicio"], "fin": d["fin"], "texto": d["texto"],
+        "veredicto": d["tipo"],
+        "nota": "de la version corregida",
+    } for d in difs]
+    if filas:
+        _rest("POST", "ejemplos_edicion", json=filas)
+
+    marcar(fila["id"], estado="listo", listo_at=_ahora(),
+           palabras=pal,
+           analisis={"correccion": True, "corrige": orig["id"],
+                     "diferencias": difs,
+                     "de_mas": sum(1 for d in difs if d["tipo"] == "no_iba"),
+                     "de_menos": sum(1 for d in difs if d["tipo"] == "faltaba"),
+                     "palabras": len(pal)})
+
+
 def procesar(fila, tmp):
+    if fila.get("modo") == "correccion" and fila.get("corrige"):
+        return procesar_correccion(fila, tmp)
     carpeta = fila["video_path"].split("/")[0]        # el uuid del usuario
     rutas   = fila.get("videos") or [fila["video_path"]]
     guiones = fila.get("guiones") or []
@@ -500,7 +551,9 @@ def procesar(fila, tmp):
         if guiones:
             op = dict(op, guion=guiones[0].get("texto") or op.get("guion"))
         analisis, res, srt = _editar(base, palabras, op, tmp, carpeta, sello + "_final", modo)
-        marcar(fila["id"], analisis=analisis)
+        # Las palabras con sus tiempos quedan guardadas: es lo unico contra lo
+        # que despues se puede comparar una version corregida.
+        marcar(fila["id"], analisis=analisis, palabras=palabras)
         marcar(fila["id"], estado="listo", listo_at=_ahora(),
                resultado_path=res, resultado_srt_path=srt)
         return

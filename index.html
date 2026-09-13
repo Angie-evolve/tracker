@@ -15217,6 +15217,8 @@ function _edGuionHtml(){
       +(e.guionId?('<button class="btn btn-sm" onclick="edGuionBorrar(\''+esc(String(e.guionId))
         +'\')" style="color:var(--text3);border-style:dashed">Borrar</button>'):'')
       +'</div>'):'')
+    +'<input type="file" id="ed-correccion" accept="video/*" style="display:none" '
+      +'onchange="edSubirCorreccion(this)">'
     +'<input type="file" id="ed-guion-file" accept=".txt,.md,.markdown,.srt,.pdf,.docx,text/*" '
       +'style="display:none" onchange="edGuionArchivo(this)">'
     +'<textarea id="ed-guion" rows="4" oninput="edGuionTexto(this.value)" '
@@ -15902,6 +15904,85 @@ function _edBancoHtml(){
 // Una tanda no tiene UN resultado: tiene una pieza por guion, mas dos cosas que
 // hay que saber antes de entregar —que guion no grabo el cliente y que tramo de
 // video no corresponde a ninguno—.
+function edPedirCorreccion(jobId){
+  var inp=document.getElementById('ed-correccion');
+  if(!inp) return;
+  inp.dataset.job=jobId;
+  inp.click();
+}
+// Subir el corte final de una persona. No hay que marcar nada: comparando su
+// transcripcion contra la del crudo se deduce que dejo y que saco, y de ahi
+// salen solas las dos correcciones que importan. Por eso se pide el video
+// TERMINADO y no una grabacion del proceso: el resultado es una respuesta
+// exacta y el proceso hay que interpretarlo.
+async function edSubirCorreccion(inp){
+  var f=inp&&inp.files&&inp.files[0];
+  var jobId=inp&&inp.dataset&&inp.dataset.job;
+  if(inp&&'value' in inp) inp.value='';
+  if(!f||!jobId) return;
+  var e=_edEstado();
+  if(!SB.token){ toast('Entrá con tu cuenta para subir correcciones.','amber'); return; }
+  var uid=sbUid();
+  if(!uid){ toast('No pude leer tu usuario. Recarga y volve a entrar.','red'); return; }
+  e.subiendo=true; e.error=''; _edPintar();
+  var decir=function(t){ var el=document.getElementById('ed-pct'); if(el) el.textContent=t; };
+  try{
+    var datos=f, nombre=f.name;
+    if(f.size > ED_LIMITE_MB*1048576){
+      if(!_edSoporte()) throw new Error('Pesa '+_matTam(f.size)+' y no puedo comprimirlo acá.');
+      var r=await _edComprimir(f, function(p){ decir('Comprimiendo… '+Math.round(p*100)+'%'); });
+      datos=r.datos; nombre=r.nombre;
+    }
+    if(!datos.size) throw new Error('el archivo quedó en 0 bytes, no lo subo');
+    // En una subcarpeta propia: son material de aprendizaje y no una entrega,
+    // y mezclarlos con los resultados ensucia el bucket.
+    var path=uid+'/correcciones/'+Date.now()+'-'+_matSlug(nombre);
+    await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
+      decir('Subiendo tu versión… '+Math.round(p*100)+'%'); });
+    var filas=await sbFetch('trabajos_video',{ method:'POST',
+      headers:{'Prefer':'return=representation'},
+      body:JSON.stringify({ video_path:path, videos:[path], modo:'correccion',
+                            corrige:jobId, opciones:_edOpciones() }) });
+    var fila=(filas&&filas[0])||null;
+    if(fila){ e.fila=fila; e.jobId=fila.id; edPoll(); }
+    toast('Subida. Cuando termine de compararla vas a ver qué cortamos distinto.');
+    edCargar();
+  }catch(err){ e.error=_edMsg(err.message); }
+  e.subiendo=false; _edPintar();
+}
+
+// El resultado de una correccion no es un video: es en que no coincidieron la
+// maquina y la persona.
+function _edCorreccionHtml(f){
+  var an=f.analisis||{}, difs=an.diferencias||[];
+  var cab={pendiente:'En cola', procesando:'Comparando', listo:'Comparada',
+           error:'Falló'}[f.estado]||f.estado;
+  var h='<div class="ed-panel"><h3>'+esc(cab)+' <span class="ed-badge">corrección</span></h3>';
+  if(f.estado==='error'){
+    h+='<div class="s" style="color:var(--redx)">'+esc(f.error||'sin detalle')+'</div>';
+  } else if(f.estado!=='listo'){
+    h+='<div class="s">Transcribiendo tu versión para compararla con la nuestra.</div>';
+  } else if(!difs.length){
+    h+='<div class="s">Cortaste igual que la máquina. No hay nada que corregir.</div>';
+  } else {
+    h+='<div class="s">'+(an.de_mas||0)+' tramo'+((an.de_mas||0)===1?'':'s')
+      +' que cortamos de más y '+(an.de_menos||0)+' que cortamos de menos. '
+      +'Ya están en el banco de ejemplos.</div>'
+      +difs.map(function(d){
+        var mal=(d.tipo==='no_iba');
+        return '<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--border)">'
+          +'<span style="width:104px;flex:none;font-size:11px;color:'
+            +(mal?'var(--redx)':'var(--amberx)')+'">'
+            +(mal?'cortamos de más':'cortamos de menos')+'</span>'
+          +'<span class="mono" style="width:52px;flex:none;font-size:10.5px;color:var(--text3)">'
+            +_edSeg(d.inicio)+'</span>'
+          +'<span style="flex:1;min-width:0;font-size:12px;color:var(--text2)">'+esc(d.texto)+'</span>'
+        +'</div>';
+      }).join('');
+  }
+  return h+'</div>';
+}
+
 function _edTandaHtml(f){
   var an=f.analisis||{}, pz=f.piezas||[];
   var listas=pz.filter(function(x){ return x.path; });
@@ -15973,6 +16054,13 @@ function _edTandaHtml(f){
           +'</div>'; }).join('')
       +'</div>';
   }
+  if(f.estado==='listo'){
+    h+='<div class="ed-acciones" style="margin-top:16px">'
+      +'<button class="btn" onclick="edPedirCorreccion(\''+esc(String(f.id))+'\')" '
+        +'style="color:var(--text3)">Subir mi versión corregida'
+        +'<span class="d">para que aprenda de cómo lo terminaste vos</span></button>'
+      +'</div>';
+  }
   if(fallidas.length && f.estado==='listo'){
     h+='<div style="margin-top:12px;font-size:11px;color:var(--redx)">'
       +fallidas.length+' pieza'+(fallidas.length===1?'':'s')+' no se pudo procesar. '
@@ -15982,6 +16070,7 @@ function _edTandaHtml(f){
 }
 
 function _edTrabajoHtml(f){
+  if(f.modo==='correccion' || (f.analisis&&f.analisis.correccion)) return _edCorreccionHtml(f);
   // Una tanda se lee distinto que un video suelto: lo que importa no es un
   // porcentaje sino cuantas piezas salieron y que falto.
   if((f.piezas&&f.piezas.length) || (f.analisis&&f.analisis.tanda)) return _edTandaHtml(f);
@@ -16032,6 +16121,8 @@ function _edTrabajoHtml(f){
         ?('<button class="btn" onclick="edRevisar(\''+esc(f.id)+'\')" style="color:var(--text3)">'
           +(f.analisis.cortes.length===1?'Revisar el corte'
             :('Revisar los '+f.analisis.cortes.length+' cortes'))+'</button>'):'')
+      +'<button class="btn" onclick="edPedirCorreccion(\''+esc(String(f.id))+'\')" '
+        +'style="color:var(--text3)">Subir mi versión corregida</button>'
       +'</div>';
   }
   return h+'</div>';
@@ -16041,7 +16132,7 @@ function _edCuerpo(){
   var e=_edEstado();
   if(!SB.token){
     return _torreVacio('Editor con IA',
-      'Entrá con tu cuenta: el video se sube a tu carpeta privada y solo vos lo ves.');
+      'Entrá con tu cuenta: el video se sube a tu carpeta privada y lo ve el equipo.');
   }
   if(e.hist===undefined){ e.hist=null; edCargar(); }
 
@@ -16131,15 +16222,22 @@ function _edCuerpo(){
         var et={pendiente:'en cola',procesando:'procesando',listo:'listo',error:'falló'}[x.estado]||x.estado;
         var c=x.estado==='error'?'var(--redx)':(x.estado==='listo'?'var(--accent)':'var(--amberx)');
         var n=(x.piezas&&x.piezas.length)||0;
+        // Ahora la lista es del equipo entero: sin decir de quien es cada
+        // trabajo, las dos ven una pila de filas ajenas sin poder distinguirlas.
+        var quien=String(x.pedido_por||'').split('@')[0];
         return '<div class="ed-hist">'
           +'<span class="t">'+(d?d.toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</span>'
           // Toda la fila abre el trabajo: con una tanda, el boton de descargar
           // solo bajaba la primera pieza y las otras cinco no habia como verlas.
           +'<span onclick="edAbrir(\''+esc(String(x.id))+'\')" '
             +'style="flex:1;min-width:0;color:var(--text2);cursor:pointer">'
-            +(n?(n+' pieza'+(n===1?'':'s')):(x.modo==='render'?'Video final':'Plan para CapCut'))
+            +(x.modo==='correccion'
+              ?('Corrección'+(((x.analisis||{}).diferencias||[]).length
+                 ? (' · '+x.analisis.diferencias.length+' diferencias') : ''))
+              :(n?(n+' pieza'+(n===1?'':'s')):(x.modo==='render'?'Video final':'Plan para CapCut')))
             +' · <span style="color:'+c+'">'+et+'</span>'
-            +(n?' · <span style="color:var(--text3)">ver</span>':'')+'</span>'
+            +(n?' · <span style="color:var(--text3)">ver</span>':'')
+            +(quien?(' · <span style="color:var(--text3)">'+esc(quien)+'</span>'):'')+'</span>'
           +'<select onchange="edAsignar(\''+esc(String(x.id))+'\',this.value)" '
             +'style="width:140px;flex:none;font-size:11px" onclick="event.stopPropagation()">'
             +'<option value="">Sin cliente</option>'
@@ -16148,7 +16246,7 @@ function _edCuerpo(){
                 +(String(x.cliente_id||'')===String(cl.id)?' selected':'')+'>'
                 +esc(cl.name||'')+'</option>'; }).join('')
           +'</select>'
-          +(x.estado==='listo'&&!n
+          +(x.estado==='listo'&&!n&&x.modo!=='correccion'
             ?('<button class="btn btn-sm" onclick="edBajar(\''+esc(x.resultado_path||'')+'\',\'\')">Descargar</button>')
             :'')
           +'<button class="btn btn-sm" onclick="edBorrarTrabajo(\''+esc(String(x.id))+'\')" '
