@@ -65,7 +65,7 @@ def _t(seg):
     return "%d:%02d:%05.2f" % (h, m, s)
 
 
-def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
+def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.74,
               tam_rel=0.055, margen_rel=0.10, tracking_rel=-0.045,
               borde_rel=0.012, blur=3, resaltar=None):
     """
@@ -75,9 +75,10 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
     altura, margenes— para que se vea igual en 9:16 y en 16:9. Un numero fijo de
     pixeles se rompe apenas cambia la resolucion.
 
-    alto_rel: donde queda el texto, medido desde arriba. 0.42 es la altura del
-    pecho: lejos del nombre de usuario y el timer de arriba, y lejos del caption
-    y el boton de CTA que la plataforma superpone abajo en un anuncio.
+    alto_rel: donde arranca el texto, medido desde arriba. 0.74 sale de medir los
+    anuncios que ella ya publica, no de la teoria: el cartel va bastante mas
+    abajo de lo que decia la spec —"altura del pecho", 0.42— y termina cerca del
+    77% de la altura, justo arriba del boton de CTA que la plataforma superpone.
 
     resaltar: palabras que van en otro color. Hoy no se usa; queda aceptado para
     no tener que rehacer el generador cuando aparezca.
