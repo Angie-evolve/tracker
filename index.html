@@ -14777,32 +14777,17 @@ function sbUid(){
 // el gusto se perdia. Un formato es el gusto con nombre, y es donde despues se
 // va a apoyar todo lo demas (el guion, y el criterio escrito).
 var ED_FORMATOS_BASE=[
-  // Son los tres modos de la skill guion-edicion-video, con parametros de
-  // verdad en vez de una guia para seguir a mano.
-  {id:'ugly', nombre:'Ugly ad', v:2,
-   // "Sin cortes" es sin cortes VISUALES: un solo plano, sin cambios de
-   // encuadre. El aire muerto se saca igual —si hay silencio hay corte— y por
-   // eso min_silencio no va en 0. Estaba mal antes: apagaba la deteccion
-   // entera y entregaba los trece minutos crudos.
-   umbralDb:-30, minSilencio:0.5, aire:0.14, clipMin:0.5,
+  // Uno solo por ahora, a pedido. Los tres modos de la skill (ugly ad, B2B
+  // prolijo, viajes con b-roll) quedan en el historial de git: el motor los
+  // sigue soportando —presentacion, punch-ins, bloque de b-roll— pero exponer
+  // tres estilos antes de tener uno aprobado era decidir de mas.
+  {id:'simple', nombre:'Simple', v:3,
+   umbralDb:-32, minSilencio:0.5, aire:0.12, clipMin:0.3,
    quitarMuletillas:false, muletillas:'',
-   tomasRepetidas:true,
+   tomasRepetidas:false, repetidasMin:6,
    presentacion:{tipo:'take_unico', cadencia:0, zoom:1},
-   subtitulo:{palabras:3, tam:36, pos:'medio', mayusculas:true, margen:80, borde:3},
-   criterio:''},
-  {id:'b2b', nombre:'B2B prolijo', v:2,
-   umbralDb:-32, minSilencio:0.35, aire:0.05, clipMin:0.3,
-   quitarMuletillas:true, muletillas:'eh, ehh, em, este, o sea, digamos, tipo, viste',
-   tomasRepetidas:true,
-   presentacion:{tipo:'punch_ins', cadencia:1.8, zoom:1.12},
-   subtitulo:{palabras:5, tam:26, pos:'abajo', mayusculas:false, margen:60, borde:2},
-   criterio:''},
-  {id:'viajes', nombre:'Viajes con b-roll', v:2,
-   umbralDb:-32, minSilencio:0.6, aire:0.12, clipMin:0.4,
-   quitarMuletillas:true, muletillas:'eh, ehh, em, o sea',
-   tomasRepetidas:true,
-   presentacion:{tipo:'b_roll', cadencia:2.6, zoom:1.08},
-   subtitulo:{palabras:5, tam:26, pos:'abajo', mayusculas:false, margen:60, borde:2},
+   subtitulo:{karaoke:true, palabras:3, altoRel:0.42, tamRel:0.055,
+              tam:26, pos:'medio', mayusculas:false, margen:60, borde:2},
    criterio:''}
 ];
 var ED_PRESENTACIONES={
@@ -14820,14 +14805,13 @@ function edFormatos(){
     var viejos=ids.every(function(i){ return ['reel','testimonio','clase'].indexOf(i)>=0; });
     if(viejos) DB.formatosEdicion=null;
   }
-  // El Ugly ad se guardo con minSilencio 0 por un error de definicion: "sin
-  // cortes" es sin cortes visuales, no dejarle el aire muerto. Se corrige una
-  // sola vez, y solo si sigue con ese valor exacto.
-  (DB.formatosEdicion||[]).forEach(function(f){
-    if(f && f.id==='ugly' && !f.v && +f.minSilencio===0){
-      f.minSilencio=0.5; f.aire=0.14; f.tomasRepetidas=true; f.v=2;
-    } else if(f && !f.v){ f.v=2; }
-  });
+  // Los formatos viejos se reemplazan por el unico que hay ahora. Se pisa solo
+  // si ninguno llego a la version actual: si algun dia hay varios de nuevo, no
+  // se los lleva puestos.
+  if(Array.isArray(DB.formatosEdicion) && DB.formatosEdicion.length
+     && !DB.formatosEdicion.some(function(f){ return f && f.v>=3; })){
+    DB.formatosEdicion=null;
+  }
   if(!Array.isArray(DB.formatosEdicion) || !DB.formatosEdicion.length){
     // Copia profunda: si se guardara la constante, editar un formato pisaria el
     // default y no habria a que volver.
@@ -14863,7 +14847,10 @@ function _edOpciones(){
       zoom:+((f.presentacion||{}).zoom||1)
     },
     subtitulo:{
+      karaoke:!!((f.subtitulo||{}).karaoke),
       palabras:+((f.subtitulo||{}).palabras||8),
+      alto_rel:+((f.subtitulo||{}).altoRel||0.42),
+      tam_rel:+((f.subtitulo||{}).tamRel||0.055),
       tam:+((f.subtitulo||{}).tam||24),
       pos:((f.subtitulo||{}).pos||'abajo'),
       mayusculas:!!((f.subtitulo||{}).mayusculas),
@@ -14875,13 +14862,14 @@ function _edOpciones(){
 }
 function _edResumen(f){
   var p=[], pr=f.presentacion||{};
-  p.push(ED_PRESENTACIONES[pr.tipo]||'Un solo plano');
+  var sb=f.subtitulo||{};
+  p.push(f.minSilencio>0?('corta silencios de '+f.minSilencio+'s'):'no corta silencios');
   if(pr.cadencia>0) p.push('plano cada '+pr.cadencia+'s');
-  p.push(f.minSilencio>0?(f.minSilencio+'s de silencio'):'no corta silencios');
   if(f.quitarMuletillas && String(f.muletillas||'').trim()) p.push('sin muletillas');
   if(f.tomasRepetidas) p.push('descarta tomas repetidas');
-  var sb=f.subtitulo||{};
-  p.push('subtítulo '+(sb.palabras||8)+' palabras'+(sb.mayusculas?', mayúsculas':''));
+  p.push(sb.karaoke
+    ? ('subtítulo karaoke de '+(sb.palabras||3)+' palabras, a la altura del pecho')
+    : ('subtítulo '+(sb.palabras||8)+' palabras'+(sb.mayusculas?', mayúsculas':'')));
   return p.join(' · ');
 }
 function edFormatoModal(){
@@ -16035,17 +16023,20 @@ function _edCuerpo(){
       +'</div>';
   }
 
-  var fmt=edFormatoSel();
+  var fmt=edFormatoSel(), todos=edFormatos();
   h+='<div style="margin-bottom:8px"><label style="display:block;font-size:10.5px;'
       +'color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">'
       +'Formato de edición</label>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-    +edFormatos().map(function(x){
-      var on=(x.id===fmt.id);
-      return '<button class="btn btn-sm" onclick="edElegirFormato(\''+esc(x.id)+'\')" style="'
-        +(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
-        +esc(x.nombre)+'</button>';
-    }).join('')
+    // Con un solo formato no hay nada que elegir: se muestra cual es y listo.
+    +(todos.length>1
+      ? todos.map(function(x){
+          var on=(x.id===fmt.id);
+          return '<button class="btn btn-sm" onclick="edElegirFormato(\''+esc(x.id)+'\')" style="'
+            +(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
+            +esc(x.nombre)+'</button>';
+        }).join('')
+      : '<span style="font-size:12.5px;color:var(--accent)">'+esc(fmt.nombre)+'</span>')
     +'<button class="btn btn-sm" onclick="edFormatoModal()" style="color:var(--text3);'
       +'border-style:dashed">Ajustar</button>'
     +'</div>'

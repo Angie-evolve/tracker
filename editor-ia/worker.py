@@ -19,6 +19,7 @@ import transcribe
 import decisiones as D
 import guion as Guion
 import piezas as Piezas
+import subtitulos as Sub
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -260,6 +261,9 @@ def kbps_para(duracion, audio_kbps=128):
     return int(max(total - audio_kbps, 0))
 
 
+FUENTES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+
 def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
     """
     Los subtitulos van pegados en la imagen. El filtro se corre con cwd en la
@@ -271,9 +275,18 @@ def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
             "este ffmpeg no trae el filtro 'subtitles' (le falta libass), "
             "asi que no puedo quemar los subtitulos. En Debian/Ubuntu se "
             "resuelve con: apt-get install -y ffmpeg")
+    if srt.lower().endswith(".ass") and not hay_filtro("ass"):
+        raise RuntimeError("este ffmpeg no trae el filtro 'ass' (le falta libass)")
     # Solo el srt entra crudo en el string del filtro, asi que ese es el unico
     # que va relativo; la entrada y la salida van con path completo.
-    filtro = "subtitles=%s:force_style='%s'" % (os.path.basename(srt), _force_style(sub or {}))
+    # El .ass ya trae su estilo adentro; el .srt necesita que se lo pasemos. Y
+    # el .ass pide fontsdir porque Montserrat no esta instalada en el sistema:
+    # viene con el repo.
+    if srt.lower().endswith(".ass"):
+        filtro = "ass=%s:fontsdir=%s" % (os.path.basename(srt), FUENTES)
+    else:
+        filtro = "subtitles=%s:force_style='%s'" % (os.path.basename(srt),
+                                                    _force_style(sub or {}))
     cmd = ["ffmpeg", "-y", "-i", os.path.abspath(video), "-vf", filtro]
     if kbps:
         cmd += ["-b:v", "%dk" % kbps, "-maxrate", "%dk" % int(kbps * 1.35),
@@ -409,15 +422,26 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
     if modo == "render":
         cortado = os.path.join(tmp, nombre + "_cortado.mp4")
         render_planos(archivo, planos, cortado)
-        srt = escribir_srt(D.remapear(palabras, clips), sub,
-                           os.path.join(tmp, nombre + ".srt"))
+        pal2 = D.remapear(palabras, clips)
+        srt = escribir_srt(pal2, sub, os.path.join(tmp, nombre + ".srt"))
+        # El karaoke necesita el tamano del video para calcular todo por
+        # proporcion: un numero fijo de pixeles se rompe apenas cambia la
+        # resolucion.
+        quemar_este = srt
+        if sub.get("karaoke"):
+            aw, ah = _dims(cortado)
+            quemar_este = Sub.escribir_ass(
+                pal2, aw, ah, os.path.join(tmp, nombre + ".ass"),
+                por_bloque=int(sub.get("palabras", 3)),
+                alto_rel=float(sub.get("alto_rel", 0.42)),
+                tam_rel=float(sub.get("tam_rel", 0.055)))
         listo = os.path.join(tmp, nombre + "_final.mp4")
         kb = kbps_para(final_s)
         if kb is not None and kb < 250:
             raise RuntimeError(
                 "el video final dura %d min y no entra en %d MB ni bajando la "
                 "calidad. Cortalo en piezas mas cortas." % (final_s / 60, LIMITE_MB))
-        quemar_subtitulos(cortado, srt, listo, sub, kbps=kb)
+        quemar_subtitulos(cortado, quemar_este, listo, sub, kbps=kb)
         res = subir(listo, f"{carpeta}/{nombre}.mp4", "video/mp4")
         p_srt = subir(srt, f"{carpeta}/{nombre}.srt", "text/plain")
         # El mismo corte pero SIN los subtitulos quemados. Es el paso previo,
