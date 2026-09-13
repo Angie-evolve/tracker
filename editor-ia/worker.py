@@ -418,8 +418,23 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
                 "el video final dura %d min y no entra en %d MB ni bajando la "
                 "calidad. Cortalo en piezas mas cortas." % (final_s / 60, LIMITE_MB))
         quemar_subtitulos(cortado, srt, listo, sub, kbps=kb)
-        return analisis, subir(listo, f"{carpeta}/{nombre}.mp4", "video/mp4"), \
-               subir(srt, f"{carpeta}/{nombre}.srt", "text/plain")
+        res = subir(listo, f"{carpeta}/{nombre}.mp4", "video/mp4")
+        p_srt = subir(srt, f"{carpeta}/{nombre}.srt", "text/plain")
+        # El mismo corte pero SIN los subtitulos quemados. Es el paso previo,
+        # asi que ya esta hecho: subirlo cuesta una subida y evita reprocesar
+        # todo cuando se quiere terminar el trabajo en CapCut, donde los
+        # carteles se estilan a mano. Quemados no se pueden sacar.
+        analisis["capcut"] = None
+        try:
+            if os.path.getsize(cortado) <= LIMITE_MB * 1048576:
+                analisis["capcut"] = subir(cortado, f"{carpeta}/{nombre}_capcut.mp4",
+                                           "video/mp4")
+            else:
+                analisis["capcut_no"] = "el corte sin subtitulos no entra en %d MB" % LIMITE_MB
+        except Exception as e:
+            # Que falle el extra no puede tirar abajo la pieza, que ya esta.
+            analisis["capcut_no"] = str(e)[:160]
+        return analisis, res, p_srt
 
     srt = escribir_srt(palabras, sub, os.path.join(tmp, nombre + ".srt"))
     plan = os.path.join(tmp, nombre + "_plan.json")
@@ -524,7 +539,8 @@ def procesar(fila, tmp):
             salida.append(dict(base, error="%s: %s" % (type(e).__name__, e)))
             continue
         salida.append(dict(base, duracion=an["duracion_final"],
-                           ahorro_pct=an["ahorro_pct"], path=res, srt_path=srt))
+                           ahorro_pct=an["ahorro_pct"], path=res, srt_path=srt,
+                           capcut_path=an.get("capcut")))
         marcar(fila["id"], piezas=salida)
 
     marcar(fila["id"], estado="listo", listo_at=_ahora(), piezas=salida,
