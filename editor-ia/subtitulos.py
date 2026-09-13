@@ -66,7 +66,8 @@ def _t(seg):
 
 
 def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
-              tam_rel=0.055, margen_rel=0.10, resaltar=None):
+              tam_rel=0.055, margen_rel=0.10, tracking_rel=-0.045,
+              borde_rel=0.04, resaltar=None):
     """
     Devuelve el .ass completo.
 
@@ -84,6 +85,12 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
     tam = max(12, int(round(alto * tam_rel)))
     mv = int(round(alto * alto_rel))
     mh = int(round(ancho * margen_rel))
+    # Las letras del diseño van casi pegadas. Spacing negativo, en proporcion al
+    # cuerpo: un valor fijo en pixeles aprieta de mas en un video chico.
+    track = round(tam * tracking_rel, 1)
+    # Borde fino. Un borde grueso convierte el cartel en un contorno y deja de
+    # parecerse: al ojo tiene que leerse como texto blanco con un canto oscuro.
+    borde = max(1, int(round(tam * borde_rel)))
     res = set(re.sub(r"[^a-z0-9]", "", str(x).lower()) for x in (resaltar or []))
 
     cab = [
@@ -99,11 +106,15 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         "MarginL, MarginR, MarginV, Encoding",
+        # Poppins y no Montserrat: en el diseño la "a" es de un solo piso, que es
+        # lo que distingue una geometrica de una grotesca. Montserrat la tiene de
+        # dos pisos y por eso no se parecia.
         # Alignment 8 = arriba y centrado. Con 5 (centro) libass ignora MarginV
         # y no hay forma de fijar la altura exacta.
-        "Style: Karaoke,Montserrat ExtraBold,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,"
-        "&H00000000,0,0,0,0,100,100,0,0,1,%d,0,8,%d,%d,%d,1"
-        % (tam, max(2, int(round(tam * 0.09))), mh, mh, mv),
+        # Bold=-1 es "si" en ASS: selecciona la cara Bold de la familia Poppins.
+        "Style: Karaoke,Poppins,%d,&H00FFFFFF,&H00FFFFFF,&H32000000,"
+        "&H64000000,-1,0,0,0,100,100,%s,0,1,%d,%d,8,%d,%d,%d,1"
+        % (tam, track, borde, max(1, int(round(tam * 0.03))), mh, mh, mv),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
