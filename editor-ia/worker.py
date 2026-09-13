@@ -11,13 +11,14 @@ Variables de entorno (ninguna va nunca al frontend):
     WHISPER_MODELO               opcional, default 'small'
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
-import os, sys, time, json, argparse, tempfile, subprocess, traceback
+import os, sys, re, time, json, argparse, tempfile, subprocess, traceback
 import requests
 
 import auto_editor
 import transcribe
 import decisiones as D
 import guion as Guion
+import piezas as Piezas
 
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 KEY    = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -264,37 +265,48 @@ def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
     return salida
 
 
-def procesar(fila, tmp):
-    carpeta = fila["video_path"].split("/")[0]        # el uuid del usuario
-    base    = os.path.join(tmp, "fuente.mp4")
-    bajar(fila["video_path"], base)
+def _palabras_en(palabras, a, b):
+    """Las palabras de un tramo, con los tiempos corridos al arranque del tramo."""
+    salida = []
+    for w in (palabras or []):
+        ini, fin = float(w.get("start", 0)), float(w.get("end", 0))
+        if a <= (ini + fin) / 2.0 < b:
+            salida.append({"word": w.get("word", ""),
+                           "start": round(max(ini - a, 0.0), 3),
+                           "end": round(max(fin - a, 0.0), 3)})
+    return salida
 
-    op      = fila.get("opciones") or {}
+
+def recortar(video, a, b, salida):
+    """Saca un tramo a archivo propio. Cada pieza se edita como si fuera un
+    video suelto: mismo camino, sin ramas paralelas que despues se desincronizan."""
+    subprocess.run(["ffmpeg", "-y", "-ss", str(a), "-to", str(b), "-i", video,
+                    "-c:v", "libx264", "-c:a", "aac", "-avoid_negative_ts", "make_zero",
+                    salida, "-loglevel", "error"], check=True)
+    return salida
+
+
+def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
+    """
+    Todo lo que va despues de transcribir: decidir que se saca, como se muestra,
+    renderizar, subtitular y subir. Devuelve (analisis, resultado, srt).
+
+    Se separo de procesar() para que una pieza de una tanda y un video suelto
+    recorran exactamente el mismo camino.
+    """
     sub     = op.get("subtitulo") or {}
     aire    = float(op.get("aire", 0.12))
     clipmin = float(op.get("clip_min", 0.3))
-    # None = no tocar las muletillas. Lista vacia tambien, para que apagarlo
-    # desde la pantalla sea mandar [] y no haya que inventar otro campo.
     muletillas = op.get("muletillas")
     repetidas  = bool(op.get("tomas_repetidas"))
 
-    dur = auto_editor.ffprobe_duration(base)
+    dur = auto_editor.ffprobe_duration(archivo)
 
-    # Se transcribe ANTES de cortar, y siempre. Es al reves de como estaba, y es
-    # lo que permite decidir por lo que se dice —muletillas, tomas repetidas— y
-    # no solo por donde baja el audio. Los subtitulos del modo render se corren
-    # despues a la linea de tiempo del cortado.
-    palabras = transcribir(base, tmp)
-
-    # min_silencio en 0 es "no cortes nada": el modo take unico, donde el valor
-    # esta en que no se note ni una costura.
     minsil = float(op.get("min_silencio", 0.6))
     silencios = auto_editor.detectar_silencios(
-        base, umbral_db=float(op.get("umbral_db", -30)), min_silencio=minsil
+        archivo, umbral_db=float(op.get("umbral_db", -30)), min_silencio=minsil
     ) if minsil > 0 else []
 
-    # El guion, si lo cargo. Cambia dos cosas: cual de dos tomas se queda, y que
-    # bloques se marcan. Sin guion todo sigue funcionando igual que antes.
     txt_guion = str(op.get("guion") or "").strip()
     elegir = (lambda i1, i2, L: Guion.elegir_peor(palabras, i1, i2, L, txt_guion)) \
         if txt_guion else None
@@ -304,85 +316,143 @@ def procesar(fila, tmp):
         palabras, minimo=int(op.get("repetidas_min", 6)), elegir=elegir
     ) if repetidas else []
     bloques = Guion.mapa(palabras, txt_guion) if txt_guion else []
-    # Los silencios llevan aire; lo que sale de la transcripcion, no.
+
     clips   = D.conservar(dur, list(silencios), aire=aire, clip_min=clipmin,
                           exacto=t_mul + t_rep)
     final_s = D.duracion_total(clips)
 
-    # Como se muestra lo que queda. Es un eje aparte del de "que se saca": un
-    # take unico sin aire muerto sigue siendo un plano fijo de trece minutos.
     pres     = op.get("presentacion") or {}
     cadencia = float(pres.get("cadencia", 0) or 0)
     zoom     = float(pres.get("zoom", 1.12) or 1.12)
     planos   = D.subdividir(clips, palabras, cadencia=cadencia, zooms=(1.0, zoom))
     broll    = D.bloque_central(clips) if pres.get("tipo") == "b_roll" else None
 
-    marcar(fila["id"], analisis={
+    analisis = {
         "duracion": round(dur, 2),
         "silencios": [{"inicio": round(a, 2), "fin": round(b, 2)} for a, b in silencios],
         "clips": [{"inicio": a, "fin": b} for a, b in clips],
         "duracion_final": final_s,
         "ahorro_pct": round(100 * (dur - final_s) / dur) if dur else 0,
-        # De donde salio cada corte. Sin esto, ver "67% mas corto" no dice si
-        # sobraba aire o si se comio media charla.
         "porque": {"silencios": len(silencios), "muletillas": len(t_mul),
                    "repetidas": len(t_rep), "palabras": len(palabras)},
         "planos": len(planos),
         "broll": broll,
-        # Que bloque del guion se dijo y cual no. Enterarse de que te salteaste
-        # uno despues de publicar no sirve de nada.
         "bloques": bloques,
-        # El detalle de cada corte y la transcripcion entera. Ocupan, pero sin
-        # esto no hay forma de revisar una decision: solo queda el porcentaje.
         "cortes": detalle_cortes(palabras, [("silencio", silencios),
                                             ("muletilla", t_mul),
                                             ("repetida", t_rep)]),
         "texto": " ".join(str(w.get("word", "")) for w in palabras)[:20000],
-    })
+    }
 
-    sello = str(int(time.time()))
-
-    if fila["modo"] == "render":
-        cortado = os.path.join(tmp, "cortado.mp4")
-        render_planos(base, planos, cortado)
-        # Los tiempos pasan a la linea del video cortado: se calcularon sobre el
-        # crudo, pero se muestran sobre el que se entrega.
-        srt = escribir_srt(D.remapear(palabras, clips), sub, os.path.join(tmp, "subs.srt"))
-        listo = os.path.join(tmp, "final.mp4")
+    if modo == "render":
+        cortado = os.path.join(tmp, nombre + "_cortado.mp4")
+        render_planos(archivo, planos, cortado)
+        srt = escribir_srt(D.remapear(palabras, clips), sub,
+                           os.path.join(tmp, nombre + ".srt"))
+        listo = os.path.join(tmp, nombre + "_final.mp4")
         kb = kbps_para(final_s)
         if kb is not None and kb < 250:
             raise RuntimeError(
                 "el video final dura %d min y no entra en %d MB ni bajando la "
                 "calidad. Cortalo en piezas mas cortas." % (final_s / 60, LIMITE_MB))
         quemar_subtitulos(cortado, srt, listo, sub, kbps=kb)
-        p_video = subir(listo, f"{carpeta}/{sello}_final.mp4", "video/mp4")
-        p_srt   = subir(srt,   f"{carpeta}/{sello}_final.srt", "text/plain")
-    else:
-        # En CapCut se importa el video CRUDO y se le aplica el plan, asi que el
-        # srt va en la linea de tiempo del crudo: sin remapear.
-        srt = escribir_srt(palabras, sub, os.path.join(tmp, "subs.srt"))
-        plan = os.path.join(tmp, "plan_de_corte.json")
-        with open(srt, encoding="utf-8") as f:
-            texto_srt = f.read()
-        auto_editor.exportar_capcut(clips, plan, os.path.join(tmp, "plan.srt"),
-                                    fuente_srt=texto_srt)
-        # exportar_capcut solo escribe los tramos a conservar. El encuadre de
-        # cada plano y donde va el b-roll son justo lo que hay que ejecutar a
-        # mano en CapCut, asi que se agregan al mismo archivo.
-        with open(plan, encoding="utf-8") as f:
-            _p = json.load(f)
-        _p["planos"] = planos
-        if broll:
-            _p["b_roll"] = broll
-        _p["formato"] = op.get("formato", "")
-        with open(plan, "w", encoding="utf-8") as f:
-            json.dump(_p, f, indent=2, ensure_ascii=False)
-        p_video = subir(plan, f"{carpeta}/{sello}_plan.json", "application/json")
-        p_srt   = subir(os.path.join(tmp, "plan.srt"), f"{carpeta}/{sello}_plan.srt",
-                        "text/plain")
+        return analisis, subir(listo, f"{carpeta}/{nombre}.mp4", "video/mp4"), \
+               subir(srt, f"{carpeta}/{nombre}.srt", "text/plain")
 
-    marcar(fila["id"], estado="listo", listo_at=_ahora(),
-           resultado_path=p_video, resultado_srt_path=p_srt)
+    srt = escribir_srt(palabras, sub, os.path.join(tmp, nombre + ".srt"))
+    plan = os.path.join(tmp, nombre + "_plan.json")
+    with open(srt, encoding="utf-8") as f:
+        texto_srt = f.read()
+    auto_editor.exportar_capcut(clips, plan, os.path.join(tmp, nombre + "_plan.srt"),
+                                fuente_srt=texto_srt)
+    with open(plan, encoding="utf-8") as f:
+        _p = json.load(f)
+    _p["planos"] = planos
+    if broll:
+        _p["b_roll"] = broll
+    _p["formato"] = op.get("formato", "")
+    with open(plan, "w", encoding="utf-8") as f:
+        json.dump(_p, f, indent=2, ensure_ascii=False)
+    return analisis, subir(plan, f"{carpeta}/{nombre}.json", "application/json"), \
+           subir(os.path.join(tmp, nombre + "_plan.srt"), f"{carpeta}/{nombre}.srt",
+                 "text/plain")
+
+
+def _slug(t, i):
+    t = re.sub(r"[^A-Za-z0-9]+", "-", str(t or "")).strip("-")[:40]
+    return ("%02d-%s" % (i + 1, t)) if t else ("pieza-%02d" % (i + 1))
+
+
+def procesar(fila, tmp):
+    carpeta = fila["video_path"].split("/")[0]        # el uuid del usuario
+    rutas   = fila.get("videos") or [fila["video_path"]]
+    guiones = fila.get("guiones") or []
+    op      = fila.get("opciones") or {}
+    modo    = fila["modo"]
+    sello   = str(int(time.time()))
+
+    # --- video suelto: el camino de siempre --------------------------------
+    if len(rutas) <= 1 and len(guiones) <= 1:
+        base = os.path.join(tmp, "fuente.mp4")
+        bajar(rutas[0], base)
+        palabras = transcribir(base, tmp)
+        if guiones:
+            op = dict(op, guion=guiones[0].get("texto") or op.get("guion"))
+        analisis, res, srt = _editar(base, palabras, op, tmp, carpeta, sello + "_final", modo)
+        marcar(fila["id"], analisis=analisis)
+        marcar(fila["id"], estado="listo", listo_at=_ahora(),
+               resultado_path=res, resultado_srt_path=srt)
+        return
+
+    # --- tanda: varios videos, varios guiones ------------------------------
+    # Se transcribe TODO primero y recien despues se reparte: un guion puede
+    # estar en cualquier video, y saber cual no se grabo exige haber mirado
+    # todos.
+    locales = []
+    for k, ruta in enumerate(rutas):
+        f = os.path.join(tmp, "v%02d.mp4" % k)
+        bajar(ruta, f)
+        print("  transcribiendo %s" % ruta, flush=True)
+        locales.append({"id": ruta, "archivo": f,
+                        "palabras": transcribir(f, tmp),
+                        "duracion": auto_editor.ffprobe_duration(f)})
+
+    encontradas, sin_grabar = Piezas.repartir(locales, guiones)
+    sueltos = Piezas.huerfanos(locales, encontradas)
+    marcar(fila["id"], analisis={"tanda": True, "videos": len(locales),
+                                 "guiones": len(guiones),
+                                 "piezas": len(encontradas),
+                                 "sin_grabar": sin_grabar, "sueltos": sueltos})
+
+    porRuta = {v["id"]: v for v in locales}
+    salida = []
+    for i, pz in enumerate(encontradas):
+        v = porRuta[pz["video"]]
+        nombre = "%s_%s" % (sello, _slug(pz["titulo"], i))
+        print("  pieza %d/%d: %s" % (i + 1, len(encontradas), pz["titulo"]), flush=True)
+        trozo = recortar(v["archivo"], pz["inicio"], pz["fin"],
+                         os.path.join(tmp, nombre + "_crudo.mp4"))
+        pal = _palabras_en(v["palabras"], pz["inicio"], pz["fin"])
+        gtxt = next((g.get("texto") for g in guiones
+                     if (g.get("titulo") or "") == pz["titulo"]), "")
+        try:
+            an, res, srt = _editar(trozo, pal, dict(op, guion=gtxt), tmp,
+                                   carpeta, nombre, modo)
+        except Exception as e:
+            # Una pieza que falla no puede llevarse la tanda entera: se anota y
+            # se sigue con las demas.
+            salida.append({"titulo": pz["titulo"], "video": pz["video"],
+                           "inicio": pz["inicio"], "fin": pz["fin"],
+                           "error": "%s: %s" % (type(e).__name__, e)})
+            continue
+        salida.append({"titulo": pz["titulo"], "video": pz["video"],
+                       "inicio": pz["inicio"], "fin": pz["fin"],
+                       "duracion": an["duracion_final"], "ahorro_pct": an["ahorro_pct"],
+                       "path": res, "srt_path": srt})
+        marcar(fila["id"], piezas=salida)
+
+    marcar(fila["id"], estado="listo", listo_at=_ahora(), piezas=salida,
+           resultado_path=(salida[0].get("path") if salida else None))
 
 
 def una_vuelta():
