@@ -31,6 +31,21 @@ BUCKET = "videos"
 # fuente, asi que tiene que entrar igual que ella.
 LIMITE_MB = int(os.environ.get("LIMITE_MB", "50"))
 
+# Calidad del encode. Se fija por CRF y no por bitrate: apuntar a "que entre en
+# 50 MB" daba 29 Mbps en un clip de seis segundos y 44 MB en una pieza de medio
+# minuto —el cupo entero gastado en algo que no se ve— y al mismo tiempo dejaba
+# el archivo de CapCut en 2 Mbps, que es el que MENOS deberia perder porque lo
+# van a exportar una vez mas.
+#
+# El tope de tamano sigue existiendo, pero como maxrate: red de seguridad para
+# una pieza larga, no objetivo a alcanzar.
+# Lo que se entrega —el video final y el archivo para CapCut— va al mismo CRF:
+# el final se codifica A PARTIR del de CapCut, asi que bajarle la calidad al
+# segundo paso solo suma una perdida sobre algo que ya estaba decidido.
+CRF_ENTREGA = 18
+CRF_INTERMEDIO = 16   # archivo de paso, no lo ve nadie
+PRESET = os.environ.get("X264_PRESET", "veryfast")
+
 # Las keys nuevas (sb_secret_...) no son JWT: mandarlas tambien en
 # Authorization: Bearer hace que Supabase rechace todo con 401.
 H = {"apikey": KEY}
@@ -315,7 +330,8 @@ def render_planos(video, planos, salida):
             ["ffmpeg", "-y", "-i", video,
              "-vf", "select='%s',setpts=N/FRAME_RATE/TB" % sel,
              "-af", "aselect='%s',asetpts=N/SR/TB" % sel,
-             "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+             "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET,
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
              salida, "-loglevel", "error"],
             check=True)
         return salida
@@ -339,7 +355,8 @@ def render_planos(video, planos, salida):
     subprocess.run(
         ["ffmpeg", "-y", "-i", video, "-filter_complex", ";".join(partes),
          "-map", "[v]", "-map", "[a]",
-         "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+         "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET,
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
          salida, "-loglevel", "error"],
         check=True)
     return salida
@@ -407,6 +424,10 @@ def kbps_para(duracion, audio_kbps=128):
 
 FUENTES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
+# Sin declarar el juego de caracteres, el navegador lee los bytes UTF-8 como
+# latin-1 y muestra "cuestiA³n" donde dice "cuestion".
+SRT_TIPO = "text/plain; charset=utf-8"
+
 
 def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
     """
@@ -433,8 +454,12 @@ def quemar_subtitulos(video, srt, salida, sub=None, kbps=None):
                                                     _force_style(sub or {}))
     cmd = ["ffmpeg", "-y", "-i", os.path.abspath(video), "-vf", filtro]
     if kbps:
-        cmd += ["-b:v", "%dk" % kbps, "-maxrate", "%dk" % int(kbps * 1.35),
-                "-bufsize", "%dk" % (kbps * 2), "-c:a", "aac", "-b:a", "128k"]
+        # CRF manda la calidad; maxrate solo evita pasarse del bucket cuando la
+        # pieza es larga. Antes iba al reves —bitrate fijo apuntando a llenar el
+        # cupo— y una pieza corta se comia 44 MB para nada.
+        cmd += ["-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET,
+                "-maxrate", "%dk" % kbps, "-bufsize", "%dk" % (kbps * 2),
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k"]
     else:
         cmd += ["-c:a", "copy"]
     cmd += [os.path.abspath(salida), "-loglevel", "error"]
@@ -484,7 +509,8 @@ def concatenar(tramos, salida, dims=None):
     subprocess.run(
         ["ffmpeg", "-y"] + entradas
         + ["-filter_complex", ";".join(partes), "-map", "[v]", "-map", "[a]",
-           "-c:v", "libx264", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+           "-c:v", "libx264", "-crf", str(CRF_INTERMEDIO), "-preset", PRESET,
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
            salida, "-loglevel", "error"],
         check=True)
     return salida
@@ -644,7 +670,7 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
                 "calidad. Cortalo en piezas mas cortas." % (final_s / 60, LIMITE_MB))
         quemar_subtitulos(cortado, quemar_este, listo, sub, kbps=kb)
         res = subir(listo, f"{carpeta}/{nombre}.mp4", "video/mp4")
-        p_srt = subir(srt, f"{carpeta}/{nombre}.srt", "text/plain")
+        p_srt = subir(srt, f"{carpeta}/{nombre}.srt", SRT_TIPO)
         # El mismo corte pero SIN los subtitulos quemados. Es el paso previo,
         # asi que ya esta hecho: subirlo cuesta una subida y evita reprocesar
         # todo cuando se quiere terminar el trabajo en CapCut, donde los
@@ -677,7 +703,7 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
         json.dump(_p, f, indent=2, ensure_ascii=False)
     return analisis, subir(plan, f"{carpeta}/{nombre}.json", "application/json"), \
            subir(os.path.join(tmp, nombre + "_plan.srt"), f"{carpeta}/{nombre}.srt",
-                 "text/plain")
+                 SRT_TIPO)
 
 
 def _slug(t, i):

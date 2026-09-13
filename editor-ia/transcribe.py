@@ -62,7 +62,9 @@ def palabras_a_srt(palabras, max_palabras_por_linea=8, out_srt="subtitulos.srt")
         if len(actual) >= max_palabras_por_linea:
             bloques.append(actual); actual = []
     if actual: bloques.append(actual)
-    with open(out_srt, "w") as f:
+    # utf-8-sig: el BOM es lo que hace que CapCut y los editores de Windows
+    # tomen el archivo como UTF-8. Sin el, los acentos llegan rotos.
+    with open(out_srt, "w", encoding="utf-8-sig") as f:
         for i, b in enumerate(bloques, 1):
             f.write(f"{i}\n{fmt(b[0]['start'])} --> {fmt(b[-1]['end'])}\n"
                      f"{' '.join(w['word'] for w in b)}\n\n")
