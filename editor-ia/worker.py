@@ -433,7 +433,7 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
             quemar_este = Sub.escribir_ass(
                 pal2, aw, ah, os.path.join(tmp, nombre + ".ass"),
                 por_bloque=int(sub.get("palabras", 3)),
-                alto_rel=float(sub.get("alto_rel", 0.42)),
+                fondo_rel=float(sub.get("fondo_rel", 0.645)),
                 tam_rel=float(sub.get("tam_rel", 0.055)))
         listo = os.path.join(tmp, nombre + "_final.mp4")
         kb = kbps_para(final_s)

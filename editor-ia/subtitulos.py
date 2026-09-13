@@ -65,7 +65,7 @@ def _t(seg):
     return "%d:%02d:%05.2f" % (h, m, s)
 
 
-def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.74,
+def armar_ass(palabras, ancho, alto, por_bloque=3, fondo_rel=0.645,
               tam_rel=0.055, margen_rel=0.10, tracking_rel=-0.045,
               borde_rel=0.012, blur=3, resaltar=None):
     """
@@ -75,16 +75,21 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.74,
     altura, margenes— para que se vea igual en 9:16 y en 16:9. Un numero fijo de
     pixeles se rompe apenas cambia la resolucion.
 
-    alto_rel: donde arranca el texto, medido desde arriba. 0.74 sale de medir los
-    anuncios que ella ya publica, no de la teoria: el cartel va bastante mas
-    abajo de lo que decia la spec —"altura del pecho", 0.42— y termina cerca del
-    77% de la altura, justo arriba del boton de CTA que la plataforma superpone.
+    fondo_rel: donde termina ABAJO el texto, medido desde arriba. Meta unifico en
+    marzo de 2026 una sola zona segura 9:16 —14% arriba, 35% abajo, 6% a los
+    lados— asi que lo que se publica tiene que vivir entre 14% y 65%. 0.645 deja
+    el cartel lo mas abajo posible sin cruzar esa linea.
+
+    Se ancla por ABAJO y no por arriba a proposito: si un bloque necesita dos
+    renglones, crece hacia arriba y sigue adentro. Anclado por arriba, el
+    renglon de mas lo empujaba justo a la zona que Meta tapa.
 
     resaltar: palabras que van en otro color. Hoy no se usa; queda aceptado para
     no tener que rehacer el generador cuando aparezca.
     """
     tam = max(12, int(round(alto * tam_rel)))
-    mv = int(round(alto * alto_rel))
+    # MarginV con alineacion abajo se mide desde el borde inferior.
+    mv = max(0, int(round(alto * (1.0 - fondo_rel))))
     mh = int(round(ancho * margen_rel))
     # Las letras del diseño van casi pegadas. Spacing negativo, en proporcion al
     # cuerpo: un valor fijo en pixeles aprieta de mas en un video chico.
@@ -112,11 +117,11 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.74,
         # Poppins y no Montserrat: en el diseño la "a" es de un solo piso, que es
         # lo que distingue una geometrica de una grotesca. Montserrat la tiene de
         # dos pisos y por eso no se parecia.
-        # Alignment 8 = arriba y centrado. Con 5 (centro) libass ignora MarginV
-        # y no hay forma de fijar la altura exacta.
+        # Alignment 2 = abajo y centrado: el MarginV fija el borde INFERIOR del
+        # cartel, que es el que no puede cruzar la zona segura.
         # Bold=-1 es "si" en ASS: selecciona la cara Bold de la familia Poppins.
         "Style: Karaoke,Poppins,%d,&H00FFFFFF,&H00FFFFFF,&H50000000,"
-        "&H78000000,-1,0,0,0,100,100,%s,0,1,%d,%d,8,%d,%d,%d,1"
+        "&H78000000,-1,0,0,0,100,100,%s,0,1,%d,%d,2,%d,%d,%d,1"
         % (tam, track, borde, sombra, mh, mh, mv),
         "",
         "[Events]",
