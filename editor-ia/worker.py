@@ -11,7 +11,7 @@ Variables de entorno (ninguna va nunca al frontend):
     WHISPER_MODELO               opcional, default 'small'
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
-import os, sys, re, time, json, array, argparse, tempfile, subprocess, traceback
+import os, sys, re, time, math, json, array, argparse, tempfile, subprocess, traceback
 import requests
 
 import auto_editor
@@ -387,11 +387,30 @@ def detalle_cortes(palabras, grupos):
 
 
 def escribir_srt(palabras, sub, ruta):
-    """El .srt con el agrupado y las mayusculas que pida el formato."""
+    """
+    El .srt, cortado igual que el cartel que se quema en el video.
+
+    Antes agrupaba de a N palabras exactas por su cuenta, asi que quien se
+    llevaba el .srt a CapCut recibia cortes distintos de los que veia en el
+    video. Ahora los dos salen de la misma funcion.
+    """
     if sub.get("mayusculas"):
         palabras = [dict(w, word=str(w.get("word", "")).upper()) for w in palabras]
-    return transcribe.palabras_a_srt(
-        palabras, max_palabras_por_linea=int(sub.get("palabras", 8)), out_srt=ruta)
+    grupos = Sub.bloques(palabras, int(sub.get("palabras", 3)))
+
+    def t(seg):
+        seg = max(0.0, float(seg))
+        return "%02d:%02d:%02d,%03d" % (seg // 3600, (seg % 3600) // 60,
+                                        seg % 60, (seg % 1) * 1000)
+
+    # utf-8-sig: el BOM es lo que hace que CapCut y los editores de Windows
+    # tomen el archivo como UTF-8. Sin el, los acentos llegan rotos.
+    with open(ruta, "w", encoding="utf-8-sig") as f:
+        for i, b in enumerate(grupos, 1):
+            f.write("%d\n%s --> %s\n%s\n\n"
+                    % (i, t(b[0]["start"]), t(b[-1]["end"]),
+                       " ".join(str(w.get("word", "")) for w in b)))
+    return ruta
 
 
 def _force_style(sub):
@@ -567,6 +586,86 @@ def sacar_mudo_inicial(tramos):
     return tramos
 
 
+# Cuanto se le suma al piso de ruido para decidir que cuenta como silencio, y
+# hasta donde se lo deja llegar. El techo existe porque en una grabacion donde
+# el piso casi toca la voz, seguir subiendo el umbral empieza a cortar palabras.
+# Cuanto se sube el umbral por vez, y hasta donde. El techo se calcula sobre el
+# nivel medio del propio audio: pasarse de ahi es empezar a cortar voz.
+PASO_DB = 1.0
+MARGEN_MEDIO_DB = 2.0
+MARGEN_FINAL_DB = 2.0
+UMBRAL_TECHO = -20.0
+
+
+def nivel_medio(archivo):
+    """
+    El nivel medio del audio segun ffmpeg, en dBFS.
+
+    Se usa la medicion de ffmpeg y no una propia a proposito: calculandola a
+    mano hay que acertar el formato de muestra, y no es obvio. Decodificando el
+    mismo archivo a s16 y a f32 dan valores que difieren en exactamente 3 dB, y
+    solo el de s16 coincide con lo que reporta ffmpeg. Preguntarle a el saca el
+    problema de encima.
+    """
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-v", "info", "-i", archivo, "-af", "volumedetect",
+             "-f", "null", "-"],
+            capture_output=True, text=True)
+    except Exception:
+        return None
+    m = re.search(r"mean_volume:\s*(-?[\d.]+) dB", r.stderr or "")
+    return float(m.group(1)) if m else None
+
+
+def umbral_silencio(archivo, configurado, min_silencio=0.5):
+    """
+    A que nivel deja de haber voz EN ESTA grabacion.
+
+    Un umbral fijo asume que todas las salas suenan igual. Medido sobre una
+    pieza real: con el umbral configurado en -32 dB el detector no encontro un
+    solo silencio en 33 segundos, y quedaron tres pausas sin cortar —1.3s, 1.4s
+    y 0.7s— la ultima de las cuales dejaba el cartel colgado en pantalla mas de
+    un segundo sin que nadie hablara.
+
+    No alcanza con mirar el piso de ruido: silencedetect exige que el nivel se
+    mantenga bajo durante TODO el tramo, asi que lo que manda son los picos del
+    ruido y no su promedio. En esa grabacion el piso estaba en -37 dBFS y aun
+    asi -32 no encontraba nada. Por eso se le pregunta al propio detector.
+
+    El criterio es la meseta: se sube de a un dB mientras sigan APARECIENDO
+    pausas nuevas y se para cuando dejan de aparecer. A partir de ahi, subir mas
+    no encuentra otra pausa, solo agranda las que ya estaban comiendose el borde
+    de las palabras. Los dos dB finales son para tomarlas enteras y no
+    recortadas, y el nivel medio del audio pone el techo.
+    """
+    def cuantos(u):
+        return len(auto_editor.detectar_silencios(archivo, umbral_db=u,
+                                                  min_silencio=min_silencio))
+
+    medio = nivel_medio(archivo)
+    techo = UMBRAL_TECHO if medio is None else min(UMBRAL_TECHO, medio - MARGEN_MEDIO_DB)
+    mejor_u, mejor_n = configurado, cuantos(configurado)
+    u, quietos = configurado, 0
+    while u + PASO_DB <= techo:
+        u += PASO_DB
+        n = cuantos(u)
+        if n > mejor_n:
+            mejor_u, mejor_n, quietos = u, n, 0
+        else:
+            quietos += 1
+            # Dos pasos sin novedad ya es meseta. Seguir es gastar pasadas.
+            if quietos >= 2 and mejor_n:
+                break
+    if not mejor_n:
+        return configurado
+    elegido = min(mejor_u + MARGEN_FINAL_DB, techo)
+    if elegido > configurado + 0.5:
+        print("   con el ruido de esta sala el umbral pasa de %.0f a %.0f dB"
+              % (configurado, elegido), flush=True)
+    return elegido
+
+
 def _palabras_pegadas(tramos):
     """Las palabras de los tramos, corridas como quedan una atras de la otra."""
     salida, offset = [], 0.0
@@ -605,8 +704,9 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
     dur = auto_editor.ffprobe_duration(archivo)
 
     minsil = float(op.get("min_silencio", 0.6))
+    umbral = umbral_silencio(archivo, float(op.get("umbral_db", -30)), minsil)
     silencios = auto_editor.detectar_silencios(
-        archivo, umbral_db=float(op.get("umbral_db", -30)), min_silencio=minsil
+        archivo, umbral_db=umbral, min_silencio=minsil
     ) if minsil > 0 else []
 
     txt_guion = str(op.get("guion") or "").strip()
