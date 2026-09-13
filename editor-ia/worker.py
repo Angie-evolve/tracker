@@ -40,14 +40,94 @@ if not KEY.startswith("sb_"):
 
 # ---------------------------------------------------------------- tabla ----
 
-def _rest(metodo, ruta, extra=None, **kw):
+# Cuantas veces se reintenta algo que fallo por causas pasajeras, y cuanto se
+# espera entre intento e intento.
+ESPERAS = (2, 5, 12)
+
+
+def _pasajero(e):
+    """
+    Si el error es del momento o del pedido.
+
+    Un 504 es la base tardando en contestar; un 400 es un pedido mal armado, y
+    repetirlo mil veces va a fallar mil veces igual.
+    """
+    if isinstance(e, (requests.ConnectionError, requests.Timeout)):
+        return True
+    r = getattr(e, "response", None)
+    return r is not None and (r.status_code >= 500 or r.status_code == 429)
+
+
+def _reintentar(hacer, que):
+    """
+    Repite una operacion que se puede repetir sin consecuencias.
+
+    Una corrida entera se moria por un 504 suelto en la primera consulta: la
+    corrida terminaba en quince segundos, el trabajo quedaba en cola y no habia
+    quien lo volviera a mirar hasta el cron siguiente, dos horas despues.
+    """
+    for i, espera in enumerate(ESPERAS + (None,)):
+        try:
+            return hacer()
+        except Exception as e:
+            if espera is None or not _pasajero(e):
+                raise
+            print("%s fallo (%s), reintento en %ds" % (que, type(e).__name__, espera),
+                  flush=True)
+            time.sleep(espera)
+
+
+def _rest(metodo, ruta, extra=None, reintentar=None, **kw):
+    """
+    reintentar: por defecto, solo los GET. Repetir una escritura que quizas si
+    llego duplicaria el efecto; el que sabe que la suya es repetible lo pide.
+    """
     cab = {**H, "Content-Type": "application/json"}
     if extra:
         cab.update(extra)
-    r = requests.request(metodo, f"{SB_URL}/rest/v1/{ruta}",
-                         headers=cab, timeout=60, **kw)
-    r.raise_for_status()
-    return r.json() if r.text else None
+
+    def hacer():
+        r = requests.request(metodo, f"{SB_URL}/rest/v1/{ruta}",
+                             headers=cab, timeout=60, **kw)
+        r.raise_for_status()
+        return r.json() if r.text else None
+
+    if reintentar is None:
+        reintentar = (metodo.upper() == "GET")
+    return _reintentar(hacer, f"{metodo} {ruta.split('?')[0]}") if reintentar else hacer()
+
+
+# Cuanto puede estar un trabajo "procesando" antes de darlo por colgado. Una
+# tanda de treinta clips tarda unos doce minutos, asi que este margen no pisa
+# a nadie que siga trabajando de verdad.
+COLGADO_MIN = int(os.environ.get("COLGADO_MIN", "45"))
+
+
+def reciclar_colgados():
+    """
+    Devuelve a la cola lo que quedo tomado por un worker que ya no existe.
+
+    El runner se puede quedar sin memoria, pasarse del limite de tiempo o
+    perder la conexion justo al guardar el resultado. En cualquiera de esos
+    casos la fila queda en "procesando" para siempre: nadie la vuelve a tomar,
+    porque tomar_pendiente solo mira las pendientes.
+    """
+    corte = time.strftime("%Y-%m-%dT%H:%M:%S",
+                          time.gmtime(time.time() - COLGADO_MIN * 60)) + "Z"
+    try:
+        vueltas = _rest("PATCH",
+                        f"trabajos_video?estado=eq.procesando&tomado_at=lt.{corte}",
+                        extra={"Prefer": "return=representation"},
+                        json={"estado": "pendiente", "tomado_at": None},
+                        reintentar=True) or []
+    except Exception as e:
+        # Que falle la limpieza no puede impedir que se procese lo que si esta
+        # en cola.
+        print("no pude reciclar colgados:", e, flush=True)
+        return 0
+    for f in vueltas:
+        print("vuelve a la cola:", f.get("id"), flush=True)
+    return len(vueltas)
 
 
 def hay_pendiente():
@@ -55,6 +135,7 @@ def hay_pendiente():
     Solo mira si hay algo, no lo reclama. Es lo que corre el primer step del
     workflow: si contesta que no, la corrida termina ahi y no se instala nada.
     """
+    reciclar_colgados()
     return bool(_rest("GET", "trabajos_video?estado=eq.pendiente&limit=1&select=id"))
 
 
@@ -77,7 +158,10 @@ def tomar_pendiente():
 
 
 def marcar(id_, **campos):
-    _rest("PATCH", f"trabajos_video?id=eq.{id_}", json=campos)
+    # Se reintenta: escribir dos veces el mismo estado deja lo mismo, y perder
+    # esta llamada deja un trabajo terminado que se ve como si siguiera
+    # procesando.
+    _rest("PATCH", f"trabajos_video?id=eq.{id_}", json=campos, reintentar=True)
 
 
 def _ahora():
@@ -87,21 +171,37 @@ def _ahora():
 # -------------------------------------------------------------- storage ----
 
 def bajar(path, destino):
-    r = requests.get(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
-                     headers=H, timeout=600, stream=True)
-    r.raise_for_status()
-    with open(destino, "wb") as f:
-        for trozo in r.iter_content(1024 * 256):
-            f.write(trozo)
-    return destino
+    def hacer():
+        r = requests.get(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
+                         headers=H, timeout=600, stream=True)
+        r.raise_for_status()
+        with open(destino, "wb") as f:
+            for trozo in r.iter_content(1024 * 256):
+                f.write(trozo)
+        return destino
+    # Bajar es leer: repetirlo no cambia nada, y una tanda son treinta y pico
+    # de descargas seguidas donde una sola que se corte tira todo abajo.
+    return _reintentar(hacer, f"bajar {path.split('/')[-1]}")
 
 
 def subir(local, path, tipo="application/octet-stream"):
     mb = os.path.getsize(local) / 1048576.0
-    with open(local, "rb") as f:
-        r = requests.post(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
-                          headers={**H, "Content-Type": tipo, "x-upsert": "true"},
-                          data=f, timeout=600)
+
+    def hacer():
+        # El archivo se reabre en cada intento: despues de un envio fallido el
+        # descriptor quedo al final y el reintento subiria cero bytes.
+        with open(local, "rb") as f:
+            r = requests.post(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
+                              headers={**H, "Content-Type": tipo, "x-upsert": "true"},
+                              data=f, timeout=600)
+        # Solo los pasajeros se reintentan; el resto se explica abajo.
+        if r.status_code >= 500 or r.status_code == 429:
+            r.raise_for_status()
+        return r
+
+    # Se puede reintentar porque va con x-upsert: la segunda subida pisa a la
+    # primera en vez de chocar.
+    r = _reintentar(hacer, f"subir {path.split('/')[-1]}")
     if not r.ok:
         # raise_for_status solo dice "400 Bad Request" y esconde el cuerpo, que
         # es lo unico que explica si fue el tamano, el bucket o los permisos.
