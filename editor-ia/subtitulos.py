@@ -67,7 +67,7 @@ def _t(seg):
 
 def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
               tam_rel=0.055, margen_rel=0.10, tracking_rel=-0.045,
-              borde_rel=0.04, resaltar=None):
+              borde_rel=0.012, blur=3, resaltar=None):
     """
     Devuelve el .ass completo.
 
@@ -88,9 +88,11 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
     # Las letras del diseño van casi pegadas. Spacing negativo, en proporcion al
     # cuerpo: un valor fijo en pixeles aprieta de mas en un video chico.
     track = round(tam * tracking_rel, 1)
-    # Borde fino. Un borde grueso convierte el cartel en un contorno y deja de
-    # parecerse: al ojo tiene que leerse como texto blanco con un canto oscuro.
+    # Casi sin borde. En el diseño no hay contorno: lo que despega el texto de
+    # una remera gris es una sombra difusa, no una linea negra. Un borde marcado
+    # convierte el cartel en otra cosa.
     borde = max(1, int(round(tam * borde_rel)))
+    sombra = max(1, int(round(tam * 0.022)))
     res = set(re.sub(r"[^a-z0-9]", "", str(x).lower()) for x in (resaltar or []))
 
     cab = [
@@ -112,9 +114,9 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
         # Alignment 8 = arriba y centrado. Con 5 (centro) libass ignora MarginV
         # y no hay forma de fijar la altura exacta.
         # Bold=-1 es "si" en ASS: selecciona la cara Bold de la familia Poppins.
-        "Style: Karaoke,Poppins,%d,&H00FFFFFF,&H00FFFFFF,&H32000000,"
-        "&H64000000,-1,0,0,0,100,100,%s,0,1,%d,%d,8,%d,%d,%d,1"
-        % (tam, track, borde, max(1, int(round(tam * 0.03))), mh, mh, mv),
+        "Style: Karaoke,Poppins,%d,&H00FFFFFF,&H00FFFFFF,&H50000000,"
+        "&H78000000,-1,0,0,0,100,100,%s,0,1,%d,%d,8,%d,%d,%d,1"
+        % (tam, track, borde, sombra, mh, mh, mv),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -137,8 +139,10 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, alto_rel=0.42,
                     fin = min(fin, float(sigue.get("start", 0)))
             if fin <= ini:
                 fin = ini + 0.12
-            lineas.append("Dialogue: 0,%s,%s,Karaoke,,0,0,0,,%s"
-                          % (_t(ini), _t(fin), visible))
+            # \blur difumina borde y sombra. Es lo que hace que el canto se
+            # lea como un halo y no como un contorno dibujado.
+            lineas.append("Dialogue: 0,%s,%s,Karaoke,,0,0,0,,{\\blur%s}%s"
+                          % (_t(ini), _t(fin), blur, visible))
     return "\n".join(cab + lineas) + "\n"
 
 
