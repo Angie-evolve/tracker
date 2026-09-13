@@ -417,12 +417,24 @@ def procesar(fila, tmp):
                         "palabras": transcribir(f, tmp),
                         "duracion": auto_editor.ffprobe_duration(f)})
 
-    encontradas, sin_grabar = Piezas.repartir(locales, guiones)
+    if guiones:
+        encontradas, sin_grabar, descartados = Piezas.repartir(locales, guiones)
+    else:
+        # Carpeta sin guiones: cada video es su propia pieza, entero. Es lo que
+        # promete el arrastrable y lo que espera cualquiera que tire una carpeta
+        # de clips sueltos; sin esto repartir() devolvia cero y no se entregaba
+        # nada.
+        encontradas = [{"video": v["id"],
+                        "titulo": os.path.splitext(os.path.basename(v["id"]))[0],
+                        "inicio": 0.0, "fin": float(v["duracion"]), "score": 1.0}
+                       for v in locales if v.get("duracion")]
+        sin_grabar, descartados = [], []
     sueltos = Piezas.huerfanos(locales, encontradas)
     marcar(fila["id"], analisis={"tanda": True, "videos": len(locales),
                                  "guiones": len(guiones),
                                  "piezas": len(encontradas),
-                                 "sin_grabar": sin_grabar, "sueltos": sueltos})
+                                 "sin_grabar": sin_grabar, "sueltos": sueltos,
+                                 "descartados": descartados})
 
     porRuta = {v["id"]: v for v in locales}
     salida = []

@@ -23,7 +23,11 @@ def _cobertura(palabras, texto):
     vistos = [b for b in bls if b["encontrado"]]
     if not vistos:
         return {"score": 0.0, "inicio": None, "fin": None, "bloques": bls}
-    return {"score": round(len(vistos) / float(len(bls)), 3),
+    # El score es continuo y no la fraccion de bloques encontrados: con 31 clips
+    # que son cuatro tomas del mismo guion, la fraccion da 1.00 en todas y gana
+    # cualquiera. Promediando cuanto se dijo de cada bloque gana la toma mas
+    # completa, que es la que hay que entregar.
+    return {"score": round(sum(b.get("score", 0) for b in bls) / float(len(bls)), 3),
             "inicio": vistos[0]["inicio"],
             "fin": vistos[-1]["fin"],
             "bloques": bls}
@@ -63,6 +67,23 @@ def repartir(videos, guiones, minimo=0.35):
     sin_grabar = [{"titulo": c["titulo"], "score": c["score"]}
                   for c in candidatos if c["video"] is None]
 
+    # Los videos que no quedaron en ninguna pieza. Con 31 clips y 8 guiones son
+    # las otras tomas, y desaparecer 23 archivos en silencio seria peor que
+    # entregar de mas: se listan con a que guion se parecian.
+    usados = set(p["video"] for p in piezas)
+    descartados = []
+    for v in (videos or []):
+        if v.get("id") in usados:
+            continue
+        mejor, tit = 0.0, ""
+        for g in (guiones or []):
+            c = _cobertura(v.get("palabras") or [], g.get("texto") or "")
+            if c and c["score"] > mejor:
+                mejor, tit = c["score"], g.get("titulo") or ""
+        descartados.append({"video": v.get("id"), "parecido_a": tit,
+                            "score": round(mejor, 3),
+                            "duracion": round(float(v.get("duracion") or 0), 1)})
+
     # Adentro de cada video las piezas van una atras de la otra. El fin que trae
     # cada una llega hasta el final de la transcripcion —el mapa no sabe que
     # viene otro guion despues— asi que se recorta contra el arranque del que
@@ -80,7 +101,7 @@ def repartir(videos, guiones, minimo=0.35):
                 p["fin"] = max(p["fin"], min(p["fin"], dur[vid]))
         for p in enEste:
             p["duracion"] = round(max(0.0, p["fin"] - p["inicio"]), 2)
-    return piezas, sin_grabar
+    return piezas, sin_grabar, descartados
 
 
 def huerfanos(videos, piezas, minimo=8.0):

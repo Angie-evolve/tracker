@@ -33,7 +33,17 @@ def transcribir_local(wav_path, modelo="small", idioma="es"):
             medio en una notebook/servidor sin GPU.
     """
     from faster_whisper import WhisperModel
-    model = WhisperModel(modelo, device="cpu", compute_type="int8")
+    # El modelo se carga una sola vez por proceso. Sin esto, una tanda de 31
+    # clips lo levantaba 31 veces y la carga tarda mas que transcribir un clip
+    # de nueve segundos.
+    global _MODELOS
+    try:
+        _MODELOS
+    except NameError:
+        _MODELOS = {}
+    if modelo not in _MODELOS:
+        _MODELOS[modelo] = WhisperModel(modelo, device="cpu", compute_type="int8")
+    model = _MODELOS[modelo]
     segments, _info = model.transcribe(wav_path, language=idioma, word_timestamps=True)
     palabras = []
     for seg in segments:

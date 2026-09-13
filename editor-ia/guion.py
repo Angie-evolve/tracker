@@ -133,6 +133,14 @@ def elegir_peor(palabras, i1, i2, largo, texto_guion):
 _SEPARADORES = [
     # ## Titulo   /   # Titulo
     (r"^\s{0,3}#{1,4}\s+(?P<t>\S.*?)\s*$", "titulo"),
+    # Numerados, en las dos formas que aparecen en un mismo documento:
+    #   Body 1 - El escaneo   /   Hook 2   /   Cierre 3
+    #   01 Si tenes una PyME que factura bien...
+    # Van juntos a proposito: un documento real usa las dos, y probandolas por
+    # separado gana la primera y la otra mitad de los guiones se pierde.
+    # La linea entra al cuerpo porque el texto ya empezo ahi.
+    (r"^\s{0,3}(?P<t>(?:(?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*"
+     r"|\d{1,2}\s+\S+(?:\s+\S+){2,}.*))\s*$", "contenido"),
     # GUION 3 - algo   /   Guion 3:   /   Pieza 2   /   Reel 4
     (r"^\s{0,3}(?P<t>(?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*"
      r"(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$", "titulo"),
@@ -143,8 +151,14 @@ _SEPARADORES = [
 ]
 
 
-def _por_encabezado(lineas, rx):
-    """El marcador ARRANCA cada guion, asi que hacen falta dos para creerlo."""
+def _por_encabezado(lineas, rx, incluir=False):
+    """
+    El marcador ARRANCA cada guion, asi que hacen falta dos para creerlo.
+
+    incluir: si la linea del marcador es tambien la primera del guion. Con "## "
+    el rotulo se descarta; con "01 Si tenes una PyME..." el texto ya empezo ahi
+    y descartarlo se come la primera frase.
+    """
     cortes = [(i, (m.groupdict().get("t") or "").strip())
               for i, l in enumerate(lineas) for m in [rx.match(l)] if m]
     if len(cortes) < 2:
@@ -152,7 +166,7 @@ def _por_encabezado(lineas, rx):
     partes = []
     for k, (i, titulo) in enumerate(cortes):
         fin = cortes[k + 1][0] if k + 1 < len(cortes) else len(lineas)
-        cuerpo = "\n".join(lineas[i + 1:fin]).strip()
+        cuerpo = "\n".join(lineas[i if incluir else i + 1:fin]).strip()
         if cuerpo:
             partes.append({"titulo": titulo, "texto": cuerpo})
     return partes
@@ -185,6 +199,20 @@ def _por_raya(lineas, rx):
     return partes
 
 
+# Un renglon con una sola palabra capitalizada, en el medio del cuerpo, es un
+# rotulo de seccion del documento ("Hooks", "Bodies", "Cierres"). Nadie lo dice
+# en camara, asi que lo que viene despues no es parte de este guion.
+_ROTULO = re.compile(r"^\s*[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]{2,14}\s*:?\s*$")
+
+
+def _cortar_en_rotulo(texto):
+    lineas = texto.split("\n")
+    for i, l in enumerate(lineas):
+        if i > 0 and _ROTULO.match(l):
+            return "\n".join(lineas[:i]).strip()
+    return texto
+
+
 def separar(texto):
     """
     Parte un archivo con varios guiones adentro.
@@ -204,12 +232,16 @@ def separar(texto):
 
     for patron, clase in _SEPARADORES:
         rx = re.compile(patron, re.I)
-        partes = (_por_raya if clase == "raya" else _por_encabezado)(lineas, rx)
+        if clase == "raya":
+            partes = _por_raya(lineas, rx)
+        else:
+            partes = _por_encabezado(lineas, rx, incluir=(clase == "contenido"))
         # Lo que hubiera antes del primer encabezado es titulo del documento, no
         # un guion: _por_encabezado lo descarta a proposito.
         if len(partes) >= 2:
             for k, p in enumerate(partes):
                 p["titulo"] = (p["titulo"] or ("Guion %d" % (k + 1)))[:80]
-            return partes
+                p["texto"] = _cortar_en_rotulo(p["texto"])
+            return [p for p in partes if p["texto"]]
 
     return [{"titulo": (lineas[0].strip() or "Guion")[:80], "texto": txt}]

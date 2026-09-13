@@ -91,7 +91,10 @@ def leer_texto(ruta):
             from pypdf import PdfReader
         except ImportError:
             salir("Falta pypdf para leer PDF. Corré: pip3 install pypdf")
-        return "\n\n".join((p.extract_text() or "") for p in PdfReader(ruta).pages)
+        # layout y no el default: un PDF exportado de Google Docs sale con una
+        # palabra por renglon, y asi cada palabra se vuelve un bloque del guion.
+        return "\n".join((p.extract_text(extraction_mode="layout") or "")
+                         for p in PdfReader(ruta).pages)
     with open(ruta, encoding="utf-8", errors="replace") as f:
         return f.read()
 
