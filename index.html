@@ -15679,7 +15679,88 @@ function _edBancoHtml(){
     +filas+'</div>';
 }
 
+// Una tanda no tiene UN resultado: tiene una pieza por guion, mas dos cosas que
+// hay que saber antes de entregar —que guion no grabo el cliente y que tramo de
+// video no corresponde a ninguno—.
+function _edTandaHtml(f){
+  var an=f.analisis||{}, pz=f.piezas||[];
+  var listas=pz.filter(function(x){ return x.path; });
+  var fallidas=pz.filter(function(x){ return x.error; });
+  var cab={pendiente:'En cola', procesando:'Procesando', listo:'Listo', error:'Falló'}[f.estado]||f.estado;
+  var h='<div class="ed-panel">'
+    +'<h3>'+esc(cab)+' <span class="ed-badge">tanda de '+(an.videos||1)+' video'
+      +((an.videos||1)===1?'':'s')+'</span></h3>';
+
+  if(f.estado==='error'){
+    h+='<div class="s" style="color:var(--redx)">'+esc(f.error||'sin detalle')+'</div>';
+  } else if(!an.tanda){
+    h+='<div class="s">Bajando y transcribiendo. Con varios videos esto tarda: '
+      +'transcribe todos antes de repartir los guiones, porque un guion puede estar '
+      +'en cualquiera.</div>';
+  } else {
+    h+='<div class="s">'+(an.guiones||0)+' guiones repartidos en '+(an.videos||0)
+      +' video'+((an.videos||0)===1?'':'s')+' · '+listas.length+' de '+(an.piezas||0)
+      +' pieza'+((an.piezas||0)===1?'':'s')+' lista'+(listas.length===1?'':'s')
+      +(f.estado==='procesando'?' · las que están se pueden bajar ya':'')+'</div>';
+  }
+
+  if(pz.length){
+    h+=pz.map(function(x){
+      return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;'
+        +'border-top:1px solid var(--border)">'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="font-size:12.5px;color:var(--text)">'+esc(x.titulo||'Pieza')+'</div>'
+          +'<div style="font-size:11px;color:'+(x.error?'var(--redx)':'var(--text3)')+';margin-top:2px">'
+            +(x.error?esc(x.error)
+              :(esc(String(x.video||'').split('/').pop())+' · '+_edSeg(x.inicio)+' → '+_edSeg(x.fin)
+                +(x.duracion?(' · queda '+(+x.duracion).toFixed(1)+'s'):'')
+                +(x.ahorro_pct?(' · '+x.ahorro_pct+'% más corto'):'')))
+          +'</div>'
+        +'</div>'
+        +(x.path?('<div style="display:flex;gap:6px;flex:none">'
+          +'<button class="btn btn-sm" onclick="edBajar(\''+esc(x.path)+'\',\''
+            +esc((x.titulo||'pieza').replace(/[^\w -]/g,''))+'.mp4\')">Bajar</button>'
+          +'<button class="btn btn-sm" onclick="edBajar(\''+esc(x.srt_path||'')+'\',\'\')" '
+            +'style="color:var(--text3)">.srt</button>'
+          +'</div>'):'')
+      +'</div>';
+    }).join('');
+  }
+
+  var faltan=an.sin_grabar||[];
+  if(faltan.length){
+    h+='<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+      +'<div style="font-size:11px;color:var(--amberx);margin-bottom:6px">'
+        +faltan.length+' guion'+(faltan.length===1?'':'es')+' que el cliente no grabó</div>'
+      +faltan.map(function(x){
+        return '<div style="font-size:11.5px;color:var(--text3);padding:2px 0">'
+          +esc(x.titulo)+'</div>'; }).join('')
+      +'</div>';
+  }
+  var sueltos=an.sueltos||[];
+  if(sueltos.length){
+    h+='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:6px">'
+        +'Tramos que no corresponden a ningún guion. Casi siempre es la charla previa, '
+        +'pero a veces el cliente improvisó algo.</div>'
+      +sueltos.map(function(x){
+        return '<div style="font-size:11.5px;color:var(--text3);padding:2px 0">'
+          +esc(String(x.video||'').split('/').pop())+' · '+_edSeg(x.inicio)+' → '+_edSeg(x.fin)
+          +'</div>'; }).join('')
+      +'</div>';
+  }
+  if(fallidas.length && f.estado==='listo'){
+    h+='<div style="margin-top:12px;font-size:11px;color:var(--redx)">'
+      +fallidas.length+' pieza'+(fallidas.length===1?'':'s')+' no se pudo procesar. '
+      +'Las demás quedaron bien.</div>';
+  }
+  return h+'</div>';
+}
+
 function _edTrabajoHtml(f){
+  // Una tanda se lee distinto que un video suelto: lo que importa no es un
+  // porcentaje sino cuantas piezas salieron y que falto.
+  if((f.piezas&&f.piezas.length) || (f.analisis&&f.analisis.tanda)) return _edTandaHtml(f);
   var an=f.analisis||null;
   var cab={pendiente:'En cola', procesando:'Procesando', listo:'Listo', error:'Falló'}[f.estado]||f.estado;
   var col=f.estado==='error'?'var(--redx)':(f.estado==='listo'?'var(--accent)':'var(--amberx)');
@@ -15722,7 +15803,8 @@ function _edTrabajoHtml(f){
         +'Descargar el .srt</button>'
       +((f.analisis&&(f.analisis.cortes||[]).length)
         ?('<button class="btn" onclick="edRevisar(\''+esc(f.id)+'\')" style="color:var(--text3)">'
-          +'Revisar los '+f.analisis.cortes.length+' cortes</button>'):'')
+          +(f.analisis.cortes.length===1?'Revisar el corte'
+            :('Revisar los '+f.analisis.cortes.length+' cortes'))+'</button>'):'')
       +'</div>';
   }
   return h+'</div>';
@@ -15807,7 +15889,9 @@ function _edCuerpo(){
         return '<div class="ed-hist">'
           +'<span class="t">'+(d?d.toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</span>'
           +'<span style="flex:1;min-width:0;color:var(--text2)">'
-            +(x.modo==='render'?'Video final':'Plan para CapCut')
+            +((x.piezas&&x.piezas.length)
+              ?(x.piezas.length+' piezas')
+              :(x.modo==='render'?'Video final':'Plan para CapCut'))
             +' · <span style="color:'+c+'">'+et+'</span></span>'
           +(x.estado==='listo'
             ?('<button class="btn btn-sm" onclick="edBajar(\''+esc(x.resultado_path||'')+'\',\'\')">Descargar</button>')
