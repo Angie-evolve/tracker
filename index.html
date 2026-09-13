@@ -15612,7 +15612,7 @@ async function edCargar(){
   var e=_edEstado();
   if(!SB.token){ e.hist=[]; return; }
   try{
-    e.hist=await sbFetch('trabajos_video?select=*&order=creado_at.desc&limit=8')||[];
+    e.hist=await sbFetch('trabajos_video?select=*&order=creado_at.desc&limit=20')||[];
     e.histError='';
     // Si quedo uno andando, se retoma el seguimiento: recargar la pagina no
     // tiene que dejarte sin saber como termino.
@@ -15794,6 +15794,69 @@ function edRevisarModal(jobId){
       +filas
       +'<div class="modal-footer"><button class="btn btn-primary" onclick="closeModal()">Listo</button></div>'
     +'</div></div>';
+}
+
+// Abrir un trabajo viejo es ponerlo donde esta el actual: asi se ve con el
+// mismo panel, con sus piezas y sus descargas, sin duplicar la vista.
+function edAbrir(id){
+  var e=_edEstado();
+  var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!f) return;
+  e.fila=f; e.jobId=(f.estado==='pendiente'||f.estado==='procesando')?f.id:null;
+  if(e.jobId) edPoll();
+  _edPintar();
+  var el=document.getElementById('ed-root');
+  if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+// Todos los archivos de un trabajo: la fuente, el resultado y lo de cada pieza.
+function _edArchivosDe(f){
+  var l=[].concat(f.videos||[], [f.video_path, f.resultado_path, f.resultado_srt_path]);
+  ((f.analisis||{}).capcut) && l.push(f.analisis.capcut);
+  (f.piezas||[]).forEach(function(p){ l.push(p.path, p.srt_path, p.capcut_path); });
+  var visto={}, out=[];
+  l.forEach(function(x){ if(x && !visto[x]){ visto[x]=1; out.push(x); } });
+  return out;
+}
+
+async function edBorrarTrabajo(id){
+  var e=_edEstado();
+  var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!f) return;
+  var arch=_edArchivosDe(f);
+  if(!confirm('Borrar este trabajo y sus '+arch.length+' archivos?\n\n'
+    +'Se van los videos que subiste y los resultados. No hay vuelta atrás.')) return;
+  try{
+    // Los archivos primero: si se borra la fila y falla esto, quedan ocupando el
+    // bucket sin que nada los nombre.
+    if(arch.length){
+      await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET, {
+        method:'DELETE',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+                 'Content-Type':'application/json'},
+        body:JSON.stringify({prefixes:arch})
+      });
+    }
+    await sbFetch('trabajos_video?id=eq.'+encodeURIComponent(id), {method:'DELETE'});
+  }catch(err){ toast(_edMsg(err.message),'red'); return; }
+  if(e.fila && String(e.fila.id)===String(id)){ e.fila=null; e.jobId=null; }
+  toast('Borrado');
+  edCargar();
+}
+
+async function edAsignar(id, clienteId){
+  try{
+    await sbFetch('trabajos_video?id=eq.'+encodeURIComponent(id), {method:'PATCH',
+      body:JSON.stringify({cliente_id:clienteId||null})});
+  }catch(err){ toast(_edMsg(err.message),'red'); return; }
+  var e=_edEstado();
+  (e.hist||[]).forEach(function(x){ if(String(x.id)===String(id)) x.cliente_id=clienteId||null; });
+  _edPintar();
+}
+
+function _edClientes(){
+  return (DB.clients||[]).filter(function(c){ return !esAgencia(c) && !c.archived; })
+    .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
 }
 
 async function edBancoCargar(){
@@ -16067,16 +16130,30 @@ function _edCuerpo(){
         var d=x.creado_at?new Date(x.creado_at):null;
         var et={pendiente:'en cola',procesando:'procesando',listo:'listo',error:'falló'}[x.estado]||x.estado;
         var c=x.estado==='error'?'var(--redx)':(x.estado==='listo'?'var(--accent)':'var(--amberx)');
+        var n=(x.piezas&&x.piezas.length)||0;
         return '<div class="ed-hist">'
           +'<span class="t">'+(d?d.toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</span>'
-          +'<span style="flex:1;min-width:0;color:var(--text2)">'
-            +((x.piezas&&x.piezas.length)
-              ?(x.piezas.length+' piezas')
-              :(x.modo==='render'?'Video final':'Plan para CapCut'))
-            +' · <span style="color:'+c+'">'+et+'</span></span>'
-          +(x.estado==='listo'
+          // Toda la fila abre el trabajo: con una tanda, el boton de descargar
+          // solo bajaba la primera pieza y las otras cinco no habia como verlas.
+          +'<span onclick="edAbrir(\''+esc(String(x.id))+'\')" '
+            +'style="flex:1;min-width:0;color:var(--text2);cursor:pointer">'
+            +(n?(n+' pieza'+(n===1?'':'s')):(x.modo==='render'?'Video final':'Plan para CapCut'))
+            +' · <span style="color:'+c+'">'+et+'</span>'
+            +(n?' · <span style="color:var(--text3)">ver</span>':'')+'</span>'
+          +'<select onchange="edAsignar(\''+esc(String(x.id))+'\',this.value)" '
+            +'style="width:140px;flex:none;font-size:11px" onclick="event.stopPropagation()">'
+            +'<option value="">Sin cliente</option>'
+            +_edClientes().map(function(cl){
+              return '<option value="'+esc(String(cl.id))+'"'
+                +(String(x.cliente_id||'')===String(cl.id)?' selected':'')+'>'
+                +esc(cl.name||'')+'</option>'; }).join('')
+          +'</select>'
+          +(x.estado==='listo'&&!n
             ?('<button class="btn btn-sm" onclick="edBajar(\''+esc(x.resultado_path||'')+'\',\'\')">Descargar</button>')
             :'')
+          +'<button class="btn btn-sm" onclick="edBorrarTrabajo(\''+esc(String(x.id))+'\')" '
+            +'title="Borrar el trabajo y sus archivos" '
+            +'style="color:var(--text3);padding:4px 9px">&times;</button>'
           +'</div>';
       }).join('')
       +'</div>';
