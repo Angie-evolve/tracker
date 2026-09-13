@@ -14856,7 +14856,6 @@ function _edOpciones(){
     aire:+f.aire, clip_min:+f.clipMin,
     muletillas:(f.quitarMuletillas && mul.length)?mul:null,
     tomas_repetidas:!!f.tomasRepetidas,
-    guion:String(_edEstado().guion||'').trim()||null,
     repetidas_min:+(f.repetidasMin||6),
     presentacion:{
       tipo:((f.presentacion||{}).tipo||'take_unico'),
@@ -14988,6 +14987,60 @@ function edFormatoGuardar(){
 // El guion es por video y no por formato: el formato es el gusto, que se repite;
 // el guion cambia en cada pieza. Y va antes de mandar, no despues, porque el
 // worker lo necesita en el momento de decidir los cortes.
+// Separa un archivo con varios guiones adentro. Es el mismo criterio que
+// editor-ia/guion.py separar(): si se toca uno hay que tocar el otro. Esta
+// duplicado a proposito para poder mostrar acá lo que se detectó ANTES de subir
+// 400 MB, en vez de enterarse cuando el worker ya trabajó.
+var ED_SEPS=[
+  {rx:/^\s{0,3}#{1,4}\s+(\S.*?)\s*$/i, clase:'titulo'},
+  {rx:/^\s{0,3}((?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*|\d{1,2}\s+\S+(?:\s+\S+){2,}.*)\s*$/i,
+   clase:'contenido'},
+  {rx:/^\s{0,3}((?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$/i,
+   clase:'titulo'},
+  {rx:/^\s{0,3}(\d{1,2}\s*[.)]\s+\S.{0,70})\s*$/i, clase:'titulo'},
+  {rx:/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/, clase:'raya'}
+];
+var ED_ROTULO=/^\s*[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]{2,14}\s*:?\s*$/;
+
+function _edCortarRotulo(t){
+  var l=String(t||'').split('\n');
+  for(var i=1;i<l.length;i++) if(ED_ROTULO.test(l[i])) return l.slice(0,i).join('\n').trim();
+  return t;
+}
+function edSepararGuiones(texto){
+  var txt=String(texto||'').replace(/\r\n?/g,'\n').trim();
+  if(!txt) return [];
+  var lineas=txt.split('\n');
+  for(var si=0; si<ED_SEPS.length; si++){
+    var sep=ED_SEPS[si], partes=[];
+    if(sep.clase==='raya'){
+      var grupos=[[]], hubo=false;
+      lineas.forEach(function(l){
+        if(sep.rx.test(l)){ hubo=true; grupos.push([]); } else grupos[grupos.length-1].push(l);
+      });
+      if(hubo) grupos.forEach(function(g){
+        var vivos=g.filter(function(x){ return x.trim(); });
+        if(vivos.length) partes.push({titulo:vivos[0].trim(), texto:g.join('\n').trim()});
+      });
+    } else {
+      var cortes=[];
+      lineas.forEach(function(l,i){ var m=sep.rx.exec(l); if(m) cortes.push([i,(m[1]||'').trim()]); });
+      if(cortes.length>=2) cortes.forEach(function(c,k){
+        var fin=(k+1<cortes.length)?cortes[k+1][0]:lineas.length;
+        var cuerpo=lineas.slice(sep.clase==='contenido'?c[0]:c[0]+1, fin).join('\n').trim();
+        if(cuerpo) partes.push({titulo:c[1], texto:cuerpo});
+      });
+    }
+    if(partes.length>=2){
+      return partes.map(function(p,k){
+        return {titulo:(p.titulo||('Guion '+(k+1))).slice(0,80),
+                texto:_edCortarRotulo(p.texto)};
+      }).filter(function(p){ return p.texto; });
+    }
+  }
+  return [{titulo:(lineas[0].trim()||'Guion').slice(0,80), texto:txt}];
+}
+
 function guionesVideo(){
   if(!Array.isArray(DB.guionesVideo)) DB.guionesVideo=[];
   return DB.guionesVideo;
@@ -15192,8 +15245,14 @@ function _edGuionHtml(){
         ?'<button class="btn btn-sm" onclick="edGuionGuardar()" style="color:var(--text3)">Guardar este guion</button>':'')
       +'<span style="font-size:11px;color:var(--text3)">'
         +(String(e.guion||'').trim()
-          ?(String(e.guion).trim().split(/\n\s*\n/).filter(Boolean).length+' bloques')
-          :'Sin guion también funciona: se queda con la última toma.')+'</span>'
+          ?(function(){
+              var g=edSepararGuiones(e.guion);
+              return g.length>1
+                ? (g.length+' guiones: '+g.map(function(x){ return x.titulo.slice(0,26); })
+                    .slice(0,4).join(' · ')+(g.length>4?' …':''))
+                : ('1 guion · '+String(e.guion).trim().split(/\n\s*\n/).filter(Boolean).length+' bloques');
+            })()
+          :'Sin guion también funciona: se edita cada video entero.')+'</span>'
     +'</div></div>';
 }
 function _edEstado(){ return (S.ed=S.ed||{}); }
@@ -15208,17 +15267,25 @@ function _edPintar(){
 
 function edElegir(inp){
   var e=_edEstado();
-  e.archivo=(inp&&inp.files&&inp.files[0])||null;
+  var fs=Array.prototype.slice.call((inp&&inp.files)||[]);
+  // Elegir una carpeta trae de todo: solo los videos entran, y ordenados por
+  // nombre, que en un rodaje es el orden en que se filmo. Ese orden despues es
+  // lo que le permite al worker saber que bloque va antes que cual.
+  fs=fs.filter(function(f){ return /^video\//.test(f.type||'') || /\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(f.name); })
+       .sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
   // El File se guarda en memoria y no se lee del input mas adelante: al
   // repintar, el <input type=file> se crea de cero y pierde la seleccion.
-  e.fila=null; e.jobId=null; e.error='';
+  e.archivos=fs;
+  e.archivo=fs[0]||null;
+  e.fila=null; e.jobId=null; e.error=''; e.comprimido=null;
   _edPintar();
 }
 
 function edLimpiar(){
   var e=_edEstado();
   if(e.timer) clearTimeout(e.timer);
-  e.archivo=null; e.fila=null; e.jobId=null; e.error=''; e.timer=null;
+  e.archivo=null; e.archivos=null; e.fila=null; e.jobId=null; e.error='';
+  e.timer=null; e.comprimido=null;
   _edPintar();
 }
 
@@ -15378,14 +15445,11 @@ function _edPost(url, f, onProg){
 async function edSubir(modo){
   var e=_edEstado();
   if(!SB.token){ toast('Entra con tu cuenta para usar el editor.','amber'); return; }
-  if(!e.archivo){ toast('Elegi un video primero.','amber'); return; }
+  var fs=e.archivos||[];
+  if(!fs.length){ toast('Elegí al menos un video.','amber'); return; }
   var uid=sbUid();
   if(!uid){ toast('No pude leer tu usuario del token. Recarga y volve a entrar.','red'); return; }
-  var f=e.archivo;
-  if(f.size > ED_MAX_MB*1048576){
-    toast('El video pesa '+_matTam(f.size)+'. El maximo es '+ED_MAX_MB+' MB.','red');
-    return;
-  }
+
   e.subiendo=true; e.pct=0; e.error=''; _edPintar();
   var decir=function(t){
     var el=document.getElementById('ed-pct');
@@ -15393,32 +15457,45 @@ async function edSubir(modo){
     // la pantalla varias veces por segundo.
     if(el) el.textContent=t;
   };
+  var rutas=[];
   try{
-    // Comprimir solo cuando no entra. Recomprimir uno que ya entra es tiempo
-    // regalado —va a velocidad real— y calidad perdida al pedo.
-    var datos=f, nombre=f.name;
-    if(f.size > ED_LIMITE_MB*1048576){
-      if(!_edSoporte()) throw new Error('El video pesa '+_matTam(f.size)+' y el tope es '
-        +ED_LIMITE_MB+' MB, pero este navegador no puede comprimirlo. Probá desde Chrome.');
-      var r=await _edComprimir(f, function(p){
-        decir('Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video'); });
-      datos=r.datos; nombre=r.nombre;
-      e.comprimido={de:f.size, a:datos.size};
-      if(datos.size > ED_LIMITE_MB*1048576)
-        throw new Error('Aun comprimido quedó en '+_matTam(datos.size)+', y el tope es '
-          +ED_LIMITE_MB+' MB. Cortalo en partes más cortas.');
+    for(var i=0;i<fs.length;i++){
+      var f=fs[i];
+      var cual=(fs.length>1?('['+(i+1)+'/'+fs.length+'] '):'');
+      var datos=f, nombre=f.name;
+      // Comprimir solo cuando no entra. Recomprimir uno que ya entra es tiempo
+      // regalado —va a velocidad real— y calidad perdida al pedo.
+      if(f.size > ED_LIMITE_MB*1048576){
+        if(!_edSoporte()) throw new Error(nombre+' pesa '+_matTam(f.size)+' y el tope es '
+          +ED_LIMITE_MB+' MB, pero este navegador no puede comprimirlo. Probá desde Chrome.');
+        var r=await _edComprimir(f, function(p){
+          decir(cual+'Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video'); });
+        datos=r.datos; nombre=r.nombre;
+        e.comprimido={de:f.size, a:datos.size};
+        if(datos.size > ED_LIMITE_MB*1048576)
+          throw new Error(nombre+' quedó en '+_matTam(datos.size)+' y el tope es '
+            +ED_LIMITE_MB+' MB. Cortalo en partes más cortas.');
+      }
+      if(!datos.size) throw new Error(nombre+' quedó en 0 bytes, no lo subo');
+      var path=uid+'/'+Date.now()+'-'+('0'+i).slice(-2)+'-'+_matSlug(nombre);
+      await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
+        e.pct=p; decir(cual+'Subiendo… '+Math.round(p*100)+'%');
+      });
+      rutas.push(path);
     }
-    if(!datos.size) throw new Error('el archivo quedó en 0 bytes, no lo subo');
-    var path=uid+'/'+Date.now()+'-'+_matSlug(nombre);
-    await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
-      e.pct=p; decir('Subiendo… '+Math.round(p*100)+'%');
-    });
+
+    // Los guiones se separan acá y viajan ya partidos: el worker los usa tal
+    // cual. Mostrarlos antes de subir es lo que permite darse cuenta de que
+    // salieron mal separados sin haber esperado la subida entera.
+    var guiones=String(e.guion||'').trim()?edSepararGuiones(e.guion):[];
+
+    decir('Armando la cola…');
     var filas=await sbFetch('trabajos_video',{
       method:'POST',
       headers:{'Prefer':'return=representation'},
       body:JSON.stringify({
-        video_path:path, modo:modo,
-        opciones:_edOpciones()
+        video_path:rutas[0], videos:rutas, guiones:guiones,
+        modo:modo, opciones:_edOpciones()
       })
     });
     var fila=(filas&&filas[0])||null;
@@ -15827,13 +15904,17 @@ function _edCuerpo(){
   if(e.histError) h+='<div class="ed-panel" style="border-color:var(--amberx)">'
     +'<div style="font-size:12px;color:var(--amberx)">'+esc(e.histError)+'</div></div>';
 
-  h+='<input type="file" id="ed-file" accept="video/*" style="display:none" onchange="edElegir(this)">';
-  if(!f){
+  var fs=e.archivos||[];
+  h+='<input type="file" id="ed-file" accept="video/*" multiple style="display:none" onchange="edElegir(this)">'
+    +'<input type="file" id="ed-carpeta" webkitdirectory directory multiple style="display:none" onchange="edElegir(this)">';
+  if(!fs.length){
     h+='<div class="ed-drop" onclick="document.getElementById(\'ed-file\').click()">'
-      +'<b>Elegí el video</b>Se sube a tu carpeta privada. Si pesa más de '
-      +ED_LIMITE_MB+' MB se comprime solo antes de subir, así que el tamaño no '
-      +'importa: lo que importa es la duración, hasta '+_edMaxMin()+' minutos.</div>';
-  } else {
+      +'<b>Elegí los videos</b>Podés marcar varios a la vez. '
+      +'Los que pesen más de '+ED_LIMITE_MB+' MB se comprimen solos antes de subir.'
+      +'<div style="margin-top:8px"><button class="btn btn-sm" '
+        +'onclick="event.stopPropagation();document.getElementById(\'ed-carpeta\').click()" '
+        +'style="color:var(--text3)">O elegir una carpeta entera</button></div></div>';
+  } else if(fs.length===1){
     h+='<div class="ed-file"><div class="ic">🎬</div><div style="flex:1;min-width:0">'
       +'<div class="nm">'+esc(f.name)+'</div>'
       +'<div class="mt">'+_matTam(f.size)
@@ -15841,6 +15922,16 @@ function _edCuerpo(){
           ? (' · pesa más de '+ED_LIMITE_MB+' MB, se comprime antes de subir')
           : ' · sin subir todavía')
         +(e.comprimido?(' · quedó en '+_matTam(e.comprimido.a)):'')+'</div></div>'
+      +'<button class="btn btn-sm" onclick="edLimpiar()" style="color:var(--text3)">Cambiar</button>'
+      +'</div>';
+  } else {
+    var pesados=fs.filter(function(x){ return x.size>ED_LIMITE_MB*1048576; }).length;
+    var tot=fs.reduce(function(a,x){ return a+x.size; },0);
+    h+='<div class="ed-file"><div class="ic">🎬</div><div style="flex:1;min-width:0">'
+      +'<div class="nm">'+fs.length+' clips</div>'
+      +'<div class="mt">'+_matTam(tot)+' en total · '+esc(fs[0].name)+' … '
+        +esc(fs[fs.length-1].name)
+        +(pesados?(' · '+pesados+' se comprimen antes de subir'):'')+'</div></div>'
       +'<button class="btn btn-sm" onclick="edLimpiar()" style="color:var(--text3)">Cambiar</button>'
       +'</div>';
   }
