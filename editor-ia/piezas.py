@@ -167,6 +167,25 @@ _RX_CIERRE_SECCION = re.compile(r"^\s*el\s+cierre\s+com[uú]n\s*$", re.I | re.M)
 _RX_CIERRE_MARCA   = re.compile(r"^\s*\+\s*cierre\s+com[uú]n\b", re.I | re.M)
 
 
+# Lo que se dice en camara va entre comillas en el documento; el resto son
+# rotulos y duraciones —"01Hook5 s", "Fuera del test 67 s", "34 s"— que nadie
+# pronuncia. Compararlos tambien hunde los puntajes y, peor, borra las
+# diferencias: el clip del cierre calzaba 0.186 con el anuncio 06 y 0.157 con el
+# cierre, cuando dice el cierre ENTERO y del 06 solo tres beats de siete.
+_ENTRECOMILLADO = re.compile(r'"([^"]{15,})"')
+
+
+def _lo_que_se_dice(texto):
+    """
+    Solo las frases para decir, si el documento las marca con comillas.
+
+    Si no hay comillas —otro cliente, otro formato— se devuelve el texto tal
+    cual: es preferible comparar de mas que quedarse sin nada con que comparar.
+    """
+    dichas = _ENTRECOMILLADO.findall(texto or "")
+    return "\n\n".join(d.strip() for d in dichas) if len(dichas) >= 2 else (texto or "")
+
+
 def _separar_cierre(guiones):
     """
     Saca el cierre comun a un guion propio y anota quien lo lleva.
@@ -215,7 +234,7 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     if cierre:
         guiones = list(guiones) + [cierre]
     porId = {v.get("id"): v for v in (videos or [])}
-    gtextos = [g.get("texto") or "" for g in (guiones or [])]
+    gtextos = [_lo_que_se_dice(g.get("texto") or "") for g in (guiones or [])]
     coberturas = []           # [clip][guion] -> resultado de _cobertura
     tabla = []                # [clip][guion] -> score
 

@@ -248,10 +248,27 @@ def _por_raya(lineas, rx):
 _ROTULO = re.compile(r"^\s*[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]{2,14}\s*:?\s*$")
 
 
+# Una frase entre comillas es texto para decir en camara. Si aparece despues del
+# rotulo, ese rotulo abre una seccion con contenido y no cierra el guion.
+_DICHO = re.compile(r'"[^"]{20,}"')
+
+
 def _cortar_en_rotulo(texto):
+    """
+    Corta donde el documento deja de hablar de ESTE guion.
+
+    Un renglon con una sola palabra capitalizada suele ser el rotulo de otra
+    seccion ("Hooks", "Bodies"). Pero no siempre: en un documento real, despues
+    de "CIERRE" venian los tres beats del cierre comun con sus frases, y
+    cortar ahi los tiraba enteros —el cierre quedaba en 195 caracteres de puro
+    comentario y despues el sistema decia que no estaba grabado—. Asi que se
+    corta solo si lo que sigue no tiene frases para decir.
+    """
     lineas = texto.split("\n")
     for i, l in enumerate(lineas):
         if i > 0 and _ROTULO.match(l):
+            if _DICHO.search("\n".join(lineas[i + 1:i + 9])):
+                continue
             return "\n".join(lineas[:i]).strip()
     return texto
 
