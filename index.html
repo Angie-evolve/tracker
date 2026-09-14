@@ -1515,6 +1515,7 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
         <div class="torre-sub-item" data-k="actividad" onclick="irTorre('actividad')">Actividad</div>
         <div class="torre-sub-item" data-k="panel360" onclick="irTorre('panel360')">Panel 360</div>
         <div class="torre-sub-item" data-k="editor" onclick="irTorre('editor')">Editor con IA</div>
+        <div class="torre-sub-item" data-k="estaticos" onclick="irTorre('estaticos')">Estáticos con IA</div>
         <div class="torre-sub-item" data-k="rentabilidad" id="nav-rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
       </div>
       <div class="nav-head-row" style="margin-top:6px">
@@ -14665,7 +14666,7 @@ function showTickets(){
     +'<div style="font-size:17px;font-weight:600;color:var(--strong)">'
       +({mirador:'Mirador',tickets:'Tickets',actividad:'Actividad',
          panel360:'Panel 360',rentabilidad:'Rentabilidad',
-         editor:'Editor con IA'}[_torre]||'Mirador')+'</div>'
+         editor:'Editor con IA',estaticos:'Estaticos con IA'}[_torre]||'Mirador')+'</div>'
     +'<div style="display:flex;align-items:center;gap:12px">'
     +'<span style="font-size:11px;color:var(--text3)">'+_tkUltimaAct(tickets)+'</span>'
     +'<button class="btn btn-sm btn-primary" onclick="actualizarTodo()" title="Sincroniza llamadas de Fathom y escanea conversaciones de WhatsApp">Actualizar</button>'
@@ -14682,7 +14683,9 @@ function showTickets(){
        tickets:'Tareas delegadas por mail (con numero de ticket) o extraidas de llamadas. ',
        actividad:'Lo que se movio en los pipelines y en las tareas. ',
        editor:'Subis el video crudo y el servidor le saca los silencios y le pone los subtitulos. '
-         +'Nada del video sale hacia una API de terceros. '}[_torre]||'')
+         +'Nada del video sale hacia una API de terceros. ',
+       estaticos:'Pegas el documento de la oferta y sale una tanda de angulos distintos, '
+         +'cada uno con sus prompts de imagen. '}[_torre]||'')
     +((_torre==='tickets'&&sinDelegar)?sinDelegar+' tareas pendientes sin delegar en los clientes. ':'')
     +(_since?'<span style="color:var(--text2)">Contando desde el '+new Date(_since).toLocaleDateString('es-AR')+'</span> &middot; <a href="javascript:void(0)" onclick="showFullTicketsHistory()" style="color:var(--accent);text-decoration:none">ver historial completo</a>':'')
     +'</div>'
@@ -14695,6 +14698,7 @@ function showTickets(){
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
+      :(_torre==='estaticos'?estaticosHtml()
       :(_torre==='editor'?editorIaHtml()
       :(_torre==='panel360'?p360Html()
       :(_torre==='rentabilidad'?(verPlata()?rentabilidadHtml():_torreVacio('Rentabilidad','Esta seccion no esta habilitada para tu usuario.'))
@@ -14740,7 +14744,7 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>')))))))))
+        +'</div>'))))))))))
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
@@ -16666,6 +16670,252 @@ async function edRevisar(jobId){
 
 function editorIaHtml(){
   return '<div id="ed-root">'+_edCuerpo()+'</div>';
+}
+
+
+// ================= ESTATICOS CON IA =================
+// El mismo patron que el Editor con IA, pero la parte cara la decide una
+// persona. Leer el documento y pensar los angulos no cuesta nada; generar cada
+// imagen gasta creditos de Higgsfield, asi que entre una cosa y la otra hay un
+// freno: se muestran los angulos y recien se produce lo que se tilda.
+//
+// No hace falta worker ni tabla nueva: la app ya sabe hablarle a Claude —la
+// misma key que usa el resto— y a Higgsfield por la edge function, que es donde
+// vive esa clave. Lo unico que se agrega es la pantalla.
+var EST_FORMATOS={'1:1':'Cuadrado 1:1', '4:5':'Vertical 4:5', '9:16':'Historia 9:16'};
+
+function _estEstado(){ return (S.est=S.est||{formato:'4:5', avatar:true}); }
+
+function _estClaude(pedido, sistema){
+  var key='';
+  try{ key=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
+  if(!key) return Promise.reject(new Error('Falta la API key de Anthropic. Se carga una vez '
+    +'en la app y queda guardada en este navegador.'));
+  return fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':key,
+             'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:4000,
+      system:sistema, messages:[{role:'user', content:pedido}]})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.error) throw new Error(d.error.message||'la IA rechazo el pedido');
+    return (d.content||[]).filter(function(b){ return b.type==='text'; })
+      .map(function(b){ return b.text; }).join('');
+  });
+}
+
+function _estJson(txt, abre, cierra){
+  var a=txt.indexOf(abre), b=txt.lastIndexOf(cierra);
+  if(a<0||b<a) throw new Error('la IA no devolvio un JSON');
+  return JSON.parse(txt.slice(a,b+1));
+}
+
+// Las reglas salen del brief que me pasaste. Van como system prompt para que se
+// apliquen igual en los dos pasos y no haya que repetirlas en cada pedido.
+var EST_SISTEMA=
+ 'Sos director de arte de una agencia de performance. Armas estaticos para Meta Ads.\n\n'
++'REGLAS QUE NO SE NEGOCIAN:\n'
++'- Si aparece una persona, se la nombra SIEMPRE como "the tagged character". Nunca se '
++'describen rasgos fisicos: ni edad, ni pelo, ni piel, ni contextura, ni ropa de marca. '
++'El parecido lo pone la referencia, no el texto.\n'
++'- Nada de texto, logos ni carteles dentro de la imagen: el copy va encima despues.\n'
++'- Escena concreta y cotidiana del negocio del cliente, no metafora de stock.\n'
++'- El prompt final va en INGLES, un solo parrafo, describiendo sujeto, accion, encuadre, '
++'luz y ambiente. Sin listas ni parametros tecnicos.\n';
+
+function estFormato(v){ _estEstado().formato=v; _estPintar(); }
+function estAvatar(v){ _estEstado().avatar=!!v; _estPintar(); }
+function estTexto(v){ _estEstado().doc=v; }
+
+async function estArchivo(inp){
+  var f=inp&&inp.files&&inp.files[0];
+  if(inp) inp.value='';
+  if(!f) return;
+  var e=_estEstado();
+  var n=String(f.name||'').toLowerCase();
+  try{
+    if(/\.(pdf)$/.test(n)) e.doc=await _edLeerPdf(f);
+    else if(/\.(docx)$/.test(n)) e.doc=await _edLeerDocx(f);
+    else e.doc=_edDesmarcar(await f.text());
+    toast('Documento cargado: '+_matTam(f.size));
+  }catch(err){ toast('No pude leerlo: '+(err&&err.message||''),'red'); }
+  _estPintar();
+}
+
+async function estAngulos(){
+  var e=_estEstado();
+  var doc=String(e.doc||'').trim();
+  if(doc.length<80){ toast('Pegá o subí el documento primero.','amber'); return; }
+  e.cargando='Leyendo el documento y sacando ángulos…'; e.error=''; _estPintar();
+  try{
+    var txt=await _estClaude(
+      'Este es el material del cliente:\n\n"""'+doc.slice(0,18000)+'"""\n\n'
+      +'Proponeme 10 angulos distintos para estaticos. Un angulo es una tesis sobre que le '
+      +'duele al cliente y como se lo muestra, no una idea visual suelta. Que se repartan '
+      +'entre estos cuatro ejes, sin que dos digan lo mismo:\n'
+      +'  dolor concreto · costo de no actuar · prueba o resultado · objecion que frena\n\n'
+      +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
+      +'[{"titulo":"3 a 6 palabras","eje":"dolor|costo|prueba|objecion",'
+      +'"idea":"que dice y por que le importa a quien lo ve, dos lineas",'
+      +'"escena":"que se ve, en una linea"}]', EST_SISTEMA);
+    e.angulos=_estJson(txt,'[',']').slice(0,10);
+    e.elegidos={}; e.prompts=null;
+    e.cargando='';
+  }catch(err){ e.cargando=''; e.error=err.message; }
+  _estPintar();
+}
+
+function estTildar(i){
+  var e=_estEstado();
+  e.elegidos=e.elegidos||{};
+  if(e.elegidos[i]) delete e.elegidos[i]; else e.elegidos[i]=true;
+  _estPintar();
+}
+
+async function estPrompts(){
+  var e=_estEstado();
+  var elegidos=(e.angulos||[]).filter(function(a,i){ return (e.elegidos||{})[i]; });
+  if(!elegidos.length){ toast('Tildá al menos un ángulo.','amber'); return; }
+  e.cargando='Armando los prompts…'; e.error=''; _estPintar();
+  try{
+    var txt=await _estClaude(
+      'Para cada uno de estos angulos, escribi 4 variantes de prompt que cambien SOLO el '
+      +'punto de vista, no la idea: frente, tres cuartos, contrapicado, y un plano cerrado '
+      +'de color o detalle.\n\n'
+      +'Formato de salida: '+e.formato+'. '
+      +(e.avatar ? 'Aparece "the tagged character" en la escena.'
+                 : 'NO aparece ninguna persona: solo el entorno, el producto o el detalle.')
+      +'\n\nAngulos:\n'+JSON.stringify(elegidos)+'\n\n'
+      +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
+      +'[{"angulo":"el titulo tal cual","variante":"frente|tres cuartos|contrapicado|detalle",'
+      +'"prompt":"el prompt en ingles, un parrafo"}]', EST_SISTEMA);
+    e.prompts=_estJson(txt,'[',']');
+    e.cargando='';
+  }catch(err){ e.cargando=''; e.error=err.message; }
+  _estPintar();
+}
+
+function estCopiar(i){
+  var p=((_estEstado().prompts||[])[i]||{}).prompt||'';
+  if(!p) return;
+  try{ navigator.clipboard.writeText(p); toast('Prompt copiado'); }
+  catch(e){ toast('No pude copiar','red'); }
+}
+
+function _estPintar(){
+  var h=document.getElementById('est-root');
+  if(h) h.innerHTML=_estCuerpo();
+}
+
+
+function _estCuerpo(){
+  var e=_estEstado();
+  var h='';
+  if(e.error) h+='<div class="ed-panel" style="border-color:var(--redx);margin-bottom:16px">'
+    +'<div class="s" style="color:var(--redx)">'+esc(e.error)+'</div></div>';
+
+  // --- el documento ---
+  h+='<div style="margin-bottom:16px">'
+    +'<label style="display:block;font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.05em;margin-bottom:8px">El documento</label>'
+    +'<textarea id="est-doc" rows="5" oninput="estTexto(this.value)" '
+      +'style="width:100%;box-sizing:border-box;font-family:var(--font);font-size:12.5px" '
+      +'placeholder="Pegá el dataset de oferta, el guion ganador o la estrategia. También lee '
+      +'PDF y Word con el botón de abajo.">'+esc(e.doc||'')+'</textarea>'
+    +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">'
+      +'<input type="file" id="est-file" accept=".txt,.md,.pdf,.docx,text/*" style="display:none" '
+        +'onchange="estArchivo(this)">'
+      +'<button class="btn btn-sm" onclick="document.getElementById(\'est-file\').click()" '
+        +'style="color:var(--text3)">Subir un archivo</button>'
+      +'<span style="font-size:11px;color:var(--text3)">'
+        +(String(e.doc||'').trim().length>80
+          ? (String(e.doc).trim().length.toLocaleString('es-AR')+' caracteres cargados')
+          : 'Cuanto más concreto el material, menos genéricos salen los ángulos.')
+      +'</span>'
+    +'</div></div>';
+
+  // --- los dos controles ---
+  h+='<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:18px">'
+    +'<div><label style="display:block;font-size:10.5px;color:var(--text3);'
+      +'text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Formato</label>'
+      +'<div style="display:flex;gap:6px">'
+      +Object.keys(EST_FORMATOS).map(function(k){
+          var on=(e.formato===k);
+          return '<button class="btn btn-sm" onclick="estFormato(\''+k+'\')" style="'
+            +(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')+'">'
+            +esc(EST_FORMATOS[k])+'</button>';
+        }).join('')+'</div></div>'
+    +'<div><label style="display:block;font-size:10.5px;color:var(--text3);'
+      +'text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Persona en la imagen</label>'
+      +'<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);'
+        +'cursor:pointer"><input type="checkbox"'+(e.avatar?' checked':'')
+        +' onchange="estAvatar(this.checked)">Aparece el avatar</label></div>'
+    +'</div>';
+
+  h+='<div class="ed-acciones" style="margin-bottom:8px">'
+    +'<button class="btn btn-primary"'+(e.cargando?' disabled style="opacity:.45"':'')
+      +' onclick="estAngulos()">'+(e.angulos?'Volver a pensar los ángulos':'Pensar los ángulos')
+      +'<span class="d">no gasta créditos de Higgsfield</span></button>'
+    +(e.cargando?('<span style="align-self:center;font-size:11.5px;color:var(--text3)">'
+      +esc(e.cargando)+'</span>'):'')
+    +'</div>';
+
+  // --- los angulos, para elegir ---
+  var ang=e.angulos||[];
+  if(ang.length){
+    var n=Object.keys(e.elegidos||{}).length;
+    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+ang.length+' ángulos '
+      +'<span class="ed-badge">'+n+' elegido'+(n===1?'':'s')+'</span></h3>'
+      +'<div class="s">Tildá los que quieras producir. Recién ahí se gastan créditos: '
+      +'cada ángulo elegido da 4 variantes.</div>'
+      +ang.map(function(a,i){
+        var on=(e.elegidos||{})[i];
+        return '<div onclick="estTildar('+i+')" style="display:flex;gap:12px;padding:10px 0;'
+          +'border-top:1px solid var(--border);cursor:pointer">'
+          +'<input type="checkbox"'+(on?' checked':'')+' style="margin-top:3px;flex:none" '
+            +'onclick="event.stopPropagation();estTildar('+i+')">'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:12.5px;color:'+(on?'var(--accent)':'var(--text)')+'">'
+              +esc(a.titulo||('Ángulo '+(i+1)))
+              +' <span style="font-size:10.5px;color:var(--text3)">'+esc(a.eje||'')+'</span></div>'
+            +'<div style="font-size:11.5px;color:var(--text2);margin-top:3px;line-height:1.5">'
+              +esc(a.idea||'')+'</div>'
+            +(a.escena?('<div style="font-size:11px;color:var(--text3);margin-top:3px">'
+              +esc(a.escena)+'</div>'):'')
+          +'</div></div>';
+      }).join('')
+      +'<div class="ed-acciones" style="margin-top:14px">'
+        +'<button class="btn btn-primary"'+((!n||e.cargando)?' disabled style="opacity:.45"':'')
+          +' onclick="estPrompts()">Armar los prompts'
+          +'<span class="d">'+(n?(n*4+' variantes'):'elegí al menos uno')+'</span></button>'
+      +'</div></div>';
+  }
+
+  // --- los prompts listos ---
+  var pr=e.prompts||[];
+  if(pr.length){
+    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+pr.length+' prompts</h3>'
+      +'<div class="s">Copiá cada uno y generalo en higgsfield.ai. La generación automática '
+      +'queda para cuando confirmemos que tu plan de Higgsfield habilita la API.</div>'
+      +pr.map(function(x,i){
+        return '<div style="padding:10px 0;border-top:1px solid var(--border)">'
+          +'<div style="display:flex;justify-content:space-between;gap:10px;align-items:center">'
+            +'<div style="font-size:12px;color:var(--text2)">'+esc(x.angulo||'')
+              +' <span style="color:var(--text3)">· '+esc(x.variante||'')+'</span></div>'
+            +'<button class="btn btn-sm" onclick="estCopiar('+i+')" '
+              +'style="flex:none;color:var(--text3)">Copiar</button>'
+          +'</div>'
+          +'<div style="font-size:11.5px;color:var(--text3);margin-top:5px;line-height:1.55">'
+            +esc(x.prompt||'')+'</div>'
+        +'</div>';
+      }).join('')
+      +'</div>';
+  }
+  return h;
+}
+
+function estaticosHtml(){
+  return '<div id="est-root">'+_estCuerpo()+'</div>';
 }
 
 // ================= TRACKER DE LANDING =================
