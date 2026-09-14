@@ -358,7 +358,7 @@ def _seleccion(planos):
                     for p in planos)
 
 
-def render_planos(video, planos, salida):
+def render_planos(video, planos, salida, kbps=None):
     """
     Deja solo los tramos elegidos, cada uno con su encuadre.
 
@@ -371,7 +371,14 @@ def render_planos(video, planos, salida):
     El zoom se hace recortando el centro y volviendo a escalar al tamano
     original. Al reves —escalar primero y recortar despues— se pierde nitidez al
     pedo, porque se agranda todo el cuadro para tirar los bordes.
+
+    kbps: techo de bitrate. La calidad la sigue mandando el CRF; esto solo evita
+    que el archivo se pase del tope del bucket. Sin techo, dos de cuatro piezas
+    de setenta segundos quedaban arriba de 50 MB y se entregaban SIN el archivo
+    para CapCut, en silencio.
     """
+    tope = (["-maxrate", "%dk" % kbps, "-bufsize", "%dk" % (kbps * 2)]
+            if kbps else [])
     if not planos:
         raise RuntimeError("no quedo ningun tramo para renderizar")
 
@@ -383,8 +390,9 @@ def render_planos(video, planos, salida):
             ["ffmpeg", "-y", "-i", video,
              "-vf", "select='%s',setpts=N/FRAME_RATE/TB" % sel,
              "-af", "aselect='%s',asetpts=N/SR/TB" % sel,
-             "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET,
-             "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+             "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET]
+            + tope +
+            ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
              salida, "-loglevel", "error"],
             check=True)
         return salida
@@ -408,8 +416,9 @@ def render_planos(video, planos, salida):
     subprocess.run(
         ["ffmpeg", "-y", "-i", video, "-filter_complex", ";".join(partes),
          "-map", "[v]", "-map", "[a]",
-         "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET,
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+         "-c:v", "libx264", "-crf", str(CRF_ENTREGA), "-preset", PRESET]
+        + tope +
+        ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2",
          salida, "-loglevel", "error"],
         check=True)
     return salida
@@ -828,7 +837,10 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
 
     if modo == "render":
         cortado = os.path.join(tmp, nombre + "_cortado.mp4")
-        render_planos(archivo, planos, cortado)
+        # El mismo techo que el final: este archivo se entrega igual y tiene
+        # que entrar en el bucket. Antes salia sin techo y la pieza larga se
+        # pasaba de 50 MB, asi que se entregaba sin el archivo para CapCut.
+        render_planos(archivo, planos, cortado, kbps=kbps_para(final_s))
         pal2 = D.remapear(palabras, clips)
         srt = escribir_srt(pal2, sub, os.path.join(tmp, nombre + ".srt"))
         # El karaoke necesita el tamano del video para calcular todo por
@@ -857,11 +869,13 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
         # carteles se estilan a mano. Quemados no se pueden sacar.
         analisis["capcut"] = None
         try:
-            if os.path.getsize(cortado) <= LIMITE_MB * 1048576:
+            mb = os.path.getsize(cortado) / 1048576.0
+            if mb <= LIMITE_MB:
                 analisis["capcut"] = subir(cortado, f"{carpeta}/{nombre}_capcut.mp4",
                                            "video/mp4")
             else:
-                analisis["capcut_no"] = "el corte sin subtitulos no entra en %d MB" % LIMITE_MB
+                analisis["capcut_no"] = ("el corte sin subtítulos pesa %.0f MB y el tope "
+                                         "es %d" % (mb, LIMITE_MB))
         except Exception as e:
             # Que falle el extra no puede tirar abajo la pieza, que ya esta.
             analisis["capcut_no"] = str(e)[:160]
@@ -1045,7 +1059,8 @@ def procesar(fila, tmp):
             continue
         salida.append(dict(base, duracion=an["duracion_final"],
                            ahorro_pct=an["ahorro_pct"], path=res, srt_path=srt,
-                           capcut_path=an.get("capcut")))
+                           capcut_path=an.get("capcut"),
+                           capcut_no=an.get("capcut_no")))
         marcar(fila["id"], piezas=salida)
 
     marcar(fila["id"], estado="listo", listo_at=_ahora(), piezas=salida,
