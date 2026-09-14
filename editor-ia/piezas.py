@@ -166,6 +166,17 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     # porque los tres terminan parecido.
     claves = [G._claves(v.get("palabras") or []) for v in (videos or [])]
 
+    # Hasta donde ya se uso cada video, en palabras. Sin esto, dos bloques
+    # distintos podian reclamar el MISMO pedazo de clip y ese pedazo salia dos
+    # veces en la pieza final. Medido sobre un caso real: 86 segundos emitidos
+    # de un clip que solo tiene 36 de material distinto, casi la mitad del
+    # video repetida.
+    #
+    # Avanzar el corte tambien ordena adentro del clip, que es como se habla:
+    # el bloque 2 se dice despues del bloque 1, no antes. Y vale entre guiones y
+    # no solo adentro de uno, para que dos guiones no se lleven el mismo cierre.
+    usado = {}
+
     porBloque = []
     for gi, g in enumerate(guiones or []):
         cursor = 0
@@ -174,7 +185,7 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
                 continue
             mejor, mejorGlobal = None, None
             for k, v in enumerate(videos or []):
-                u = G._ubicar(claves[k], b["palabras"])
+                u = G._ubicar(claves[k], b["palabras"], usado.get(k, 0))
                 if not u:
                     continue
                 cand = dict(u, video=v.get("id"), k=k)
@@ -193,6 +204,7 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
             if not elegido:
                 continue
             cursor = elegido["k"] + 1
+            usado[elegido["k"]] = elegido["i"] + elegido["size"]
             porBloque.append({"guion": gi, "orden": bi, "video": elegido["video"],
                               "i": elegido["i"], "size": elegido["size"],
                               "score": round(elegido["score"], 3),
