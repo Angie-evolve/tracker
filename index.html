@@ -14980,14 +14980,22 @@ function edFormatoGuardar(){
 // editor-ia/guion.py separar(): si se toca uno hay que tocar el otro. Esta
 // duplicado a proposito para poder mostrar acá lo que se detectó ANTES de subir
 // 400 MB, en vez de enterarse cuando el worker ya trabajó.
+// ESPEJO de _SEPARADORES en editor-ia/guion.py: si cambia uno hay que cambiar
+// el otro, porque el navegador separa y el worker tiene que leer lo mismo.
+// La indentacion va con \s* y no acotada: un documento exportado de Google Docs
+// viene con seis espacios adelante y con el tope de tres no matcheaba ninguno.
 var ED_SEPS=[
-  {rx:/^\s{0,3}#{1,4}\s+(\S.*?)\s*$/i, clase:'titulo'},
-  {rx:/^\s{0,3}((?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*|\d{1,2}\s+\S+(?:\s+\S+){2,}.*)\s*$/i,
+  {rx:/^\s*#{1,4}\s+(\S.*?)\s*$/i, clase:'titulo'},
+  // Un indice: el numero SOLO en su linea y el titulo en la siguiente.
+  // Va antes que los demas porque una serie de numeros consecutivos es la
+  // senal mas fuerte que hay: no se da por casualidad.
+  {rx:/^\s*(\d{1,2})\s*$/, clase:'numero'},
+  {rx:/^\s*((?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*|\d{1,2}\s+\S+(?:\s+\S+){2,}.*)\s*$/i,
    clase:'contenido'},
-  {rx:/^\s{0,3}((?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$/i,
+  {rx:/^\s*((?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$/i,
    clase:'titulo'},
-  {rx:/^\s{0,3}(\d{1,2}\s*[.)]\s+\S.{0,70})\s*$/i, clase:'titulo'},
-  {rx:/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/, clase:'raya'}
+  {rx:/^\s*(\d{1,2}\s*[.)]\s+\S.{0,70})\s*$/i, clase:'titulo'},
+  {rx:/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/, clase:'raya'}
 ];
 var ED_ROTULO=/^\s*[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]{2,14}\s*:?\s*$/;
 
@@ -15002,7 +15010,27 @@ function edSepararGuiones(texto){
   var lineas=txt.split('\n');
   for(var si=0; si<ED_SEPS.length; si++){
     var sep=ED_SEPS[si], partes=[];
-    if(sep.clase==='raya'){
+    if(sep.clase==='numero'){
+      // Un documento tiene numeros sueltos que no son separadores —un "6"
+      // arriba de "anuncios en total"—, asi que no alcanza con encontrarlos: lo
+      // que distingue a un indice de verdad es que vengan uno atras del otro.
+      // Se usa la serie consecutiva mas larga y se descarta el resto.
+      var cand=[];
+      lineas.forEach(function(l,i){ var m=sep.rx.exec(l); if(m) cand.push([i,parseInt(m[1],10)]); });
+      var mejor=[], act=cand.length?[cand[0]]:[];
+      for(var q=1;q<cand.length;q++){
+        if(cand[q][1]===cand[q-1][1]+1) act.push(cand[q]);
+        else { if(act.length>mejor.length) mejor=act; act=[cand[q]]; }
+      }
+      if(act.length>mejor.length) mejor=act;
+      if(mejor.length>=2) mejor.forEach(function(c,k){
+        var fin=(k+1<mejor.length)?mejor[k+1][0]:lineas.length;
+        var trozo=lineas.slice(c[0]+1, fin);
+        var vivos=trozo.filter(function(x){ return x.trim(); });
+        var cuerpo=trozo.join('\n').trim();
+        if(cuerpo) partes.push({titulo:vivos.length?vivos[0].trim():'', texto:cuerpo});
+      });
+    } else if(sep.clase==='raya'){
       var grupos=[[]], hubo=false;
       lineas.forEach(function(l){
         if(sep.rx.test(l)){ hubo=true; grupos.push([]); } else grupos[grupos.length-1].push(l);

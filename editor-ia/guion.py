@@ -132,23 +132,66 @@ def elegir_peor(palabras, i1, i2, largo, texto_guion):
 # separador porque ya separa bloques adentro de un guion.
 _SEPARADORES = [
     # ## Titulo   /   # Titulo
-    (r"^\s{0,3}#{1,4}\s+(?P<t>\S.*?)\s*$", "titulo"),
+    (r"^\s*#{1,4}\s+(?P<t>\S.*?)\s*$", "titulo"),
+    # Un indice: el numero SOLO en su linea y el titulo en la siguiente.
+    #     01
+    #     Hora pico
+    # Va antes que los demas porque una serie de numeros consecutivos es la
+    # senal mas fuerte que hay: no se da por casualidad.
+    (r"^\s*(?P<t>\d{1,2})\s*$", "numero"),
     # Numerados, en las dos formas que aparecen en un mismo documento:
     #   Body 1 - El escaneo   /   Hook 2   /   Cierre 3
     #   01 Si tenes una PyME que factura bien...
     # Van juntos a proposito: un documento real usa las dos, y probandolas por
     # separado gana la primera y la otra mitad de los guiones se pierde.
     # La linea entra al cuerpo porque el texto ya empezo ahi.
-    (r"^\s{0,3}(?P<t>(?:(?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*"
+    (r"^\s*(?P<t>(?:(?:body|hook|gancho|cuerpo|cierre)\s*\d+\b.*"
      r"|\d{1,2}\s+\S+(?:\s+\S+){2,}.*))\s*$", "contenido"),
     # GUION 3 - algo   /   Guion 3:   /   Pieza 2   /   Reel 4
-    (r"^\s{0,3}(?P<t>(?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*"
+    (r"^\s*(?P<t>(?:gui[oó]n|pieza|video|reel|anuncio|spot)\s*"
      r"(?:n[°º]?\s*)?\d+\s*[-–—:.)]?.*?)\s*$", "titulo"),
     # 1. Titulo corto   /   2) Titulo corto
-    (r"^\s{0,3}(?P<t>\d{1,2}\s*[.)]\s+\S.{0,70})\s*$", "titulo"),
+    (r"^\s*(?P<t>\d{1,2}\s*[.)]\s+\S.{0,70})\s*$", "titulo"),
     # --- o ***  (raya sola: el titulo es el primer renglon de lo que sigue)
-    (r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$", "raya"),
+    (r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "raya"),
 ]
+
+
+def _por_numero_solo(lineas, rx):
+    """
+    Un indice donde el numero esta solo en su linea y el titulo en la siguiente.
+
+    Un documento tiene numeros sueltos que no son separadores —un "6" arriba de
+    "anuncios en total"—, asi que no alcanza con encontrarlos: lo que distingue
+    a un indice de verdad es que los numeros vengan uno atras del otro. Se usa
+    la serie consecutiva mas larga y se descarta el resto.
+    """
+    cand = [(i, int(m.group("t")))
+            for i, l in enumerate(lineas) for m in [rx.match(l)] if m]
+    if len(cand) < 2:
+        return []
+    mejor, actual = [], [cand[0]]
+    for previo, act in zip(cand, cand[1:]):
+        if act[1] == previo[1] + 1:
+            actual.append(act)
+        else:
+            if len(actual) > len(mejor):
+                mejor = actual
+            actual = [act]
+    if len(actual) > len(mejor):
+        mejor = actual
+    if len(mejor) < 2:
+        return []
+    partes = []
+    for k, (i, _) in enumerate(mejor):
+        fin = mejor[k + 1][0] if k + 1 < len(mejor) else len(lineas)
+        cuerpo_lineas = lineas[i + 1:fin]
+        vivos = [c for c in cuerpo_lineas if c.strip()]
+        cuerpo = "\n".join(cuerpo_lineas).strip()
+        if cuerpo:
+            partes.append({"titulo": vivos[0].strip() if vivos else "",
+                           "texto": cuerpo})
+    return partes
 
 
 def _por_encabezado(lineas, rx, incluir=False):
@@ -234,6 +277,8 @@ def separar(texto):
         rx = re.compile(patron, re.I)
         if clase == "raya":
             partes = _por_raya(lineas, rx)
+        elif clase == "numero":
+            partes = _por_numero_solo(lineas, rx)
         else:
             partes = _por_encabezado(lineas, rx, incluir=(clase == "contenido"))
         # Lo que hubiera antes del primer encabezado es titulo del documento, no
