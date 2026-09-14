@@ -12,6 +12,7 @@ mejor calza. Lo que sobra se avisa en vez de desaparecer: un guion que no se
 grabo y un tramo de video que no corresponde a ningun guion son las dos cosas
 que hay que saber antes de entregar.
 """
+import difflib
 import re
 
 import guion as G
@@ -156,7 +157,30 @@ PIEZA_MINIMA_S = 3.0
 # el segundo es clara: sobre material real el ganador saca el doble. Cuando no
 # saca esa diferencia, el clip se reporta como dudoso en vez de adivinar.
 VENTAJA_MINIMA = 1.3
-COBERTURA_PISO = 0.04
+COBERTURA_PISO = 0.35
+
+
+def _pertenencia(palabras, texto):
+    """
+    Que parte de lo que se dice en el clip esta escrito en este guion.
+
+    Se mide asi y no al reves —cuanto del guion aparece en el clip— porque la
+    pregunta es de que guion es ESTE clip, y eso no depende de cuanto falte por
+    grabar. Con la medida invertida, un cliente que graba un bloque por clip
+    daba cero en todo: cada clip cubre un quinto de su guion, y encima si el
+    documento viene con saltos de linea simples el guion entero es un solo
+    bloque y no llega a ningun umbral.
+
+    Sirve igual para las dos formas de filmar que aparecen: un clip que dice el
+    anuncio entero da alto contra el suyo, y uno que dice un solo bloque
+    tambien, porque lo que se mide es el clip.
+    """
+    a = G._claves(palabras or [])
+    b = [G._n(x) for x in str(texto or "").split() if G._n(x)]
+    if not a or not b:
+        return 0.0
+    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+    return round(sum(bl.size for bl in sm.get_matching_blocks()) / float(len(a)), 3)
 
 # El cierre comun: tres beats iguales en todos los anuncios de concepto, que se
 # graban UNA vez y se pegan atras de cada uno. En el documento vienen como una
@@ -282,9 +306,10 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
 
     for v in (videos or []):
         pal = v.get("palabras") or []
-        fila_c = [_cobertura(pal, txt) for txt in gtextos]
-        coberturas.append(fila_c)
-        tabla.append([(c["score"] if c else 0.0) for c in fila_c])
+        # _cobertura sigue usandose para contar que bloques del guion se
+        # dijeron; para decidir de quien es el clip manda _pertenencia.
+        coberturas.append([_cobertura(pal, txt) for txt in gtextos])
+        tabla.append([_pertenencia(pal, txt) for txt in gtextos])
 
     asignado, dudosos = {}, []
     for k, fila in enumerate(tabla):
@@ -296,10 +321,22 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
         if fila[mejor] < COBERTURA_PISO:
             continue
         if segundo > 0 and fila[mejor] < segundo * VENTAJA_MINIMA:
-            dudosos.append({"video": (videos[k] or {}).get("id"),
-                            "entre": [(guiones[i].get("titulo") or "") for i in orden[:2]],
-                            "score": round(fila[mejor], 3)})
-            continue
+            # Empate: los dos guiones contienen lo que dice el clip. Pasa cuando
+            # uno lleva al otro adentro —el anuncio que trae el cierre escrito
+            # contra el cierre suelto— y ahi lo que desempata es al reves:
+            # cuanto de CADA guion cubre el clip. El corto y cubierto entero le
+            # gana al largo del que solo se dijo un pedazo.
+            a, b = orden[0], orden[1]
+            ca = (coberturas[k][a] or {}).get("score", 0) or 0
+            cb = (coberturas[k][b] or {}).get("score", 0) or 0
+            if max(ca, cb) > 0 and abs(ca - cb) > 0.001 and \
+               max(ca, cb) >= min(ca, cb) * VENTAJA_MINIMA:
+                mejor = a if ca > cb else b
+            else:
+                dudosos.append({"video": (videos[k] or {}).get("id"),
+                                "entre": [(guiones[i].get("titulo") or "") for i in orden[:2]],
+                                "score": round(fila[mejor], 3)})
+                continue
         asignado.setdefault(mejor, []).append(k)
 
     # Los clips del cierre, si se grabo. Se pegan atras de cada anuncio que lo
