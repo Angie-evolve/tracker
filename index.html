@@ -15593,11 +15593,24 @@ function _edComprimir(f, onProg){
         if(fps<12) return rej(new Error('la compresión salió a '+fps.toFixed(1)+' cuadros por '
           +'segundo porque el navegador frenó el dibujado. Dejá esta pestaña abierta y adelante '
           +'mientras comprime, y volvé a intentar.'));
+        // Un solo tirón sin dibujar ya arruina el clip aunque el promedio cierre:
+        // esos segundos quedan con la imagen congelada y el audio siguiendo.
+        if(huecoMax>500) return rej(new Error('la imagen se congeló '
+          +(huecoMax/1000).toFixed(1)+' segundos mientras comprimía. Dejá esta pestaña '
+          +'adelante y sin minimizar, y volvé a intentar.'));
+        // Y si la copia quedó mas corta que el original, se perdio contenido.
+        if(v.duration && dur && (dur-v.currentTime)>Math.max(0.6, dur*0.03))
+          return rej(new Error('la compresión cortó en el segundo '+v.currentTime.toFixed(1)
+            +' de '+dur.toFixed(1)+': se perdió el final. Volvé a intentar con esta pestaña '
+            +'adelante.'));
         res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
       };
       var pintar=function(){
         if(v.ended) return;
         ctx.drawImage(v,0,0,ancho,alto);
+        var ahora=(window.performance&&performance.now)?performance.now():Date.now();
+        if(ultimoDibujo) huecoMax=Math.max(huecoMax, ahora-ultimoDibujo);
+        ultimoDibujo=ahora;
         dibujados++;
         onProg(Math.min(v.currentTime/dur,1));
         if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(pintar);
@@ -15613,6 +15626,10 @@ function _edComprimir(f, onProg){
       // pestana pierde el foco: ahi sale una copia de un cuadro por segundo,
       // que no sirve para nada y no se nota hasta ver el resultado.
       var dibujados=0;
+      // El hueco mas largo entre dos dibujos. El promedio no alcanza: un clip
+      // real se trabo diez segundos en el medio y termino con el 44% de los
+      // cuadros congelados, pero el promedio del resto daba bien y pasaba.
+      var huecoMax=0, ultimoDibujo=0;
       var arranco=false;
       var primerCuadro=function(){
         if(arranco) return;
@@ -16223,6 +16240,17 @@ function _edTandaHtml(f){
         +'style="color:var(--text3)">Subir mi versión corregida'
         +'<span class="d">para que aprenda de cómo lo terminaste vos</span></button>'
       +'</div>';
+  }
+  var trabados=(an.trabados||[]);
+  if(trabados.length){
+    h+='<div class="s" style="color:var(--redx);margin-top:12px">'
+      +'Estos clips llegaron con la imagen congelada, así que la pieza que salga de ellos '
+      +'va a tener el video trabado. Volvé a subirlos dejando la pestaña adelante mientras '
+      +'comprime:</div>'
+      +trabados.map(function(x){
+        return '<div class="s" style="color:var(--text3)">'
+          +esc(String(x.video).split('/').pop())+' · '+x.congelado_s+'s congelados</div>';
+      }).join('');
   }
   if(fallidas.length && f.estado==='listo'){
     h+='<div style="margin-top:12px;font-size:11px;color:var(--redx)">'

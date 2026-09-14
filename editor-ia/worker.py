@@ -666,6 +666,33 @@ def umbral_silencio(archivo, configurado, min_silencio=0.5):
     return elegido
 
 
+# Un tiron de imagen mas largo que esto ya se ve. Pasa cuando el navegador
+# frena el dibujado mientras comprime: la imagen se traba y el audio sigue.
+# Medido sobre un clip real que salio asi: un congelamiento de 13.2 segundos
+# adentro de un clip de 31, y ademas 5.7 segundos de contenido perdidos.
+CONGELADO_S = 1.0
+
+
+def congelado(archivo):
+    """
+    Cuanto tiempo esta la imagen quieta en este clip, en segundos.
+
+    Se usa freezedetect, que es el filtro de ffmpeg hecho para esto. mpdecimate
+    no sirve aca: cuenta cuadros repetidos consecutivos y sobre este material
+    devolvia 0% incluso en un clip con trece segundos congelados.
+    """
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-v", "info", "-i", archivo, "-an",
+             "-vf", "freezedetect=n=-60dB:d=%.2f" % CONGELADO_S, "-f", "null", "-"],
+            capture_output=True, text=True)
+    except Exception:
+        return 0.0
+    duraciones = [float(x) for x in
+                  re.findall(r"freeze_duration:\s*([0-9.]+)", r.stderr or "")]
+    return round(sum(duraciones), 1)
+
+
 def _palabras_pegadas(tramos):
     """Las palabras de los tramos, corridas como quedan una atras de la otra."""
     salida, offset = [], 0.0
@@ -911,6 +938,16 @@ def procesar(fila, tmp):
                         "bloques": 1, "bloques_total": 1}
                        for v in locales if v.get("duracion")]
         sin_grabar, descartados = [], []
+    # Un clip que viene congelado no tiene arreglo aguas abajo: hay que volver a
+    # subirlo. Se avisa con nombre y segundos para saber cual, en vez de
+    # entregar una pieza con la imagen trabada.
+    trabados = []
+    for v in locales:
+        seg = congelado(v["archivo"])
+        if seg > CONGELADO_S:
+            trabados.append({"video": v["id"], "congelado_s": seg})
+            print("   OJO: %s tiene %.1fs de imagen congelada" % (v["id"], seg), flush=True)
+
     sueltos = Piezas.huerfanos(locales, encontradas)
     # Lo que entendio Whisper de cada clip, con los tiempos. Sin esto, cuando
     # una pieza sale mal no hay forma de saber si el guion no calzo porque el
@@ -926,7 +963,7 @@ def procesar(fila, tmp):
                      "guiones": len(guiones),
                      "piezas": len(encontradas),
                      "sin_grabar": sin_grabar, "sueltos": sueltos,
-                     "descartados": descartados})
+                     "descartados": descartados, "trabados": trabados})
 
     porRuta = {v["id"]: v for v in locales}
     salida = []
