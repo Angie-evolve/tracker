@@ -51787,6 +51787,152 @@ function vtSyncSiHaceFalta(c){
   setTimeout(function(){ if(typeof syncGhl==='function') syncGhl(c.id, true); }, 1500);
 }
 
+
+// ================= Embudos de conversion del Top of Funnel =================
+// Los dos embudos que se siguen: uno arranca en la agenda y el otro en el
+// registro. Cada paso es un evento estandar de Meta; el nombre en español es
+// como lo muestra el Administrador de anuncios, para poder cotejar a ojo.
+var TOF_EMBUDOS={
+  agendas:{nombre:'Agendas', pasos:[
+    {k:'schedule', l:'Agenda',   ev:'Schedule',             es:'Programar'},
+    {k:'apply',    l:'Califica', ev:'SubmitApplication',    es:'Enviar solicitud'},
+    {k:'reg',      l:'Asistió',  ev:'CompleteRegistration', es:'Completar Registro'},
+    {k:'compra',   l:'Compró',   ev:'Purchase',             es:'Comprar'}
+  ]},
+  registros:{nombre:'Registros', pasos:[
+    {k:'lead',     l:'Se registró', ev:'Lead',                 es:'Cliente potencial'},
+    {k:'apply',    l:'Califica',    ev:'SubmitApplication',    es:'Enviar solicitud'},
+    {k:'schedule', l:'Agendó',      ev:'Schedule',             es:'Programar'},
+    {k:'reg',      l:'Asistió',     ev:'CompleteRegistration', es:'Completar Registro'},
+    {k:'compra',   l:'Compró',      ev:'Purchase',             es:'Comprar'}
+  ]}
+};
+
+function _tofCfg(c){
+  // Sin configurar no se inventa nada: se pregunta. Que embudo sigue cada
+  // cliente no se puede deducir de los numeros —los dos usan los mismos
+  // eventos, en distinto orden— y elegir por default el equivocado muestra
+  // una caida en un paso que ese cliente ni siquiera tiene.
+  return (c&&c.embudoTof)||{tipo:'', campana:''};
+}
+
+function tofElegir(tipo){
+  var c=S._hojaCliente; if(!c) return;
+  c.embudoTof=Object.assign({campana:''}, _tofCfg(c), {tipo:tipo});
+  save(); dibujarMmTop(c);
+}
+function tofCampana(v){
+  var c=S._hojaCliente; if(!c) return;
+  c.embudoTof=Object.assign({tipo:''}, _tofCfg(c), {campana:String(v||'')});
+  save(); dibujarMmTop(c);
+}
+function tofReconfigurar(){
+  var c=S._hojaCliente; if(!c) return;
+  c.embudoTof=Object.assign({}, _tofCfg(c), {tipo:''});
+  save(); dibujarMmTop(c);
+}
+
+function _tofTotales(cache, campana){
+  // Se suma sobre el periodo entero que ya esta en memoria. Si hay una campana
+  // elegida se mira solo esa; "todas" es la cuenta completa menos las que estan
+  // destildadas en Ads, que fetchMetaMensual ya descarto.
+  var t={spend:0, lead:0, apply:0, schedule:0, reg:0, compra:0};
+  var filas=(cache&&cache.porCampana)||{};
+  Object.keys(filas).forEach(function(id){
+    if(campana && String(id)!==String(campana)) return;
+    var f=filas[id];
+    Object.keys(t).forEach(function(k){ t[k]+=(f[k]||0); });
+  });
+  return t;
+}
+
+function embudoTofHtml(cache, c){
+  var cfg=_tofCfg(c);
+  var camps=(cache&&cache.porCampana)||{};
+  var ids=Object.keys(camps).sort(function(a,b){ return (camps[b].spend||0)-(camps[a].spend||0); });
+
+  var selector='<label style="font-size:11px;color:var(--text3)">Sobre&nbsp;</label>'
+    +'<select onchange="tofCampana(this.value)" style="font-size:11.5px;max-width:280px">'
+    +'<option value=""'+(cfg.campana?'':' selected')+'>Todas las campañas</option>'
+    +ids.map(function(id){
+        return '<option value="'+esc(id)+'"'+(String(cfg.campana)===String(id)?' selected':'')+'>'
+          +esc(camps[id].nombre||id)+'</option>'; }).join('')
+    +'</select>';
+
+  if(!cfg.tipo){
+    return '<div class="mm" style="margin-top:14px"><div class="mm-title">Embudo de conversión</div>'
+      +'<div class="mm-foot" style="margin-top:10px">¿Cuál de los dos seguís en esta cuenta? '
+      +'Los dos usan los mismos eventos de Meta pero en distinto orden, así que no se puede '
+      +'adivinar: elegido el que no es, un paso aparece siempre en cero.</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">'
+      +Object.keys(TOF_EMBUDOS).map(function(k){
+          var e=TOF_EMBUDOS[k];
+          return '<button class="btn btn-sm" onclick="tofElegir(\''+k+'\')">Embudo '+esc(e.nombre)
+            +'<span class="d">'+e.pasos.map(function(p){return esc(p.l);}).join(' → ')+'</span></button>';
+        }).join('')
+      +'</div>'
+      +'<div style="margin-top:12px">'+selector+'</div>'
+      +'</div>';
+  }
+
+  var emb=TOF_EMBUDOS[cfg.tipo]||TOF_EMBUDOS.agendas;
+  var t=_tofTotales(cache, cfg.campana);
+  var primero=t[emb.pasos[0].k]||0;
+  var filas=emb.pasos.map(function(pso, i){
+    var v=t[pso.k]||0;
+    var previo=i?(t[emb.pasos[i-1].k]||0):0;
+    // Contra el paso anterior, que es donde se ve el escalon que se rompe.
+    // Contra el primero, que es la conversion de punta a punta.
+    var vsPrev=i&&previo? (v/previo*100) : null;
+    var vsTop=primero? (v/primero*100) : null;
+    var costo=v? (t.spend/v) : null;
+    // Un paso no puede tener mas gente que el anterior. Si pasa, o el embudo
+    // elegido no es el de esta cuenta, o ese evento se dispara tambien desde
+    // otro lado. Se marca en vez de mostrarlo como si fuera una buena noticia.
+    var imposible=(vsPrev!=null&&vsPrev>105);
+    return '<tr>'
+      +'<td style="padding:7px 10px 7px 0;font-size:12px;color:var(--text2);white-space:nowrap">'
+        +(i+1)+'. '+esc(pso.l)+'</td>'
+      +'<td style="padding:7px 10px;font-size:10.5px;color:var(--text3);white-space:nowrap">'
+        +esc(pso.ev)+' · '+esc(pso.es)+'</td>'
+      +'<td style="padding:7px 10px;text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px">'
+        +(v||0).toLocaleString('es-AR')+'</td>'
+      +'<td style="padding:7px 10px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--text3)">'
+        +(costo!=null?money(costo):'—')+'</td>'
+      +'<td style="padding:7px 10px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:'
+        +(imposible?'var(--redx)':(vsPrev!=null&&vsPrev<20?'var(--amberx)':'var(--text3)'))+'">'
+        +(vsPrev!=null?vsPrev.toFixed(1)+'%':'—')+(imposible?' !':'')+'</td>'
+      +'<td style="padding:7px 0 7px 10px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--text3)">'
+        +(i&&vsTop!=null?vsTop.toFixed(1)+'%':'—')+'</td>'
+    +'</tr>';
+  }).join('');
+  var hayImposible=emb.pasos.some(function(pso,i){
+    var prev=i?(t[emb.pasos[i-1].k]||0):0;
+    return i && prev && (t[pso.k]||0) > prev*1.05;
+  });
+
+  var th=function(x,al){ return '<th style="text-align:'+(al||'left')+';padding:0 10px 6px;font-size:10px;'
+    +'text-transform:uppercase;letter-spacing:.05em;color:var(--text3);font-weight:500">'+x+'</th>'; };
+
+  return '<div class="mm" style="margin-top:14px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+      +'<div class="mm-title">Embudo ' + esc(emb.nombre) + '</div>'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+selector
+      +'<button class="btn btn-sm" onclick="tofReconfigurar()" style="color:var(--text3)">Cambiar</button>'
+      +'</div></div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;margin-top:10px">'
+    +'<thead><tr>'+th('Paso')+th('Evento en Meta')+th('Cantidad','right')
+      +th('Costo','right')+th('vs. paso anterior','right')+th('vs. paso 1','right')
+    +'</tr></thead><tbody>'+filas+'</tbody></table></div>'
+    +'<div class="mm-foot" style="margin-top:10px">Inversión del período: '+money(t.spend)
+      +(cfg.campana?(' · solo '+esc((camps[cfg.campana]||{}).nombre||cfg.campana)):' · todas las campañas')
+      +'. Un paso en cero suele ser el pixel: si ese evento no está configurado en Meta, acá no llega.'
+      +(hayImposible?(' <span style="color:var(--redx)">Hay un paso con más gente que el anterior: '
+        +'o este no es el embudo de esta cuenta, o ese evento se dispara también desde otro lado.</span>'):'')
+      +'</div>'
+    +'</div>';
+}
+
 // ================= Matriz mensual de Top of Funnel =================
 // Los insights que guarda la app son de UN rango (el de la sincronizacion), asi que
 // para ver mes a mes hay que pedirle a Meta el desglose: una sola consulta a nivel
@@ -51806,10 +51952,18 @@ function _mmActions(row){
   var purch=max(['purchase','offsite_conversion.fb_pixel_purchase','onsite_web_purchase']);
   var msg=max(['onsite_conversion.messaging_conversation_started_7d','onsite_conversion.total_messaging_connection']);
   var sched=Math.max(max(['schedule','onsite_conversion.schedule','onsite_web_schedule','offsite_conversion.fb_pixel_schedule']), barrer(/schedule/i));
+  // SubmitApplication llega con nombres distintos segun si el evento es del
+  // pixel o de la API de conversiones, asi que se barre por el patron ademas de
+  // pedir los alias conocidos.
+  var apply=Math.max(max(['submit_application','offsite_conversion.fb_pixel_submit_application',
+                          'onsite_conversion.submit_application']), barrer(/submit_application/i));
   var custom=barrer(/custom/i);
   return {
     leads:leads,
     landing:get('landing_page_view'),
+    // Los pasos del embudo van sueltos ademas de en 'results': el embudo
+    // necesita cada escalon por separado para mostrar donde se cae.
+    apply:apply, schedule:sched, reg:reg, compra:purch,
     results:(purch||sched||reg||custom||leads||msg||0)
   };
 }
@@ -51847,14 +52001,17 @@ async function fetchMetaMensual(clientId){
   const excl=((al&&al.excludedCampaigns)||[]).map(String);
   // v3: se sumo reach a los campos pedidos. Con la clave vieja, una respuesta
   // cacheada sin alcance dejaba la fila de frecuencia vacia hasta recargar.
-  const cacheKey='v3|'+excl.slice().sort().join(',');
+  // v4: se sumo el desglose por campana y los pasos del embudo. Con la clave
+  // vieja, una respuesta cacheada sin esos campos dejaba el embudo vacio.
+  const cacheKey='v4|'+excl.slice().sort().join(',');
   const prev=_mmCache[clientId];
   if(prev && prev.key===cacheKey && (Date.now()-prev.at)<10*60*1000) return prev;
 
   const hoy=new Date();
   const desde=new Date(hoy.getFullYear(), hoy.getMonth()-11, 1);
   const tr='{"since":"'+isoDate(desde)+'","until":"'+isoDate(hoy)+'"}';
-  const campos='campaign_id,spend,impressions,clicks,actions,reach';
+  // campaign_name: el selector del embudo tiene que mostrar nombres y no ids.
+  const campos='campaign_id,campaign_name,spend,impressions,clicks,actions,reach';
   var url='https://graph.facebook.com/v25.0/act_'+c.metaAccountId+'/insights'
     +'?level=campaign&time_increment=monthly'
     +'&time_range='+encodeURIComponent(tr)
@@ -51862,6 +52019,9 @@ async function fetchMetaMensual(clientId){
     +'&limit=500&access_token='+c.metaToken;
 
   const meses={};
+  // Ademas del mes a mes, el total por campana: es lo que permite mirar el
+  // embudo de una campana sola sin volver a preguntarle nada a Meta.
+  const porCampana={};
   var paginas=0;
   while(url && paginas<10){
     paginas++;
@@ -51888,10 +52048,17 @@ async function fetchMetaMensual(clientId){
       // alto que el real, asi que la frecuencia que sale de aca es un piso.
       m.reach+=parseInt(row.reach||0)||0;
       m.leads+=a.leads; m.landing+=a.landing; m.results+=a.results;
+      const cid=String(row.campaign_id||'');
+      const pc=porCampana[cid]||(porCampana[cid]={nombre:row.campaign_name||cid,
+        spend:0, lead:0, apply:0, schedule:0, reg:0, compra:0});
+      if(row.campaign_name) pc.nombre=row.campaign_name;
+      pc.spend+=parseFloat(row.spend||0)||0;
+      pc.lead+=a.leads; pc.apply+=a.apply; pc.schedule+=a.schedule;
+      pc.reg+=a.reg; pc.compra+=a.compra;
     });
     url=(data.paging&&data.paging.next)||null;
   }
-  _mmCache[clientId]={key:cacheKey, at:Date.now(), meses:meses};
+  _mmCache[clientId]={key:cacheKey, at:Date.now(), meses:meses, porCampana:porCampana};
   return _mmCache[clientId];
 }
 
@@ -52020,12 +52187,12 @@ function dibujarMmTop(c){
     host.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
       +'<div class="mm-foot" style="margin-top:10px">Pidiendo el desglose mensual a Meta...</div></div>';
   }else{
-    host.innerHTML=mmTopHtml(cache);
+    host.innerHTML=embudoTofHtml(cache, c)+mmTopHtml(cache);
   }
   fetchMetaMensual(c.id).then(function(res){
     var h2=document.getElementById('mm-top-host');
     if(!h2||S._hoja!=='top') return;
-    h2.innerHTML=res?mmTopHtml(res):'';
+    h2.innerHTML=res?(embudoTofHtml(res, c)+mmTopHtml(res)):'';
   }).catch(function(e){
     console.warn('mm top:',e);
     var h2=document.getElementById('mm-top-host');
