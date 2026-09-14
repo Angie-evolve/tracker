@@ -112,7 +112,14 @@ Deno.serve(async (req: Request) => {
         });
         aviso = "Ya tenia cuenta: le devolvimos el acceso sin mandarle nada.";
       } else {
-        await admin("/auth/v1/invite", {
+        // El link del mail tiene que volver a la app, no a la Site URL que
+        // tenga configurado el proyecto: si cae en otro lado, la invitada
+        // recibe el mail y no tiene donde elegir la contrasena. El origen sale
+        // del pedido, asi sirve igual desde GitHub Pages que desde localhost.
+        // No es un redirect abierto: Supabase solo acepta los de su lista.
+        const origen = req.headers.get("Origin") || "";
+        const volver = origen ? "?redirect_to=" + encodeURIComponent(origen) : "";
+        await admin("/auth/v1/invite" + volver, {
           method: "POST",
           body: JSON.stringify({ email: mail, data: { invitado_por: quien } }),
         });

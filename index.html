@@ -57329,6 +57329,114 @@ function _lpMarca(){
     +'Operation System</div>';
 }
 
+// Un link de invitacion o de recuperacion llega con la sesion metida en el
+// fragmento de la URL: #access_token=...&type=invite. Sin leerlo, la persona
+// invitada cae en el formulario de entrada y no tiene como elegir una
+// contrasena, que es lo unico que vino a hacer.
+function _lpDelMail(){
+  var h=String(location.hash||'').replace(/^#/,'');
+  if(!h || h.indexOf('access_token=')<0) return null;
+  var p={};
+  h.split('&').forEach(function(par){
+    var i=par.indexOf('=');
+    if(i>0){
+      try{ p[decodeURIComponent(par.slice(0,i))]=decodeURIComponent(par.slice(i+1)); }
+      catch(e){ /* fragmento mal armado */ }
+    }
+  });
+  if(p.type!=='invite' && p.type!=='recovery') return null;
+  // Leido el token, no tiene por que seguir en la barra de direcciones ni
+  // quedar en el historial.
+  try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){}
+  return { token:p.access_token, refresh:p.refresh_token||'',
+           expira:parseInt(p.expires_in||'3600',10), tipo:p.type };
+}
+
+function pantallaClave(s){
+  var d=document.createElement('div');
+  d.id='sb-login';
+  d.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--bg);overflow:hidden;'
+    +'display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML=_lpPolvo()
+    +'<div class="lp-card">'
+    +_lpMarca()
+    +'<div style="font-size:12.5px;color:var(--text2);line-height:1.6;margin:-14px 0 18px">'
+      +(s.tipo==='invite' ? 'Te invitaron al tracker. Elegí una contraseña y entrás.'
+                          : 'Elegí una contraseña nueva.')+'</div>'
+    +'<input id="sb-pass" type="password" placeholder="Contraseña nueva" '
+      +'autocomplete="new-password" style="width:100%;margin-bottom:9px">'
+    +'<input id="sb-pass2" type="password" placeholder="Repetila" '
+      +'autocomplete="new-password" style="width:100%;margin-bottom:14px">'
+    +'<button id="sb-btn" class="btn btn-primary" style="width:100%">Guardar y entrar</button>'
+    +'<div id="sb-msg" style="font-size:12px;color:var(--redx);margin-top:11px;'
+      +'min-height:16px;line-height:1.5"></div>'
+  +'</div>';
+  document.body.appendChild(d);
+
+  var guardar=async function(){
+    var b=document.getElementById('sb-btn'), m=document.getElementById('sb-msg');
+    var p1=document.getElementById('sb-pass').value||'';
+    var p2=document.getElementById('sb-pass2').value||'';
+    if(p1!==p2){ m.textContent='Las dos no coinciden.'; return; }
+    if(p1.length<8){ m.textContent='Poné al menos 8 caracteres.'; return; }
+    b.disabled=true; b.textContent='Guardando...'; m.textContent='';
+    try{
+      // El largo de arriba es solo para atajar un error de tipeo sin ir y
+      // volver. Las reglas de verdad las pone el proyecto, y si el servidor
+      // rechaza la contrasena se muestra SU mensaje, que dice que le falta.
+      var r=await fetch(SB_URL+'/auth/v1/user',{
+        method:'PUT',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+s.token,
+                 'Content-Type':'application/json'},
+        body:JSON.stringify({password:p1})
+      });
+      var u=await r.json();
+      if(!r.ok){
+        var crudo=u.msg||u.message||u.error_description||('error '+r.status);
+        // Los links de invitacion vencen. El mensaje de Supabase para ese caso
+        // habla de firmas y segmentos del token, que no le dice nada a nadie y
+        // ademas apunta al lado equivocado: no hay nada que corregir aca.
+        if(/jwt|token|expired|invalid/i.test(crudo) && !/password|contrase/i.test(crudo)){
+          throw new Error('Este link ya venció o no es válido. Pedí que te vuelvan '
+            +'a invitar y usá el link nuevo.');
+        }
+        throw new Error(crudo);
+      }
+      SB.token=s.token; SB.refresh=s.refresh;
+      SB.exp=Date.now()+(s.expira*1000);
+      SB.email=(u&&u.email)||'';
+      sbGuardarSesion();
+      await arrancarConSesion();
+      d.remove();
+    }catch(e){
+      m.textContent=e.message;
+      b.disabled=false; b.textContent='Guardar y entrar';
+    }
+  };
+  document.getElementById('sb-btn').onclick=guardar;
+  document.getElementById('sb-pass2').addEventListener('keydown',function(ev){
+    if(ev.key==='Enter') guardar(); });
+  setTimeout(function(){ var e=document.getElementById('sb-pass'); if(e) e.focus(); },50);
+}
+
+// Sin esto, cada contrasena olvidada termina en el panel de Supabase.
+async function lpOlvide(){
+  var m=document.getElementById('sb-msg');
+  var mail=((document.getElementById('sb-mail')||{}).value||'').trim();
+  if(!mail){ m.style.color='var(--redx)'; m.textContent='Poné tu mail arriba primero.'; return; }
+  m.style.color='var(--text3)'; m.textContent='Mandando…';
+  try{
+    await fetch(SB_URL+'/auth/v1/recover',{
+      method:'POST', headers:{'apikey':SB_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({email:mail, gotrue_meta_security:{}})
+    });
+  }catch(e){ /* da igual: la respuesta no se muestra */ }
+  // Siempre el mismo texto, ande o no: decir si el mail tiene cuenta seria
+  // contarle a cualquiera quien esta en el equipo.
+  m.style.color='var(--text3)';
+  m.textContent='Si ese mail tiene cuenta, le llega un link para cambiarla.';
+}
+
 function pantallaLogin(msg){
   var d=document.createElement('div');
   d.id='sb-login';
@@ -57341,6 +57449,9 @@ function pantallaLogin(msg){
     +'<input id="sb-pass" type="password" placeholder="Contrasena" autocomplete="current-password" style="width:100%;margin-bottom:14px">'
     +'<button id="sb-btn" class="btn btn-primary" style="width:100%">Entrar</button>'
     +'<div id="sb-msg" style="font-size:12px;color:var(--redx);margin-top:11px;min-height:16px;line-height:1.5">'+(msg||'')+'</div>'
+    +'<div style="font-size:11.5px;margin-top:12px">'
+      +'<a href="#" onclick="event.preventDefault();lpOlvide()" '
+      +'style="color:var(--text3)">Olvidé mi contraseña</a></div>'
     +(_lpEsLocal()
       ? ('<div style="font-size:11.5px;color:var(--text3);margin-top:18px;line-height:1.6">'
          +'Copia local: podes entrar sin sesion para probar. '
@@ -57469,6 +57580,10 @@ async function arrancarConSesion(){
 
 (function iniciar(){
   bootPaso('inicio','Abriendo');
+  // Antes que la sesion guardada: quien llega desde un mail de invitacion
+  // viene a elegir contrasena, no a entrar con lo que haya en este navegador.
+  var delMail=_lpDelMail();
+  if(delMail){ bootListo(); pantallaClave(delMail); return; }
   sbCargarSesion();
   if(SB.token){
     bootPaso('sesion','Trayendo tus datos');

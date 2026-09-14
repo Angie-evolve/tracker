@@ -28,7 +28,22 @@ Esto se aplica en el servidor, asi que vale para todas: invitadas nuevas y
 cambios de contrasena de las que ya estan. Ninguna validacion en el navegador
 sirve para esto, porque el endpoint se puede llamar directo salteandola.
 
-## 3. Deployar la funcion
+## 3. Dejar que el link del mail vuelva a la app
+
+El mail de invitacion trae un link. Si ese link no vuelve a la app, la invitada
+lo recibe y no tiene donde elegir su contrasena.
+
+Supabase -> Authentication -> URL Configuration:
+
+- **Site URL**: `https://angie-evolve.github.io/tracker/`
+- **Redirect URLs**: agregar esa misma, y `http://localhost:8731/**` si vas a
+  probar desde tu copia local.
+
+La funcion manda como destino el origen desde donde la llamaste, asi que sirve
+igual publicada que en local. No es un redirect abierto: Supabase solo acepta
+los que esten en esa lista.
+
+## 4. Deployar la funcion
 
 Desde la carpeta del repo:
 
@@ -45,8 +60,12 @@ Supabase -> Edge Functions -> Deploy a new function, con el nombre **equipo**.
 En la app: los tres puntos de arriba a la derecha -> **Quien tiene acceso**.
 
 - **Invitar** manda el mail y suma a la persona a `equipo_video`, que es la
-  lista que el RLS mira para decidir quien ve los datos del equipo. La persona
-  elige su propia contrasena desde el mail.
+  lista que el RLS mira para decidir quien ve los datos del equipo. Al abrir el
+  link, la app le muestra una pantalla para elegir contrasena y la deja
+  adentro. Si el proyecto exige una contrasena fuerte y la que puso no alcanza,
+  ahi mismo le aparece que le falta.
+- En la pantalla de entrada hay **Olvide mi contrasena**, que usa el mismo
+  camino. Sin eso, cada contrasena olvidada terminaba en este panel.
 - **Sacar** hace las dos cosas que hacen falta: la borra de la lista y le
   banea la cuenta. Solo lo primero no alcanza, porque la cuenta seguiria viva
   y podria seguir encolando trabajos.
