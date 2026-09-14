@@ -15289,13 +15289,16 @@ function _edPintar(){
 // que no le dice nada a nadie. Pasa sobre todo si el .zip todavia se estaba
 // bajando cuando se lo eligio: Chrome se guarda el tamano y la fecha en ese
 // momento, y despues encuentra otra cosa y aborta la lectura.
-function _edErrDisco(e){
+function _edErrDisco(e, etapa, detalle){
   var m=String(e&&e.message||e||'');
-  if(/failed to fetch|not readable|NotReadableError|NotFoundError/i.test(m))
-    return new Error('No pude leer el archivo del disco. Suele pasar cuando todavía '
-      +'se estaba descargando o se movió después de elegirlo. Volvé a elegirlo y probá '
-      +'de nuevo.');
-  return e;
+  if(!/failed to fetch|not readable|NotReadableError|NotFoundError/i.test(m)) return e;
+  // El navegador dice solo "Failed to fetch" para cualquier lectura que no pudo
+  // completar, sin decir cual ni por que. Sin estos datos no hay forma de saber
+  // si el problema es el archivo, el rango pedido o la descompresion.
+  return new Error('No pude leer el archivo del disco (' + etapa + ')'
+    + (detalle ? ' · ' + detalle : '')
+    + '. Probá: abrí el .zip en el Finder y arrastrá la carpeta que sale, o elegí '
+    + 'los videos sueltos con "Elegir archivos". [' + (e && e.name || '?') + ': ' + m + ']');
 }
 
 async function _edLeerZip(file, onProg){
@@ -15303,7 +15306,10 @@ async function _edLeerZip(file, onProg){
   var leer=async function(a, b){
     try{
       return new DataView(await file.slice(a, b).arrayBuffer());
-    }catch(e){ throw _edErrDisco(e); }
+    }catch(e){
+      throw _edErrDisco(e, 'cabeceras',
+        'pedí del byte '+a+' al '+b+' de un archivo de '+file.size);
+    }
   };
   // El fin del directorio central esta al final, despues de un comentario que
   // puede medir hasta 64 KB. Se busca la firma hacia atras.
@@ -15345,7 +15351,10 @@ async function _edLeerZip(file, onProg){
       try{
         datos=await new Response(
           trozo.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
-      }catch(e){ throw _edErrDisco(e); }
+      }catch(e){
+        throw _edErrDisco(e, 'descomprimir '+en.nombre,
+          'desde el byte '+ini+', '+en.comp+' bytes, de un archivo de '+file.size);
+      }
     } else if(en.metodo!==0){
       continue;   // otro metodo de compresion: no lo se abrir
     }
