@@ -16686,24 +16686,6 @@ var EST_FORMATOS={'1:1':'Cuadrado 1:1', '4:5':'Vertical 4:5', '9:16':'Historia 9
 
 function _estEstado(){ return (S.est=S.est||{formato:'4:5', avatar:true}); }
 
-function _estClaude(pedido, sistema){
-  var key='';
-  try{ key=localStorage.getItem('evold-anthropic-key')||''; }catch(e){}
-  if(!key) return Promise.reject(new Error('Falta la API key de Anthropic. Se carga una vez '
-    +'en la app y queda guardada en este navegador.'));
-  return fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','x-api-key':key,
-             'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:4000,
-      system:sistema, messages:[{role:'user', content:pedido}]})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    if(d.error) throw new Error(d.error.message||'la IA rechazo el pedido');
-    return (d.content||[]).filter(function(b){ return b.type==='text'; })
-      .map(function(b){ return b.text; }).join('');
-  });
-}
-
 function _estJson(txt, abre, cierra){
   var a=txt.indexOf(abre), b=txt.lastIndexOf(cierra);
   if(a<0||b<a) throw new Error('la IA no devolvio un JSON');
@@ -16742,28 +16724,75 @@ async function estArchivo(inp){
   _estPintar();
 }
 
-async function estAngulos(){
+// Los dos pasos son texto y nada mas: no hay llamado a ninguna API. El plan de
+// Claude no se puede consumir desde el navegador, y poner un token en un repo
+// publico para simularlo no es una opcion. Asi que la app arma el pedido, la
+// persona lo pasa por su propia sesion de Claude y trae la respuesta.
+// Como no hay canal de system prompt, las reglas van pegadas adelante.
+function _estPedido(tipo){
   var e=_estEstado();
-  var doc=String(e.doc||'').trim();
-  if(doc.length<80){ toast('Pegá o subí el documento primero.','amber'); return; }
-  e.cargando='Leyendo el documento y sacando ángulos…'; e.error=''; _estPintar();
-  try{
-    var txt=await _estClaude(
-      'Este es el material del cliente:\n\n"""'+doc.slice(0,18000)+'"""\n\n'
+  if(tipo==='angulos'){
+    return EST_SISTEMA
+      +'\n\n---\n\nEste es el material del cliente:\n\n"""'
+      +String(e.doc||'').trim().slice(0,18000)+'"""\n\n'
       +'Proponeme 10 angulos distintos para estaticos. Un angulo es una tesis sobre que le '
       +'duele al cliente y como se lo muestra, no una idea visual suelta. Que se repartan '
       +'entre estos cuatro ejes, sin que dos digan lo mismo:\n'
-      +'  dolor concreto · costo de no actuar · prueba o resultado · objecion que frena\n\n'
+      +'  dolor concreto . costo de no actuar . prueba o resultado . objecion que frena\n\n'
       +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
       +'[{"titulo":"3 a 6 palabras","eje":"dolor|costo|prueba|objecion",'
       +'"idea":"que dice y por que le importa a quien lo ve, dos lineas",'
-      +'"escena":"que se ve, en una linea"}]', EST_SISTEMA);
-    e.angulos=_estJson(txt,'[',']').slice(0,10);
-    e.elegidos={}; e.prompts=null;
-    e.cargando='';
-  }catch(err){ e.cargando=''; e.error=err.message; }
+      +'"escena":"que se ve, en una linea"}]';
+  }
+  var elegidos=(e.angulos||[]).filter(function(a,i){ return (e.elegidos||{})[i]; });
+  return EST_SISTEMA
+    +'\n\n---\n\nPara cada uno de estos angulos, escribi 4 variantes de prompt que cambien '
+    +'SOLO el punto de vista, no la idea: frente, tres cuartos, contrapicado, y un plano '
+    +'cerrado de color o detalle.\n\n'
+    +'Formato de salida: '+e.formato+'. '
+    +(e.avatar ? 'Aparece "the tagged character" en la escena.'
+               : 'NO aparece ninguna persona: solo el entorno, el producto o el detalle.')
+    +'\n\nAngulos:\n'+JSON.stringify(elegidos)+'\n\n'
+    +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
+    +'[{"angulo":"el titulo tal cual","variante":"frente|tres cuartos|contrapicado|detalle",'
+    +'"prompt":"el prompt en ingles, un parrafo"}]';
+}
+
+function estPedir(tipo){
+  var e=_estEstado();
+  if(tipo==='angulos' && String(e.doc||'').trim().length<80){
+    toast('Pegá o subí el documento primero.','amber'); return;
+  }
+  if(tipo==='prompts' && !Object.keys(e.elegidos||{}).length){
+    toast('Tildá al menos un ángulo.','amber'); return;
+  }
+  e.pedido=_estPedido(tipo); e.pegar=tipo; e.error='';
+  // El portapapeles puede fallar (permisos, http): por eso el pedido igual queda
+  // a la vista en un cuadro, para poder copiarlo a mano.
+  try{ navigator.clipboard.writeText(e.pedido); toast('Pedido copiado. Pegalo en Claude.'); }
+  catch(err){ toast('No pude copiar solo: copialo del cuadro.','amber'); }
   _estPintar();
 }
+
+function estPegar(tipo){
+  var e=_estEstado();
+  var caja=document.getElementById('est-respuesta');
+  var txt=caja?String(caja.value||''):'';
+  if(!txt.trim()){ toast('Pegá la respuesta de Claude.','amber'); return; }
+  try{
+    var datos=_estJson(txt,'[',']');
+    if(!datos.length) throw new Error('vino vacia');
+    if(tipo==='angulos'){ e.angulos=datos.slice(0,10); e.elegidos={}; e.prompts=null; }
+    else { e.prompts=datos; }
+    e.pegar=''; e.pedido=''; e.error='';
+  }catch(err){
+    e.error='No pude leer la respuesta ('+(err&&err.message||'')+'). Copiá todo lo que '
+      +'devolvió Claude, desde el corchete de apertura hasta el de cierre.';
+  }
+  _estPintar();
+}
+
+function estCancelar(){ var e=_estEstado(); e.pegar=''; e.pedido=''; _estPintar(); }
 
 function estTildar(i){
   var e=_estEstado();
@@ -16772,27 +16801,34 @@ function estTildar(i){
   _estPintar();
 }
 
-async function estPrompts(){
+// El bloque de copiar y pegar se usa igual en los dos pasos.
+function _estPaso(tipo, etiqueta, nota){
   var e=_estEstado();
-  var elegidos=(e.angulos||[]).filter(function(a,i){ return (e.elegidos||{})[i]; });
-  if(!elegidos.length){ toast('Tildá al menos un ángulo.','amber'); return; }
-  e.cargando='Armando los prompts…'; e.error=''; _estPintar();
-  try{
-    var txt=await _estClaude(
-      'Para cada uno de estos angulos, escribi 4 variantes de prompt que cambien SOLO el '
-      +'punto de vista, no la idea: frente, tres cuartos, contrapicado, y un plano cerrado '
-      +'de color o detalle.\n\n'
-      +'Formato de salida: '+e.formato+'. '
-      +(e.avatar ? 'Aparece "the tagged character" en la escena.'
-                 : 'NO aparece ninguna persona: solo el entorno, el producto o el detalle.')
-      +'\n\nAngulos:\n'+JSON.stringify(elegidos)+'\n\n'
-      +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
-      +'[{"angulo":"el titulo tal cual","variante":"frente|tres cuartos|contrapicado|detalle",'
-      +'"prompt":"el prompt en ingles, un parrafo"}]', EST_SISTEMA);
-    e.prompts=_estJson(txt,'[',']');
-    e.cargando='';
-  }catch(err){ e.cargando=''; e.error=err.message; }
-  _estPintar();
+  if(e.pegar!==tipo){
+    return '<div class="ed-acciones" style="margin-bottom:8px">'
+      +'<button class="btn btn-primary" onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
+      +'<span class="d">'+esc(nota)+'</span></button></div>';
+  }
+  return '<div class="ed-panel" style="margin:12px 0"><h3>Pasalo por tu Claude</h3>'
+    +'<div class="s">Ya te lo copié. Abrí Claude, pegalo, y traé de vuelta lo que responda. '
+    +'No sale nada hacia ninguna API: se gasta tu plan.</div>'
+    +'<textarea readonly rows="3" onclick="this.select()" style="width:100%;box-sizing:border-box;'
+      +'font-family:var(--font);font-size:11px;color:var(--text3)">'+esc(e.pedido||'')+'</textarea>'
+    +'<div style="display:flex;gap:8px;margin:10px 0 14px">'
+      +'<button class="btn btn-sm" onclick="estPedir(\''+tipo+'\')" style="color:var(--text3)">'
+        +'Copiar de nuevo</button>'
+      +'<button class="btn btn-sm" onclick="window.open(\'https://claude.ai/new\',\'_blank\')" '
+        +'style="color:var(--text3)">Abrir Claude</button>'
+    +'</div>'
+    +'<label style="display:block;font-size:10.5px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.05em;margin-bottom:6px">Lo que respondió</label>'
+    +'<textarea id="est-respuesta" rows="4" style="width:100%;box-sizing:border-box;'
+      +'font-family:var(--font);font-size:11.5px" placeholder="Pegá acá el JSON entero, '
+      +'desde [ hasta ]"></textarea>'
+    +'<div class="ed-acciones" style="margin-top:10px">'
+      +'<button class="btn btn-primary" onclick="estPegar(\''+tipo+'\')">Listo</button>'
+      +'<button class="btn btn-sm" onclick="estCancelar()" style="color:var(--text3)">Cancelar</button>'
+    +'</div></div>';
 }
 
 function estCopiar(i){
@@ -16852,19 +16888,15 @@ function _estCuerpo(){
         +' onchange="estAvatar(this.checked)">Aparece el avatar</label></div>'
     +'</div>';
 
-  h+='<div class="ed-acciones" style="margin-bottom:8px">'
-    +'<button class="btn btn-primary"'+(e.cargando?' disabled style="opacity:.45"':'')
-      +' onclick="estAngulos()">'+(e.angulos?'Volver a pensar los ángulos':'Pensar los ángulos')
-      +'<span class="d">no gasta créditos de Higgsfield</span></button>'
-    +(e.cargando?('<span style="align-self:center;font-size:11.5px;color:var(--text3)">'
-      +esc(e.cargando)+'</span>'):'')
-    +'</div>';
+  h+=_estPaso('angulos', e.angulos?'Volver a pedir los ángulos':'Pedir los ángulos',
+               'lo pensás en tu Claude, no gasta créditos de Higgsfield');
 
   // --- los angulos, para elegir ---
   var ang=e.angulos||[];
   if(ang.length){
     var n=Object.keys(e.elegidos||{}).length;
-    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+ang.length+' ángulos '
+    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+ang.length
+      +(ang.length===1?' ángulo ':' ángulos ')
       +'<span class="ed-badge">'+n+' elegido'+(n===1?'':'s')+'</span></h3>'
       +'<div class="s">Tildá los que quieras producir. Recién ahí se gastan créditos: '
       +'cada ángulo elegido da 4 variantes.</div>'
@@ -16884,17 +16916,16 @@ function _estCuerpo(){
               +esc(a.escena)+'</div>'):'')
           +'</div></div>';
       }).join('')
-      +'<div class="ed-acciones" style="margin-top:14px">'
-        +'<button class="btn btn-primary"'+((!n||e.cargando)?' disabled style="opacity:.45"':'')
-          +' onclick="estPrompts()">Armar los prompts'
-          +'<span class="d">'+(n?(n*4+' variantes'):'elegí al menos uno')+'</span></button>'
-      +'</div></div>';
+      +_estPaso('prompts','Armar los prompts',
+                 n?(n*4+' variantes'):'elegí al menos uno')
+      +'</div>';
   }
 
   // --- los prompts listos ---
   var pr=e.prompts||[];
   if(pr.length){
-    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+pr.length+' prompts</h3>'
+    h+='<div class="ed-panel" style="margin-top:16px"><h3>'+pr.length
+      +(pr.length===1?' prompt':' prompts')+'</h3>'
       +'<div class="s">Copiá cada uno y generalo en higgsfield.ai. La generación automática '
       +'queda para cuando confirmemos que tu plan de Higgsfield habilita la API.</div>'
       +pr.map(function(x,i){
