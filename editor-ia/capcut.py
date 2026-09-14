@@ -245,13 +245,40 @@ pause
 """
 
 
+_LEEME = """PROYECTO DE CAPCUT - %s
+
+Doble click al instalador de TU sistema:
+
+  Mac      ->  "Mac - ABRIR EN CAPCUT.command"
+  Windows  ->  "Windows - ABRIR EN CAPCUT.bat"
+
+El instalador copia el proyecto a la carpeta de CapCut y le corrige la ruta del
+video. Sin ese paso CapCut abre el proyecto pero muestra el clip en rojo.
+
+En Mac, la primera vez el sistema puede avisar que es de un desarrollador no
+identificado: click derecho sobre el instalador -> Abrir.
+
+Despues abri CapCut: el proyecto va a estar en la lista.
+"""
+
+
 def escribir_instaladores(carpeta_zip, nombre):
-    """Deja los dos instaladores al lado de la carpeta del proyecto."""
-    mac = os.path.join(carpeta_zip, "INSTALAR-mac.command")
+    """
+    Deja un instalador por sistema al lado de la carpeta del proyecto.
+
+    El sistema va PRIMERO en el nombre y no al final: con "INSTALAR-mac" y
+    "INSTALAR-windows" los dos empiezan igual, y de un vistazo se agarra el que
+    no es —pasa de verdad—. Asi la primera palabra ya dice cual es cual, y
+    ordenados alfabeticamente el de Mac queda arriba.
+    """
+    mac = os.path.join(carpeta_zip, "Mac - ABRIR EN CAPCUT.command")
     with open(mac, "w", encoding="utf-8") as f:
         f.write(_INSTALAR_MAC.replace("__NOMBRE__", nombre))
     os.chmod(mac, 0o755)
-    win = os.path.join(carpeta_zip, "INSTALAR-windows.bat")
+    win = os.path.join(carpeta_zip, "Windows - ABRIR EN CAPCUT.bat")
     with open(win, "w", encoding="utf-8") as f:
         f.write(_INSTALAR_WIN.replace("__NOMBRE__", nombre))
-    return [mac, win]
+    leeme = os.path.join(carpeta_zip, "LEEME.txt")
+    with open(leeme, "w", encoding="utf-8") as f:
+        f.write(_LEEME % nombre)
+    return [mac, win, leeme]
