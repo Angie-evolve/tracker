@@ -175,15 +175,57 @@ _RX_CIERRE_MARCA   = re.compile(r"^\s*\+\s*cierre\s+com[uú]n\b", re.I | re.M)
 _ENTRECOMILLADO = re.compile(r'"([^"]{15,})"')
 
 
+# Un rotulo de guion: "01Hook5 s", "04Giro6 s", "Aterrizaje 8s", "34 s", "67 s".
+# Son la marca del bloque y su duracion, nunca algo que alguien pronuncie.
+_ROTULO_BLOQUE = re.compile(
+    r"^\s*(?:\d{1,2}\s*)?"
+    r"(?:hook|gancho|aterrizaje|desarrollo|giro|cierre|body|cuerpo|cta|remate|prueba)?"
+    r"\s*\d{0,3}\s*s?\s*$", re.I)
+
+
+def _parece_dicho(bloque):
+    """
+    Si este bloque es algo que una persona dice en camara.
+
+    Sin comillas hay que decidirlo por la forma. Lo que NO se dice son rotulos y
+    duraciones: renglones cortos, con numeros, o que son el nombre del beat. Una
+    frase de guion tiene varias palabras seguidas y pocas cifras.
+    """
+    t = (bloque or "").strip()
+    if not t or _ROTULO_BLOQUE.match(t):
+        return False
+    palabras = t.split()
+    # Ocho y no menos: probado sobre el documento real sin sus comillas, con seis
+    # se cuelan rotulos y se pierde un anuncio entero. El costo es que un hook de
+    # siete palabras queda afuera, y es barato: esto solo decide de que guion es
+    # cada clip, no que se entrega, y un guion tiene otros bloques para
+    # reconocerse. Si ninguno pasara, mas abajo se cae al texto completo.
+    if len(palabras) < 8:
+        return False
+    cifras = sum(1 for w in palabras if re.search(r"\d", w))
+    return cifras <= len(palabras) * 0.34
+
+
 def _lo_que_se_dice(texto):
     """
-    Solo las frases para decir, si el documento las marca con comillas.
+    Solo lo que se dice en camara, sin los rotulos del documento.
 
-    Si no hay comillas —otro cliente, otro formato— se devuelve el texto tal
-    cual: es preferible comparar de mas que quedarse sin nada con que comparar.
+    Primero por comillas, que es como lo marca el documento cuando las usa y no
+    deja lugar a dudas. Si no las usa —otro cliente, un PDF, un Word— se filtra
+    por la forma de cada bloque. Sin esto se compara contra "01Hook5 s" y "34 s"
+    igual que contra el texto, y eso hunde el puntaje de TODOS los guiones por
+    igual hasta borrar las diferencias entre ellos, que es lo unico que importa
+    para saber de cual es cada clip.
+
+    Si ni asi queda nada, se devuelve el texto entero: es preferible comparar de
+    mas que quedarse sin nada con que comparar.
     """
-    dichas = _ENTRECOMILLADO.findall(texto or "")
-    return "\n\n".join(d.strip() for d in dichas) if len(dichas) >= 2 else (texto or "")
+    texto = texto or ""
+    dichas = _ENTRECOMILLADO.findall(texto)
+    if len(dichas) >= 2:
+        return "\n\n".join(d.strip() for d in dichas)
+    bloques = [b for b in re.split(r"\n\s*\n", texto) if _parece_dicho(b)]
+    return "\n\n".join(b.strip() for b in bloques) if bloques else texto
 
 
 def _separar_cierre(guiones):
