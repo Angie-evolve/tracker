@@ -10482,7 +10482,8 @@ function toggleTicketsMenu(btn){
       +it('abrirSubcategorias()','ti-users','Subcategorias de gastos')
       +it('abrirImportarTx()','ti-file-import','Importar transacciones')
       +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
-      +it('abrirConfigAgencia()','ti-building','Configuracion de agencia');
+      +it('abrirConfigAgencia()','ti-building','Configuracion de agencia')
+      +it('abrirEquipo()','ti-users','Quien tiene acceso');
   } else if((S.torreVista||'mirador')!=='tickets'){
     // El Panel 360 cae aca. Las etapas son las columnas de esta pantalla, asi
     // que su editor va en el menu de esta pantalla y no escondido en un link.
@@ -10491,7 +10492,8 @@ function toggleTicketsMenu(btn){
         ? (it('rutaModal()','ti-layout-columns','Editar las etapas')
            +'<div style="height:1px;background:var(--border);margin:4px 0"></div>')
         : '')
-      +it('abrirConfigAgencia()','ti-building','Configuracion de agencia');
+      +it('abrirConfigAgencia()','ti-building','Configuracion de agencia')
+      +it('abrirEquipo()','ti-users','Quien tiene acceso');
   } else {
     m.innerHTML=''
       +it('openNewTicketModal()','ti-plus','Crear tarea')
@@ -10502,6 +10504,7 @@ function toggleTicketsMenu(btn){
       +it('scanFathomRecaps()','ti-phone','Tareas de llamadas')
       +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
       +it('abrirConfigAgencia()','ti-building','Configuracion de agencia')
+      +it('abrirEquipo()','ti-users','Quien tiene acceso')
       +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
       +it('openTicketsProxyModal()','ti-settings','Config Fathom',true)
       +it('openConvTestModal()','ti-message','Conversaciones',true)
@@ -56478,6 +56481,130 @@ function ticketsProxyUrl(){
 function fathomProxyUrl(){
   return (localStorage.getItem('evold-fathom-proxy')||'').trim() || ticketsProxyUrl();
 }
+
+// ── Quien tiene acceso ───────────────────────────────────────────────────
+// La lista se lee directo porque tiene policy de select. Invitar y sacar no:
+// las dos necesitan la service_role key, asi que pasan por la edge function,
+// que es el unico lugar donde esa clave puede vivir sin quedar a la vista.
+async function eqLlamar(accion, email){
+  var r;
+  try{
+    r=await fetch(SB_URL+'/functions/v1/equipo',{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify({accion:accion, email:email})
+    });
+  }catch(e){
+    // Si la funcion no esta deployada, el navegador ni siquiera llega a leer
+    // la respuesta: el preflight falla y fetch tira "Failed to fetch", que no
+    // le dice nada a nadie. El caso real es siempre este.
+    throw new Error('No encontré la función "equipo" en tu Supabase. Falta deployarla: '
+      +'el paso a paso está en supabase/functions/equipo/LEEME.md');
+  }
+  var d=null; try{ d=await r.json(); }catch(e){ /* respuesta sin cuerpo */ }
+  if(!r.ok) throw new Error((d&&d.error)||('La función respondió '+r.status+'.'));
+  return d||{};
+}
+
+async function abrirEquipo(){
+  if(!SB.listo){ toast('Entra con tu cuenta para ver el equipo.','amber'); return; }
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:580px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">'
+      +'Quién tiene acceso</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
+      +'Esta lista es la que abre y cierra el acceso a los datos del equipo: clientes, '
+      +'tickets y los videos del Editor. Quien no está acá entra y ve todo vacío.</div>'
+    +'<div id="eq-cuerpo" style="font-size:12.5px;color:var(--text3)">Cargando…</div>'
+    +'</div></div>';
+  await eqCargar();
+}
+
+async function eqCargar(){
+  try{
+    S._eq=await sbFetch('equipo_video?select=email,agregado_at&order=agregado_at.asc');
+    S._eqErr='';
+  }catch(e){ S._eq=null; S._eqErr=e.message; }
+  _eqPintar();
+}
+
+function _eqPintar(){
+  var c=document.getElementById('eq-cuerpo'); if(!c) return;
+  var yo=String(SB.email||'').toLowerCase();
+  var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);'
+    +'border-radius:var(--radius);background:var(--bg3);color:var(--text);'
+    +'font-family:var(--font);outline:none';
+  var h='';
+  if(S._eqErr) h+='<div style="color:var(--redx);line-height:1.6;margin-bottom:12px">'
+    +esc(S._eqErr)+'</div>';
+
+  (S._eq||[]).forEach(function(f){
+    var m=String(f.email||'').toLowerCase();
+    var propia=(m===yo);
+    h+='<div style="display:flex;align-items:center;gap:10px;padding:9px 0;'
+      +'border-bottom:1px solid var(--border)">'
+      +'<span style="flex:1;color:var(--text)">'+esc(f.email)
+        +(propia?' <span style="color:var(--text3);font-size:11px">· vos</span>':'')+'</span>'
+      +(propia?''
+        :'<button class="btn btn-sm" onclick="eqSacar(\''+esc(m)+'\')" '
+         +'style="color:var(--text3)">Sacar</button>')
+    +'</div>';
+  });
+
+  h+='<div style="display:flex;gap:8px;margin-top:16px">'
+    +'<input id="eq-mail" type="email" placeholder="mail@dominio.com" '
+      +'style="'+inp+';flex:1" onkeydown="if(event.key===\'Enter\')eqInvitar()">'
+    +'<button class="btn btn-sm btn-primary" onclick="eqInvitar()">Invitar</button>'
+  +'</div>'
+  +'<div id="eq-estado" style="margin-top:10px;line-height:1.6;min-height:17px"></div>'
+  // La fuerza de la contrasena no se puede pedir desde aca: el endpoint de
+  // Supabase se llama directo y se saltea cualquier validacion del navegador.
+  // Por eso se dice donde esta el ajuste que si la exige, en vez de fingir
+  // que la app la controla.
+  +'<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);'
+    +'font-size:11.5px;color:var(--text3);line-height:1.65">'
+    +'La invitada elige su propia contraseña desde el mail. Lo que la obliga a que sea '
+    +'segura no es esta pantalla sino el ajuste del proyecto: '
+    +'<span class="mono">Supabase → Authentication → Password settings</span> '
+    +'(largo mínimo y tipos de caracteres). Ahí mismo está la protección contra '
+    +'contraseñas filtradas.</div>';
+  c.innerHTML=h;
+}
+
+async function eqInvitar(){
+  var i=document.getElementById('eq-mail'), e=document.getElementById('eq-estado');
+  var mail=((i&&i.value)||'').trim().toLowerCase();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){
+    e.innerHTML='<span style="color:var(--redx)">Ese mail no parece un mail.</span>'; return;
+  }
+  e.innerHTML='<span style="color:var(--text3)">invitando…</span>';
+  try{
+    var d=await eqLlamar('invitar', mail);
+    if(i) i.value='';
+    await eqCargar();
+    var e2=document.getElementById('eq-estado');
+    if(e2) e2.innerHTML='<span style="color:var(--accent)">'+esc(d.aviso||'Listo.')+'</span>';
+  }catch(err){
+    e.innerHTML='<span style="color:var(--redx)">'+esc(err.message)+'</span>';
+  }
+}
+
+async function eqSacar(mail){
+  if(!confirm('Sacar a '+mail+'?\n\nDeja de ver los datos del equipo y no va a poder '
+    +'volver a entrar. La cuenta no se borra: se le puede devolver el acceso '
+    +'invitandola de nuevo.')) return;
+  var e=document.getElementById('eq-estado');
+  if(e) e.innerHTML='<span style="color:var(--text3)">sacando…</span>';
+  try{
+    await eqLlamar('sacar', mail);
+    await eqCargar();
+  }catch(err){
+    var e2=document.getElementById('eq-estado');
+    if(e2) e2.innerHTML='<span style="color:var(--redx)">'+esc(err.message)+'</span>';
+  }
+}
+
 function openTicketsProxyModal(){
   var cur=localStorage.getItem('evold-fathom-proxy')||localStorage.getItem('evold-tickets-proxy')||'';
   var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
