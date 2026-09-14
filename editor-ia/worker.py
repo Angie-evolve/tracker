@@ -776,6 +776,39 @@ def recortar(video, a, b, salida):
     return salida
 
 
+# Cuanto puede solaparse un "silencio" con una palabra antes de considerarlo un
+# error del detector. Los bordes que da Whisper son aproximados, asi que un
+# roce de menos de esto no cuenta.
+ROCE_OK = 0.05
+
+
+def sin_pisar_palabras(silencios, palabras):
+    """
+    Saca de la lista los silencios que caen encima de una palabra.
+
+    silencedetect escucha nivel; la transcripcion sabe que se dijo. Cuando no
+    coinciden gana la transcripcion: una palabra corta y dicha bajo —"Un" en
+    "Tocá el botón. Un minuto"— le queda por debajo del umbral y se cortaba, y
+    con ella se iba del video y del subtitulo.
+
+    Es lo que permite bajar el minimo de silencio para apretar el corte sin
+    empezar a comerse palabras, que es el riesgo de apretarlo.
+    """
+    if not silencios or not palabras:
+        return silencios
+    rangos = [(float(w.get("start", 0)), float(w.get("end", 0))) for w in palabras]
+    salida, tocados = [], 0
+    for a, b in silencios:
+        pisa = any(min(b, pb) - max(a, pa) > ROCE_OK for pa, pb in rangos)
+        if pisa:
+            tocados += 1
+            continue
+        salida.append((a, b))
+    if tocados:
+        print("   %d silencio(s) no se cortan: hay una palabra ahi" % tocados, flush=True)
+    return salida
+
+
 def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
     """
     Todo lo que va despues de transcribir: decidir que se saca, como se muestra,
@@ -797,6 +830,7 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
     silencios = auto_editor.detectar_silencios(
         archivo, umbral_db=umbral, min_silencio=minsil
     ) if minsil > 0 else []
+    silencios = sin_pisar_palabras(silencios, palabras)
 
     txt_guion = str(op.get("guion") or "").strip()
     elegir = (lambda i1, i2, L: Guion.elegir_peor(palabras, i1, i2, L, txt_guion)) \

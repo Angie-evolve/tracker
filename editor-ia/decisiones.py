@@ -72,11 +72,27 @@ def conservar(duracion, sacar, aire=0.12, clip_min=0.3, exacto=None):
     clips, cursor = [], 0.0
     for a, b in tramos:
         if a - cursor >= clip_min:
-            clips.append((round(cursor, 3), round(a, 3)))
+            clips.append([cursor, a])
+        elif a > cursor:
+            # Lo que queda entre dos pausas es mas corto que el minimo. Antes se
+            # tiraba, y con el se iba lo que se decia ahi: sobre una pieza real,
+            # el "Un" de "Tocá el botón. Un minuto y lo tenés en pantalla"
+            # desaparecio asi. Se prefiere NO cortar ese silencio y seguir el
+            # clip anterior: un clip no puede ser mas corto que clip_min, pero
+            # tampoco puede faltar una palabra.
+            if clips:
+                clips[-1][1] = a
+            else:
+                clips.append([cursor, a])
         cursor = max(cursor, b)
-    if duracion - cursor >= clip_min:
-        clips.append((round(cursor, 3), round(duracion, 3)))
-    return clips
+    # La cola va SIEMPRE. Con la regla de arriba, un final corto se descartaba y
+    # la pieza terminaba a mitad de la ultima palabra.
+    if duracion - cursor > 0.01:
+        if clips and (duracion - cursor) < clip_min:
+            clips[-1][1] = duracion
+        else:
+            clips.append([cursor, duracion])
+    return [(round(x, 3), round(y, 3)) for x, y in clips]
 
 
 def duracion_total(clips):
