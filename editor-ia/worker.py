@@ -916,7 +916,8 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
             # El proyecto de CapCut sale del video SIN cortar y de la lista de
             # tramos: CapCut hace el corte solo con los puntos de entrada y
             # salida, asi que no hace falta prerenderizar nada.
-            zip_ = armar_proyecto_capcut(archivo, clips, palabras, sub, tmp, nombre)
+            zip_ = armar_proyecto_capcut(archivo, clips, palabras, sub, tmp, nombre,
+                                         titulo=op.get('titulo_pieza'))
             if zip_ and os.path.getsize(zip_) <= LIMITE_MB * 1048576:
                 analisis["proyecto"] = subir(zip_, f"{carpeta}/{nombre}_capcut.zip",
                                              "application/zip")
@@ -944,7 +945,7 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
                  SRT_TIPO)
 
 
-def armar_proyecto_capcut(video, clips, palabras, sub, tmp, nombre):
+def armar_proyecto_capcut(video, clips, palabras, sub, tmp, nombre, titulo=None):
     """
     El proyecto de CapCut, comprimido y listo para descomprimir y abrir.
 
@@ -957,9 +958,14 @@ def armar_proyecto_capcut(video, clips, palabras, sub, tmp, nombre):
     rojo, probado— y aca no se puede saber en que maquina se va a descomprimir,
     asi que la escribe el instalador del otro lado.
     """
+    # El nombre del archivo lleva el sello de tiempo para no pisarse en el
+    # bucket, pero ESE es el que CapCut muestra en su lista y ahi no sirve:
+    # arranca con un numero de diez cifras y el nombre se corta antes de llegar
+    # a lo que dice. En la lista va el titulo de la pieza.
+    visible = re.sub(r'[/\\:*?"<>|]', "-", (titulo or nombre)).strip() or nombre
     try:
         base = os.path.join(tmp, "capcut_" + nombre)
-        carpeta = os.path.join(base, nombre)
+        carpeta = os.path.join(base, visible)
         os.makedirs(os.path.join(carpeta, "Resources"), exist_ok=True)
         dentro = os.path.join(carpeta, "Resources", "video.mp4")
         # Va el video SIN cortar, que es lo que hace que los cortes se puedan
@@ -984,9 +990,9 @@ def armar_proyecto_capcut(video, clips, palabras, sub, tmp, nombre):
                    for b in Sub.bloques(palabras, int((sub or {}).get("palabras", 3)))]
         ancho, alto = _dims(video)
         CapCut.armar(PLANTILLA_CAPCUT, "Resources/video.mp4", clips, bloques,
-                     carpeta, nombre, dims=(ancho, alto),
+                     carpeta, visible, dims=(ancho, alto),
                      duracion_video=auto_editor.ffprobe_duration(video))
-        CapCut.escribir_instaladores(base, nombre)
+        CapCut.escribir_instaladores(base, visible)
         zip_ = shutil.make_archive(os.path.join(tmp, nombre + "_capcut"), "zip", base)
         return zip_
     except Exception as e:
@@ -1131,6 +1137,7 @@ def procesar(fila, tmp):
     salida = []
     for i, pz in enumerate(encontradas):
         nombre = "%s_%s" % (sello, _slug(pz["titulo"], i))
+        op_pieza = dict(op, titulo_pieza=pz["titulo"])
         print("  pieza %d/%d: %s (%d tramos)" % (i + 1, len(encontradas),
                                                  pz["titulo"], len(pz["tramos"])), flush=True)
         base = {"titulo": pz["titulo"], "tramos": pz["tramos"],
@@ -1145,7 +1152,7 @@ def procesar(fila, tmp):
             pal = _palabras_pegadas(trs)
             gtxt = next((g.get("texto") for g in guiones
                          if (g.get("titulo") or "") == pz["titulo"]), "")
-            an, res, srt = _editar(armado, pal, dict(op, guion=gtxt), tmp,
+            an, res, srt = _editar(armado, pal, dict(op_pieza, guion=gtxt), tmp,
                                    carpeta, nombre, modo)
         except Exception as e:
             # Una pieza que falla no puede llevarse la tanda entera: se anota y
