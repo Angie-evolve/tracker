@@ -114,11 +114,16 @@ Deno.serve(async (req: Request) => {
       } else {
         // El link del mail tiene que volver a la app, no a la Site URL que
         // tenga configurado el proyecto: si cae en otro lado, la invitada
-        // recibe el mail y no tiene donde elegir la contrasena. El origen sale
-        // del pedido, asi sirve igual desde GitHub Pages que desde localhost.
-        // No es un redirect abierto: Supabase solo acepta los de su lista.
-        const origen = req.headers.get("Origin") || "";
-        const volver = origen ? "?redirect_to=" + encodeURIComponent(origen) : "";
+        // recibe el mail y no tiene donde elegir la contrasena.
+        //
+        // Lo manda la app porque el header Origin pierde la ruta: desde
+        // GitHub Pages el origen es solo el dominio y la app vive en /tracker/.
+        // Que venga del pedido no lo hace un redirect abierto: Supabase solo
+        // acepta los destinos de su lista, y quien llama ya paso el filtro de
+        // equipo de mas arriba.
+        const destino = String(body.volver || req.headers.get("Origin") || "");
+        const volver = /^https?:\/\//.test(destino)
+          ? "?redirect_to=" + encodeURIComponent(destino) : "";
         await admin("/auth/v1/invite" + volver, {
           method: "POST",
           body: JSON.stringify({ email: mail, data: { invitado_por: quien } }),
