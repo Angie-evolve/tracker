@@ -12,6 +12,8 @@ Variables de entorno (ninguna va nunca al frontend):
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
 import os, sys, re, time, math, json, array, argparse, tempfile, subprocess, traceback
+import difflib
+import unicodedata
 import requests
 
 import auto_editor
@@ -241,6 +243,57 @@ def transcribir(video, tmp):
     """
     wav = transcribe.extraer_audio(video, os.path.join(tmp, "audio_16k.wav"))
     return transcribe.transcribir_local(wav, modelo=MODELO)
+
+
+# Que tan parecida tiene que ser una palabra a una de la lista para corregirla.
+# Alto a proposito: "ohapo" contra "ojapo" da 0.8 y hay que agarrarlo, pero
+# "hora" contra "ahora" tambien da 0.89 y no hay que tocarlo, por eso ademas se
+# exige que tengan el mismo largo a una letra.
+PARECIDO = 0.8
+
+
+def _sin_tildes(t):
+    t = unicodedata.normalize("NFD", str(t or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+def corregir_propias(palabras, propias):
+    """
+    Arregla los nombres propios que la transcripcion escucho mal.
+
+    Whisper no conoce las marcas: "Ojapo" sale "Ohapo", y va a salir mal en
+    todos los videos de ese cliente. Es mas barato arreglarlo despues que pelear
+    con el modelo. Se compara sin tildes y por parecido, no por igualdad, porque
+    el error nunca es el mismo dos veces.
+
+    Importa que corra ANTES de decidir los cortes y no solo antes del .srt: el
+    guion se empareja contra estas mismas palabras, y una marca mal escrita
+    tambien hace perder ese emparejamiento.
+    """
+    lista = [w.strip() for w in re.split(r"[,\n;]+", str(propias or "")) if w.strip()]
+    if not lista or not palabras:
+        return palabras
+    claves = {_sin_tildes(w): w for w in lista if len(w) >= 4}
+    if not claves:
+        return palabras
+    salida, tocadas = [], 0
+    for w in palabras:
+        cruda = str(w.get("word", ""))
+        limpia = re.sub(r"[^a-z0-9]", "", _sin_tildes(cruda))
+        if len(limpia) >= 4 and limpia not in claves:
+            cerca = difflib.get_close_matches(limpia, list(claves.keys()), n=1,
+                                              cutoff=PARECIDO)
+            if cerca and abs(len(cerca[0]) - len(limpia)) <= 1:
+                # Se conserva lo que rodea a la palabra: la coma, el punto.
+                arreglada = re.sub(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", claves[cerca[0]],
+                                   cruda, count=1)
+                w = dict(w, word=arreglada)
+                tocadas += 1
+        salida.append(w)
+    if tocadas:
+        print("   corregi %d palabra(s) contra la lista de nombres propios" % tocadas,
+              flush=True)
+    return salida
 
 
 _FILTROS = None
@@ -856,7 +909,7 @@ def procesar_correccion(fila, tmp):
     base = os.path.join(tmp, "corregido.mp4")
     bajar(fila["video_path"], base)
     print("  transcribiendo la version corregida", flush=True)
-    pal = transcribir(base, tmp)
+    pal = corregir_propias(transcribir(base, tmp), (fila.get('opciones') or {}).get('propias'))
 
     clips = ((orig.get("analisis") or {}).get("clips")) or []
     difs = Corr.comparar(orig["palabras"], clips, pal)
@@ -900,7 +953,7 @@ def procesar(fila, tmp):
     if len(rutas) <= 1 and len(guiones) <= 1:
         base = os.path.join(tmp, "fuente.mp4")
         bajar(rutas[0], base)
-        palabras = transcribir(base, tmp)
+        palabras = corregir_propias(transcribir(base, tmp), op.get('propias'))
         if guiones:
             op = dict(op, guion=guiones[0].get("texto") or op.get("guion"))
         analisis, res, srt = _editar(base, palabras, op, tmp, carpeta, sello + "_final", modo)
@@ -921,7 +974,7 @@ def procesar(fila, tmp):
         bajar(ruta, f)
         print("  transcribiendo %s" % ruta, flush=True)
         locales.append({"id": ruta, "archivo": f,
-                        "palabras": transcribir(f, tmp),
+                        "palabras": corregir_propias(transcribir(f, tmp), op.get("propias")),
                         "duracion": auto_editor.ffprobe_duration(f)})
 
     if guiones:
