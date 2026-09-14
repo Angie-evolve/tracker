@@ -148,109 +148,109 @@ def _tiempos(palabras, i, size):
 PIEZA_MINIMA_S = 3.0
 
 
+# Cuanto tiene que sacarle el guion ganador al segundo para creerle. Los
+# puntajes absolutos son bajos —el guion trae rotulos y duraciones que nadie
+# dice en camara, y eso hunde el promedio— pero la distancia entre el primero y
+# el segundo es clara: sobre material real el ganador saca el doble. Cuando no
+# saca esa diferencia, el clip se reporta como dudoso en vez de adivinar.
+VENTAJA_MINIMA = 1.3
+COBERTURA_PISO = 0.04
+
+
 def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     """
-    Arma cada guion juntando los clips que dicen sus bloques, en orden.
+    Arma cada guion con los clips que lo dicen, cada clip entero.
 
-    Es como filma la gente de verdad: un parrafo por toma, se corta, se acomoda
-    y se graba el siguiente. Medido sobre un rodaje real de 31 clips y 6
-    guiones, cada bloque cayo en un archivo distinto y consecutivo.
+    Lo que decide a que guion va un clip es cuanto de ese guion se reconoce en
+    lo que se dijo. Un clip va a UN guion solo: es una toma de algo, no material
+    suelto para repartir entre varios.
 
-    La version anterior buscaba el guion ENTERO adentro de un solo video. Con
-    este material no encontraba nada, porque ningun clip contiene un guion
-    completo.
+    El clip se toma COMPLETO. La version anterior emitia un tramo por cada frase
+    que calzara literal con el guion y tiraba lo del medio: sobre un clip real
+    de 40 segundos que dice el anuncio entero devolvia cuatro pedacitos, 17.8
+    segundos en total, cortando a mitad de frase. Recortar es trabajo del
+    detector de silencios, que corre despues y sabe donde no se habla; el
+    emparejamiento con el guion sirve para saber QUE clip es, no para editarlo.
 
-    minimo: cuanto tiene que reconocerse un bloque para darlo por dicho. Va bajo
-    a proposito: la transcripcion automatica destroza los nombres propios —"En
-    Potential" sale "Empotencia"— y exigir mucho deja todo afuera.
-    min_palabras: un bloque de una o dos palabras calza con cualquier cosa. Casi
-    siempre es un titulo que quedo partido en el PDF, no algo que alguien diga.
+    minimo y borde quedan aceptados para no romper a quien ya llama a esta
+    funcion, pero ya no se usan: el umbral ahora es relativo.
     """
-    # Los clips vienen en orden de rodaje, y un guion se graba de arriba abajo:
-    # el bloque 2 se filmo despues del bloque 1. Esa restriccion es la que
-    # permite bajar el umbral sin empezar a inventar coincidencias, y de paso
-    # evita que un mismo clip de cierre se lo lleven tres guiones distintos
-    # porque los tres terminan parecido.
-    claves = [G._claves(v.get("palabras") or []) for v in (videos or [])]
-
-    # Se puntua TODO primero y se reparte despues por puntaje, no por orden de
-    # guion. Antes ganaba el que se procesaba antes: la frase "vuelvan los que
-    # ya" esta en el guion 2 y en el 3, el 2 se la llevaba, y el 3 —que se llama
-    # justamente asi— terminaba con un segundo de sobras.
-    cand = []
-    for gi, g in enumerate(guiones or []):
-        for bi, b in enumerate(G.bloques(g.get("texto") or "")):
-            if len(b["palabras"]) < min_palabras:
-                continue
-            for k, v in enumerate(videos or []):
-                u = G._ubicar(claves[k], b["palabras"])
-                if u and u["score"] >= minimo:
-                    cand.append({"guion": gi, "orden": bi, "k": k,
-                                 "video": v.get("id"), "titulo": b["titulo"],
-                                 "i": u["i"], "size": u["size"],
-                                 "score": u["score"]})
-    # Mejor puntaje primero. A igualdad se ordena por guion y bloque para que el
-    # resultado no dependa del orden en que se recorrieron los videos.
-    cand.sort(key=lambda x: (-x["score"], x["guion"], x["orden"], x["k"], x["i"]))
-
-    resuelto = set()      # (guion, bloque) que ya encontro su video
-    ocupado = {}          # k -> rangos de palabras ya reclamados en ese video
-    porBloque = []
-    for c in cand:
-        if (c["guion"], c["orden"]) in resuelto:
-            continue
-        a, b = c["i"], c["i"] + c["size"]
-        # Un pedazo de clip se reclama una sola vez. Sin esto el mismo tramo
-        # sale dos veces en la entrega: medido sobre un caso real, 86 segundos
-        # emitidos de un clip que tiene 36 de material distinto.
-        if any(a < hasta and b > desde for desde, hasta in ocupado.get(c["k"], ())):
-            continue
-        resuelto.add((c["guion"], c["orden"]))
-        ocupado.setdefault(c["k"], []).append((a, b))
-        porBloque.append({"guion": c["guion"], "orden": c["orden"],
-                          "video": c["video"], "i": c["i"], "size": c["size"],
-                          "score": round(c["score"], 3), "titulo": c["titulo"]})
-
     porId = {v.get("id"): v for v in (videos or [])}
+    gtextos = [g.get("texto") or "" for g in (guiones or [])]
+    coberturas = []           # [clip][guion] -> resultado de _cobertura
+    tabla = []                # [clip][guion] -> score
 
-    # Cuanto del clip se lleva cada bloque. Si el clip entero es ese bloque
-    # —que es el caso normal— se toma completo: recortar por donde calzo la
-    # transcripcion se come el arranque y el cierre de la frase.
-    for vid, v in porId.items():
-        mios = sorted([x for x in porBloque if x["video"] == vid], key=lambda x: x["i"])
-        dur = float(v.get("duracion") or 0)
+    for v in (videos or []):
         pal = v.get("palabras") or []
-        for k, x in enumerate(mios):
-            a, b = _tiempos(pal, x["i"], x["size"])
-            if len(mios) == 1:
-                x["inicio"], x["fin"] = 0.0, dur
-            else:
-                x["inicio"] = 0.0 if (k == 0 and a <= borde) else a
-                x["fin"] = dur if (k == len(mios) - 1 and dur - b <= borde) else b
+        fila_c = [_cobertura(pal, txt) for txt in gtextos]
+        coberturas.append(fila_c)
+        tabla.append([(c["score"] if c else 0.0) for c in fila_c])
+
+    asignado, dudosos = {}, []
+    for k, fila in enumerate(tabla):
+        if not fila:
+            continue
+        orden = sorted(range(len(fila)), key=lambda i: -fila[i])
+        mejor = orden[0]
+        segundo = fila[orden[1]] if len(orden) > 1 else 0.0
+        if fila[mejor] < COBERTURA_PISO:
+            continue
+        if segundo > 0 and fila[mejor] < segundo * VENTAJA_MINIMA:
+            dudosos.append({"video": (videos[k] or {}).get("id"),
+                            "entre": [(guiones[i].get("titulo") or "") for i in orden[:2]],
+                            "score": round(fila[mejor], 3)})
+            continue
+        asignado.setdefault(mejor, []).append(k)
 
     piezas, sin_grabar = [], []
     for gi, g in enumerate(guiones or []):
-        tramos = sorted([x for x in porBloque if x["guion"] == gi],
-                        key=lambda x: x["orden"])
-        dur = round(sum(t["fin"] - t["inicio"] for t in tramos), 2)
-        if not tramos or dur < PIEZA_MINIMA_S:
+        # En orden de rodaje: un guion se graba de arriba abajo, asi que los
+        # clips que lo cubren vienen en ese orden.
+        ks = sorted(asignado.get(gi, []))
+        tramos, dur_total = [], 0.0
+        for k in ks:
+            d = float((videos[k] or {}).get("duracion") or 0)
+            if d <= 0:
+                continue
+            tramos.append({"video": videos[k].get("id"), "inicio": 0.0,
+                           "fin": round(d, 2), "score": round(tabla[k][gi], 3),
+                           "bloque": (g.get("titulo") or "")[:70]})
+            dur_total += d
+        if not tramos or dur_total < PIEZA_MINIMA_S:
             sin_grabar.append({"titulo": g.get("titulo") or "Guion",
-                               "score": round(max([t["score"] for t in tramos] or [0]), 2),
-                               "encontrado_s": dur if tramos else 0})
+                               "score": round(max([tabla[k][gi] for k in ks] or [0]), 3),
+                               "encontrado_s": round(dur_total, 2)})
             continue
-        total = sorted(set(b["titulo"] for b in G.bloques(g.get("texto") or "")
-                           if len(b["palabras"]) >= min_palabras))
+        # Que bloques del guion se llegaron a decir, sumando todos sus clips.
+        # Los bloques que devuelve mapa() no traen la lista de palabras, solo el
+        # titulo y si se encontro: filtrar por largo aca dejaba el conteo en 0/0.
+        dichos, total = set(), set()
+        for k in ks:
+            for b in ((coberturas[k][gi] or {}).get("bloques") or []):
+                t = b.get("titulo") or ""
+                total.add(t)
+                if b.get("encontrado"):
+                    dichos.add(t)
         piezas.append({
             "titulo": g.get("titulo") or "Guion",
-            "tramos": [{"video": t["video"], "inicio": t["inicio"], "fin": t["fin"],
-                        "score": t["score"], "bloque": t["titulo"][:70]} for t in tramos],
-            "duracion": dur,
-            "bloques": len(tramos), "bloques_total": len(total),
+            "tramos": tramos,
+            "duracion": round(dur_total, 2),
+            "bloques": len(dichos), "bloques_total": len(total),
             "score": round(sum(t["score"] for t in tramos) / float(len(tramos)), 3),
         })
 
-    usados = set(x["video"] for x in porBloque)
-    descartados = [{"video": v.get("id"),
-                    "duracion": round(float(v.get("duracion") or 0), 1)}
-                   for v in (videos or []) if v.get("id") not in usados]
+    usados = set()
+    for ks in asignado.values():
+        for k in ks:
+            usados.add((videos[k] or {}).get("id"))
+    porDudoso = {d["video"]: d for d in dudosos}
+    descartados = []
+    for v in (videos or []):
+        if v.get("id") in usados:
+            continue
+        d = porDudoso.get(v.get("id"))
+        descartados.append({"video": v.get("id"),
+                            "duracion": round(float(v.get("duracion") or 0), 1),
+                            "motivo": ("no se sabe si es " + " o " .join(d["entre"]))
+                                      if d else "no se parece a ningun guion"})
     return piezas, sin_grabar, descartados
