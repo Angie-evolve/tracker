@@ -15593,13 +15593,16 @@ function _edComprimir(f, onProg){
         if(fps<12) return rej(new Error('la compresión salió a '+fps.toFixed(1)+' cuadros por '
           +'segundo porque el navegador frenó el dibujado. Dejá esta pestaña abierta y adelante '
           +'mientras comprime, y volvé a intentar.'));
-        // Un solo tirón sin dibujar ya arruina el clip aunque el promedio cierre:
-        // esos segundos quedan con la imagen congelada y el audio siguiendo.
-        if(huecoMax>500) return rej(new Error('la imagen se congeló '
-          +(huecoMax/1000).toFixed(1)+' segundos mientras comprimía. Dejá esta pestaña '
-          +'adelante y sin minimizar, y volvé a intentar.'));
+        // El corte es por el TOTAL de imagen quieta, no por un tiron suelto:
+        // medido sobre clips reales, uno roto tenia 13.2s congelados en 31 —el
+        // 44%— y los sanos entre 0 y 1%. Un hueco de medio segundo es un hipo
+        // del navegador y no arruina nada; con ese umbral se rechazaba todo.
+        if(perdido > Math.max(2000, dur*1000*0.05))
+          return rej(new Error('la imagen quedó congelada '+(perdido/1000).toFixed(1)
+            +' de los '+dur.toFixed(0)+' segundos porque el navegador frenó el dibujado. '
+            +'Dejá esta pestaña adelante y sin minimizar, y volvé a intentar.'));
         // Y si la copia quedó mas corta que el original, se perdio contenido.
-        if(v.duration && dur && (dur-v.currentTime)>Math.max(0.6, dur*0.03))
+        if(v.duration && dur && (dur-v.currentTime)>Math.max(1.5, dur*0.08))
           return rej(new Error('la compresión cortó en el segundo '+v.currentTime.toFixed(1)
             +' de '+dur.toFixed(1)+': se perdió el final. Volvé a intentar con esta pestaña '
             +'adelante.'));
@@ -15609,7 +15612,14 @@ function _edComprimir(f, onProg){
         if(v.ended) return;
         ctx.drawImage(v,0,0,ancho,alto);
         var ahora=(window.performance&&performance.now)?performance.now():Date.now();
-        if(ultimoDibujo) huecoMax=Math.max(huecoMax, ahora-ultimoDibujo);
+        if(ultimoDibujo){
+          var hueco=ahora-ultimoDibujo;
+          if(hueco>huecoMax) huecoMax=hueco;
+          // Lo que se perdio de verdad: un cuadro tarda ~33 ms, asi que por
+          // arriba de 150 ms hubo imagen quieta. Se acumula, porque lo que
+          // arruina un clip es el total y no un hipo suelto.
+          if(hueco>150) perdido+=(hueco-150);
+        }
         ultimoDibujo=ahora;
         dibujados++;
         onProg(Math.min(v.currentTime/dur,1));
@@ -15629,7 +15639,7 @@ function _edComprimir(f, onProg){
       // El hueco mas largo entre dos dibujos. El promedio no alcanza: un clip
       // real se trabo diez segundos en el medio y termino con el 44% de los
       // cuadros congelados, pero el promedio del resto daba bien y pasaba.
-      var huecoMax=0, ultimoDibujo=0;
+      var huecoMax=0, ultimoDibujo=0, perdido=0;
       var arranco=false;
       var primerCuadro=function(){
         if(arranco) return;
