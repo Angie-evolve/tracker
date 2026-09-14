@@ -59,6 +59,16 @@ def duracion_total(clips):
     return round(sum(b-a for a,b in clips), 3)
 
 def render_final(path, clips, out_path):
+    """
+    NO lo usa el Editor con IA: esto es solo para correr auto_editor.py suelto
+    desde la linea de comandos.
+
+    El pipeline arma con concatenar() y render_planos() de worker.py, que van en
+    una sola pasada por filtros. Este de aca corta a archivos y los pega con el
+    demuxer concat, que copia sin decodificar y por lo tanto no puede mezclar
+    nada en las junturas. Se aclara porque ya paso que alguien revisara este
+    archivo creyendo que era el que corre.
+    """
     """Modo 'sin CapCut': corta y concatena de una, produce el video final."""
     tmp_dir = os.path.splitext(out_path)[0] + "_tmp_clips"
     os.makedirs(tmp_dir, exist_ok=True)

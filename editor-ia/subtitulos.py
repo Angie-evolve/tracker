@@ -214,23 +214,26 @@ def armar_ass(palabras, ancho, alto, por_bloque=3, fondo_rel=0.645,
     bls = bloques(palabras, por_bloque)
     for bi, b in enumerate(bls):
         sigue = bls[bi + 1][0] if bi + 1 < len(bls) else None
-        for k in range(len(b)):
-            visible = " ".join(_txt(w.get("word")) for w in b[:k + 1])
-            ini = float(b[k].get("start", 0))
-            if k + 1 < len(b):
-                fin = float(b[k + 1].get("start", 0))
-            else:
-                # El ultimo pedazo del bloque se queda hasta que arranca el
-                # siguiente, pero no mas de COLA_MAX despues de dejar de hablar.
-                fin = float(b[k].get("end", 0)) + COLA_MAX
-                if sigue is not None:
-                    fin = min(fin, float(sigue.get("start", 0)))
-            if fin <= ini:
-                fin = ini + 0.12
-            # \blur difumina borde y sombra. Es lo que hace que el canto se
-            # lea como un halo y no como un contorno dibujado.
-            lineas.append("Dialogue: 0,%s,%s,Karaoke,,0,0,0,,{\\blur%s}%s"
-                          % (_t(ini), _t(fin), blur, visible))
+        # Un evento por bloque, con el texto entero. Antes se emitia uno por
+        # cada palabra que se sumaba, para que el cartel se armara palabra por
+        # palabra. En pantalla eso no se lee como un efecto: la primera palabra
+        # se queda quieta mientras el bloque crece a su alrededor —"evaluamos",
+        # "evaluamos logros", "evaluamos logros concretos,"— y de un vistazo
+        # parece que el subtitulo repite texto.
+        visible = " ".join(_txt(w.get("word")) for w in b)
+        ini = float(b[0].get("start", 0))
+        # Se queda hasta que arranca el siguiente, pero no mas de COLA_MAX
+        # despues de dejar de hablar: si no, el cartel queda colgado en una
+        # pausa larga.
+        fin = float(b[-1].get("end", 0)) + COLA_MAX
+        if sigue is not None:
+            fin = min(fin, float(sigue.get("start", 0)))
+        if fin <= ini:
+            fin = ini + 0.12
+        # \blur difumina borde y sombra. Es lo que hace que el canto se
+        # lea como un halo y no como un contorno dibujado.
+        lineas.append("Dialogue: 0,%s,%s,Karaoke,,0,0,0,,{\\blur%s}%s"
+                      % (_t(ini), _t(fin), blur, visible))
     return "\n".join(cab + lineas) + "\n"
 
 
