@@ -141,6 +141,13 @@ def _tiempos(palabras, i, size):
             round(float(palabras[min(i + size - 1, len(palabras) - 1)].get("end", 0)), 2))
 
 
+# Menos que esto no es un anuncio, es ruido que calzo de casualidad. Sirve para
+# distinguir "lo grabo y lo reconoci" de "no lo grabo": sin este piso salian
+# piezas de un segundo hechas de palabras sueltas —"te no con cuanto mas"— que
+# se ven como entregables y no lo son.
+PIEZA_MINIMA_S = 3.0
+
+
 def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     """
     Arma cada guion juntando los clips que dicen sus bloques, en orden.
@@ -166,49 +173,43 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     # porque los tres terminan parecido.
     claves = [G._claves(v.get("palabras") or []) for v in (videos or [])]
 
-    # Hasta donde ya se uso cada video, en palabras. Sin esto, dos bloques
-    # distintos podian reclamar el MISMO pedazo de clip y ese pedazo salia dos
-    # veces en la pieza final. Medido sobre un caso real: 86 segundos emitidos
-    # de un clip que solo tiene 36 de material distinto, casi la mitad del
-    # video repetida.
-    #
-    # Avanzar el corte tambien ordena adentro del clip, que es como se habla:
-    # el bloque 2 se dice despues del bloque 1, no antes. Y vale entre guiones y
-    # no solo adentro de uno, para que dos guiones no se lleven el mismo cierre.
-    usado = {}
-
-    porBloque = []
+    # Se puntua TODO primero y se reparte despues por puntaje, no por orden de
+    # guion. Antes ganaba el que se procesaba antes: la frase "vuelvan los que
+    # ya" esta en el guion 2 y en el 3, el 2 se la llevaba, y el 3 —que se llama
+    # justamente asi— terminaba con un segundo de sobras.
+    cand = []
     for gi, g in enumerate(guiones or []):
-        cursor = 0
         for bi, b in enumerate(G.bloques(g.get("texto") or "")):
             if len(b["palabras"]) < min_palabras:
                 continue
-            mejor, mejorGlobal = None, None
             for k, v in enumerate(videos or []):
-                u = G._ubicar(claves[k], b["palabras"], usado.get(k, 0))
-                if not u:
-                    continue
-                cand = dict(u, video=v.get("id"), k=k)
-                if not mejorGlobal or u["score"] > mejorGlobal["score"]:
-                    mejorGlobal = cand
-                if k >= cursor and (not mejor or u["score"] > mejor["score"]):
-                    mejor = cand
-            # Primero el mejor de aca en adelante. Si ninguno llega, se acepta
-            # el mejor de todos pero exigiendole mas: puede ser una toma que se
-            # rehizo fuera de orden.
-            elegido = None
-            if mejor and mejor["score"] >= minimo:
-                elegido = mejor
-            elif mejorGlobal and mejorGlobal["score"] >= minimo * 2:
-                elegido = mejorGlobal
-            if not elegido:
-                continue
-            cursor = elegido["k"] + 1
-            usado[elegido["k"]] = elegido["i"] + elegido["size"]
-            porBloque.append({"guion": gi, "orden": bi, "video": elegido["video"],
-                              "i": elegido["i"], "size": elegido["size"],
-                              "score": round(elegido["score"], 3),
-                              "titulo": b["titulo"]})
+                u = G._ubicar(claves[k], b["palabras"])
+                if u and u["score"] >= minimo:
+                    cand.append({"guion": gi, "orden": bi, "k": k,
+                                 "video": v.get("id"), "titulo": b["titulo"],
+                                 "i": u["i"], "size": u["size"],
+                                 "score": u["score"]})
+    # Mejor puntaje primero. A igualdad se ordena por guion y bloque para que el
+    # resultado no dependa del orden en que se recorrieron los videos.
+    cand.sort(key=lambda x: (-x["score"], x["guion"], x["orden"], x["k"], x["i"]))
+
+    resuelto = set()      # (guion, bloque) que ya encontro su video
+    ocupado = {}          # k -> rangos de palabras ya reclamados en ese video
+    porBloque = []
+    for c in cand:
+        if (c["guion"], c["orden"]) in resuelto:
+            continue
+        a, b = c["i"], c["i"] + c["size"]
+        # Un pedazo de clip se reclama una sola vez. Sin esto el mismo tramo
+        # sale dos veces en la entrega: medido sobre un caso real, 86 segundos
+        # emitidos de un clip que tiene 36 de material distinto.
+        if any(a < hasta and b > desde for desde, hasta in ocupado.get(c["k"], ())):
+            continue
+        resuelto.add((c["guion"], c["orden"]))
+        ocupado.setdefault(c["k"], []).append((a, b))
+        porBloque.append({"guion": c["guion"], "orden": c["orden"],
+                          "video": c["video"], "i": c["i"], "size": c["size"],
+                          "score": round(c["score"], 3), "titulo": c["titulo"]})
 
     porId = {v.get("id"): v for v in (videos or [])}
 
@@ -231,8 +232,11 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     for gi, g in enumerate(guiones or []):
         tramos = sorted([x for x in porBloque if x["guion"] == gi],
                         key=lambda x: x["orden"])
-        if not tramos:
-            sin_grabar.append({"titulo": g.get("titulo") or "Guion", "score": 0})
+        dur = round(sum(t["fin"] - t["inicio"] for t in tramos), 2)
+        if not tramos or dur < PIEZA_MINIMA_S:
+            sin_grabar.append({"titulo": g.get("titulo") or "Guion",
+                               "score": round(max([t["score"] for t in tramos] or [0]), 2),
+                               "encontrado_s": dur if tramos else 0})
             continue
         total = sorted(set(b["titulo"] for b in G.bloques(g.get("texto") or "")
                            if len(b["palabras"]) >= min_palabras))
@@ -240,7 +244,7 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
             "titulo": g.get("titulo") or "Guion",
             "tramos": [{"video": t["video"], "inicio": t["inicio"], "fin": t["fin"],
                         "score": t["score"], "bloque": t["titulo"][:70]} for t in tramos],
-            "duracion": round(sum(t["fin"] - t["inicio"] for t in tramos), 2),
+            "duracion": dur,
             "bloques": len(tramos), "bloques_total": len(total),
             "score": round(sum(t["score"] for t in tramos) / float(len(tramos)), 3),
         })
