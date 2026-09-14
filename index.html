@@ -15136,6 +15136,28 @@ async function _edLeerPdf(file){
   return partes.join('\n\n').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
 }
 
+// Un .html —un Google Doc exportado, por ejemplo— entra por el accept "text/*"
+// y se cargaba con las etiquetas adentro. El worker despues compara ese texto
+// contra lo que se dijo en camara, asi que el marcado arruina el emparejamiento
+// sin que nada avise: el guion parece cargado y en realidad no sirve.
+function _edDesmarcar(t){
+  if(!/<\s*(!doctype|html|body|head|div|p|span|table)\b/i.test(t)) return t;
+  var doc;
+  try{ doc=new DOMParser().parseFromString(t,'text/html'); }catch(e){ return t; }
+  if(!doc||!doc.body) return t;
+  Array.prototype.forEach.call(doc.querySelectorAll('script,style,head,noscript'),
+    function(x){ x.remove(); });
+  // Cada bloque tiene que terminar en una linea en blanco: es lo que despues
+  // separa los parrafos del guion.
+  Array.prototype.forEach.call(doc.querySelectorAll('p,div,br,li,h1,h2,h3,h4,tr'),
+    function(x){ x.insertAdjacentText('afterend','\n\n'); });
+  return String(doc.body.textContent||'')
+    .replace(/\u00a0/g,' ')
+    .replace(/[ \t]+\n/g,'\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
 function edGuionArchivo(inp){
   var f=inp&&inp.files&&inp.files[0];
   if(inp) inp.value='';
@@ -15172,10 +15194,13 @@ function edGuionArchivo(inp){
       toast('Eso no parece texto. Guardalo como .txt o pegá el contenido.','amber');
       return;
     }
+    var limpio=_edDesmarcar(t);
     var e=_edEstado();
-    e.guion=t.trim(); e.guionId='';
+    e.guion=limpio.trim(); e.guionId='';
     _edPintar();
-    toast('Guion cargado desde '+f.name);
+    toast(limpio===t
+      ? ('Guion cargado desde '+f.name)
+      : ('Guion cargado desde '+f.name+' · le saqué el código HTML, quedó solo el texto'));
   };
   r.readAsText(f);
 }
@@ -15599,7 +15624,10 @@ async function edSubir(modo){
     // Los guiones se separan acá y viajan ya partidos: el worker los usa tal
     // cual. Mostrarlos antes de subir es lo que permite darse cuenta de que
     // salieron mal separados sin haber esperado la subida entera.
-    var guiones=String(e.guion||'').trim()?edSepararGuiones(e.guion):[];
+    // Por las dudas tambien acá: si alguien pegó el HTML a mano en vez de subir
+    // el archivo, este es el ultimo lugar antes de que salga para el worker.
+    var texto=_edDesmarcar(String(e.guion||''));
+    var guiones=texto.trim()?edSepararGuiones(texto):[];
 
     decir('Armando la cola…');
     var filas=await sbFetch('trabajos_video',{
