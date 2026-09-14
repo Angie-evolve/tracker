@@ -16160,6 +16160,34 @@ function _edCorreccionHtml(f){
   return h+'</div>';
 }
 
+// Volver a renderizar lo mismo sin volver a subir nada. Los videos ya estan en
+// el bucket: lo unico que cambia entre una corrida y la siguiente es el codigo
+// del worker, asi que recomprimir y resubir medio giga para probar un arreglo
+// es tiempo regalado. Se encola una fila nueva con las mismas entradas.
+async function edRehacer(id){
+  var e=_edEstado();
+  var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0]
+        || ((e.fila && String(e.fila.id)===String(id)) ? e.fila : null);
+  if(!f){ toast('No encontré ese trabajo. Actualizá y probá de nuevo.','amber'); return; }
+  var vs=(f.videos&&f.videos.length)?f.videos:(f.video_path?[f.video_path]:[]);
+  if(!vs.length){ toast('Ese trabajo no tiene los videos guardados, hay que subirlos de nuevo.','amber'); return; }
+  var cuantos=vs.length+' video'+(vs.length===1?'':'s');
+  if(!confirm('Rehacer con los mismos '+cuantos+' que ya están subidos?\n\n'
+    +'No se vuelve a subir ni a comprimir nada. El trabajo anterior queda como está.')) return;
+  try{
+    var filas=await sbFetch('trabajos_video',{ method:'POST',
+      headers:{'Prefer':'return=representation'},
+      body:JSON.stringify({ video_path:f.video_path||vs[0], videos:vs,
+                            guiones:f.guiones||[], opciones:_edOpciones(),
+                            modo:f.modo||'render', cliente_id:f.cliente_id||null }) });
+    var nueva=(filas&&filas[0])||null;
+    if(!nueva) throw new Error('la fila no volvió del insert');
+    e.fila=nueva; e.jobId=nueva.id;
+    edPoll(); edCargar();
+    toast('Encolado de nuevo. Los videos ya estaban subidos, así que arranca directo.');
+  }catch(err){ toast(_edMsg(err.message),'red'); }
+}
+
 function _edTandaHtml(f){
   var an=f.analisis||{}, pz=f.piezas||[];
   var listas=pz.filter(function(x){ return x.path; });
@@ -16170,7 +16198,12 @@ function _edTandaHtml(f){
     // trae la lista: sin esto la etiqueta decia "tanda de 1 video".
     +(function(){ var n=an.videos||(f.videos||[]).length||1;
         return '<h3>'+esc(cab)+' <span class="ed-badge">tanda de '+n+' video'
-          +(n===1?'':'s')+'</span></h3>'; })();
+          +(n===1?'':'s')+'</span>'
+          +((f.estado==='listo'||f.estado==='error')
+            ? ('<button class="btn btn-sm" onclick="edRehacer(\''+esc(String(f.id))+'\')" '
+               +'style="float:right;color:var(--text3)" title="Volver a renderizar con los '
+               +'mismos videos, sin subir nada">Rehacer</button>') : '')
+          +'</h3>'; })();
 
   if(f.estado==='error'){
     h+='<div class="s" style="color:var(--redx)">'+esc(f.error||'sin detalle')+'</div>';
@@ -16273,7 +16306,12 @@ function _edTrabajoHtml(f){
   var cab={pendiente:'En cola', procesando:'Procesando', listo:'Listo', error:'Falló'}[f.estado]||f.estado;
   var col=f.estado==='error'?'var(--redx)':(f.estado==='listo'?'var(--accent)':'var(--amberx)');
   var h='<div class="ed-panel">'
-    +'<h3>'+esc(cab)+' <span class="ed-badge">'+(f.modo==='render'?'video final':'plan para CapCut')+'</span></h3>';
+    +'<h3>'+esc(cab)+' <span class="ed-badge">'+(f.modo==='render'?'video final':'plan para CapCut')+'</span>'
+    +((f.estado==='listo'||f.estado==='error')
+      ? ('<button class="btn btn-sm" onclick="edRehacer(\''+esc(String(f.id))+'\')" '
+         +'style="float:right;color:var(--text3)" title="Volver a renderizar con el mismo '
+         +'video, sin subirlo de nuevo">Rehacer</button>') : '')
+    +'</h3>';
   if(f.estado==='error'){
     h+='<div class="s" style="color:'+col+'">'+esc(f.error||'sin detalle')+'</div>';
   } else if(!an){
@@ -16462,6 +16500,9 @@ function _edCuerpo(){
           +(x.estado==='listo'&&!n&&x.modo!=='correccion'
             ?('<button class="btn btn-sm" onclick="edBajar(\''+esc(x.resultado_path||'')+'\',\'\')">Descargar</button>')
             :'')
+          +'<button class="btn btn-sm" onclick="edRehacer(\''+esc(String(x.id))+'\')" '
+            +'title="Volver a renderizar sin subir nada" '
+            +'style="color:var(--text3);padding:4px 9px">Rehacer</button>'
           +'<button class="btn btn-sm" onclick="edBorrarTrabajo(\''+esc(String(x.id))+'\')" '
             +'title="Borrar el trabajo y sus archivos" '
             +'style="color:var(--text3);padding:4px 9px">&times;</button>'
