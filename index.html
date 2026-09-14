@@ -15480,7 +15480,13 @@ function _edComprimir(f, onProg){
     var url=URL.createObjectURL(f);
     var v=document.createElement('video');
     v.src=url; v.muted=true; v.playsInline=true; v.preload='auto';
-    v.style.cssText='position:fixed;left:-9999px;width:2px;height:2px';
+    // Chiquito y casi transparente, pero DENTRO de la pantalla. Fuera de ella
+    // —que era como estaba, en left:-9999px— Chrome lo trata como multimedia de
+    // fondo y lo pausa para ahorrar energia: "video-only background media was
+    // paused to save power". El resultado era una copia de un cuadro por
+    // segundo, o directamente un error al reproducir.
+    v.style.cssText='position:fixed;left:0;bottom:0;width:2px;height:2px;'
+      +'opacity:.01;pointer-events:none';
     document.body.appendChild(v);
     var limpiar=function(){ try{ URL.revokeObjectURL(url); v.remove(); }catch(e){} };
     v.onerror=function(){ limpiar(); rej(new Error('el navegador no puede leer este video')); };
@@ -15501,12 +15507,20 @@ function _edComprimir(f, onProg){
           +_edMaxMin()+' minutos. Cortalo en partes.'));
         return;
       }
-      if(bVideo>2500000) bVideo=2500000;
+      // El techo era 2.5 Mbps y el lado largo 1280, asi que un clip de 1080x1920
+      // apenas pasado del limite entraba como 720p. Eso dejaba el resto del
+      // trabajo sin sentido: por mas que el servidor encode bien, la fuente ya
+      // venia achicada. Con 6 Mbps y 1920, un clip de 40s da unos 30 MB, bien
+      // abajo del tope, y el 1080 llega entero.
+      // Antes no se podia: MediaRecorder reventaba a 1080x1920 con el codec
+      // fijado. Probado de nuevo ahora que el tipo de salida va sin fijar,
+      // codifica sin problema.
+      if(bVideo>6000000) bVideo=6000000;
       // Se limita el lado LARGO. Mirando solo el ancho, un video vertical de
       // 1080x1920 pasaba sin achicarse nada.
       var vw=v.videoWidth||1280, vh=v.videoHeight||720;
       var largo=Math.max(vw,vh);
-      var esc=(largo>1280)?(1280/largo):1;
+      var esc=(largo>1920)?(1920/largo):1;
       var ancho=Math.round(vw*esc), alto=Math.round(vh*esc);
       if(ancho%2) ancho++;
       if(alto%2) alto++;
@@ -15535,11 +15549,19 @@ function _edComprimir(f, onProg){
         if(falla) return rej(new Error('la compresión falló ('+falla+')'));
         if(blob.size<1024) return rej(new Error('la compresión salió vacía: el navegador no '
           +'pudo codificar este video'));
+        // Menos de 12 cuadros por segundo ya no es video. Vale la pena cortar
+        // acá: subir esto significa esperar el render entero para recién
+        // entonces ver que quedó congelado.
+        var fps=dibujados/Math.max(dur,0.1);
+        if(fps<12) return rej(new Error('la compresión salió a '+fps.toFixed(1)+' cuadros por '
+          +'segundo porque el navegador frenó el dibujado. Dejá esta pestaña abierta y adelante '
+          +'mientras comprime, y volvé a intentar.'));
         res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
       };
       var pintar=function(){
         if(v.ended) return;
         ctx.drawImage(v,0,0,ancho,alto);
+        dibujados++;
         onProg(Math.min(v.currentTime/dur,1));
         if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(pintar);
         else requestAnimationFrame(pintar);
@@ -15549,6 +15571,11 @@ function _edComprimir(f, onProg){
       // play(): lo que tarda en empezar a reproducir se grababa igual y la
       // copia salia mas larga que el original. En modo CapCut eso corre todo
       // el plan de corte contra el video real.
+      // Cuantos cuadros se llegaron a dibujar. Comprimir depende de que el video
+      // se reproduzca de verdad, y el navegador frena el dibujado cuando la
+      // pestana pierde el foco: ahi sale una copia de un cuadro por segundo,
+      // que no sirve para nada y no se nota hasta ver el resultado.
+      var dibujados=0;
       var arranco=false;
       var primerCuadro=function(){
         if(arranco) return;
