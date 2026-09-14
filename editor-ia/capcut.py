@@ -308,6 +308,18 @@ if [ ! -d "./$NOMBRE" ]; then
   fin 1
 fi
 
+# Que la carpeta exista no alcanza. Si el origen no es un proyecto entero y
+# igual se borra el destino, se destruye una instalacion que estaba bien: paso
+# de verdad, con una carpeta que solo traia el instalador de PowerShell.
+if [ ! -f "./$NOMBRE/draft_info.json" ] || [ ! -f "./$NOMBRE/Resources/video.mp4" ]; then
+  echo "La carpeta '$NOMBRE' que esta al lado de este archivo no es el proyecto"
+  echo "completo: le falta el draft_info.json o el video."
+  echo ""
+  echo "No toque nada, para no pisar una instalacion que este bien."
+  echo "Corre el instalador desde la carpeta que salio del .zip del proyecto."
+  fin 1
+fi
+
 PROY="$HOME/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 if [ ! -d "$PROY" ]; then
   echo "No encontre la carpeta de proyectos de CapCut."
@@ -449,6 +461,12 @@ REM Ejecutarlo desde adentro del .zip es el error mas comun: Windows copia a
 REM una carpeta temporal SOLO este archivo, y el proyecto se queda en el zip.
 if not exist "%NOMBRE%\" goto sin_carpeta
 
+REM Que la carpeta exista no alcanza. Si el origen no es un proyecto entero y
+REM igual se borra el destino, se destruye una instalacion que estaba bien:
+REM paso de verdad, con una carpeta que solo traia el _rutas.ps1.
+if not exist "%NOMBRE%\draft_info.json" goto origen_incompleto
+if not exist "%NOMBRE%\Resources\video.mp4" goto origen_incompleto
+
 REM La carpeta de proyectos cambia segun version e instalacion, asi que se
 REM prueban las conocidas en vez de dar una por sentada.
 set "PROY="
@@ -493,6 +511,18 @@ echo   Abri CapCut: "%NOMBRE%" va a estar en la lista de proyectos.
 echo.
 pause
 exit /b 0
+
+:origen_incompleto
+echo   La carpeta "%NOMBRE%" que esta al lado de este archivo no es el
+echo   proyecto completo: le falta el draft_info.json o el video.
+echo.
+echo   No toque nada, para no pisar una instalacion que este bien.
+echo.
+echo   Corre este instalador desde la carpeta que salio del .zip original
+echo   del proyecto, no desde una carpeta con parches sueltos.
+echo.
+pause
+exit /b 1
 
 :sin_carpeta
 echo   No encuentro la carpeta del proyecto al lado de este archivo.
