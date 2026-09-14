@@ -12,6 +12,8 @@ mejor calza. Lo que sobra se avisa en vez de desaparecer: un guion que no se
 grabo y un tramo de video que no corresponde a ningun guion son las dos cosas
 que hay que saber antes de entregar.
 """
+import re
+
 import guion as G
 
 
@@ -156,6 +158,37 @@ PIEZA_MINIMA_S = 3.0
 VENTAJA_MINIMA = 1.3
 COBERTURA_PISO = 0.04
 
+# El cierre comun: tres beats iguales en todos los anuncios de concepto, que se
+# graban UNA vez y se pegan atras de cada uno. En el documento vienen como una
+# seccion aparte al final, y cada anuncio que lo lleva lo declara con "+ cierre
+# comun". El anuncio que trae su cierre escrito adentro no lo declara y no lo
+# recibe.
+_RX_CIERRE_SECCION = re.compile(r"^\s*el\s+cierre\s+com[uú]n\s*$", re.I | re.M)
+_RX_CIERRE_MARCA   = re.compile(r"^\s*\+\s*cierre\s+com[uú]n\b", re.I | re.M)
+
+
+def _separar_cierre(guiones):
+    """
+    Saca el cierre comun a un guion propio y anota quien lo lleva.
+
+    El separador de guiones parte por el indice numerado, asi que la seccion del
+    cierre —que viene despues del ultimo anuncio— queda pegada al final de ese
+    ultimo. Aca se despega: sin esto, el cierre cuenta como bloques del anuncio
+    06 y ademas no hay con que comparar los clips para saber si se grabo.
+    """
+    salida, cierre = [], None
+    for g in (guiones or []):
+        txt = g.get("texto") or ""
+        m = _RX_CIERRE_SECCION.search(txt)
+        if m and cierre is None:
+            antes, despues = txt[:m.start()].strip(), txt[m.end():].strip()
+            if despues:
+                cierre = {"titulo": "El cierre común", "texto": despues}
+            txt = antes
+        salida.append(dict(g, texto=txt,
+                           _lleva_cierre=bool(_RX_CIERRE_MARCA.search(txt))))
+    return salida, cierre
+
 
 def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     """
@@ -175,6 +208,12 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
     minimo y borde quedan aceptados para no romper a quien ya llama a esta
     funcion, pero ya no se usan: el umbral ahora es relativo.
     """
+    guiones, cierre = _separar_cierre(guiones)
+    # El cierre entra como un guion mas para que el emparejamiento le busque su
+    # clip igual que a cualquier otro; despues no se entrega solo, se pega.
+    i_cierre = len(guiones) if cierre else -1
+    if cierre:
+        guiones = list(guiones) + [cierre]
     porId = {v.get("id"): v for v in (videos or [])}
     gtextos = [g.get("texto") or "" for g in (guiones or [])]
     coberturas = []           # [clip][guion] -> resultado de _cobertura
@@ -202,11 +241,26 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
             continue
         asignado.setdefault(mejor, []).append(k)
 
+    # Los clips del cierre, si se grabo. Se pegan atras de cada anuncio que lo
+    # declara, asi que el mismo clip aparece en varias entregas a proposito: se
+    # graba una vez y se reusa, que es justo lo que dice el guion.
+    ks_cierre = sorted(asignado.get(i_cierre, [])) if i_cierre >= 0 else []
+
     piezas, sin_grabar = [], []
     for gi, g in enumerate(guiones or []):
+        if gi == i_cierre:
+            # El cierre no es una entrega: es una parte de las otras.
+            if not ks_cierre:
+                sin_grabar.append({"titulo": "El cierre común", "score": 0,
+                                   "nota": "lo llevan " + str(sum(
+                                       1 for x in guiones if x.get("_lleva_cierre")))
+                                       + " anuncios y no está grabado"})
+            continue
         # En orden de rodaje: un guion se graba de arriba abajo, asi que los
         # clips que lo cubren vienen en ese orden.
         ks = sorted(asignado.get(gi, []))
+        if g.get("_lleva_cierre") and ks and ks_cierre:
+            ks = ks + [k for k in ks_cierre if k not in ks]
         tramos, dur_total = [], 0.0
         for k in ks:
             d = float((videos[k] or {}).get("duracion") or 0)
@@ -226,6 +280,8 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
         # titulo y si se encontro: filtrar por largo aca dejaba el conteo en 0/0.
         dichos, total = set(), set()
         for k in ks:
+            if k in ks_cierre and k not in asignado.get(gi, []):
+                continue          # el clip del cierre no cubre bloques de este guion
             for b in ((coberturas[k][gi] or {}).get("bloques") or []):
                 t = b.get("titulo") or ""
                 total.add(t)
