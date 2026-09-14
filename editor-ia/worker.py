@@ -11,12 +11,13 @@ Variables de entorno (ninguna va nunca al frontend):
     WHISPER_MODELO               opcional, default 'small'
     INTERVALO                    opcional, segundos entre vueltas (default 8)
 """
-import os, sys, re, time, math, json, array, argparse, tempfile, subprocess, traceback
+import os, sys, re, time, math, json, array, shutil, argparse, tempfile, subprocess, traceback
 import difflib
 import unicodedata
 import requests
 
 import auto_editor
+import capcut as CapCut
 import transcribe
 import decisiones as D
 import guion as Guion
@@ -504,6 +505,8 @@ def kbps_para(duracion, audio_kbps=128):
 
 
 FUENTES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+PLANTILLA_CAPCUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "capcut-plantilla")
 
 # Sin declarar el juego de caracteres, el navegador lee los bytes UTF-8 como
 # latin-1 y muestra "cuestiA³n" donde dice "cuestion".
@@ -910,6 +913,13 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
             else:
                 analisis["capcut_no"] = ("el corte sin subtítulos pesa %.0f MB y el tope "
                                          "es %d" % (mb, LIMITE_MB))
+            # El proyecto de CapCut sale del video SIN cortar y de la lista de
+            # tramos: CapCut hace el corte solo con los puntos de entrada y
+            # salida, asi que no hace falta prerenderizar nada.
+            zip_ = armar_proyecto_capcut(archivo, clips, palabras, sub, tmp, nombre)
+            if zip_ and os.path.getsize(zip_) <= LIMITE_MB * 1048576:
+                analisis["proyecto"] = subir(zip_, f"{carpeta}/{nombre}_capcut.zip",
+                                             "application/zip")
         except Exception as e:
             # Que falle el extra no puede tirar abajo la pieza, que ya esta.
             analisis["capcut_no"] = str(e)[:160]
@@ -932,6 +942,57 @@ def _editar(archivo, palabras, op, tmp, carpeta, nombre, modo):
     return analisis, subir(plan, f"{carpeta}/{nombre}.json", "application/json"), \
            subir(os.path.join(tmp, nombre + "_plan.srt"), f"{carpeta}/{nombre}.srt",
                  SRT_TIPO)
+
+
+def armar_proyecto_capcut(video, clips, palabras, sub, tmp, nombre):
+    """
+    El proyecto de CapCut, comprimido y listo para descomprimir y abrir.
+
+    Se entrega ADEMAS del video y del .srt, nunca en lugar de ellos: el formato
+    de CapCut no esta documentado y puede cambiar en cualquier actualizacion,
+    mientras que el .srt y el mp4 no dependen de nadie.
+
+    Va con el video adentro y con un instalador por sistema. CapCut exige la
+    ruta COMPLETA del archivo —con una relativa abre igual pero el clip queda en
+    rojo, probado— y aca no se puede saber en que maquina se va a descomprimir,
+    asi que la escribe el instalador del otro lado.
+    """
+    try:
+        base = os.path.join(tmp, "capcut_" + nombre)
+        carpeta = os.path.join(base, nombre)
+        os.makedirs(os.path.join(carpeta, "Resources"), exist_ok=True)
+        dentro = os.path.join(carpeta, "Resources", "video.mp4")
+        # Va el video SIN cortar, que es lo que hace que los cortes se puedan
+        # mover en CapCut. Pero entra al zip, y el zip tiene el mismo tope que
+        # todo lo demas: una copia tal cual daba 49.9 MB de 50. Asi que se
+        # recodifica apuntando a entrar, con el mismo calculo por duracion que
+        # usa el resto. Es material para editar, no la entrega final.
+        dur = auto_editor.ffprobe_duration(video)
+        kb = kbps_para(dur, audio_kbps=128)
+        kb = int(kb * 0.75) if kb else None       # deja lugar para los JSON
+        if kb and kb >= 300:
+            subprocess.run(["ffmpeg", "-y", "-i", video, "-c:v", "libx264",
+                            "-crf", str(CRF_ENTREGA), "-preset", PRESET,
+                            "-maxrate", "%dk" % kb, "-bufsize", "%dk" % (kb * 2),
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                            dentro, "-loglevel", "error"], check=True)
+        else:
+            shutil.copy2(video, dentro)
+        bloques = [{"inicio": float(b[0].get("start", 0)),
+                    "fin": float(b[-1].get("end", 0)),
+                    "texto": " ".join(str(w.get("word", "")) for w in b)}
+                   for b in Sub.bloques(palabras, int((sub or {}).get("palabras", 3)))]
+        ancho, alto = _dims(video)
+        CapCut.armar(PLANTILLA_CAPCUT, "Resources/video.mp4", clips, bloques,
+                     carpeta, nombre, dims=(ancho, alto),
+                     duracion_video=auto_editor.ffprobe_duration(video))
+        CapCut.escribir_instaladores(base, nombre)
+        zip_ = shutil.make_archive(os.path.join(tmp, nombre + "_capcut"), "zip", base)
+        return zip_
+    except Exception as e:
+        # Que falle el extra no puede tirar abajo la pieza, que ya esta.
+        print("   no pude armar el proyecto de CapCut:", e, flush=True)
+        return None
 
 
 def _slug(t, i):
@@ -1094,7 +1155,8 @@ def procesar(fila, tmp):
         salida.append(dict(base, duracion=an["duracion_final"],
                            ahorro_pct=an["ahorro_pct"], path=res, srt_path=srt,
                            capcut_path=an.get("capcut"),
-                           capcut_no=an.get("capcut_no")))
+                           capcut_no=an.get("capcut_no"),
+                           proyecto_path=an.get("proyecto")))
         marcar(fila["id"], piezas=salida)
 
     marcar(fila["id"], estado="listo", listo_at=_ahora(), piezas=salida,
