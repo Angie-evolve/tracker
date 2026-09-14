@@ -187,78 +187,231 @@ def armar(plantilla, video, clips, bloques, salida, nombre,
 # clip en rojo, "Media Not Found". Y el worker no puede saber la ruta, porque no
 # sabe en que maquina se va a descomprimir. Asi que la escribe el instalador, que
 # corre del lado de quien lo baja y ahi si conoce su propia carpeta.
+_RUTAS_PS1 = r"""# Le pone al proyecto las rutas de ESTA maquina.
+#
+# Va en un archivo aparte y no adentro del .bat a proposito: escapar comillas
+# de PowerShell dentro de un .bat es una fuente conocida de errores silenciosos,
+# y aca un error silencioso deja el proyecto sin aparecer en CapCut.
+param([Parameter(Mandatory=$true)][string]$Dest)
+$ErrorActionPreference = 'Stop'
+
+# En JSON la barra invertida va doblada.
+function Escapar([string]$p) { $p.Replace('\', '\\') }
+# En el reemplazo de una regex, el signo peso tiene significado propio.
+function Literal([string]$s) { $s.Replace('$', '$$') }
+
+$carpeta = (Resolve-Path $Dest).Path.TrimEnd('\')
+$raiz    = Split-Path -Parent $carpeta
+$video   = Join-Path $carpeta 'Resources\video.mp4'
+if (-not (Test-Path $video)) { throw "El proyecto vino sin el video: $video" }
+
+$cJson = Literal (Escapar $carpeta)
+$rJson = Literal (Escapar $raiz)
+
+foreach ($f in 'draft_info.json', 'draft_content.json', 'draft_meta_info.json') {
+  $p = Join-Path $carpeta $f
+  if (-not (Test-Path $p)) { continue }
+  $t = [IO.File]::ReadAllText($p)
+  # La ruta del video viene relativa. CapCut la necesita completa o el clip
+  # queda en rojo.
+  $t = $t.Replace('Resources/video.mp4', (Escapar $video))
+  # Y estas dos vienen con la ruta de la maquina que armo el proyecto. Si
+  # quedan asi, CapCut no lo muestra en la lista: es el motivo por el que
+  # antes no aparecia nada.
+  $t = [Regex]::Replace($t, '"draft_fold_path"\s*:\s*"[^"]*"', '"draft_fold_path": "' + $cJson + '"')
+  $t = [Regex]::Replace($t, '"draft_root_path"\s*:\s*"[^"]*"', '"draft_root_path": "' + $rJson + '"')
+  # La ruta relativa tiene que haber desaparecido. Ojo con buscarla suelta:
+  # la ruta nueva TERMINA en Resources/video.mp4, asi que sin las comillas de
+  # apertura cualquier chequeo da positivo siempre.
+  if ($t.Contains('"Resources/video.mp4"')) { throw "No pude reemplazar la ruta en $f" }
+  [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding($false)))
+}
+Write-Output 'rutas-ok'
+"""
+
+
 _INSTALAR_MAC = r"""#!/bin/bash
-# Doble click y listo: copia el proyecto a CapCut y le arregla la ruta del video.
+# Doble click y listo: copia el proyecto a CapCut y le arregla las rutas.
 cd "$(dirname "$0")" || exit 1
-PROY="$HOME/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 NOMBRE="__NOMBRE__"
+
+fin(){ echo ""; read -n 1 -s -r -p "Enter para cerrar"; echo ""; exit "$1"; }
+
+if [ ! -d "./$NOMBRE" ]; then
+  echo "No encuentro la carpeta del proyecto al lado de este archivo."
+  echo "Descomprimi el .zip primero y corre el instalador desde la carpeta."
+  fin 1
+fi
+
+PROY="$HOME/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 if [ ! -d "$PROY" ]; then
   echo "No encontre la carpeta de proyectos de CapCut."
   echo "Buscada en: $PROY"
   echo "Abri CapCut una vez y volve a intentar."
-  read -n 1 -s -r -p "Enter para cerrar"; exit 1
+  fin 1
 fi
+
 DEST="$PROY/$NOMBRE"
 rm -rf "$DEST"
-cp -R "./$NOMBRE" "$DEST" || { echo "No pude copiar."; read -n 1 -s -r; exit 1; }
+cp -R "./$NOMBRE" "$DEST" || { echo "No pude copiar a $DEST"; fin 1; }
+rm -f "$DEST/_rutas.ps1"
+
 VIDEO="$DEST/Resources/video.mp4"
-python3 - "$DEST" "$VIDEO" <<'PYFIN'
-import json, sys, os
-dest, video = sys.argv[1], sys.argv[2]
-for f in ("draft_info.json", "draft_content.json"):
-    r = os.path.join(dest, f)
-    if not os.path.exists(r): continue
-    d = json.load(open(r, encoding="utf-8"))
-    for m in d.get("materials", {}).get("videos", []):
-        m["path"] = video
-    json.dump(d, open(r, "w", encoding="utf-8"), ensure_ascii=False)
-r = os.path.join(dest, "draft_meta_info.json")
-if os.path.exists(r):
-    m = json.load(open(r, encoding="utf-8"))
-    m["draft_fold_path"] = dest
-    m["draft_root_path"] = os.path.dirname(dest)
-    json.dump(m, open(r, "w", encoding="utf-8"), ensure_ascii=False)
-print("Listo: " + dest)
-PYFIN
+if [ ! -f "$VIDEO" ]; then echo "El proyecto vino sin el video."; fin 1; fi
+
+# perl y no python3: perl viene con macOS, python3 no siempre.
+for F in draft_info.json draft_content.json draft_meta_info.json; do
+  [ -f "$DEST/$F" ] || continue
+  V="$VIDEO" C="$DEST" R="$PROY" perl -i -pe '
+    s{Resources/video\.mp4}{$ENV{V}}g;
+    s{"draft_fold_path"\s*:\s*"[^"]*"}{"draft_fold_path": "$ENV{C}"}g;
+    s{"draft_root_path"\s*:\s*"[^"]*"}{"draft_root_path": "$ENV{R}"}g;
+  ' "$DEST/$F"
+done
+
+# Se comprueba en vez de avisar que salio bien y listo: antes decia "ya esta"
+# aunque no hubiera hecho nada, y del otro lado no aparecia el proyecto.
+# Las comillas de apertura son imprescindibles: la ruta nueva TERMINA en
+# Resources/video.mp4, asi que buscarla suelta da positivo siempre.
+if grep -q '"Resources/video\.mp4"' "$DEST/draft_info.json" 2>/dev/null; then
+  echo "Copie el proyecto pero no pude arreglar las rutas."
+  echo "Abrilo igual: si el clip sale en rojo, arrastrale el video que esta en"
+  echo "$DEST/Resources"
+  fin 1
+fi
+
+echo "Listo. El proyecto quedo en:"
+echo "$DEST"
 echo ""
-echo "Abri CapCut: el proyecto '$NOMBRE' va a estar en la lista."
-read -n 1 -s -r -p "Enter para cerrar"
+if pgrep -x CapCut >/dev/null 2>&1; then
+  echo "OJO: CapCut esta abierto. Cerralo del todo y volve a abrirlo, porque la"
+  echo "lista de proyectos se lee al arrancar."
+  echo ""
+fi
+echo "Abri CapCut: '$NOMBRE' va a estar en la lista."
+fin 0
 """
 
+
 _INSTALAR_WIN = r"""@echo off
-REM Doble click y listo: copia el proyecto a CapCut y le arregla la ruta del video.
+setlocal enableextensions
 cd /d "%~dp0"
 set "NOMBRE=__NOMBRE__"
-set "PROY=%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft"
-if not exist "%PROY%" (
-  echo No encontre la carpeta de proyectos de CapCut.
-  echo Buscada en: %PROY%
-  pause & exit /b 1
-)
+echo.
+echo   Instalando "%NOMBRE%" en CapCut
+echo.
+
+REM Ejecutarlo desde adentro del .zip es el error mas comun: Windows copia a
+REM una carpeta temporal SOLO este archivo, y el proyecto se queda en el zip.
+if not exist "%NOMBRE%\" goto sin_carpeta
+
+REM La carpeta de proyectos cambia segun version e instalacion, asi que se
+REM prueban las conocidas en vez de dar una por sentada.
+set "PROY="
+for %%D in (
+  "%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft"
+  "%APPDATA%\CapCut\User Data\Projects\com.lveditor.draft"
+  "%LOCALAPPDATA%\CapCut\User Data\Projects"
+) do if not defined PROY if exist "%%~D\" set "PROY=%%~D"
+if not defined PROY goto sin_capcut
+
 set "DEST=%PROY%\%NOMBRE%"
 if exist "%DEST%" rmdir /s /q "%DEST%"
-xcopy /e /i /q "%NOMBRE%" "%DEST%" >nul
-python -c "import json,os,sys;d=sys.argv[1];v=os.path.join(d,'Resources','video.mp4');[ (lambda r: [json.dump((lambda j: (([m.__setitem__('path',v) for m in j.get('materials',{}).get('videos',[])]), j)[1])(json.load(open(r,encoding='utf-8'))), open(r,'w',encoding='utf-8'), ensure_ascii=False)] )(os.path.join(d,f)) for f in ('draft_info.json','draft_content.json') if os.path.exists(os.path.join(d,f))]" "%DEST%"
+xcopy /e /i /q /y "%NOMBRE%" "%DEST%" >nul
+if errorlevel 1 goto sin_copia
+
+REM La comprobacion la hace el propio .ps1, que es donde se pueden escribir
+REM comillas sin pelear con el parser del .bat. Aca alcanza su codigo de salida.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%NOMBRE%\_rutas.ps1" -Dest "%DEST%"
+if errorlevel 1 goto sin_rutas
+del /q "%DEST%\_rutas.ps1" >nul 2>&1
+
+echo   Listo. El proyecto quedo en:
+echo   %DEST%
 echo.
-echo Abri CapCut: el proyecto "%NOMBRE%" va a estar en la lista.
+tasklist /fi "imagename eq CapCut.exe" 2>nul | find /i "CapCut.exe" >nul
+if not errorlevel 1 (
+  echo   OJO: CapCut esta abierto. Cerralo del todo y volve a abrirlo,
+  echo   porque la lista de proyectos se lee al arrancar.
+  echo.
+)
+echo   Abri CapCut: "%NOMBRE%" va a estar en la lista de proyectos.
+echo.
 pause
+exit /b 0
+
+:sin_carpeta
+echo   No encuentro la carpeta del proyecto al lado de este archivo.
+echo.
+echo   Casi siempre es esto: lo ejecutaste desde adentro del .zip. Windows
+echo   copia a una carpeta temporal solo el .bat, y el proyecto se queda
+echo   adentro del zip.
+echo.
+echo   Cerra esta ventana, click derecho en el .zip, "Extraer todo", y
+echo   recien ahi doble click en este archivo.
+echo.
+pause
+exit /b 1
+
+:sin_capcut
+echo   No encontre la carpeta de proyectos de CapCut.
+echo   Busque en:
+echo     %%LOCALAPPDATA%%\CapCut\User Data\Projects\com.lveditor.draft
+echo     %%APPDATA%%\CapCut\User Data\Projects\com.lveditor.draft
+echo.
+echo   Abri CapCut una vez, cerralo, y volve a intentar. Si ya lo hiciste,
+echo   pasale esta pantalla a Angie.
+echo.
+pause
+exit /b 1
+
+:sin_copia
+echo   No pude copiar el proyecto a:
+echo   %DEST%
+echo.
+echo   Suele ser CapCut abierto usando la carpeta. Cerralo y volve a intentar.
+echo.
+pause
+exit /b 1
+
+:sin_rutas
+echo   Copie el proyecto pero no pude arreglarle las rutas.
+echo.
+echo   Abrilo igual desde CapCut: si el clip sale en rojo, arrastrale el video
+echo   que esta en:
+echo   %DEST%\Resources
+echo.
+pause
+exit /b 1
 """
 
 
 _LEEME = """PROYECTO DE CAPCUT - %s
 
-Doble click al instalador de TU sistema:
+1. DESCOMPRIMI EL ZIP PRIMERO.
 
-  Mac      ->  "Mac - ABRIR EN CAPCUT.command"
-  Windows  ->  "Windows - ABRIR EN CAPCUT.bat"
+   En Windows: click derecho -> "Extraer todo". Correr el instalador desde
+   adentro del zip NO funciona: Windows copia solo el .bat a una carpeta
+   temporal y el proyecto se queda adentro del comprimido.
 
-El instalador copia el proyecto a la carpeta de CapCut y le corrige la ruta del
-video. Sin ese paso CapCut abre el proyecto pero muestra el clip en rojo.
+2. Doble click al instalador de TU sistema:
 
-En Mac, la primera vez el sistema puede avisar que es de un desarrollador no
-identificado: click derecho sobre el instalador -> Abrir.
+     Mac      ->  "Mac - ABRIR EN CAPCUT.command"
+     Windows  ->  "Windows - ABRIR EN CAPCUT.bat"
 
-Despues abri CapCut: el proyecto va a estar en la lista.
+   Windows va a avisar que el editor es desconocido: es normal, son cuatro
+   lineas de texto que podes abrir con el Bloc de notas. Dale "Ejecutar".
+   En Mac, si dice que es de un desarrollador no identificado: click derecho
+   sobre el instalador -> Abrir.
+
+   El instalador copia el proyecto a la carpeta de CapCut y le corrige las
+   rutas. Sin ese paso CapCut ni siquiera lo muestra en la lista.
+
+3. Abri CapCut. Si ya estaba abierto, cerralo del todo y volve a abrirlo: la
+   lista de proyectos se lee al arrancar.
+
+El instalador dice al final si salio bien o que fallo. Si falla, mandale esa
+pantalla a Angie: ahi esta el motivo.
 """
 
 
@@ -268,17 +421,24 @@ def escribir_instaladores(carpeta_zip, nombre):
 
     El sistema va PRIMERO en el nombre y no al final: con "INSTALAR-mac" y
     "INSTALAR-windows" los dos empiezan igual, y de un vistazo se agarra el que
-    no es —pasa de verdad—. Asi la primera palabra ya dice cual es cual, y
+    no es -pasa de verdad-. Asi la primera palabra ya dice cual es cual, y
     ordenados alfabeticamente el de Mac queda arriba.
+
+    El .ps1 va DENTRO de la carpeta del proyecto y no al lado de los
+    instaladores: arriba solo tienen que verse las dos cosas que se tocan.
     """
     mac = os.path.join(carpeta_zip, "Mac - ABRIR EN CAPCUT.command")
     with open(mac, "w", encoding="utf-8") as f:
         f.write(_INSTALAR_MAC.replace("__NOMBRE__", nombre))
     os.chmod(mac, 0o755)
     win = os.path.join(carpeta_zip, "Windows - ABRIR EN CAPCUT.bat")
-    with open(win, "w", encoding="utf-8") as f:
+    # CRLF: el Bloc de notas y algunas versiones de cmd se marean con LF solo.
+    with open(win, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(_INSTALAR_WIN.replace("__NOMBRE__", nombre))
+    ps1 = os.path.join(carpeta_zip, nombre, "_rutas.ps1")
+    with open(ps1, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(_RUTAS_PS1)
     leeme = os.path.join(carpeta_zip, "LEEME.txt")
-    with open(leeme, "w", encoding="utf-8") as f:
+    with open(leeme, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(_LEEME % nombre)
-    return [mac, win, leeme]
+    return [mac, win, ps1, leeme]
