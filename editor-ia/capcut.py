@@ -227,6 +227,71 @@ foreach ($f in 'draft_info.json', 'draft_content.json', 'draft_meta_info.json') 
   [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding($false)))
 }
 Write-Output 'rutas-ok'
+
+# CapCut no escanea la carpeta: lee root_meta_info.json. Si el proyecto no esta
+# ahi, existe en el disco y no aparece en la lista. Eso es lo que pasaba.
+$idx = Join-Path $raiz 'root_meta_info.json'
+if (-not (Test-Path $idx)) { Write-Output 'indice-no-hay'; exit 0 }
+$txt = [IO.File]::ReadAllText($idx)
+if ($txt.Contains($carpeta)) { Write-Output 'indice-ya-estaba'; exit 0 }
+
+$m = $txt | ConvertFrom-Json
+$lista = $m.all_draft_store
+if (-not $lista -or $lista.Count -lt 1) { Write-Output 'indice-vacio'; exit 0 }
+
+# Se clona una entrada que ya funciona en vez de inventar una: asi hereda el
+# esquema exacto de ESTA version de CapCut, que cambia entre versiones.
+$e = $lista[0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$ahora = [int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) * 1000
+$dur = 0
+$metaP = Join-Path $carpeta 'draft_meta_info.json'
+if (Test-Path $metaP) {
+  $mm = [Regex]::Match([IO.File]::ReadAllText($metaP), '"tm_duration"\s*:\s*(\d+)')
+  if ($mm.Success) { $dur = [int64]$mm.Groups[1].Value }
+}
+
+$nuevo = @{
+  draft_name = $Env:CAPCUT_NOMBRE; draft_fold_path = $carpeta; draft_root_path = $raiz
+  draft_json_file = (Join-Path $carpeta 'draft_info.json'); draft_cover = ''
+  draft_id = ([guid]::NewGuid().ToString().ToUpper())
+  tm_draft_create = $ahora; tm_draft_modified = $ahora; tm_draft_removed = 0
+  tm_duration = $dur
+}
+# Los campos de nube del clon apuntan a OTRO proyecto. Si quedan, CapCut puede
+# creer que es el mismo y pisarlo en la nube.
+$cero = @{
+  cloud_draft_cover = $false; cloud_draft_sync = $false
+  draft_cloud_last_action_download = $false
+  draft_cloud_purchase_info = ''; draft_cloud_template_id = ''
+  draft_cloud_tutorial_info = ''; draft_cloud_videocut_purchase_info = ''
+  tm_draft_cloud_completed = ''; tm_draft_cloud_entry_id = 0
+  tm_draft_cloud_modified = 0; tm_draft_cloud_parent_entry_id = -1
+  tm_draft_cloud_space_id = 0; tm_draft_cloud_user_id = 0
+  pippit_avatar_url = ''; pippit_extra_info = ''; pippit_id = ''; pippit_user_name = ''
+}
+# Solo se tocan claves que la entrada clonada ya tenia: inventar campos que
+# esta version no conoce es pedir problemas.
+$tiene = @{}; foreach ($pr in $e.PSObject.Properties) { $tiene[$pr.Name] = $true }
+foreach ($k in @($nuevo.Keys)) { if ($tiene[$k]) { $e.$k = $nuevo[$k] } }
+foreach ($k in @($cero.Keys))  { if ($tiene[$k]) { $e.$k = $cero[$k]  } }
+
+$entrada = $e | ConvertTo-Json -Depth 20 -Compress
+# Se inserta como texto y no se reescribe el JSON entero: asi el resto del
+# archivo -incluidos los enteros largos de la nube, que ConvertTo-Json puede
+# estropear- queda igual.
+$pos = $txt.IndexOf('"all_draft_store"')
+if ($pos -lt 0) { Write-Output 'indice-sin-lista'; exit 0 }
+$cor = $txt.IndexOf('[', $pos)
+if ($cor -lt 0) { Write-Output 'indice-sin-lista'; exit 0 }
+$resto = $txt.Substring($cor + 1)
+$coma = if ($resto -match '^\s*\]') { '' } else { ',' }
+$nuevoTxt = $txt.Substring(0, $cor + 1) + $entrada + $coma + $resto
+try { $null = $nuevoTxt | ConvertFrom-Json } catch { Write-Output 'indice-roto'; exit 0 }
+
+$sello = (Get-Date).ToString('yyyyMMdd-HHmmss')
+[IO.File]::WriteAllText("$idx.bak-$sello", $txt, (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($idx, $nuevoTxt, (New-Object Text.UTF8Encoding($false)))
+Write-Output 'indice-ok'
 """
 
 
@@ -271,6 +336,85 @@ done
 
 # Se comprueba en vez de avisar que salio bien y listo: antes decia "ya esta"
 # aunque no hubiera hecho nada, y del otro lado no aparecia el proyecto.
+# CapCut no escanea la carpeta: lee root_meta_info.json. Si el proyecto no
+# esta ahi, existe en el disco y no aparece en la lista. En Mac CapCut se
+# auto-agrega al arrancar, en Windows no; se registra en los dos por las dudas.
+INDICE=$(C="$DEST" R="$PROY" N="$NOMBRE" perl - "$PROY/root_meta_info.json" <<'PLFIN'
+use strict; use warnings;
+my $idx = shift;
+exit 0 unless -f $idx;                      # sin indice, CapCut lo crea el solo
+open(my $fh, '<:encoding(UTF-8)', $idx) or exit 0;
+my $txt = do { local $/; <$fh> }; close $fh;
+exit 0 if index($txt, $ENV{C}) >= 0;        # ya registrado: no duplicar
+
+eval { require JSON::PP; 1 } or exit 0;
+my $m = eval { JSON::PP->new->decode($txt) } or exit 0;
+my $lista = $m->{all_draft_store};
+exit 0 unless ref $lista eq 'ARRAY' && @$lista;
+
+# Se clona una entrada que ya funciona en vez de inventar una: asi hereda el
+# esquema exacto de ESTA version de CapCut, que cambia entre versiones.
+my %e = %{ $lista->[0] };
+my $ahora = int(time() * 1000000);
+my $dur = 0;
+if (open(my $mf, '<:encoding(UTF-8)', "$ENV{C}/draft_meta_info.json")) {
+  my $t = do { local $/; <$mf> }; close $mf;
+  $dur = $1 if $t =~ /"tm_duration"\s*:\s*(\d+)/;
+}
+my @hex = ('0'..'9','A'..'F');
+my $id = join '', map { $hex[int rand 16] } 1..32;
+$id = join '-', substr($id,0,8), substr($id,8,4), substr($id,12,4), substr($id,16,4), substr($id,20,12);
+
+my %nuevo = (
+  draft_name => $ENV{N}, draft_fold_path => $ENV{C}, draft_root_path => $ENV{R},
+  draft_json_file => "$ENV{C}/draft_info.json", draft_cover => '', draft_id => $id,
+  tm_draft_create => $ahora, tm_draft_modified => $ahora, tm_draft_removed => 0,
+  tm_duration => $dur + 0,
+);
+# Los campos de nube del clon apuntan a OTRO proyecto. Si quedan, CapCut puede
+# creer que es el mismo y pisarlo en la nube.
+my %cero = (
+  cloud_draft_cover => JSON::PP::false(), cloud_draft_sync => JSON::PP::false(),
+  draft_cloud_last_action_download => JSON::PP::false(),
+  draft_cloud_purchase_info => '', draft_cloud_template_id => '',
+  draft_cloud_tutorial_info => '', draft_cloud_videocut_purchase_info => '',
+  tm_draft_cloud_completed => '', tm_draft_cloud_entry_id => 0,
+  tm_draft_cloud_modified => 0, tm_draft_cloud_parent_entry_id => -1,
+  tm_draft_cloud_space_id => 0, tm_draft_cloud_user_id => 0,
+  pippit_avatar_url => '', pippit_extra_info => '', pippit_id => '',
+  pippit_user_name => '',
+);
+# Solo se tocan claves que la entrada clonada ya tenia: inventar campos que
+# esta version no conoce es pedir problemas.
+for my $k (keys %nuevo) { $e{$k} = $nuevo{$k} if exists $e{$k}; }
+for my $k (keys %cero)  { $e{$k} = $cero{$k}  if exists $e{$k}; }
+
+my $entrada = JSON::PP->new->canonical->encode(\%e);
+# Se inserta como texto y no se reescribe el JSON entero: asi el resto del
+# archivo -incluidos los enteros largos de la nube- queda byte por byte igual.
+my $pos = index($txt, '"all_draft_store"');
+exit 0 if $pos < 0;
+my $cor = index($txt, '[', $pos);
+exit 0 if $cor < 0;
+my $sig = substr($txt, $cor + 1);
+my $nuevoTxt = substr($txt, 0, $cor + 1) . $entrada . ($sig =~ /^\s*\]/ ? '' : ',') . $sig;
+eval { JSON::PP->new->decode($nuevoTxt); 1 } or exit 0;   # no se escribe algo roto
+
+my @t = localtime; my $sello = sprintf('%04d%02d%02d-%02d%02d%02d',
+  $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0]);
+my $bk;
+if (open($bk, '>:encoding(UTF-8)', "$idx.bak-$sello")) { print $bk $txt; close $bk; }
+open(my $out, '>:encoding(UTF-8)', $idx) or exit 0;
+print $out $nuevoTxt; close $out;
+print "indice-ok\n";
+PLFIN
+)
+if [ "$INDICE" != "indice-ok" ]; then
+  echo "AVISO: copie el proyecto pero no pude anotarlo en la lista de CapCut."
+  echo "Si no aparece, mandale esta pantalla a Angie."
+  echo ""
+fi
+
 # Las comillas de apertura son imprescindibles: la ruta nueva TERMINA en
 # Resources/video.mp4, asi que buscarla suelta da positivo siempre.
 if grep -q '"Resources/video\.mp4"' "$DEST/draft_info.json" 2>/dev/null; then
@@ -322,9 +466,19 @@ if errorlevel 1 goto sin_copia
 
 REM La comprobacion la hace el propio .ps1, que es donde se pueden escribir
 REM comillas sin pelear con el parser del .bat. Aca alcanza su codigo de salida.
+set "CAPCUT_NOMBRE=%NOMBRE%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%NOMBRE%\_rutas.ps1" -Dest "%DEST%"
 if errorlevel 1 goto sin_rutas
 del /q "%DEST%\_rutas.ps1" >nul 2>&1
+
+REM Se comprueba el estado final del indice y no lo que haya dicho PowerShell:
+REM lo que importa es si el proyecto quedo anotado, no si el script se quejo.
+findstr /c:"%NOMBRE%" "%PROY%\root_meta_info.json" >nul 2>&1
+if errorlevel 1 (
+  echo   AVISO: copie el proyecto pero no pude anotarlo en la lista de CapCut.
+  echo   Si no aparece, mandale esta pantalla a Angie.
+  echo.
+)
 
 echo   Listo. El proyecto quedo en:
 echo   %DEST%
