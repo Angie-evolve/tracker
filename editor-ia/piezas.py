@@ -259,6 +259,10 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
         # En orden de rodaje: un guion se graba de arriba abajo, asi que los
         # clips que lo cubren vienen en ese orden.
         ks = sorted(asignado.get(gi, []))
+        # El anuncio declara que lleva cierre pero el cierre no se grabo: la
+        # pieza sale igual porque lo que hay sirve, pero incompleta. Se marca
+        # para que no se entregue creyendo que esta terminada.
+        falta_cierre = bool(g.get("_lleva_cierre")) and not ks_cierre
         if g.get("_lleva_cierre") and ks and ks_cierre:
             ks = ks + [k for k in ks_cierre if k not in ks]
         tramos, dur_total = [], 0.0
@@ -292,6 +296,7 @@ def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):
             "tramos": tramos,
             "duracion": round(dur_total, 2),
             "bloques": len(dichos), "bloques_total": len(total),
+            "falta_cierre": falta_cierre,
             "score": round(sum(t["score"] for t in tramos) / float(len(tramos)), 3),
         })
 

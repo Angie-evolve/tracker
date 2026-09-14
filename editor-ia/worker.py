@@ -972,7 +972,8 @@ def procesar(fila, tmp):
         print("  pieza %d/%d: %s (%d tramos)" % (i + 1, len(encontradas),
                                                  pz["titulo"], len(pz["tramos"])), flush=True)
         base = {"titulo": pz["titulo"], "tramos": pz["tramos"],
-                "bloques": pz.get("bloques"), "bloques_total": pz.get("bloques_total")}
+                "bloques": pz.get("bloques"), "bloques_total": pz.get("bloques_total"),
+                "falta_cierre": pz.get("falta_cierre")}
         try:
             trs = [dict(t, archivo=porRuta[t["video"]]["archivo"],
                         palabras=porRuta[t["video"]]["palabras"])
