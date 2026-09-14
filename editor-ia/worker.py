@@ -912,11 +912,21 @@ def procesar(fila, tmp):
                        for v in locales if v.get("duracion")]
         sin_grabar, descartados = [], []
     sueltos = Piezas.huerfanos(locales, encontradas)
-    marcar(fila["id"], analisis={"tanda": True, "videos": len(locales),
-                                 "guiones": len(guiones),
-                                 "piezas": len(encontradas),
-                                 "sin_grabar": sin_grabar, "sueltos": sueltos,
-                                 "descartados": descartados})
+    # Lo que entendio Whisper de cada clip, con los tiempos. Sin esto, cuando
+    # una pieza sale mal no hay forma de saber si el guion no calzo porque el
+    # umbral esta flojo o porque el clip dice otra cosa: lo unico que queda es
+    # un puntaje suelto y adivinar. Las palabras se guardan aparte del analisis
+    # para no inflar lo que la pantalla lee en cada refresco.
+    marcar(fila["id"],
+           palabras=[{"video": v["id"],
+                      "texto": " ".join(str(w.get("word", ""))
+                                        for w in (v.get("palabras") or []))[:8000]}
+                     for v in locales],
+           analisis={"tanda": True, "videos": len(locales),
+                     "guiones": len(guiones),
+                     "piezas": len(encontradas),
+                     "sin_grabar": sin_grabar, "sueltos": sueltos,
+                     "descartados": descartados})
 
     porRuta = {v["id"]: v for v in locales}
     salida = []
