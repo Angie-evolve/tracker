@@ -8,8 +8,16 @@
 // no sirve para nada fuera de esta funcion: si se filtra, se cambia en dos
 // lugares y listo, sin tocar la cuenta de Higgsfield.
 
-const HF_KEY = Deno.env.get("HF_API_KEY") ?? "";
+// Los tres ya existen en el proyecto, puestos para la funcion de video. Los
+// nombres son los de ella, no unos nuevos: dos secrets con la misma clave
+// adentro es garantia de que un dia se cambie uno solo.
+//
+// Higgsfield pide DOS credenciales, no una: clave y secreto. HF_SECRETO es otra
+// cosa -el secreto compartido con la app-, y se nota porque comparte digest con
+// FATHOM_SECRETO y GHL_SECRETO: es la convencion de todas las funciones de acá.
+const HF_KEY = Deno.env.get("HF_KEY") ?? "";
 const HF_SECRET = Deno.env.get("HF_SECRET") ?? "";
+const APP_SECRETO = Deno.env.get("HF_SECRETO") ?? Deno.env.get("HF_SECRET") ?? "";
 const HF_BASE = "https://platform.higgsfield.ai/v1";
 
 const CORS = {
@@ -29,7 +37,8 @@ async function hf(ruta: string, init: RequestInit = {}) {
   const r = await fetch(HF_BASE + ruta, {
     ...init,
     headers: {
-      "Authorization": "Bearer " + HF_KEY,
+      "hf-api-key": HF_KEY,
+      "hf-secret": HF_SECRET,
       "Content-Type": "application/json",
       ...((init.headers as Record<string, string>) || {}),
     },
@@ -46,10 +55,12 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   // El secreto va en la query y no en un header porque asi lo manda ya el
   // resto de la app; cambiar el contrato obligaria a tocar las dos puntas.
-  if (!HF_SECRET || url.searchParams.get("s") !== HF_SECRET) {
+  if (!APP_SECRETO || url.searchParams.get("s") !== APP_SECRETO) {
     return responder({ ok: false, error: "secreto invalido" }, 403);
   }
-  if (!HF_KEY) return responder({ ok: false, error: "falta HF_API_KEY en la funcion" }, 500);
+  if (!HF_KEY || !HF_SECRET) {
+    return responder({ ok: false, error: "faltan HF_KEY o HF_SECRET en el proyecto" }, 500);
+  }
 
   const accion = url.searchParams.get("accion") || "";
   const body = await req.json().catch(() => ({} as any));
