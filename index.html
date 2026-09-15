@@ -17074,12 +17074,24 @@ function _estPedido(){
     +'"gancho":"hasta 8 palabras","bajada":"una linea"}]}]';
 }
 
-function estPedir(tipo){
+// Encola y espera. El copiar y pegar sigue existiendo como respaldo, para
+// cuando la maquina del worker esta apagada: sin eso, un domingo a la noche la
+// pantalla no sirve para nada.
+async function estPedir(tipo){
   var e=_estEstado();
   if(String(e.doc||'').trim().length<80){
     toast('Pegá o subí el documento primero.','amber'); return;
   }
-  e.pedido=_estPedido(); e.pegar=tipo; e.error=''; _estGuardar();
+  if(e.cola){ toast('Ya hay un pedido en curso.','amber'); return; }
+  e.error='';
+  try{
+    _estCola(await estEncolar('angulos', {pedido:_estPedido()}));
+  }catch(err){ e.error=_estErrCola(err.message); _estPintar(); }
+}
+
+function estManual(tipo){
+  var e=_estEstado();
+  e.pedido=_estPedido(); e.pegar=tipo||'angulos'; e.error=''; _estGuardar();
   // El portapapeles puede fallar (permisos, http): por eso el pedido igual queda
   // a la vista en un cuadro, para poder copiarlo a mano.
   try{ navigator.clipboard.writeText(e.pedido); toast('Pedido copiado. Pegalo en Claude.'); }
@@ -17127,9 +17139,48 @@ function estTildar(i){
 }
 
 // El bloque de copiar y pegar se usa igual en los dos pasos.
+// Mientras hay algo en la cola no se ofrece pedir otra cosa: dos pedidos a la
+// vez confunden y el worker los hace en serie igual.
+function _estColaHtml(){
+  var e=_estEstado(), c=e.cola;
+  if(!c) return '';
+  var seg=Math.round((Date.now()-(c.desde||Date.now()))/1000);
+  var lento=(seg>90 && c.estado==='pendiente');
+  return '<div class="ed-panel" style="margin-bottom:12px'
+      +(lento?';border-color:var(--amberx)':'')+'">'
+    +'<h3>'+(c.tipo==='angulos'?'Pensando los ángulos':'Generando las imágenes')
+      +' <span class="ed-badge">'+esc(c.estado)+'</span></h3>'
+    +'<div class="s">'+(c.estado==='procesando'
+        ? 'El worker lo está trabajando. Podés cerrar esta pantalla: cuando vuelvas va a estar.'
+        : 'En cola, esperando al worker.')
+      +' · '+seg+'s</div>'
+    // El worker corre en una maquina que puede estar apagada. Decirlo recien
+    // cuando tarda, y no antes, evita sembrar la duda en el caso normal.
+    +(lento?('<div class="s" style="color:var(--amberx)">Hace un rato que espera. '
+        +'Si la máquina del worker está apagada, esto no avanza: '
+        +'<a href="javascript:void(0)" onclick="estManual(\'angulos\')" '
+        +'style="color:var(--amberx)">hacelo a mano con tu Claude</a>.</div>'):'')
+    +'<div class="ed-acciones" style="margin-top:10px">'
+      +'<button class="btn btn-sm" onclick="estCancelarCola()" '
+        +'style="color:var(--text3)">Cancelar el pedido</button></div>'
+  +'</div>';
+}
+
+async function estCancelarCola(){
+  var e=_estEstado(), c=e.cola;
+  if(!c) return;
+  // Se borra la fila y no solo se olvida: si quedara en la cola, el worker la
+  // trabajaria igual y gastaria creditos por algo que ya nadie espera.
+  try{ await sbFetch('estaticos_pedidos?id=eq.'+encodeURIComponent(c.id),
+                     {method:'DELETE'}); }
+  catch(err){ /* si ya la tomo el worker, no se puede: se ignora */ }
+  e.cola=null; _estGuardar(); _estPintar();
+}
+
 function _estPaso(tipo, etiqueta, nota){
   var e=_estEstado();
   if(e.pegar!==tipo){
+    if(e.cola) return '';
     return '<div class="ed-acciones" style="margin-bottom:8px">'
       +'<button class="btn btn-primary" onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
       +'<span class="d">'+esc(nota)+'</span></button></div>';
@@ -17160,104 +17211,102 @@ function _estPaso(tipo, etiqueta, nota){
     +'</div></div>';
 }
 
-// ── Generar las imagenes ────────────────────────────────────────────────
-// La conexion es la misma que ya usa el video: url + secreto guardados una vez.
-// Cambia la funcion, que es otra, asi que la url se deriva de la que hay.
-// La misma funcion que ya genera los videos de las landings: tiene accion
-// imagen desde el principio, con el modelo en la ruta. Llegue a escribir una
-// funcion nueva por no haberla leido antes.
-function _estFn(){
-  var a=_hfFn();
-  if(!a.url || !a.sec) return null;
-  return { url:a.url, sec:a.sec };
+// ── La cola ─────────────────────────────────────────────────────────────
+// Ni Claude ni Higgsfield se pueden llamar desde el navegador sin dejar una
+// clave a la vista, y el repo es publico. Asi que la app no llama: deja el
+// pedido en una tabla y lo trabaja el worker de la maquina de Angie, donde las
+// dos sesiones ya estan abiertas. Desde aca se encola y se espera.
+async function estEncolar(tipo, entrada){
+  var filas=await sbFetch('estaticos_pedidos', {method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body:JSON.stringify({tipo:tipo, entrada:entrada})});
+  var f=(filas&&filas[0])||null;
+  if(!f) throw new Error('no pude encolar el pedido');
+  return f;
 }
 
-function _estLlamar(fn, accion, cuerpo){
-  return fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
-    +'&accion='+accion,
-    {method:'POST', headers:{'Content-Type':'application/json'},
-     body:JSON.stringify(cuerpo)}).then(function(x){ return x.json(); });
-}
-
-function _estMsg(msg){
-  // Solo se traduce lo que el mensaje dice literalmente. Antes cualquier 404
-  // se traducia a "no te habilita el modelo", que es una conclusion: un 404
-  // tambien puede ser una ruta mal puesta de este lado, y el mensaje mandaba
-  // a buscar el problema al lado equivocado.
-  if(/model_not_found/i.test(msg))
-    return 'Higgsfield no te habilita ese modelo de imagen. Mientras tanto usá '
-      +'"Copiar prompt" y generalo en higgsfield.ai.';
-  if(/credit|balance|insufficient/i.test(msg))
-    return 'Te quedaste sin créditos en Higgsfield.';
-  if(/secreto/i.test(msg))
-    return 'La función rechazó el secreto: el guardado acá no es el mismo que tiene '
-      +'la función en Supabase. Se arregla en cualquiera de los dos, pero tienen que '
-      +'ser iguales.';
-  return msg;
-}
-
-// Una pieza. Devuelve true si salio, para que la tanda sepa donde corta.
-async function estGenerar(i, callado){
+function _estCola(f){
   var e=_estEstado();
-  var x=(e.prompts||[])[i];
-  if(!x) return false;
-  var fn=_estFn();
-  if(!fn){
-    if(!callado) toast('Falta conectar Higgsfield. Está en la landing de un cliente.','amber');
-    return false;
-  }
-  x.estado='mandando'; x.err=''; _estPintar();
-  try{
-    var r=await _estLlamar(fn, 'imagen', {prompt:x.prompt, aspecto:e.formato||'1:1'});
-    // El error de la funcion ya viene con el texto literal de Higgsfield: no
-    // hay nada que agregarle.
-    if(!r||!r.ok) throw new Error((r&&r.error)||'no pude mandar el pedido');
-    // Cada ocho segundos y con tope: una imagen tarda menos de un minuto, y sin
-    // tope esto quedaria preguntando para siempre si algo se cuelga del otro lado.
-    for(var v=1; v<=30; v++){
-      await new Promise(function(ok){ setTimeout(ok, 8000); });
-      x.estado='generando ('+(v*8)+'s)'; _estPintar();
-      var q=await _estLlamar(fn, 'estado', {id:r.id});
-      if(!q||!q.ok) throw new Error((q&&q.error)||'se cortó la consulta');
-      if(!q.termino) continue;
-      if(q.estado!=='completed'||!q.url)
-        throw new Error('Higgsfield lo terminó en "'+q.estado+'" '+(q.motivo||''));
-      x.url=q.url; x.estado=''; _estGuardar(); _estPintar();
-      return true;
-    }
-    throw new Error('tardó demasiado, miralo en higgsfield.ai');
-  }catch(err){
-    x.estado=''; x.err=_estMsg(err.message); _estPintar();
-    return false;
-  }
+  e.cola={id:f.id, tipo:f.tipo, estado:f.estado, desde:Date.now()};
+  e.error='';
+  _estGuardar(); _estPintar();
+  estMirar();
 }
 
-// La tanda va de a una y en serie, no todas juntas: Higgsfield limita los
-// pedidos en paralelo, y si una falla por creditos o por modelo van a fallar
-// todas, asi que conviene frenar ahi en vez de gastar treinta intentos.
-async function estGenerarTodas(){
+// Cada seis segundos. El worker mira la cola cada diez, asi que preguntar mas
+// seguido solo agrega ruido sin adelantar nada.
+async function estMirar(){
+  var e=_estEstado(), c=e.cola;
+  if(!c||!c.id) return;
+  var f=null;
+  try{
+    f=(await sbFetch('estaticos_pedidos?id=eq.'+encodeURIComponent(c.id)
+       +'&select=*')||[])[0];
+  }catch(err){ /* sin red: se reintenta en la proxima vuelta */ }
+  if(f){
+    c.estado=f.estado;
+    if(f.estado==='listo'){ _estAplicar(f); return; }
+    if(f.estado==='error'){
+      e.cola=null; e.error=f.error||'el worker no pudo';
+      _estGuardar(); _estPintar(); return;
+    }
+  }
+  _estPintar();
+  setTimeout(estMirar, 6000);
+}
+
+function _estAplicar(f){
+  var e=_estEstado(), s=f.salida||{};
+  if(f.tipo==='angulos'){
+    e.angulos=(s.angulos||[]).slice(0,10); e.elegidos={}; e.prompts=null;
+  }else{
+    var fallo=0;
+    (s.piezas||[]).forEach(function(p){
+      var x=(e.prompts||[])[p.i];
+      if(!x) return;
+      if(p.url) x.url=p.url; else { x.err=p.error||'no salio'; fallo++; }
+    });
+    if(fallo) toast(fallo+' no salieron, mirá el detalle en cada una','amber');
+  }
+  e.cola=null; e.error='';
+  _estGuardar(); _estPintar();
+}
+
+// Una pieza o todas: es el mismo pedido con distinta cantidad adentro. El
+// worker las hace en serie igual, asi que no hay una version "rapida".
+function estGenerar(i){ _estPedirImagenes([i]); }
+
+function estGenerarTodas(){
   var e=_estEstado();
   var falta=(e.prompts||[]).map(function(x,i){ return x.url?-1:i; })
     .filter(function(i){ return i>=0; });
   if(!falta.length){ toast('Ya están todas generadas.'); return; }
-  if(!_estFn()){ toast('Falta conectar Higgsfield. Está en la landing de un cliente.','amber'); return; }
-  if(!confirm('Generar '+falta.length+' imagen'+(falta.length===1?'':'es')+' en Higgsfield?\n\n'
-    +'Se hacen de a una y gastan créditos de tu cuenta.')) return;
-  e.tanda=true; _estPintar();
-  for(var k=0; k<falta.length; k++){
-    if(!e.tanda) break;                      // se puede frenar a mitad de camino
-    var ok=await estGenerar(falta[k], true);
-    if(!ok){
-      e.tanda=false; _estPintar();
-      toast('Frené en la '+(k+1)+': el error está en esa pieza.','red');
-      return;
-    }
-  }
-  e.tanda=false; _estPintar();
-  toast('Listas');
+  if(!confirm('Generar '+falta.length+' imagen'+(falta.length===1?'':'es')+'?\n\n'
+    +'Cada una son 2 créditos de Higgsfield: '+(falta.length*2)+' en total.')) return;
+  _estPedirImagenes(falta);
 }
 
-function estFrenar(){ _estEstado().tanda=false; _estPintar(); toast('Freno después de la que está'); }
+async function _estPedirImagenes(indices){
+  var e=_estEstado();
+  if(e.cola){ toast('Ya hay un pedido en curso.','amber'); return; }
+  var piezas=indices.map(function(i){
+    return {i:i, prompt:((e.prompts||[])[i]||{}).prompt||''};
+  }).filter(function(p){ return p.prompt; });
+  if(!piezas.length) return;
+  indices.forEach(function(i){ if((e.prompts||[])[i]) e.prompts[i].err=''; });
+  try{
+    _estCola(await estEncolar('imagenes', {aspecto:e.formato||'1:1', piezas:piezas}));
+  }catch(err){ e.error=_estErrCola(err.message); _estPintar(); }
+}
+
+// El tope vive en la base y contesta con su propio texto: se muestra tal cual
+// en vez de traducirlo, porque dice exactamente cuantos van y por que.
+function _estErrCola(msg){
+  if(/tope|20 pedidos/i.test(msg)) return msg;
+  if(/row-level security|permission/i.test(msg))
+    return 'Tu usuario no está en la lista del equipo, así que no podés encolar pedidos.';
+  return msg;
+}
 
 function estCopiar(i, que){
   var x=(_estEstado().prompts||[])[i]||{};
@@ -17324,8 +17373,9 @@ function _estCuerpo(){
         +' onchange="estEnImagen(this.checked)">Va dentro de la imagen</label></div>'
     +'</div>';
 
-  h+=_estPaso('angulos', e.angulos?'Volver a pedir todo':'Pedir los ángulos y sus prompts',
-              'un solo ida y vuelta con tu Claude');
+  h+=_estColaHtml()
+    +_estPaso('angulos', e.angulos?'Volver a pedir todo':'Pedir los ángulos y sus prompts',
+              'lo hace tu Claude, sin gastar créditos de Higgsfield');
 
   // --- los angulos, para elegir ---
   var ang=e.angulos||[];
@@ -17362,7 +17412,7 @@ function _estCuerpo(){
     h+='<div class="ed-panel" style="margin-top:16px"><h3>'+pr.length
       +(pr.length===1?' pieza':' piezas')+'</h3>'
       +'<div class="s">Generalas acá o copiá el prompt y hacelo en higgsfield.ai. '
-      +'El copy va encima de cada imagen.</div>'
+      +'El copy va encima de cada imagen. Cada una son 2 créditos.</div>'
       +(function(){
           var listas=pr.filter(function(x){ return x.url; }).length;
           return '<div class="ed-acciones" style="margin:10px 0 4px">'
@@ -17370,7 +17420,7 @@ function _estCuerpo(){
               ? '<button class="btn btn-sm" onclick="estFrenar()">Frenar la tanda</button>'
               : ('<button class="btn btn-sm btn-primary" onclick="estGenerarTodas()">'
                 +'Generar todas<span class="d">'+(pr.length-listas)+' sin generar · '
-                +'gasta créditos de Higgsfield</span></button>'))
+                +((pr.length-listas)*2)+' créditos</span></button>'))
             +(listas?('<span style="align-self:center;font-size:11.5px;color:var(--text3)">'
               +listas+' de '+pr.length+' listas</span>'):'')
           +'</div>';
@@ -17421,6 +17471,11 @@ function _estCuerpo(){
 }
 
 function estaticosHtml(){
+  // Si se recargo con un pedido en curso, se vuelve a mirar. Sin esto el
+  // estado queda congelado en "en cola" para siempre aunque el worker ya lo
+  // haya terminado.
+  var e=_estEstado();
+  if(e.cola && e.cola.id) setTimeout(estMirar, 300);
   return '<div id="est-root">'+_estCuerpo()+'</div>';
 }
 
