@@ -15,7 +15,9 @@ create table if not exists ejemplos_edicion (
   id          uuid primary key default gen_random_uuid(),
   usuario_id  uuid references auth.users(id) not null default auth.uid(),
   pedido_por  text default (auth.jwt() ->> 'email'),
-  trabajo_id  uuid references trabajos_video(id) on delete cascade,
+  -- SET NULL y no CASCADE: borrar el trabajo para liberar espacio no puede
+  -- llevarse el ejemplo. El video se puede volver a grabar, el ejemplo no.
+  trabajo_id  uuid references trabajos_video(id) on delete set null,
   formato     text,
   -- De donde salio el corte: silencio | muletilla | repetida | plano
   motivo      text,
