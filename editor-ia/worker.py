@@ -202,6 +202,24 @@ def bajar(path, destino):
     return _reintentar(hacer, f"bajar {path.split('/')[-1]}")
 
 
+def borrar_archivo(path):
+    """
+    Saca un archivo del bucket. No se reintenta ni se rompe si falla: es
+    limpieza, y perder espacio es molesto pero perder el trabajo hecho por no
+    poder borrar seria absurdo.
+    """
+    try:
+        r = requests.delete(f"{SB_URL}/storage/v1/object/{BUCKET}/{path}",
+                            headers=H, timeout=60)
+        if r.ok:
+            print("  borrado del bucket:", path.split("/")[-1], flush=True)
+            return True
+        print("  no pude borrar", path.split("/")[-1], r.status_code, flush=True)
+    except Exception as e:
+        print("  no pude borrar", path.split("/")[-1], e, flush=True)
+    return False
+
+
 def subir(local, path, tipo="application/octet-stream"):
     mb = os.path.getsize(local) / 1048576.0
 
@@ -1052,6 +1070,15 @@ def procesar_correccion(fila, tmp):
                      "de_mas": sum(1 for d in difs if d["tipo"] == "no_iba"),
                      "de_menos": sum(1 for d in difs if d["tipo"] == "faltaba"),
                      "palabras": len(pal)})
+
+    # El video de la correccion ya no sirve para nada: lo que se queria de el
+    # -que dejo y que saco- quedo en las palabras y en los ejemplos, y ambos
+    # pesan kilobytes. Guardarlo son 50 MB por correccion en un bucket que ya
+    # esta al limite, para volver a mirar algo que no se va a volver a mirar.
+    #
+    # Se borra DESPUES de marcar listo: si se borrara antes y el marcado
+    # fallara, el trabajo quedaria para reintentar sin el archivo que necesita.
+    borrar_archivo(fila["video_path"])
 
 
 def procesar(fila, tmp):
