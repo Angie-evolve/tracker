@@ -16275,10 +16275,73 @@ function _edBancoHtml(){
 // Una tanda no tiene UN resultado: tiene una pieza por guion, mas dos cosas que
 // hay que saber antes de entregar —que guion no grabo el cliente y que tramo de
 // video no corresponde a ninguno—.
-function edPedirCorreccion(jobId){
+// Los estilos con que se etiqueta una correccion. Esta lista es solo el
+// arranque: crece sola con lo que alguien escriba, porque las opciones salen
+// de los ejemplos ya cargados y no de una lista fija que haya que ir a editar.
+var ED_ESTILOS=['Ugly ad','Dinámico','Testimonial','Institucional'];
+
+async function edPedirCorreccion(jobId){
+  var usados=[];
+  try{
+    usados=(await sbFetch('ejemplos_edicion?select=formato')||[])
+      .map(function(x){ return String(x.formato||'').trim(); })
+      .filter(Boolean);
+  }catch(err){ /* con la lista base alcanza para empezar */ }
+  var lista=[], visto={};
+  ED_ESTILOS.concat(usados).forEach(function(x){
+    var k=x.toLowerCase();
+    if(!visto[k]){ visto[k]=1; lista.push(x); }
+  });
+  S._edCorr={job:jobId, estilo:'', lista:lista};
+  _edEstiloModal();
+}
+
+// Se pregunta ANTES de elegir el archivo y no despues: si se preguntara al
+// final, la subida ya arranco y cancelar significa tirar la subida.
+function _edEstiloModal(){
+  var c=S._edCorr||{};
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">'
+      +'¿Qué estilo de edición es?</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:14px">'
+      +'Lo que se corta en un ugly ad no es lo que se corta en uno dinámico. Sin esto '
+      +'los ejemplos de los dos se mezclan y el patrón no se ve.</div>'
+    +'<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px">'
+    +(c.lista||[]).map(function(x){
+        var on=(c.estilo===x);
+        return '<button class="btn btn-sm" onclick="edEstilo('
+          +JSON.stringify(x).replace(/"/g,'&quot;')+')" style="'
+          +(on?'border-color:var(--accent);color:var(--accent)':'color:var(--text3)')
+          +'">'+esc(x)+'</button>';
+      }).join('')
+    +'</div>'
+    +'<input id="ed-estilo-nuevo" placeholder="…o escribí uno nuevo" '
+      +'oninput="edEstilo(\'\')" style="width:100%;box-sizing:border-box;font-size:12.5px">'
+    +'<div class="ed-acciones" style="margin-top:16px">'
+      +'<button class="btn btn-primary" onclick="edEstiloListo()">Elegir el video</button>'
+      +'<button class="btn btn-sm" onclick="closeModal()" style="color:var(--text3)">'
+        +'Cancelar</button>'
+    +'</div></div></div>';
+}
+
+function edEstilo(x){
+  var c=(S._edCorr=S._edCorr||{});
+  c.estilo=x;
+  if(x){ var i=document.getElementById('ed-estilo-nuevo'); if(i) i.value=''; _edEstiloModal(); }
+}
+
+function edEstiloListo(){
+  var c=S._edCorr||{};
+  var nuevo=((document.getElementById('ed-estilo-nuevo')||{}).value||'').trim();
+  var est=nuevo||c.estilo||'';
+  if(!est){ toast('Elegí un estilo o escribí uno.','amber'); return; }
+  c.estilo=est;
+  closeModal();
   var inp=document.getElementById('ed-correccion');
   if(!inp) return;
-  inp.dataset.job=jobId;
+  inp.dataset.job=c.job;
   inp.click();
 }
 // Subir el corte final de una persona. No hay que marcar nada: comparando su
@@ -16297,6 +16360,11 @@ async function edSubirCorreccion(inp){
   if(!uid){ toast('No pude leer tu usuario. Recarga y volve a entrar.','red'); return; }
   e.subiendo=true; e.error=''; _edPintar();
   var decir=function(t){ var el=document.getElementById('ed-pct'); if(el) el.textContent=t; };
+  // El estilo va dentro de opciones.formato, que es de donde el worker lo copia
+  // a cada ejemplo. Sin el, los ejemplos entran sin etiqueta y no se pueden
+  // separar despues.
+  var opc=_edOpciones()||{};
+  opc.formato=((S._edCorr||{}).estilo)||opc.formato||'';
   try{
     var datos=f, nombre=f.name;
     if(f.size > ED_LIMITE_MB*1048576){
@@ -16313,7 +16381,7 @@ async function edSubirCorreccion(inp){
     var filas=await sbFetch('trabajos_video',{ method:'POST',
       headers:{'Prefer':'return=representation'},
       body:JSON.stringify({ video_path:path, videos:[path], modo:'correccion',
-                            corrige:jobId, opciones:_edOpciones() }) });
+                            corrige:jobId, opciones:opc }) });
     var fila=(filas&&filas[0])||null;
     if(fila){ e.fila=fila; e.jobId=fila.id; edPoll(); }
     toast('Subida. Cuando termine de compararla vas a ver qué cortamos distinto.');
@@ -16328,7 +16396,9 @@ function _edCorreccionHtml(f){
   var an=f.analisis||{}, difs=an.diferencias||[];
   var cab={pendiente:'En cola', procesando:'Comparando', listo:'Comparada',
            error:'Falló'}[f.estado]||f.estado;
-  var h='<div class="ed-panel"><h3>'+esc(cab)+' <span class="ed-badge">corrección</span></h3>';
+  var est=(f.opciones||{}).formato||'';
+  var h='<div class="ed-panel"><h3>'+esc(cab)+' <span class="ed-badge">corrección</span>'
+    +(est?' <span class="ed-badge">'+esc(est)+'</span>':'')+'</h3>';
   if(f.estado==='error'){
     h+='<div class="s" style="color:var(--redx)">'+esc(f.error||'sin detalle')+'</div>';
   } else if(f.estado!=='listo'){
