@@ -15690,7 +15690,12 @@ function _edComprimir(f, onProg){
     v.style.cssText='position:fixed;left:0;bottom:0;width:2px;height:2px;'
       +'opacity:.01;pointer-events:none';
     document.body.appendChild(v);
-    var limpiar=function(){ try{ URL.revokeObjectURL(url); v.remove(); }catch(e){} };
+    // Se reemplaza cuando arranca el dibujado. Declarado aca para que limpiar()
+    // lo pueda sacar venga por donde venga la salida, incluidos los rechazos
+    // tempranos que pasan antes de que exista el listener.
+    var limpiarFoco=function(){};
+    var limpiar=function(){ try{ limpiarFoco(); }catch(e){}
+      try{ URL.revokeObjectURL(url); v.remove(); }catch(e){} };
     v.onerror=function(){ limpiar(); rej(new Error('el navegador no puede leer este video')); };
     v.onloadedmetadata=function(){
       var dur=v.duration;
@@ -15755,9 +15760,11 @@ function _edComprimir(f, onProg){
         // acá: subir esto significa esperar el render entero para recién
         // entonces ver que quedó congelado.
         var fps=dibujados/Math.max(dur,0.1);
+        if(desdeQue){ seFue+=Date.now()-desdeQue; desdeQue=0; }
         if(fps<12) return rej(new Error('la compresión salió a '+fps.toFixed(1)+' cuadros por '
-          +'segundo porque el navegador frenó el dibujado. Dejá esta pestaña abierta y adelante '
-          +'mientras comprime, y volvé a intentar.'));
+          +'segundo porque el navegador frenó el dibujado'
+          +(seFue>1500?(': la pestaña estuvo '+Math.round(seFue/1000)+'s en segundo plano'):'')
+          +'. Dejá esta pestaña abierta y adelante mientras comprime, y volvé a intentar.'));
         // Lo que arruina un clip es un PARON, no la suma de hipos. El clip que
         // salio mal tenia un solo congelamiento de 13.2 segundos seguidos; una
         // maquina ocupada acumula tres segundos en hipos de medio segundo
@@ -15780,6 +15787,20 @@ function _edComprimir(f, onProg){
             +'adelante.'));
         res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
       };
+      // Avisar APENAS pasa, no al final. El navegador frena el dibujado cuando la
+      // pestana deja de estar adelante, y la compresion corre en tiempo real:
+      // enterarse al terminar significa esperar los minutos que dura el video
+      // para recien ahi leer que hay que empezar de nuevo.
+      var seFue=0, desdeQue=0;
+      var mirarFoco=function(){
+        if(document.hidden){ desdeQue=Date.now(); onProg(-1); }
+        else if(desdeQue){ seFue+=Date.now()-desdeQue; desdeQue=0; }
+      };
+      document.addEventListener('visibilitychange', mirarFoco);
+      limpiarFoco=function(){
+        try{ document.removeEventListener('visibilitychange', mirarFoco); }catch(e){}
+      };
+
       var pintar=function(){
         if(v.ended) return;
         ctx.drawImage(v,0,0,ancho,alto);
@@ -15931,7 +15952,11 @@ async function edSubir(modo){
         if(!_edSoporte()) throw new Error(nombre+' pesa '+_matTam(f.size)+' y el tope es '
           +ED_LIMITE_MB+' MB, pero este navegador no puede comprimirlo. Probá desde Chrome.');
         var r=await _edComprimir(f, function(p){
-          decir(cual+'Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video'); });
+          // p en -1 es el aviso de que la pestana se fue a segundo plano. Se
+          // dice en el momento: despues de esperar los minutos que dura el
+          // video, enterarse de que hay que rehacerlo es lo peor que puede pasar.
+          if(p<0){ decir(cual+'⚠ Volvé a esta pestaña: en segundo plano la compresión se rompe'); return; }
+          decir(cual+'Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video · no cambies de pestaña'); });
         datos=r.datos; nombre=r.nombre;
         e.comprimido={de:f.size, a:datos.size};
         if(datos.size > ED_LIMITE_MB*1048576)
@@ -16507,7 +16532,9 @@ async function edSubirCorreccion(inp){
     var datos=f, nombre=f.name;
     if(f.size > ED_LIMITE_MB*1048576){
       if(!_edSoporte()) throw new Error('Pesa '+_matTam(f.size)+' y no puedo comprimirlo acá.');
-      var r=await _edComprimir(f, function(p){ decir('Comprimiendo… '+Math.round(p*100)+'%'); });
+      var r=await _edComprimir(f, function(p){
+        if(p<0){ decir('⚠ Volvé a esta pestaña: en segundo plano la compresión se rompe'); return; }
+        decir('Comprimiendo… '+Math.round(p*100)+'% · no cambies de pestaña'); });
       datos=r.datos; nombre=r.nombre;
     }
     if(!datos.size) throw new Error('el archivo quedó en 0 bytes, no lo subo');
