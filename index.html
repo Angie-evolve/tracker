@@ -17066,6 +17066,52 @@ function _estPedido(tipo){
     +'"gancho":"hasta 8 palabras","bajada":"una linea"}]';
 }
 
+// Si hay clave cargada, el pedido va solo. Es la misma que ya usa el resto de
+// la app, asi que esta pantalla deja de ser la excepcion. Sin clave sigue
+// andando el copiar y pegar: no se rompe nada si no la hay.
+function _estClave(){
+  try{ return localStorage.getItem('evold-anthropic-key')||''; }catch(e){ return ''; }
+}
+
+async function _estClaude(pedido){
+  var r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':_estClave(),
+             'anthropic-version':'2023-06-01',
+             'anthropic-dangerous-direct-browser-access':'true'},
+    // 16k porque ocho angulos por cuatro variantes con prompt largo no entran
+    // en 4k: se cortaba el JSON por la mitad y no parseaba.
+    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:16000,
+      messages:[{role:'user', content:pedido}]})
+  });
+  var d=await r.json();
+  if(d.error) throw new Error(d.error.message||'la IA rechazo el pedido');
+  if(!r.ok) throw new Error('error '+r.status);
+  if((d.stop_reason||'')==='max_tokens')
+    throw new Error('la respuesta se corto por largo. Elegí menos ángulos y probá de nuevo.');
+  return (d.content||[]).filter(function(b){ return b.type==='text'; })
+    .map(function(b){ return b.text; }).join('');
+}
+
+async function _estAuto(tipo, pedido){
+  var e=_estEstado();
+  e.cargando=(tipo==='angulos')?'Leyendo el documento y sacando ángulos…'
+                               :'Armando los prompts…';
+  e.error=''; e.pegar=''; _estPintar();
+  try{
+    var datos=_estJson(await _estClaude(pedido), '[', ']');
+    if(!datos.length) throw new Error('vino vacía');
+    if(tipo==='angulos'){ e.angulos=datos.slice(0,10); e.elegidos={}; e.prompts=null; }
+    else { e.prompts=datos; }
+  }catch(err){
+    e.error=err.message+' — podés hacerlo a mano con el botón de siempre.';
+    // Si falla el llamado no se pierde el trabajo: queda el pedido listo para
+    // pasarlo por Claude a mano.
+    e.pedido=pedido; e.pegar=tipo;
+  }
+  e.cargando=''; _estPintar();
+}
+
 function estPedir(tipo){
   var e=_estEstado();
   if(tipo==='angulos' && String(e.doc||'').trim().length<80){
@@ -17074,7 +17120,9 @@ function estPedir(tipo){
   if(tipo==='prompts' && !Object.keys(e.elegidos||{}).length){
     toast('Tildá al menos un ángulo.','amber'); return;
   }
-  e.pedido=_estPedido(tipo); e.pegar=tipo; e.error='';
+  var pedido=_estPedido(tipo);
+  if(_estClave()){ _estAuto(tipo, pedido); return; }
+  e.pedido=pedido; e.pegar=tipo; e.error='';
   // El portapapeles puede fallar (permisos, http): por eso el pedido igual queda
   // a la vista en un cuadro, para poder copiarlo a mano.
   try{ navigator.clipboard.writeText(e.pedido); toast('Pedido copiado. Pegalo en Claude.'); }
@@ -17114,7 +17162,8 @@ function _estPaso(tipo, etiqueta, nota){
   var e=_estEstado();
   if(e.pegar!==tipo){
     return '<div class="ed-acciones" style="margin-bottom:8px">'
-      +'<button class="btn btn-primary" onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
+      +'<button class="btn btn-primary"'+(e.cargando?' disabled style="opacity:.45"':'')
+      +' onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
       +'<span class="d">'+esc(nota)+'</span></button></div>';
   }
   return '<div class="ed-panel" style="margin:12px 0"><h3>Pasalo por tu Claude</h3>'
@@ -17208,8 +17257,12 @@ function _estCuerpo(){
         +' onchange="estEnImagen(this.checked)">Va dentro de la imagen</label></div>'
     +'</div>';
 
-  h+=_estPaso('angulos', e.angulos?'Volver a pedir los ángulos':'Pedir los ángulos',
-               'lo pensás en tu Claude, no gasta créditos de Higgsfield');
+  var auto=!!_estClave();
+  h+=(e.cargando?('<div class="ed-panel" style="margin-bottom:12px"><div class="s">'
+      +esc(e.cargando)+'</div></div>'):'')
+    +_estPaso('angulos', e.angulos?'Volver a pedir los ángulos':'Pedir los ángulos',
+              auto?'sale solo, no gasta créditos de Higgsfield'
+                  :'lo pensás en tu Claude, no gasta créditos de Higgsfield');
 
   // --- los angulos, para elegir ---
   var ang=e.angulos||[];
