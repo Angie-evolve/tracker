@@ -3880,6 +3880,18 @@ function personasModal(){
                 +'<input type="checkbox" class="sw"'+(puede?' checked':'')+' onchange="setVerPlata(\''+esc(p.email)+'\',this.checked)">'
                 +'plata</label>';
             })()
+          +(function(){
+              var csm=(_rolDe(p.email)==='csm');
+              // No se ofrece para uno mismo: acotarse seria encerrarse fuera de
+              // esta misma pantalla, sin forma de volver.
+              if(soyYo(p.email)) return '';
+              return '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:'
+                +(csm?'var(--amberx)':'var(--text3)')+';cursor:pointer;white-space:nowrap" '
+                +'title="Solo ve Panel 360, y ahi solo los clientes donde figura como responsable">'
+                +'<input type="checkbox" class="sw"'+(csm?' checked':'')
+                +' onchange="setRolCsm(\''+esc(p.email)+'\',this.checked)">'
+                +'solo su cartera</label>';
+            })()
           +'<button class="btn btn-sm" onclick="personasEditar(\''+esc(p.email)+'\')">Editar</button>'
           +'<button class="btn btn-sm" style="color:var(--redx)" onclick="personaBorrar(\''+esc(p.email)+'\')">Quitar</button>'
         +'</div>';
@@ -4108,6 +4120,7 @@ function sidebarClients(){
     // Los prospectos nacen archivados. Si ya llegaron a alta, ese flag no los
     // puede seguir escondiendo o volverian a quedar fuera por otra puerta.
     if(c.archived && !f.archivados && !(esProspecto(c)&&(alta||f.prospectos))) return false;
+    if(soloCartera() && !esMiCliente(c)) return false;
     if(f.duenio==='mios' && !soyYo(c.owner)) return false;
     if(f.duenio==='otros' && (soyYo(c.owner)||!c.owner)) return false;
     if(f.duenio==='sin' && c.owner) return false;
@@ -14223,8 +14236,51 @@ function rentabilidadHtml(){
     +'</div>';
 }
 
+// ── Rol acotado: la CSM ve su cartera y nada mas ────────────────────────
+// Mismo patron que el switch de "plata": una marca por persona en DB.personas,
+// que viaja con la sincronizacion y se prende desde el modal de Personas.
+//
+// Esto ESCONDE, no bloquea: la app se sincroniza entera, asi que los datos de
+// los otros clientes igual bajan a ese navegador. Para que no bajen hay que
+// meterse con las policies de la tabla, que es otro trabajo.
+function _rolDe(mail){
+  var k=String(mail||'').toLowerCase();
+  if(!k) return '';
+  var p=(DB.personas||[]).filter(function(x){
+    return String((x||{}).email||'').toLowerCase()===k; })[0];
+  return String((p||{}).rol||'');
+}
+
+function soloCartera(){ return _rolDe(SB.email)==='csm'; }
+
+function setRolCsm(mail, es){
+  // Nadie se puede acotar a si mismo: quedaria encerrado en Panel 360 sin la
+  // pantalla de Personas para volver atras.
+  if(soyYo(mail)){ toast('No podés acotarte a vos misma.','amber'); return; }
+  var k=String(mail).toLowerCase();
+  DB.personas=(DB.personas||[]).map(function(x){
+    if(String((x||{}).email||'').toLowerCase()!==k) return x;
+    var y=Object.assign({}, x);
+    if(es) y.rol='csm'; else delete y.rol;
+    return y;
+  });
+  save();
+  if(typeof personasModal==='function') personasModal();
+}
+
+// El responsable convivio como nombre ("Ashy") y como mail, por eso existe
+// _respMail. Comparando el campo crudo, una CSM cuyos clientes la tengan
+// anotada por nombre no veria ninguno.
+function esMiCliente(c){
+  var o=(c||{}).owner;
+  if(!o) return false;
+  try{ return soyYo(_respMail(o)); }catch(e){ return soyYo(o); }
+}
+
 function irTorre(k){
-  S.torreVista=k||'mirador';
+  // La vista se fuerza y no solo se esconde el link: una posicion guardada de
+  // antes, o un irTorre() a mano, entrarian igual.
+  S.torreVista=soloCartera()?'panel360':(k||'mirador');
   collapseSidebar();
   showTickets();
 }
@@ -14235,6 +14291,13 @@ function _torreSubVisible(){
   try{
     var r=document.getElementById('nav-rentabilidad');
     if(r) r.style.display=verPlata()?'':'none';
+    // De la CSM no es que "no le interesan" las otras secciones: no son suyas.
+    // Se esconden todas menos Panel 360, que es donde trabaja.
+    if(soloCartera()){
+      document.querySelectorAll('#torre-sub .torre-sub-item').forEach(function(el){
+        el.style.display=(el.dataset.k==='panel360')?'':'none';
+      });
+    }
   }catch(e){}
   var sub=document.getElementById('torre-sub');
   var it=document.getElementById('nav-tickets');
@@ -14731,6 +14794,7 @@ function showTickets(){
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
+      :(soloCartera()?p360Html()
       :(_torre==='estaticos'?estaticosHtml()
       :(_torre==='editor'?editorIaHtml()
       :(_torre==='panel360'?p360Html()
@@ -14777,7 +14841,7 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>'))))))))))
+        +'</div>'))))))))))) 
     +'</div>';
   // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
   if(typeof convChequearNuevas==='function') convChequearNuevas();
@@ -29958,8 +30022,13 @@ function _p360FaltanHtml(f){
 function p360Html(){
   // Los prospectos entran aca y en ningun otro lado: el tablero es
   // justamente donde tienen que verse avanzar.
-  var cls=(DB.clients||[]).filter(function(c){ return !c.archived || esProspecto(c); });
-  if(!cls.length) return _torreVacio('Panel 360','Todavia no hay clientes activos.');
+  var cls=(DB.clients||[]).filter(function(c){
+    if(soloCartera() && !esMiCliente(c)) return false;
+    return !c.archived || esProspecto(c);
+  });
+  if(!cls.length) return _torreVacio('Panel 360', soloCartera()
+    ? 'Todavia no tenés clientes asignados. Pedile a Angie que te ponga como responsable.'
+    : 'Todavia no hay clientes activos.');
 
   var datos=cls.map(function(c){
     var et=_p360Etapa(c);
