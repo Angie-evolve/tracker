@@ -17149,6 +17149,100 @@ function _estPaso(tipo, etiqueta, nota){
     +'</div></div>';
 }
 
+// ── Generar las imagenes ────────────────────────────────────────────────
+// La conexion es la misma que ya usa el video: url + secreto guardados una vez.
+// Cambia la funcion, que es otra, asi que la url se deriva de la que hay.
+function _estFn(){
+  var a=_hfFn();
+  if(!a.url || !a.sec) return null;
+  // .../functions/v1/higgsfield  ->  .../functions/v1/imagen
+  return { url:String(a.url).replace(/\/[^\/]*$/, '/imagen'), sec:a.sec };
+}
+
+function _estLlamar(fn, accion, cuerpo){
+  return fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+    +'&accion='+accion,
+    {method:'POST', headers:{'Content-Type':'application/json'},
+     body:JSON.stringify(cuerpo)}).then(function(x){ return x.json(); });
+}
+
+function _estMsg(msg){
+  // "model_not_found" y "credits" no dicen que hacer. Los otros errores se
+  // muestran tal cual: inventarles un texto amable esconde el motivo real.
+  if(/model_not_found|not_found|404/i.test(msg))
+    return 'Higgsfield no te habilita ese modelo de imagen. Mientras tanto usá '
+      +'"Copiar prompt" y generalo en higgsfield.ai.';
+  if(/credit|balance|insufficient/i.test(msg))
+    return 'Te quedaste sin créditos en Higgsfield.';
+  if(/secreto/i.test(msg))
+    return 'La función rechazó el secreto: el guardado acá no es el mismo que tiene '
+      +'la función en Supabase. Se arregla en cualquiera de los dos, pero tienen que '
+      +'ser iguales.';
+  return msg;
+}
+
+// Una pieza. Devuelve true si salio, para que la tanda sepa donde corta.
+async function estGenerar(i, callado){
+  var e=_estEstado();
+  var x=(e.prompts||[])[i];
+  if(!x) return false;
+  var fn=_estFn();
+  if(!fn){
+    if(!callado) toast('Falta conectar Higgsfield. Está en la landing de un cliente.','amber');
+    return false;
+  }
+  x.estado='mandando'; x.err=''; _estPintar();
+  try{
+    var r=await _estLlamar(fn, 'imagen',
+      {prompt:x.prompt, aspecto:e.formato||'1:1', modelo:e.modelo||'recraft_v4_1'});
+    if(!r||!r.ok) throw new Error((r&&r.error)||'no pude mandar el pedido');
+    // Cada ocho segundos y con tope: una imagen tarda menos de un minuto, y sin
+    // tope esto quedaria preguntando para siempre si algo se cuelga del otro lado.
+    for(var v=1; v<=30; v++){
+      await new Promise(function(ok){ setTimeout(ok, 8000); });
+      x.estado='generando ('+(v*8)+'s)'; _estPintar();
+      var q=await _estLlamar(fn, 'estado', {id:r.id});
+      if(!q||!q.ok) throw new Error((q&&q.error)||'se cortó la consulta');
+      if(!q.termino) continue;
+      if(q.estado!=='completed'||!q.url)
+        throw new Error('Higgsfield lo terminó en "'+q.estado+'" '+(q.motivo||''));
+      x.url=q.url; x.estado=''; _estPintar();
+      return true;
+    }
+    throw new Error('tardó demasiado, miralo en higgsfield.ai');
+  }catch(err){
+    x.estado=''; x.err=_estMsg(err.message); _estPintar();
+    return false;
+  }
+}
+
+// La tanda va de a una y en serie, no todas juntas: Higgsfield limita los
+// pedidos en paralelo, y si una falla por creditos o por modelo van a fallar
+// todas, asi que conviene frenar ahi en vez de gastar treinta intentos.
+async function estGenerarTodas(){
+  var e=_estEstado();
+  var falta=(e.prompts||[]).map(function(x,i){ return x.url?-1:i; })
+    .filter(function(i){ return i>=0; });
+  if(!falta.length){ toast('Ya están todas generadas.'); return; }
+  if(!_estFn()){ toast('Falta conectar Higgsfield. Está en la landing de un cliente.','amber'); return; }
+  if(!confirm('Generar '+falta.length+' imagen'+(falta.length===1?'':'es')+' en Higgsfield?\n\n'
+    +'Se hacen de a una y gastan créditos de tu cuenta.')) return;
+  e.tanda=true; _estPintar();
+  for(var k=0; k<falta.length; k++){
+    if(!e.tanda) break;                      // se puede frenar a mitad de camino
+    var ok=await estGenerar(falta[k], true);
+    if(!ok){
+      e.tanda=false; _estPintar();
+      toast('Frené en la '+(k+1)+': el error está en esa pieza.','red');
+      return;
+    }
+  }
+  e.tanda=false; _estPintar();
+  toast('Listas');
+}
+
+function estFrenar(){ _estEstado().tanda=false; _estPintar(); toast('Freno después de la que está'); }
+
 function estCopiar(i, que){
   var x=(_estEstado().prompts||[])[i]||{};
   var t=(que==='copy')
@@ -17251,9 +17345,20 @@ function _estCuerpo(){
   if(pr.length){
     h+='<div class="ed-panel" style="margin-top:16px"><h3>'+pr.length
       +(pr.length===1?' pieza':' piezas')+'</h3>'
-      +'<div class="s">De a una: copiás el prompt, lo generás en higgsfield.ai, y el copy '
-      +'va encima de esa imagen. La generación automática queda para cuando confirmemos '
-      +'que tu plan de Higgsfield habilita la API.</div>'
+      +'<div class="s">Generalas acá o copiá el prompt y hacelo en higgsfield.ai. '
+      +'El copy va encima de cada imagen.</div>'
+      +(function(){
+          var listas=pr.filter(function(x){ return x.url; }).length;
+          return '<div class="ed-acciones" style="margin:10px 0 4px">'
+            +(e.tanda
+              ? '<button class="btn btn-sm" onclick="estFrenar()">Frenar la tanda</button>'
+              : ('<button class="btn btn-sm btn-primary" onclick="estGenerarTodas()">'
+                +'Generar todas<span class="d">'+(pr.length-listas)+' sin generar · '
+                +'gasta créditos de Higgsfield</span></button>'))
+            +(listas?('<span style="align-self:center;font-size:11.5px;color:var(--text3)">'
+              +listas+' de '+pr.length+' listas</span>'):'')
+          +'</div>';
+        })()
       +pr.map(function(x,i){
         return '<div style="padding:12px 0;border-top:1px solid var(--border)">'
           +'<div style="font-size:11px;color:var(--text3);margin-bottom:6px">'
@@ -17273,9 +17378,25 @@ function _estCuerpo(){
           +'<div style="display:flex;gap:10px;align-items:flex-start;margin-top:10px">'
             +'<div style="flex:1;min-width:0;font-size:11.5px;color:var(--text3);'
               +'line-height:1.55">'+esc(x.prompt||'')+'</div>'
-            +'<button class="btn btn-sm" onclick="estCopiar('+i+',\'prompt\')" '
-              +'style="flex:none;color:var(--text3)">Copiar prompt</button>'
+            +'<div style="flex:none;display:flex;flex-direction:column;gap:6px">'
+              +'<button class="btn btn-sm" onclick="estCopiar('+i+',\'prompt\')" '
+                +'style="color:var(--text3)">Copiar prompt</button>'
+              +(x.estado
+                ? ('<span style="font-size:11px;color:var(--text3);text-align:center">'
+                   +esc(x.estado)+'</span>')
+                : ('<button class="btn btn-sm" onclick="estGenerar('+i+')"'
+                   +(e.tanda?' disabled style="opacity:.45"':'')+'>'
+                   +(x.url?'Volver a generar':'Generar')+'</button>'))
+            +'</div>'
           +'</div>'
+          +(x.err?('<div style="font-size:11.5px;color:var(--redx);margin-top:8px;'
+            +'line-height:1.5">'+esc(x.err)+'</div>'):'')
+          // La imagen abajo y clickeable: en el feed se juzga mirandola, no
+          // leyendo el prompt que la produjo.
+          +(x.url?('<a href="'+esc(x.url)+'" target="_blank" rel="noopener" '
+            +'style="display:block;margin-top:10px"><img src="'+esc(x.url)+'" '
+            +'alt="" style="max-width:280px;width:100%;border-radius:var(--radius);'
+            +'border:1px solid var(--border)"></a>'):'')
         +'</div>';
       }).join('')
       +'</div>';
