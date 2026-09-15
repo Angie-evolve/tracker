@@ -104,13 +104,21 @@ Deno.serve(async (req: Request) => {
       const ya = await buscarUsuario(mail);
       let aviso = "";
       if (ya) {
-        // Ya tiene cuenta: no se le manda una invitacion que no puede usar, se
-        // le levanta el ban si lo tenia y listo.
         await admin("/auth/v1/admin/users/" + ya.id, {
           method: "PUT",
           body: JSON.stringify({ ban_duration: "none" }),
         });
-        aviso = "Ya tenia cuenta: le devolvimos el acceso sin mandarle nada.";
+        // Tener cuenta no es lo mismo que poder entrar. Si la crearon a mano y
+        // nunca puso contrasena, devolverle el acceso sin mandarle nada la deja
+        // habilitada y afuera, sin ninguna senal de que falta algo.
+        const origen0 = String(body.volver || req.headers.get("Origin") || "");
+        const volver0 = /^https?:\/\//.test(origen0)
+          ? "?redirect_to=" + encodeURIComponent(origen0) : "";
+        await admin("/auth/v1/recover" + volver0, {
+          method: "POST",
+          body: JSON.stringify({ email: mail }),
+        });
+        aviso = "Ya tenia cuenta: le mandamos un link para poner su contrasena.";
       } else {
         // El link del mail tiene que volver a la app, no a la Site URL que
         // tenga configurado el proyecto: si cae en otro lado, la invitada
