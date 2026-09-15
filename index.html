@@ -16213,6 +16213,7 @@ async function edBorrarTrabajo(id){
   }catch(err){ toast(_edMsg(err.message),'red'); return; }
   if(e.fila && String(e.fila.id)===String(id)){ e.fila=null; e.jobId=null; }
   toast(arch.length ? ('Borrado · '+arch.length+' archivos') : 'Borrado');
+  edMedirEspacio(true);   // el numero acaba de cambiar: medirlo de nuevo
   edCargar();
 }
 
@@ -16621,6 +16622,107 @@ function edFaltaVideo(){
 }
 
 
+// ── Cuanto espacio queda ────────────────────────────────────────────────
+// El plan gratuito de Supabase da 1 GB para todo el storage. Pasarse no avisa
+// con tiempo: el proyecto se restringe y se cae el tracker entero, no solo el
+// Editor. Por eso el numero se mira desde aca, que es donde se genera el peso.
+var ED_TOPE_GB=1;
+
+// Listar el bucket son varios pedidos, y el peso no cambia entre repintados.
+// Se guarda y se refresca cada diez minutos o cuando algo lo movio.
+function _edEspacio(){ return (S._edEsp=S._edEsp||{}); }
+
+async function edMedirEspacio(forzar){
+  var c=_edEspacio();
+  if(!forzar && c.bytes!==undefined && (Date.now()-(c.cuando||0))<600000) return c;
+  if(c.midiendo) return c;
+  c.midiendo=true;
+  var pedir=async function(prefijo){
+    var r=await fetch(SB_URL+'/storage/v1/object/list/'+ED_BUCKET,{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+               'Content-Type':'application/json'},
+      body:JSON.stringify({prefix:prefijo, limit:1000,
+                           sortBy:{column:'name', order:'asc'}})
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return (await r.json())||[];
+  };
+  try{
+    // El bucket esta partido por usuario, asi que primero las carpetas y
+    // despues cada una: la API lista un nivel por vez.
+    var carpetas=(await pedir('')).map(function(o){ return o.name; });
+    var bytes=0, archivos=0, rutas={};
+    for(var i=0;i<carpetas.length;i++){
+      (await pedir(carpetas[i])).forEach(function(o){
+        var t=(o.metadata||{}).size;
+        if(!t) return;                      // subcarpeta, no archivo
+        bytes+=t; archivos++;
+        rutas[carpetas[i]+'/'+o.name]=t;
+      });
+    }
+    // Lo que no nombra ningun trabajo no lo alcanza ningun boton de la app:
+    // hay que decirlo aparte o queda ocupando para siempre.
+    var usados={};
+    try{
+      (await sbFetch('trabajos_video?select=videos,video_path,resultado_path,'
+        +'resultado_srt_path,piezas,analisis')||[]).forEach(function(t){
+        _edArchivosDe(t).forEach(function(x){ usados[x]=1; });
+      });
+    }catch(err){ usados=null; }
+    var hb=0, hn=0;
+    if(usados) Object.keys(rutas).forEach(function(x){
+      if(!usados[x]){ hb+=rutas[x]; hn++; }
+    });
+    c.bytes=bytes; c.archivos=archivos;
+    c.huerfanosBytes=usados?hb:null; c.huerfanos=usados?hn:null;
+    c.error=''; c.cuando=Date.now();
+  }catch(err){ c.error=err.message; c.cuando=Date.now(); }
+  c.midiendo=false;
+  _edPintar();
+  return c;
+}
+
+function _edEspacioHtml(){
+  var c=_edEspacio();
+  // El error va ANTES del early-return de abajo: si falla la medicion, bytes
+  // queda sin definir, y chequeandolo despues el mensaje no se veia nunca.
+  // Callarse deja la funcion muerta sin que nadie se entere.
+  if(c.error) return '<div style="font-size:11px;color:var(--text3);margin-bottom:10px">'
+    +'No pude medir el espacio usado (' + esc(c.error) + '). '
+    +'<a href="javascript:void(0)" onclick="edMedirEspacio(true)" '
+    +'style="color:var(--text3)">reintentar</a></div>';
+  if(c.bytes===undefined){
+    if(!c.midiendo) edMedirEspacio();
+    return '';
+  }
+  var gb=c.bytes/1073741824, pct=Math.min(100, gb/ED_TOPE_GB*100);
+  // Tres estados y no un numero pelado: lo unico que importa saber de un
+  // vistazo es si hay que hacer algo hoy.
+  var col='var(--text3)', titulo='', urge=false;
+  if(gb>=ED_TOPE_GB){ col='var(--redx)'; urge=true;
+    titulo='Te pasaste del espacio del plan'; }
+  else if(gb>=ED_TOPE_GB*0.8){ col='var(--amberx)'; urge=true;
+    titulo='Estás por quedarte sin espacio'; }
+  if(!urge) return '<div style="font-size:11px;color:var(--text3);margin-bottom:10px">'
+    +'Espacio usado: '+gb.toFixed(2)+' GB de '+ED_TOPE_GB+' GB · '+c.archivos+' archivos</div>';
+  return '<div class="ed-panel" style="border-color:'+col+';margin-bottom:14px">'
+    +'<h3 style="color:'+col+'">'+esc(titulo)+' · '+gb.toFixed(2)+' GB de '+ED_TOPE_GB+' GB</h3>'
+    +'<div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin:8px 0 10px">'
+      +'<div style="height:100%;width:'+pct.toFixed(1)+'%;background:'+col+'"></div></div>'
+    +'<div class="s">Si Supabase restringe el proyecto se cae todo junto, no solo el Editor. '
+      +'Borrá los trabajos que ya no necesites: cada uno se lleva sus videos, su render '
+      +'y su proyecto de CapCut. Los archivos que comparte con otro trabajo se quedan.</div>'
+    +(c.huerfanos ? ('<div class="s" style="color:var(--amberx)">Además hay '+c.huerfanos
+        +' archivo'+(c.huerfanos===1?'':'s')+' ('+(c.huerfanosBytes/1073741824).toFixed(2)
+        +' GB) que no usa ningún trabajo. Esos no los alcanza ningún botón de acá: '
+        +'pedímelos y los saco.</div>') : '')
+    +'<div class="ed-acciones" style="margin-top:10px">'
+      +'<button class="btn btn-sm" onclick="edMedirEspacio(true)" style="color:var(--text3)">'
+        +'Volver a medir</button></div>'
+  +'</div>';
+}
+
 function _edCuerpo(){
   var e=_edEstado();
   if(!SB.token){
@@ -16632,6 +16734,8 @@ function _edCuerpo(){
   var f=e.archivo;
   var corriendo=!!(e.fila && (e.fila.estado==='pendiente'||e.fila.estado==='procesando'));
   var h='';
+
+  h+=_edEspacioHtml();
 
   if(e.error) h+='<div class="ed-panel" style="border-color:var(--redx)">'
     +'<div style="font-size:12px;color:var(--redx)">'+esc(e.error)+'</div></div>';
