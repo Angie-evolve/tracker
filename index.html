@@ -16102,7 +16102,9 @@ function edAbrir(id){
 function _edArchivosDe(f){
   var l=[].concat(f.videos||[], [f.video_path, f.resultado_path, f.resultado_srt_path]);
   ((f.analisis||{}).capcut) && l.push(f.analisis.capcut);
-  (f.piezas||[]).forEach(function(p){ l.push(p.path, p.srt_path, p.capcut_path); });
+  (f.piezas||[]).forEach(function(p){
+    l.push(p.path, p.srt_path, p.capcut_path, p.proyecto_path);
+  });
   var visto={}, out=[];
   l.forEach(function(x){ if(x && !visto[x]){ visto[x]=1; out.push(x); } });
   return out;
@@ -16112,24 +16114,57 @@ async function edBorrarTrabajo(id){
   var e=_edEstado();
   var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0];
   if(!f) return;
-  var arch=_edArchivosDe(f);
-  if(!confirm('Borrar este trabajo y sus '+arch.length+' archivos?\n\n'
-    +'Se van los videos que subiste y los resultados. No hay vuelta atrás.')) return;
+
+  // Rehacer reencola el mismo trabajo con los MISMOS videos, asi que dos filas
+  // terminan apuntando a los mismos archivos. Borrar por fila, sin mirar, le
+  // saca los videos al otro trabajo: incluso a uno que este procesando ahora.
+  // Medido sobre datos reales: siete trabajos compartiendo los mismos 31.
+  var otros={};
   try{
-    // Los archivos primero: si se borra la fila y falla esto, quedan ocupando el
-    // bucket sin que nada los nombre.
+    var filas=await sbFetch('trabajos_video?select=id,videos,video_path,resultado_path,'
+      +'resultado_srt_path,piezas,analisis');
+    (filas||[]).forEach(function(x){
+      if(String(x.id)===String(id)) return;
+      _edArchivosDe(x).forEach(function(ruta){ otros[ruta]=1; });
+    });
+  }catch(err){
+    // Sin saber que se comparte no se borra nada. El riesgo no es dejar
+    // basura, es romperle los archivos a otro trabajo.
+    toast('No pude comprobar que archivos comparte con otros trabajos. '
+      +'No borre nada.','red');
+    return;
+  }
+
+  var todos=_edArchivosDe(f);
+  var arch=todos.filter(function(ruta){ return !otros[ruta]; });
+  var compartidos=todos.length-arch.length;
+
+  if(!confirm('Borrar este trabajo?\n\n'
+    +'Se borran '+arch.length+' archivo'+(arch.length===1?'':'s')+'.'
+    +(compartidos? ('\n'+compartidos+' se quedan porque los usa otro trabajo.'):'')
+    +'\n\nNo hay vuelta atrás.')) return;
+
+  try{
     if(arch.length){
-      await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET, {
+      var r=await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET, {
         method:'DELETE',
         headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
                  'Content-Type':'application/json'},
         body:JSON.stringify({prefixes:arch})
       });
+      // Antes esto no se miraba: si fallaba, la fila se borraba igual y los
+      // archivos quedaban en el bucket sin que nada los nombrara. Asi se
+      // juntaron los huerfanos que hubo que sacar a mano.
+      if(!r.ok){
+        var d=null; try{ d=await r.json(); }catch(e2){ /* sin cuerpo */ }
+        throw new Error((d&&(d.message||d.error))
+          ||('no pude borrar los archivos (HTTP '+r.status+')'));
+      }
     }
     await sbFetch('trabajos_video?id=eq.'+encodeURIComponent(id), {method:'DELETE'});
   }catch(err){ toast(_edMsg(err.message),'red'); return; }
   if(e.fila && String(e.fila.id)===String(id)){ e.fila=null; e.jobId=null; }
-  toast('Borrado');
+  toast(arch.length ? ('Borrado · '+arch.length+' archivos') : 'Borrado');
   edCargar();
 }
 
