@@ -79,11 +79,16 @@ Deno.serve(async (req: Request) => {
         }),
       });
       if (!r.ok) {
-        // El cuerpo del error es lo unico que distingue "el modelo no existe"
-        // de "tu cuenta no lo tiene" de "te quedaste sin creditos".
+        // El cuerpo crudo y el status, sin interpretar: un 404 puede ser que el
+        // modelo no exista, que la cuenta no lo tenga, o que la ruta que se
+        // pidio este mal. Decidir cual desde aca es adivinar, y adivinar mal
+        // manda a buscar el problema al lado equivocado.
         return responder({
           ok: false,
+          status: r.status,
+          ruta: "/image/generate",
           error: (r.d && (r.d.detail || r.d.message || r.d.error)) || ("HTTP " + r.status),
+          crudo: String(r.txt || "").slice(0, 400),
         });
       }
       const id = r.d?.id || r.d?.job_id || r.d?.request_id;
