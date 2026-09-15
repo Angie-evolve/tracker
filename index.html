@@ -15721,6 +15721,40 @@ function _edPost(url, f, onProg){
   });
 }
 
+// Huella del archivo TAL COMO LO ELIGIO LA PERSONA, antes de comprimirlo: la
+// compresion no da dos veces el mismo byte, asi que el tamano de lo que se
+// sube no sirve para reconocerlo. Tamano y fecha del original alcanzan de
+// sobra para videos de camara, y no cuesta nada: leer 200 MB para hashearlos
+// en el navegador si.
+function _edHuella(f){
+  return 'h' + Number(f.size||0).toString(36)
+       + 'x' + Number(f.lastModified||0).toString(36);
+}
+
+// Que ya hay en la carpeta de esta persona, por huella. Sin esto, subir la
+// misma carpeta dos veces deja dos copias enteras: llego a haber siete del
+// mismo video, 345 MB de un archivo solo.
+async function _edYaSubidos(uid){
+  var mapa={};
+  try{
+    var r=await fetch(SB_URL+'/storage/v1/object/list/'+ED_BUCKET,{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+               'Content-Type':'application/json'},
+      body:JSON.stringify({prefix:uid, limit:1000,
+                           sortBy:{column:'name', order:'asc'}})
+    });
+    if(!r.ok) return mapa;
+    (await r.json()||[]).forEach(function(o){
+      var m=/-(h[0-9a-z]+x[0-9a-z]+)-/.exec(String(o.name||''));
+      // El primero que aparece se queda: si hubiera dos con la misma huella,
+      // da igual cual se reuse.
+      if(m && !mapa[m[1]] && (o.metadata||{}).size) mapa[m[1]]=uid+'/'+o.name;
+    });
+  }catch(e){ /* si no se puede listar, se sube y listo */ }
+  return mapa;
+}
+
 async function edSubir(modo){
   var e=_edEstado();
   if(!SB.token){ toast('Entra con tu cuenta para usar el editor.','amber'); return; }
@@ -15738,9 +15772,20 @@ async function edSubir(modo){
   };
   var rutas=[];
   try{
+    var yaEstan=await _edYaSubidos(uid);
+    var reusados=0;
     for(var i=0;i<fs.length;i++){
       var f=fs[i];
       var cual=(fs.length>1?('['+(i+1)+'/'+fs.length+'] '):'');
+      var huella=_edHuella(f);
+      // Reusar el que ya esta ahorra la compresion Y la subida: en un video de
+      // camara eso es varios minutos, no unos segundos.
+      if(yaEstan[huella]){
+        reusados++;
+        decir(cual+'Ya estaba subido, lo reuso');
+        rutas.push(yaEstan[huella]);
+        continue;
+      }
       var datos=f, nombre=f.name;
       // Comprimir solo cuando no entra. Recomprimir uno que ya entra es tiempo
       // regalado —va a velocidad real— y calidad perdida al pedo.
@@ -15756,12 +15801,15 @@ async function edSubir(modo){
             +ED_LIMITE_MB+' MB. Cortalo en partes más cortas.');
       }
       if(!datos.size) throw new Error(nombre+' quedó en 0 bytes, no lo subo');
-      var path=uid+'/'+Date.now()+'-'+('0'+i).slice(-2)+'-'+_matSlug(nombre);
+      var path=uid+'/'+Date.now()+'-'+('0'+i).slice(-2)+'-'+huella+'-'+_matSlug(nombre);
       await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
         e.pct=p; decir(cual+'Subiendo… '+Math.round(p*100)+'%');
       });
       rutas.push(path);
+      yaEstan[huella]=path;   // por si el mismo archivo viene dos veces en la tanda
     }
+    if(reusados) toast(reusados+' archivo'+(reusados===1?' ya estaba subido':'s ya estaban subidos')
+      +', no lo'+(reusados===1?'':'s')+' volví a subir');
 
     // Los guiones se separan acá y viajan ya partidos: el worker los usa tal
     // cual. Mostrarlos antes de subir es lo que permite darse cuenta de que
