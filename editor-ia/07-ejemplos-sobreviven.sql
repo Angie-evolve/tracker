@@ -37,8 +37,8 @@ alter table ejemplos_edicion
   add constraint ejemplos_edicion_trabajo_id_fkey
   foreign key (trabajo_id) references trabajos_video(id) on delete set null;
 
--- Para comprobar que quedo bien. Tiene que decir 'n' (no action / set null),
--- no 'c' (cascade).
+-- Para comprobar que quedo bien. Tiene que decir 'n', que en pg_constraint es
+-- SET NULL. Si dice 'c' es CASCADE y no se aplico.
 select con.conname, con.confdeltype as al_borrar
   from pg_constraint con
   join pg_attribute att
