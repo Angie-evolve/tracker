@@ -17023,106 +17023,53 @@ async function estArchivo(inp){
 // publico para simularlo no es una opcion. Asi que la app arma el pedido, la
 // persona lo pasa por su propia sesion de Claude y trae la respuesta.
 // Como no hay canal de system prompt, las reglas van pegadas adelante.
-function _estPedido(tipo){
+// Un solo pedido y no dos. Antes se pedian los angulos, se elegian, y recien
+// despues los prompts de los elegidos. Pedir los prompts de los ocho cuesta lo
+// mismo que pedir los de tres —es un mensaje igual— y ahorra la segunda vuelta
+// entera, que era el cuello de botella real.
+// Como no hay canal de system prompt en la app de Claude, las reglas van
+// pegadas adelante.
+function _estPedido(){
   var e=_estEstado();
-  if(tipo==='angulos'){
-    return EST_SISTEMA
-      +'\n\n---\n\nEste es el material del cliente:\n\n"""'
-      +String(e.doc||'').trim().slice(0,18000)+'"""\n\n'
-      +'Proponeme 10 angulos distintos para estaticos. Un angulo es una tesis sobre que le '
-      +'duele al cliente y como se lo muestra, no una idea visual suelta. Que se repartan '
-      +'entre estos cuatro ejes, sin que dos digan lo mismo:\n'
-      +'  dolor concreto . costo de no actuar . prueba o resultado . objecion que frena\n\n'
-      +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
-      +'[{"titulo":"3 a 6 palabras","eje":"dolor|costo|prueba|objecion",'
-      +'"idea":"que dice y por que le importa a quien lo ve, dos lineas",'
-      +'"escena":"que se ve, en una linea"}]';
-  }
-  var elegidos=(e.angulos||[]).filter(function(a,i){ return (e.elegidos||{})[i]; });
   return EST_SISTEMA
-    +'\n\n---\n\nPara cada uno de estos angulos, escribi 4 variantes de prompt que cambien '
-    +'SOLO el punto de vista, no la idea: frente, tres cuartos, contrapicado, y un plano '
-    +'cerrado de color o detalle.\n\n'
+    +'\n\n---\n\nEste es el material del cliente:\n\n"""'
+    +String(e.doc||'').trim().slice(0,18000)+'"""\n\n'
+    +'PASO 1. Proponeme 8 angulos distintos para estaticos. Un angulo es una tesis sobre '
+    +'que le duele al cliente y como se lo muestra, no una idea visual suelta. Que se '
+    +'repartan entre estos cuatro ejes, sin que dos digan lo mismo:\n'
+    +'  dolor concreto . costo de no actuar . prueba o resultado . objecion que frena\n\n'
+    +'PASO 2. De CADA angulo, 4 variantes que cambien SOLO el punto de vista, no la idea: '
+    +'frente, tres cuartos, contrapicado, y un plano cerrado de color o detalle.\n\n'
     +'Formato de salida: '+e.formato+'. '
     +(e.avatar ? 'Aparece "the tagged character" en la escena.'
                : 'NO aparece ninguna persona: solo el entorno, el producto o el detalle.')
-    +'\n\nAngulos:\n'+JSON.stringify(elegidos)+'\n\n'
-    +'De cada variante quiero DOS cosas: el prompt de imagen y el copy. El copy en '
-    +'castellano rioplatense, corto, que se lea de un vistazo en el feed: un gancho '
-    +'de hasta 8 palabras y una bajada de una linea. Que hable del angulo, no de la '
-    +'foto.\n\n'
+    +'\n\nCada variante lleva su copy: un gancho de hasta 8 palabras y una bajada de una '
+    +'linea, en castellano rioplatense, que se lean de un vistazo en el feed. Que hablen '
+    +'del angulo, no de la foto.\n\n'
     +(e.enImagen
       ? ('El GANCHO va renderizado DENTRO de la imagen. El prompt tiene que pedirlo '
-        +'explicitamente: el texto exacto entre comillas, en que parte del cuadro va, '
-        +'y que se lea —tipografia gruesa de palo seco, alto contraste contra lo que '
-        +'tiene detras—. Ademas la escena tiene que dejarle lugar: una zona sin '
-        +'detalle donde el texto entre sin taparle la cara a nadie ni el objeto que '
-        +'importa. La bajada NO va en la imagen, va como texto del anuncio.\n\n')
+        +'explicitamente: el texto exacto entre comillas, en que parte del cuadro va, y '
+        +'que se lea —tipografia gruesa de palo seco, alto contraste contra lo que tiene '
+        +'detras—. Ademas la escena tiene que dejarle lugar: una zona sin detalle donde '
+        +'el texto entre sin taparle la cara a nadie ni el objeto que importa. La bajada '
+        +'NO va en la imagen, va como texto del anuncio.\n\n')
       : ('Ningun texto dentro de la imagen: ni el gancho ni la bajada. El prompt tiene '
         +'que pedir la foto limpia, que el copy se sobreimprime despues en el editor.\n\n'))
     +'Devolve SOLO un JSON, sin markdown, empezando con [ :\n'
-    +'[{"angulo":"el titulo tal cual","variante":"frente|tres cuartos|contrapicado|detalle",'
+    +'[{"titulo":"3 a 6 palabras","eje":"dolor|costo|prueba|objecion",'
+    +'"idea":"que dice y por que le importa a quien lo ve, dos lineas",'
+    +'"escena":"que se ve, en una linea",'
+    +'"variantes":[{"variante":"frente|tres cuartos|contrapicado|detalle",'
     +'"prompt":"el prompt en ingles, un parrafo",'
-    +'"gancho":"hasta 8 palabras","bajada":"una linea"}]';
-}
-
-// Si hay clave cargada, el pedido va solo. Es la misma que ya usa el resto de
-// la app, asi que esta pantalla deja de ser la excepcion. Sin clave sigue
-// andando el copiar y pegar: no se rompe nada si no la hay.
-function _estClave(){
-  try{ return localStorage.getItem('evold-anthropic-key')||''; }catch(e){ return ''; }
-}
-
-async function _estClaude(pedido){
-  var r=await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','x-api-key':_estClave(),
-             'anthropic-version':'2023-06-01',
-             'anthropic-dangerous-direct-browser-access':'true'},
-    // 16k porque ocho angulos por cuatro variantes con prompt largo no entran
-    // en 4k: se cortaba el JSON por la mitad y no parseaba.
-    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:16000,
-      messages:[{role:'user', content:pedido}]})
-  });
-  var d=await r.json();
-  if(d.error) throw new Error(d.error.message||'la IA rechazo el pedido');
-  if(!r.ok) throw new Error('error '+r.status);
-  if((d.stop_reason||'')==='max_tokens')
-    throw new Error('la respuesta se corto por largo. Elegí menos ángulos y probá de nuevo.');
-  return (d.content||[]).filter(function(b){ return b.type==='text'; })
-    .map(function(b){ return b.text; }).join('');
-}
-
-async function _estAuto(tipo, pedido){
-  var e=_estEstado();
-  e.cargando=(tipo==='angulos')?'Leyendo el documento y sacando ángulos…'
-                               :'Armando los prompts…';
-  e.error=''; e.pegar=''; _estPintar();
-  try{
-    var datos=_estJson(await _estClaude(pedido), '[', ']');
-    if(!datos.length) throw new Error('vino vacía');
-    if(tipo==='angulos'){ e.angulos=datos.slice(0,10); e.elegidos={}; e.prompts=null; }
-    else { e.prompts=datos; }
-  }catch(err){
-    e.error=err.message+' — podés hacerlo a mano con el botón de siempre.';
-    // Si falla el llamado no se pierde el trabajo: queda el pedido listo para
-    // pasarlo por Claude a mano.
-    e.pedido=pedido; e.pegar=tipo;
-  }
-  e.cargando=''; _estPintar();
+    +'"gancho":"hasta 8 palabras","bajada":"una linea"}]}]';
 }
 
 function estPedir(tipo){
   var e=_estEstado();
-  if(tipo==='angulos' && String(e.doc||'').trim().length<80){
+  if(String(e.doc||'').trim().length<80){
     toast('Pegá o subí el documento primero.','amber'); return;
   }
-  if(tipo==='prompts' && !Object.keys(e.elegidos||{}).length){
-    toast('Tildá al menos un ángulo.','amber'); return;
-  }
-  var pedido=_estPedido(tipo);
-  if(_estClave()){ _estAuto(tipo, pedido); return; }
-  e.pedido=pedido; e.pegar=tipo; e.error='';
+  e.pedido=_estPedido(); e.pegar=tipo; e.error='';
   // El portapapeles puede fallar (permisos, http): por eso el pedido igual queda
   // a la vista en un cuadro, para poder copiarlo a mano.
   try{ navigator.clipboard.writeText(e.pedido); toast('Pedido copiado. Pegalo en Claude.'); }
@@ -17137,9 +17084,11 @@ function estPegar(tipo){
   if(!txt.trim()){ toast('Pegá la respuesta de Claude.','amber'); return; }
   try{
     var datos=_estJson(txt,'[',']');
-    if(!datos.length) throw new Error('vino vacia');
-    if(tipo==='angulos'){ e.angulos=datos.slice(0,10); e.elegidos={}; e.prompts=null; }
-    else { e.prompts=datos; }
+    if(!datos.length) throw new Error('vino vacía');
+    if(!datos.some(function(a){ return (a.variantes||[]).length; }))
+      throw new Error('vinieron los ángulos pero sin sus variantes. Pedíselo de nuevo '
+        +'con el botón, que el pedido las incluye');
+    e.angulos=datos.slice(0,10); e.elegidos={}; e.prompts=null;
     e.pegar=''; e.pedido=''; e.error='';
   }catch(err){
     e.error='No pude leer la respuesta ('+(err&&err.message||'')+'). Copiá todo lo que '
@@ -17154,6 +17103,15 @@ function estTildar(i){
   var e=_estEstado();
   e.elegidos=e.elegidos||{};
   if(e.elegidos[i]) delete e.elegidos[i]; else e.elegidos[i]=true;
+  // Las piezas salen de lo que ya vino: tildar no vuelve a preguntarle a nadie.
+  e.prompts=[];
+  (e.angulos||[]).forEach(function(a,j){
+    if(!e.elegidos[j]) return;
+    (a.variantes||[]).forEach(function(v){
+      e.prompts.push({angulo:a.titulo, variante:v.variante, prompt:v.prompt,
+                      gancho:v.gancho, bajada:v.bajada});
+    });
+  });
   _estPintar();
 }
 
@@ -17162,8 +17120,7 @@ function _estPaso(tipo, etiqueta, nota){
   var e=_estEstado();
   if(e.pegar!==tipo){
     return '<div class="ed-acciones" style="margin-bottom:8px">'
-      +'<button class="btn btn-primary"'+(e.cargando?' disabled style="opacity:.45"':'')
-      +' onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
+      +'<button class="btn btn-primary" onclick="estPedir(\''+tipo+'\')">'+esc(etiqueta)
       +'<span class="d">'+esc(nota)+'</span></button></div>';
   }
   return '<div class="ed-panel" style="margin:12px 0"><h3>Pasalo por tu Claude</h3>'
@@ -17257,12 +17214,8 @@ function _estCuerpo(){
         +' onchange="estEnImagen(this.checked)">Va dentro de la imagen</label></div>'
     +'</div>';
 
-  var auto=!!_estClave();
-  h+=(e.cargando?('<div class="ed-panel" style="margin-bottom:12px"><div class="s">'
-      +esc(e.cargando)+'</div></div>'):'')
-    +_estPaso('angulos', e.angulos?'Volver a pedir los ángulos':'Pedir los ángulos',
-              auto?'sale solo, no gasta créditos de Higgsfield'
-                  :'lo pensás en tu Claude, no gasta créditos de Higgsfield');
+  h+=_estPaso('angulos', e.angulos?'Volver a pedir todo':'Pedir los ángulos y sus prompts',
+              'un solo ida y vuelta con tu Claude');
 
   // --- los angulos, para elegir ---
   var ang=e.angulos||[];
@@ -17271,8 +17224,9 @@ function _estCuerpo(){
     h+='<div class="ed-panel" style="margin-top:16px"><h3>'+ang.length
       +(ang.length===1?' ángulo ':' ángulos ')
       +'<span class="ed-badge">'+n+' elegido'+(n===1?'':'s')+'</span></h3>'
-      +'<div class="s">Tildá los que quieras producir. Recién ahí se gastan créditos: '
-      +'cada ángulo elegido da 4 variantes.</div>'
+      +'<div class="s">Tildá los que quieras producir: sus 4 variantes aparecen abajo, '
+      +'con el copy y el prompt. Ya vinieron todas, así que tildar no vuelve a '
+      +'preguntarle nada a Claude.</div>'
       +ang.map(function(a,i){
         var on=(e.elegidos||{})[i];
         return '<div onclick="estTildar('+i+')" style="display:flex;gap:12px;padding:10px 0;'
@@ -17289,8 +17243,6 @@ function _estCuerpo(){
               +esc(a.escena)+'</div>'):'')
           +'</div></div>';
       }).join('')
-      +_estPaso('prompts','Armar los prompts',
-                 n?(n*4+' variantes'):'elegí al menos uno')
       +'</div>';
   }
 
