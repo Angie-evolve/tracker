@@ -1699,13 +1699,17 @@ var COPIAS_MAX=5;
 async function _copiaAntesDeBajar(actual){
   try{
     if(!actual || !(actual.clients||[]).length) return;   // nada que resguardar
+    // Clonar ANTES de cualquier await: si el que llama sigue y modifica DB
+    // mientras esto espera al disco, la copia guarda el estado ya cambiado.
+    // Paso en la prueba: la copia de "antes de volver a fabrica" salia con la
+    // ruta de fabrica adentro, o sea servia para nada.
+    var foto=JSON.parse(JSON.stringify(actual));
     var lista=(await idbLeer('evold-copias'))||[];
     var ultima=lista[0];
     // Si no cambio nada desde la ultima, no se apila otra igual.
-    if(ultima && ultima.n===(actual.clients||[]).length
+    if(ultima && ultima.n===(foto.clients||[]).length
       && ultima.at && (Date.now()-Date.parse(ultima.at))<10*60000) return;
-    lista.unshift({at:new Date().toISOString(), n:(actual.clients||[]).length,
-                   datos:JSON.parse(JSON.stringify(actual))});
+    lista.unshift({at:new Date().toISOString(), n:(foto.clients||[]).length, datos:foto});
     lista=lista.slice(0, COPIAS_MAX);
     await idbGuardar('evold-copias', lista);
   }catch(e){ console.warn('[copias] no pude guardar:', e&&e.message); }
@@ -2443,12 +2447,23 @@ function _normalizarClientes(){
   });
 }
 async function load(){
+  var fallo=false;
   try{
     const p=await _leerLocal();
     if(p&&p.clients&&p.clients.length){ DB=p; _normalizarClientes(); return; }
-  }catch(e){}
+  }catch(e){ fallo=true; }
   DB=JSON.parse(JSON.stringify(DEFAULT));
   _normalizarClientes();
+  // Si la lectura fallo -IndexedDB caido, ventana privada, disco lleno- los
+  // datos de fabrica se usan en pantalla pero NO se guardan: escribirlos
+  // encima borraria la base local de verdad por un problema pasajero, y sin
+  // copia de la que volver.
+  if(fallo){
+    console.warn('[load] no pude leer la base local: uso la de fabrica sin guardarla');
+    try{ toast('No pude leer los datos guardados en este navegador. '
+      +'No toques nada y recarga.','red'); }catch(e){}
+    return;
+  }
   save();
 }
 // Las copias que quedaron antes de cada bajada de la nube. Sin una pantalla no
@@ -2495,7 +2510,15 @@ function importData(){
       try{
         const p=JSON.parse(ev.target.result);
         if(!p.clients) throw new Error();
-        DB=p;_normalizarClientes();save();renderSidebar();showOverview();
+        // Reemplaza TODO. Sin decirlo, importar un backup viejo por error borra
+        // lo de hoy y ademas lo sube, que era exactamente el agujero del 16/9.
+        if(!confirm('Importar este archivo?\n\nTiene '+p.clients.length+' clientes y '
+          +'reemplaza todo lo que hay ahora, aca y en la nube.\n\nSe guarda una copia '
+          +'local de lo actual antes de reemplazar, por si hay que volver.')) return;
+        _copiaAntesDeBajar(DB);
+        DB=p;_normalizarClientes();
+        _sbHuellas={}; _sbVisto={};
+        save();renderSidebar();showOverview();
         toast('Datos importados correctamente OK');
       }catch{toast('Archivo invalido','red');}
     };r.readAsText(f);
@@ -3474,6 +3497,11 @@ function borrarClienteDefinitivo(clientId){
   if(_n(tecleado)!==_n(c.name)){ toast('El nombre no coincide, no borre nada','red'); return; }
   DB.clients=DB.clients.filter(function(x){return x.id!==clientId;});
   delete _sbHuellas[clientId];
+  // Igual que con los prospectos: si el DELETE de la nube falla, sbBajar lo
+  // devolvia entero en la siguiente carga y no habia forma de sacarlo.
+  DB.clientesBorrados=DB.clientesBorrados||[];
+  if(DB.clientesBorrados.indexOf(String(clientId))<0)
+    DB.clientesBorrados.push(String(clientId));
   save();
   S.view='overview'; S.clientId=null;
   renderSidebar(); showOverview();
@@ -29080,7 +29108,13 @@ function rutaAgregarEtapa(){
   save(); rutaModal();
 }
 function rutaRestaurar(){
-  if(!confirm('Volver a las 9 etapas de fabrica? Se pierden los cambios de esta pantalla.')) return;
+  // Renombrar muda el historial; volver a fabrica cambia las nueve de golpe y
+  // no hay a donde mudarlo. Conviene decirlo antes y no despues.
+  if(!confirm('Volver a las 9 etapas de fabrica?\n\nSe pierden los nombres, las palabras '
+    +'clave y los pasos de esta pantalla. Y como todo se guarda por nombre de etapa, '
+    +'lo tildado a mano y las citas de tus clientes quedan colgando de etapas que ya no '
+    +'existen.\n\nSe guarda una copia local antes, por si hay que volver.')) return;
+  try{ _copiaAntesDeBajar(DB); }catch(e){}
   DB.ruta=RUTA_DEFAULT.map(function(e){
     return {l:e.l, kw:e.kw||'', dia:e.dia, sub:false}; });
   save(); rutaModal();
