@@ -1692,6 +1692,43 @@ function _guardarLocal(obj){
     return false;
   });
 }
+// Copias locales antes de que la nube pise lo que hay. No es un backup del
+// servidor: es la ultima red antes de perder trabajo. El 16/9 una ventana con
+// datos viejos sobrescribio una tarde entera y no habia de donde volver.
+var COPIAS_MAX=5;
+async function _copiaAntesDeBajar(actual){
+  try{
+    if(!actual || !(actual.clients||[]).length) return;   // nada que resguardar
+    var lista=(await idbLeer('evold-copias'))||[];
+    var ultima=lista[0];
+    // Si no cambio nada desde la ultima, no se apila otra igual.
+    if(ultima && ultima.n===(actual.clients||[]).length
+      && ultima.at && (Date.now()-Date.parse(ultima.at))<10*60000) return;
+    lista.unshift({at:new Date().toISOString(), n:(actual.clients||[]).length,
+                   datos:JSON.parse(JSON.stringify(actual))});
+    lista=lista.slice(0, COPIAS_MAX);
+    await idbGuardar('evold-copias', lista);
+  }catch(e){ console.warn('[copias] no pude guardar:', e&&e.message); }
+}
+async function copiasListar(){
+  try{ return (await idbLeer('evold-copias'))||[]; }catch(e){ return []; }
+}
+// Volver a una copia. No sube nada por su cuenta: deja los datos cargados y el
+// guardado normal los manda, con el mismo control de choque que el resto.
+async function copiasVolver(i){
+  var lista=await copiasListar();
+  var c=lista[i];
+  if(!c || !c.datos){ toast('Esa copia ya no esta','amber'); return; }
+  if(!confirm('Volver a la copia del '+new Date(c.at).toLocaleString('es-AR')
+    +'?\n\nTiene '+c.n+' clientes. Lo que haya ahora se reemplaza por eso.')) return;
+  await _copiaAntesDeBajar(DB);          // la de ahora tambien se resguarda
+  DB=JSON.parse(JSON.stringify(c.datos));
+  try{ _normalizarClientes(); }catch(e){}
+  _sbHuellas={}; _sbVisto={};
+  save();
+  toast('Volviste a la copia del '+new Date(c.at).toLocaleString('es-AR'));
+  location.reload();
+}
 async function _leerLocal(){
   try{
     var v=await idbLeer(LS_KEY);
@@ -2052,6 +2089,8 @@ function _cfgEquipoNota(){
 
 // ── Bajar todo de Supabase ──────────────────────────────────────────────
 async function sbBajar(){
+  // Lo que hay ahora, antes de que lo de la nube lo reemplace.
+  try{ await _copiaAntesDeBajar(DB); }catch(e){}
   var filas=await sbFetch('clientes?select=id,datos,actualizado&order=id');
   var cfg=await sbFetch('config?select=clave,valor');
   if(!filas||!filas.length) return false;   // base vacia: se queda con lo local
@@ -2411,6 +2450,32 @@ async function load(){
   DB=JSON.parse(JSON.stringify(DEFAULT));
   _normalizarClientes();
   save();
+}
+// Las copias que quedaron antes de cada bajada de la nube. Sin una pantalla no
+// sirven de nada: nadie va a abrir la consola justo cuando acaba de perder algo.
+async function copiasModal(){
+  var lista=await copiasListar();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:560px">'
+      +'<div class="modal-title">Copias locales</div>'
+      +'<div class="modal-sub">De este navegador, guardadas justo antes de que la app '
+        +'traiga los datos de la nube. Sirven para volver atras si algo se pisó. '
+        +'Se guardan las ultimas '+COPIAS_MAX+'.</div>'
+      +(lista.length
+        ? lista.map(function(c,i){
+            return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;'
+                +'border-bottom:1px solid var(--border)">'
+              +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text)">'
+                +esc(new Date(c.at).toLocaleString('es-AR'))
+                +'<span style="color:var(--text3)"> \u00b7 '+c.n+' clientes</span></span>'
+              +'<button class="btn btn-sm" onclick="copiasVolver('+i+')">Volver a esta</button>'
+            +'</div>';
+          }).join('')
+        : '<div style="font-size:12px;color:var(--text3);padding:10px 0">Todavia no hay '
+          +'ninguna. Se crea sola la proxima vez que la app traiga datos de la nube.</div>')
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
 }
 function exportData(){
   const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
@@ -10817,6 +10882,7 @@ function toggleOverviewMenu(btn){
     +it('openNewClientModal()','ti-plus','Nuevo cliente')
     +it('fathomWebhookSync()','ti-phone','Sincronizar llamadas')
     +'<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    +it('copiasModal()','ti-history','Copias locales',true)
     +it('importData()','ti-download','Importar backup',true)
     +it('exportData()','ti-upload','Exportar backup',true);
   btn.parentElement.appendChild(m);
