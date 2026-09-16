@@ -29772,17 +29772,73 @@ function citasVigilar(){
     if(!document.hidden) citasAuto();
   });
 }
+// La agenda de la agencia es UNA sola para todos los clientes que no tienen
+// subcuenta propia. Antes se bajaba entera y se aplicaba a un cliente por
+// vuelta, cada seis minutos: con treinta clientes, tres horas para dar una
+// vuelta, y solo con la app abierta. De ahi que las llamadas de onboarding
+// estuvieran agendadas en GHL y el tablero no las mostrara.
+//
+// Ahora se baja una vez y se reparte entre todos. Los que tienen subcuenta
+// propia siguen de a uno: su agenda es otra y hay que pedirla aparte.
 async function citasAuto(){
   if(!_lpCalFn().url) return;
   var ctx=_citasCtx();
-  var cands=(DB.clients||[]).filter(function(c){
-    return (!c.archived || esProspecto(c))
-      && ((ctx.token&&ctx.location) || (c.ghl&&c.ghl.token&&c.ghl.locationId));
-  }).sort(function(a,b){
-    return String(a.citasAt||'').localeCompare(String(b.citasAt||''));
-  });
-  if(!cands.length) return;
-  await citasBuscar(cands[0].id, true);
+  var vivos=(DB.clients||[]).filter(function(c){ return !c.archived || esProspecto(c); });
+  var propios=vivos.filter(function(c){ return c.ghl&&c.ghl.token&&c.ghl.locationId; });
+  var deLaAgencia=vivos.filter(function(c){
+    return !(c.ghl&&c.ghl.token&&c.ghl.locationId) && ctx.token && ctx.location; });
+
+  if(deLaAgencia.length){
+    var eventos=await _citasAgendaAgencia(ctx);
+    if(eventos){
+      deLaAgencia.forEach(function(c){
+        try{ _citasAplicar(c, eventos, true, eventos.length); }catch(e){}
+      });
+      save();
+      if(typeof renderTab==='function' && S.view==='tickets') showTickets();
+    }
+  }
+  // El de subcuenta propia que haga mas tiempo que no se revisa. Uno por
+  // vuelta: son pocos y cada uno es una agenda distinta.
+  if(propios.length){
+    propios.sort(function(a,b){
+      return String(a.citasAt||'').localeCompare(String(b.citasAt||'')); });
+    await citasBuscar(propios[0].id, true);
+  }
+}
+
+// Baja la agenda de la subcuenta interna una sola vez. Devuelve null si algo
+// falla: repartir una agenda a medias seria peor que no repartir nada, porque
+// borraria las citas que ya estaban bien.
+async function _citasAgendaAgencia(ctx){
+  var fn=_lpCalFn();
+  if(!fn.url || !ctx.token || !ctx.location) return null;
+  try{
+    var cals=(DB.ghlCalendariosAgencia||[]).map(function(x){ return x.id; });
+    if(!cals.length){
+      var rc=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+        +'&accion=calendarios',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({token:ctx.token, location:ctx.location})})
+        .then(function(x){ return x.json(); });
+      if(!rc||!rc.ok) return null;
+      DB.ghlCalendariosAgencia=(rc.calendarios||[])
+        .map(function(x){ return {id:x.id, nombre:x.nombre}; });
+      cals=DB.ghlCalendariosAgencia.map(function(x){ return x.id; });
+      if(!cals.length) return null;
+    }
+    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=eventos',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({token:ctx.token, location:ctx.location, calendarios:cals,
+                            ahora:Date.now()})})
+      .then(function(x){ return x.json(); });
+    if(!r||!r.ok) return null;
+    var todos=(r.eventos||[]);
+    var gg=await _gcalEventos();
+    if(gg.eventos.length) todos=todos.concat(gg.eventos);
+    return todos;
+  }catch(e){ return null; }
 }
 function _p360FichaHtml(c){
   var ruta=_ruta(c).filter(function(x){ return !x.manual; });
