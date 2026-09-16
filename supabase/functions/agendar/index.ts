@@ -141,6 +141,39 @@ Deno.serve(async (req: Request) => {
       return responder({ ok: true, location: GHL_LOCATION, calendarios: cals });
     }
 
+    // Los horarios libres de un calendario para un dia. Los calcula GHL con la
+    // disponibilidad configurada -horario de atencion, duracion del turno, lo
+    // ya ocupado-, asi que es la misma verdad que ve el cliente en el widget.
+    //
+    // El rango se pide ancho a proposito y el filtrado por dia lo hace la app:
+    // acotarlo aca obligaria a hacer cuentas de zona horaria del lado del
+    // servidor, que es donde se cuelan los errores de un dia de corrimiento.
+    if (accion === "huecos") {
+      const calendarId = String(body.calendarId || "").trim();
+      const dia = String(body.dia || "").trim();            // AAAA-MM-DD
+      if (!calendarId) return responder({ error: "Esa etapa no tiene calendario de GHL." }, 400);
+      const base = Date.parse(dia + "T00:00:00Z");
+      if (isNaN(base)) return responder({ error: "El dia no se entiende: " + dia }, 400);
+      const desde = base - 24 * 3600 * 1000;
+      const hasta = base + 48 * 3600 * 1000;
+      const r = await ghl(
+        "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" +
+        "?startDate=" + desde + "&endDate=" + hasta,
+      );
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      // GHL devuelve un objeto con una clave por dia y los turnos adentro. La
+      // forma cambio entre versiones, asi que se juntan todos los que aparezcan
+      // en vez de asumir una estructura.
+      const slots: string[] = [];
+      const juntar = (v: any) => {
+        if (!v) return;
+        if (Array.isArray(v)) { v.forEach((x) => typeof x === "string" && slots.push(x)); return; }
+        if (typeof v === "object") Object.keys(v).forEach((k) => juntar(v[k]));
+      };
+      juntar(r.datos);
+      return responder({ ok: true, slots: slots.slice(0, 400) });
+    }
+
     // Mover una cita que ya existe. Va por el mismo camino que crearla porque
     // es la misma decision: si la etapa ya tiene reunion, cambiar la fecha es
     // reprogramar esa, no crear una segunda y dejar al cliente con dos

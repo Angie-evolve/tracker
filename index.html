@@ -30080,6 +30080,54 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
 // cliente recibe la invitacion, el link y los recordatorios. "Cargar a mano"
 // solo la anota en el tracker: sirve para registrar algo que ya existe, no para
 // crear una reunion -el cliente nunca se entera de esas.
+// Los horarios libres del calendario de esa etapa, para el dia elegido. Los
+// calcula GHL con su disponibilidad, asi que es lo mismo que ve el cliente en
+// el widget: sin esto se agenda a cualquier hora y despues hay que reprogramar.
+async function citasHuecos(clientId){
+  var caja=document.getElementById('cita-huecos');
+  if(!caja) return;
+  var f=(document.getElementById('cita-fecha')||{}).value||'';
+  var et=(document.getElementById('cita-etapa')||{}).value||'';
+  if(!f||!et){ caja.innerHTML=''; return; }
+  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
+  var cal=String((def&&def.cal)||'');
+  if(!cal){
+    caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">"'+esc(et)
+      +'" no tiene calendario de GHL: no puedo mostrar los horarios.</span>';
+    return;
+  }
+  caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando horarios\u2026</span>';
+  try{
+    var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f});
+    // Se filtra al dia elegido con la hora local: el rango que se pide es ancho
+    // a proposito para no hacer cuentas de zona horaria del otro lado.
+    var hoy=(r.slots||[]).map(function(x){ return new Date(x); })
+      .filter(function(d){
+        if(isNaN(d.getTime())) return false;
+        var y=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+        return y===f;
+      }).sort(function(a,b){ return a-b; });
+    if(!hoy.length){
+      caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">'
+        +'Sin horarios libres ese dia en ese calendario. Proba otra fecha.</span>';
+      return;
+    }
+    caja.innerHTML='<span style="font-size:10.5px;color:var(--text3);margin-right:6px">'
+      +hoy.length+' libre'+(hoy.length===1?'':'s')+':</span>'
+      +hoy.map(function(d){
+        var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+        return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;margin:0 4px 4px 0" '
+          +'onclick="citasElegirHora(\''+hh+'\')">'+hh+'</button>';
+      }).join('');
+  }catch(e){
+    caja.innerHTML='<span style="font-size:10.5px;color:var(--redx)">No pude traer los '
+      +'horarios: '+esc(e&&e.message||'')+'</span>';
+  }
+}
+function citasElegirHora(hh){
+  var i=document.getElementById('cita-hora');
+  if(i){ i.value=hh; i.style.borderColor='var(--accent)'; }
+}
 async function citasAgendarGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -30578,7 +30626,8 @@ function _citasHtml(c){
     +'<details class="p3-mano"'+(S._p3Mano?' open':'')
       +' ontoggle="S._p3Mano=this.open"><summary>Cargar una cita a mano</summary>'
       +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:7px">'
-        +'<input id="cita-fecha" type="date" style="'+_citaEst()+'">'
+        +'<input id="cita-fecha" type="date" onchange="citasHuecos('+c.id+')" '
+          +'style="'+_citaEst()+'">'
         +'<input id="cita-hora" type="time" value="09:00" style="'+_citaEst()+'">'
         // Viene puesto con el contacto del cliente: es con quien es la reunion en
         // el 99% de los casos, y escribirlo cada vez era trabajo de mas. Para
@@ -30586,7 +30635,7 @@ function _citasHtml(c){
         +'<input id="cita-con" value="'+esc(c.contacto||c.name||'')+'" '
           +'placeholder="Con quien" title="Solo para anotar. Al agendar en GHL el '
           +'contacto sale del mail de la ficha." style="'+_citaEst()+';flex:1;min-width:130px">'
-        +'<select id="cita-etapa" style="'+_citaEst()+'">'
+        +'<select id="cita-etapa" onchange="citasHuecos('+c.id+')" style="'+_citaEst()+'">'
           +'<option value="">Etapa...</option>'+ops+'</select>'
         +'<input id="cita-min" type="number" min="5" max="480" step="5" value="60" '
           +'title="Cuanto dura, en minutos" style="'+_citaEst()+';width:64px">'
@@ -30598,6 +30647,8 @@ function _citasHtml(c){
           +'title="Solo la anota en el tracker. El cliente no se entera." '
           +'onclick="citasAMano('+c.id+')">Solo anotar</button>'
       +'</div>'
+      // Los horarios libres del dia elegido. Vacio hasta que haya fecha y etapa.
+      +'<div id="cita-huecos" style="margin-top:7px;line-height:1.9"></div>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px;line-height:1.5;'
         +'max-width:74ch"><b style="color:var(--text2)">Agendar en GHL</b> la crea de '
         +'verdad: el cliente recibe la invitacion, el link y los recordatorios. Necesita '
