@@ -2019,6 +2019,25 @@ async function sbBajar(){
   if(!filas||!filas.length) return false;   // base vacia: se queda con lo local
   var nuevo={clients:filas.map(function(f){ return f.datos; })};
   (cfg||[]).forEach(function(row){ nuevo[row.clave]=row.valor; });
+  // Lo borrado se queda borrado. Borrar hace un DELETE en la nube, pero si esa
+  // llamada no sale -sin red, sin permiso, o la pestana cerrada antes de que
+  // termine- la fila sobrevive y esto la devolvia entera. La tarjeta volvia
+  // sola en la siguiente carga y borrarla de nuevo no servia de nada, porque
+  // la lista de borrados por mail solo frena a Fathom, no a la sincronizacion.
+  var _bor=[].concat(DB.clientesBorrados||[], nuevo.clientesBorrados||[]).map(String);
+  _bor=_bor.filter(function(v,i){ return v && _bor.indexOf(v)===i; });
+  if(_bor.length){
+    nuevo.clientesBorrados=_bor;
+    var _vuelven=filas.filter(function(f){ return _bor.indexOf(String(f.id))>=0; });
+    nuevo.clients=filas.filter(function(f){ return _bor.indexOf(String(f.id))<0; })
+      .map(function(f){ return f.datos; });
+    // Y se reintenta el borrado que habia quedado a medias, para que la fila no
+    // siga volviendo en cada carga.
+    _vuelven.forEach(function(f){
+      sbFetch('clientes?id=eq.'+encodeURIComponent(f.id), {method:'DELETE'})
+        .catch(function(){});
+    });
+  }
   DB=Object.assign({}, DB, nuevo);
   // Esta es la hidratacion de verdad cuando hay nube: pisa los clientes que
   // dejo load(), asi que normalizar alla sola no alcanzaba.
@@ -28012,6 +28031,11 @@ function p360BorrarProspecto(clientId){
     DB.prospectosNo=DB.prospectosNo||[];
     if(DB.prospectosNo.indexOf(mail)<0) DB.prospectosNo.push(mail);
   }
+  // Por id ademas de por mail: el mail frena a Fathom, el id frena a la
+  // sincronizacion, que es el otro camino por el que la tarjeta volvia.
+  DB.clientesBorrados=DB.clientesBorrados||[];
+  if(DB.clientesBorrados.indexOf(String(clientId))<0)
+    DB.clientesBorrados.push(String(clientId));
   DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
   delete _sbHuellas[clientId];
   if(S.p360Abierto===clientId) S.p360Abierto=null;
