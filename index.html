@@ -27833,8 +27833,16 @@ function _p360Etapa(c){
   // que quedo sin tildar. Un cliente con el onboarding agendado para manana
   // aparecia en Alta Cliente y no habia forma de ver, de un vistazo, quien
   // tenia la reunion puesta y quien no.
+  // Solo cuenta como agendada la etapa que tiene una cita de verdad, o una
+  // fecha puesta a mano. Una fecha suelta en rutaAgenda es casi siempre la
+  // huella que dejo una cita al cambiarse de etapa, y siendo anterior le ganaba
+  // a la reunion real: el cliente quedaba en Alta Cliente con el onboarding ya
+  // agendado, y la ficha no tenia como explicarlo.
+  var _viva=function(x){
+    return !!_deEtapa(c.citas, x.l) || !!_deEtapa(c.rutaAgendaMano, x.l);
+  };
   var prox=-1;
-  fijas.forEach(function(x,j){ if(prox<0 && x.estado==='agendada') prox=j; });
+  fijas.forEach(function(x,j){ if(prox<0 && x.estado==='agendada' && _viva(x)) prox=j; });
   // Por que cae en esta columna. El panel dice "en que etapa esta cada uno y
   // que le impide avanzar" y no sabia explicarse: cuando el resultado no era el
   // esperado no habia forma de saber que dato lo estaba decidiendo.
@@ -28014,6 +28022,11 @@ function p360Agendar(clientId, etapa, iso){
   if(isNaN(d)) return;
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();
+  // Queda marcada como puesta a mano: sin eso no hay como distinguirla de una
+  // fecha que dejo atras una cita al cambiar de etapa, que es lo que despues
+  // se lleva al cliente a la columna equivocada.
+  c.rutaAgendaMano=c.rutaAgendaMano||{};
+  c.rutaAgendaMano[etapa]=1;
   save();
   toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
   p360ConfirmarMover(clientId, S._p360Destino||etapa, true);
@@ -31190,6 +31203,22 @@ function rutaHijas(label){
   });
   return out;
 }
+// Buscar una etapa dentro de un mapa guardado por nombre. Todo -las citas, lo
+// tildado a mano, las fechas agendadas- se guarda con el nombre de la etapa
+// como clave, asi que un espacio de mas o una mayuscula distinta entre lo
+// guardado y la ruta los desconecta sin que se vea nada: la cita figura en la
+// ficha y la etapa igual sale pendiente.
+function _norm(t){
+  return String(t||'').trim().toLowerCase().replace(/\s+/g,' ');
+}
+function _deEtapa(mapa, label){
+  if(!mapa) return undefined;
+  if(Object.prototype.hasOwnProperty.call(mapa, label)) return mapa[label];
+  var n=_norm(label);
+  var ks=Object.keys(mapa);
+  for(var i=0;i<ks.length;i++){ if(_norm(ks[i])===n) return mapa[ks[i]]; }
+  return undefined;
+}
 function _ruta(c){
   var k=_compromiso(c);
   var hoy=new Date(); hoy.setHours(0,0,0,0);
@@ -31203,7 +31232,7 @@ function _ruta(c){
     // generan ninguna, asi que nunca encontraban su match y quedaban en rojo
     // para siempre por mas que estuvieran hechas. Marcarlas a mano manda sobre
     // la deteccion automatica.
-    var aMano=parseDDMMYYYY(((c.rutaHechas||{})[e.l])||'');
+    var aMano=parseDDMMYYYY(_deEtapa(c.rutaHechas, e.l)||'');
     // Agendar cuenta como hecha. La llamada de onboarding se agenda al cerrar
     // la venta y se graba dias despues: esperar la grabacion dejaba al cliente
     // trabado en una etapa que en los hechos ya paso.
@@ -31211,8 +31240,8 @@ function _ruta(c){
     // ruta miraba solo c.rutaAgenda, que se llena al asignar una a mano: un
     // cliente con la reunion de Onboarding puesta en el calendario seguia
     // figurando en Diagnostico, y las citas se veian ahi abajo sin efecto.
-    var _ct=(c.citas||{})[e.l];
-    var agenda=parseDDMMYYYY(((c.rutaAgenda||{})[e.l])||'');
+    var _ct=_deEtapa(c.citas, e.l);
+    var agenda=parseDDMMYYYY(_deEtapa(c.rutaAgenda, e.l)||'');
     if(!agenda && _ct && _ct.inicio && String(_ct.estado||'')!=='cancelled'){
       var _d=new Date(_ct.inicio);
       if(!isNaN(_d)) agenda=new Date(_d.getFullYear(), _d.getMonth(), _d.getDate());
