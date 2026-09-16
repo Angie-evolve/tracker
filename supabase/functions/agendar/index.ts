@@ -181,23 +181,27 @@ Deno.serve(async (req: Request) => {
     if (accion === "reprogramar") {
       const id = String(body.eventId || "").trim();
       const inicio = String(body.inicio || "").trim();
-      const minutos = Math.max(5, Math.min(480, parseInt(body.minutos, 10) || 60));
       if (!id) return responder({ error: "Falta el id de la cita." }, 400);
       const t0 = Date.parse(inicio);
       if (isNaN(t0)) return responder({ error: "La fecha no se entiende: " + inicio }, 400);
+      // Sin endTime: la duracion la define el calendario. Mandarla nuestra da
+      // "Selected slot duration is not a valid duration option for this
+      // calendar" -GHL solo acepta las duraciones que tiene configuradas.
+      const cuerpo: Record<string, unknown> = { startTime: new Date(t0).toISOString() };
+      if (body.minutos) {
+        const m = Math.max(5, Math.min(480, parseInt(body.minutos, 10)));
+        cuerpo.endTime = new Date(t0 + m * 60000).toISOString();
+      }
       const r = await ghl("/calendars/events/appointments/" + encodeURIComponent(id), {
         method: "PUT",
-        body: JSON.stringify({
-          startTime: new Date(t0).toISOString(),
-          endTime: new Date(t0 + minutos * 60000).toISOString(),
-        }),
+        body: JSON.stringify(cuerpo),
       });
       if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
       const ev = (r.datos && (r.datos.event || r.datos.appointment || r.datos)) || {};
       return responder({
         ok: true, id: ev.id || id,
         inicio: ev.startTime || new Date(t0).toISOString(),
-        fin: ev.endTime || new Date(t0 + minutos * 60000).toISOString(),
+        fin: ev.endTime || "",
       });
     }
 
@@ -208,7 +212,6 @@ Deno.serve(async (req: Request) => {
     const email = String(body.email || "").trim().toLowerCase();
     const calendarId = String(body.calendarId || "").trim();
     const inicio = String(body.inicio || "").trim();      // ISO con zona
-    const minutos = Math.max(5, Math.min(480, parseInt(body.minutos, 10) || 60));
     const titulo = String(body.titulo || "").trim();
 
     if (!email) return responder({ error: "Falta el mail del cliente." }, 400);
@@ -220,21 +223,28 @@ Deno.serve(async (req: Request) => {
     const c = await buscarContacto(email);
     if ("error" in c) return responder({ error: c.error }, 404);
 
-    const fin = new Date(t0 + minutos * 60000).toISOString();
+    // Sin endTime a proposito: la duracion es la que tiene configurada el
+    // calendario. Mandar una propia hace que GHL rechace con "Selected slot
+    // duration is not a valid duration option for this calendar", y ademas
+    // crearia reuniones de un largo que el cliente no espera.
+    const nueva: Record<string, unknown> = {
+      calendarId,
+      locationId: GHL_LOCATION,
+      contactId: c.id,
+      startTime: new Date(t0).toISOString(),
+      title: titulo || "Reunion",
+      appointmentStatus: "confirmed",
+      // Que el cliente reciba lo que recibe siempre: invitacion, link y
+      // recordatorios los arma GHL con la configuracion del calendario.
+      ignoreFreeSlotValidation: false,
+    };
+    if (body.minutos) {
+      const m = Math.max(5, Math.min(480, parseInt(body.minutos, 10)));
+      nueva.endTime = new Date(t0 + m * 60000).toISOString();
+    }
     const r = await ghl("/calendars/events/appointments", {
       method: "POST",
-      body: JSON.stringify({
-        calendarId,
-        locationId: GHL_LOCATION,
-        contactId: c.id,
-        startTime: new Date(t0).toISOString(),
-        endTime: fin,
-        title: titulo || "Reunion",
-        appointmentStatus: "confirmed",
-        // Que el cliente reciba lo que recibe siempre: invitacion, link y
-        // recordatorios los arma GHL con la configuracion del calendario.
-        ignoreFreeSlotValidation: false,
-      }),
+      body: JSON.stringify(nueva),
     });
 
     if (!r.ok) {
@@ -247,7 +257,7 @@ Deno.serve(async (req: Request) => {
       ok: true,
       id: ev.id || "",
       inicio: ev.startTime || new Date(t0).toISOString(),
-      fin: ev.endTime || fin,
+      fin: ev.endTime || "",
       contacto: c.nombre || email,
     });
   } catch (e) {
