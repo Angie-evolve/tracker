@@ -29378,12 +29378,15 @@ function _citaEsDe(c, titulo, con, mail){
 }
 // Deja anotado a que etapa pertenece una cita, para que no cambie sola en la
 // proxima sincronizacion. Lo puesto a mano no lo pisa lo automatico.
-function _citaFijar(c, id, etapa, aMano){
+function _citaFijar(c, id, etapa, aMano, origen){
   if(!c || !id || !etapa) return;
   c.citaEtapa=c.citaEtapa||{};
   var ya=c.citaEtapa[String(id)];
   if(ya && ya.m && !aMano) return;
-  c.citaEtapa[String(id)]={e:etapa, m:aMano?1:0};
+  // Y de donde salio la etapa: del titulo, del reparto por orden, de una
+  // asignacion a mano, o de la adivinanza. Sin esto no hay forma de listar las
+  // que cayeron adivinadas, que son justo las que hay que revisar.
+  c.citaEtapa[String(id)]={e:etapa, m:aMano?1:0, o:aMano?'mano':(origen||'adivinada')};
 }
 // Para que etapa es. Si el titulo la nombra, esa. Si no, la primera que tenga
 // pendiente el paso de agendar: es la reunion que se estaba esperando.
@@ -29394,15 +29397,17 @@ function _citaFijar(c, id, etapa, aMano){
 // cliente cambiaba de columna sin que pasara nada. Ahora lo adivinado se anota
 // y se queda quieto. El titulo sigue mandando sobre la adivinanza vieja: si se
 // renombra el calendario de GHL con el nombre de la etapa, se corrige solo.
-function _citaEtapaPara(c, titulo, calendario, id, porOrden){
+function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
+  info=info||{};
   var fijo=(c&&c.citaEtapa)?c.citaEtapa[String(id||'')]:null;
-  if(fijo && fijo.m && fijo.e) return fijo.e;
+  if(fijo && fijo.m && fijo.e){ info.o='mano'; return fijo.e; }
   // El reparto por orden ya miro el titulo, y ademas sabe cuantas reuniones
   // iguales tiene este cliente. Manda sobre mirar el titulo de a una.
-  if(porOrden) return porOrden;
+  if(porOrden){ info.o='orden'; return porOrden; }
   var porTitulo=_citaEtapaDe(titulo, calendario);
-  if(porTitulo) return porTitulo;
-  if(fijo && fijo.e) return fijo.e;
+  if(porTitulo){ info.o='titulo'; return porTitulo; }
+  if(fijo && fijo.e){ info.o=fijo.o||'adivinada'; return fijo.e; }
+  info.o='adivinada';
   var out=null;
   rutaDef().forEach(function(e){
     if(out) return;
@@ -29481,13 +29486,15 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
     if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-    var et=_citaEtapaPara(c, ev.titulo, _citaCalNombre(ev), ev.id, _porOrden[String(ev.id)]);
+    var _inf={};
+    var et=_citaEtapaPara(c, ev.titulo, _citaCalNombre(ev), ev.id,
+                          _porOrden[String(ev.id)], _inf);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
       return;
     }
-    _citaFijar(c, ev.id, et, false);
+    _citaFijar(c, ev.id, et, false, _inf.o);
     var ant=previas[et];
     if(String(ev.estado||'')==='cancelled'){
       c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con};
@@ -29499,6 +29506,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
     c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
+                 como:_inf.o,
                  anterior:movida?ant.inicio:(ant&&ant.anterior)||''};
     c.rutaAgenda=c.rutaAgenda||{};
     c.rutaAgenda[et]=_citaFechaAR(ev.inicio);
@@ -29597,6 +29605,27 @@ function citasAsignarAgenda(clientId, idx, etapa){
   save();
   if(typeof renderTab==='function') renderTab();
   toast(etapa+' agendada para el '+c.rutaAgenda[etapa]);
+}
+// Cambiar de etapa una cita que YA esta asignada. Es lo que hace falta cuando
+// la etapa la puso la adivinanza: la reunion engancho con el cliente correcto
+// pero en la columna equivocada, y hasta ahora solo se podia arreglar sacandola
+// y volviendola a poner.
+function citasAsignarEtapa(clientId, etapaVieja, etapaNueva){
+  var c=(DB.clients||[]).find(function(x){return x.id===clientId;});
+  if(!c || !etapaNueva || etapaNueva===etapaVieja) return;
+  var x=(c.citas||{})[etapaVieja];
+  if(!x) return;
+  delete c.citas[etapaVieja];
+  if(c.rutaAgenda) delete c.rutaAgenda[etapaVieja];
+  x.como='mano';
+  c.citas[etapaNueva]=x;
+  c.rutaAgenda=c.rutaAgenda||{};
+  c.rutaAgenda[etapaNueva]=_citaFechaAR(x.inicio);
+  // A mano, para que la proxima sincronizacion no la vuelva a adivinar.
+  _citaFijar(c, x.id, etapaNueva, true);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  toast(String(c.name||'')+': '+etapaNueva+' agendada para el '+c.rutaAgenda[etapaNueva]);
 }
 function citasAsignar(clientId, idx, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -30339,7 +30368,25 @@ function _p360Faltan(datos, sinRuta){
   // Los prospectos sin producto no son un dato faltante: cual van a comprar es
   // justamente lo que se define en la venta.
   var prod=(datos||[]).filter(function(d){ return !d.prod && !esProspecto(d.c); });
-  return {citas:citas, etapa:(sinRuta||[]), prod:prod};
+  // Reuniones que engancharon con el cliente correcto pero cuya etapa la puso
+  // la adivinanza: ni el titulo ni el calendario la nombran. Son las que hacen
+  // que un cliente con el onboarding agendado no figure en Onboarding.
+  var desde=hoy.getTime()-30*24*3600*1000;
+  var adivinadas=[];
+  (DB.clients||[]).forEach(function(c){
+    var cs=(c.citas||{});
+    Object.keys(cs).forEach(function(k){
+      var x=cs[k]||{};
+      if(!x.inicio || x.manual) return;
+      if(String(x.estado||'')==='cancelled') return;
+      if(x.como!=='adivinada') return;
+      var t=Date.parse(x.inicio);
+      if(isNaN(t) || t<desde) return;
+      adivinadas.push({c:c, etapa:k, ev:x, t:t});
+    });
+  });
+  adivinadas.sort(function(a,b){ return a.t-b.t; });
+  return {citas:citas, etapa:(sinRuta||[]), prod:prod, adivinadas:adivinadas};
 }
 function _p360FaltanHtml(f){
   var link=function(c){
@@ -30350,7 +30397,29 @@ function _p360FaltanHtml(f){
     return '<div><h3>'+tit+'</h3><div class="s">'+sub+'</div>'
       +(filas.length?filas.join(''):'<div class="nada">Nada pendiente.</div>')+'</div>';
   };
+  var ops=rutaDef().map(function(e){
+    return '<option value="'+esc(e.l)+'">'+esc(e.l)+'</option>'; }).join('');
   return '<div class="p3bd">'
+    +grupo('Reuniones en una etapa adivinada',
+      'Engancharon con el cliente pero ni el titulo ni el calendario dicen de '
+      +'que reunion son, asi que cayeron en la primera etapa libre. Por eso un '
+      +'cliente con el onboarding agendado puede no figurar en Onboarding. '
+      +'Corregila aca y queda fija.',
+      (f.adivinadas||[]).map(function(x){
+        var cal=_citaCalNombre(x.ev);
+        return '<div class="r">'+link(x.c)
+          +'<span class="b" style="display:flex;gap:8px;align-items:center">'
+          +'<span style="color:var(--text3)">'+esc(_citaFechaAR(x.ev.inicio))
+          +' \u00b7 '+esc(cal||'sin nombre de calendario')
+          +' \u00b7 hoy en '+esc(x.etapa)+'</span>'
+          +'<select onchange="citasAsignarEtapa('+x.c.id+',\''
+            +esc(String(x.etapa).replace(/'/g,"\\'"))+'\',this.value)" '
+          +'style="font-size:11px;padding:3px 6px;border-radius:var(--radius);'
+          +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+          +'font-family:var(--font)">'
+          +'<option value="">Es la etapa\u2026</option>'+ops+'</select>'
+          +'</span></div>';
+      }))
     +grupo('Reuniones sin asignar',
       'Estan en la agenda y no engancharon con ningun cliente. Se asignan desde '
       +'la ficha del cliente, en Citas.',
@@ -30571,7 +30640,8 @@ function p360Html(){
   // despues, y para eso queda el tablero de siempre.
   var vista=(S.p360Vista||'reparto');
   var faltan=_p360Faltan(datos, sinRuta);
-  var nFaltan=faltan.citas.length+faltan.etapa.length+faltan.prod.length;
+  var nFaltan=faltan.citas.length+faltan.etapa.length+faltan.prod.length
+    +(faltan.adivinadas||[]).length;
   var LEAD={
     reparto:'Quien tiene que mover a cada cliente y hace cuanto espera. '
       +'Lo unico que se pinta es lo que ya paso su plazo.',
