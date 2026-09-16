@@ -29580,6 +29580,33 @@ function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
   });
   return out;
 }
+// Si un prospecto tiene agendada la reunion de onboarding -o una posterior- ya
+// no es un lead: compro. Antes habia que acordarse de pasarlo a cliente a mano,
+// y mientras tanto quedaba como prospecto, fuera de las metricas y de la
+// cartera, con el onboarding ya en el calendario.
+//
+// Solo con una cita reconocida de verdad: por el titulo, por el calendario, por
+// orden o asignada a mano. Una adivinada no alcanza -dar por hecho que alguien
+// compro es caro, y una adivinanza ya mando diez leads a Onboarding de una.
+function _altaPorOnboarding(c){
+  if(!c || typeof esProspecto!=='function' || !esProspecto(c)) return false;
+  var cols=rutaColumnas().map(function(e){ return e.l; });
+  var iOnb=-1;
+  cols.forEach(function(l,i){ if(iOnb<0 && /onboarding/i.test(l)) iOnb=i; });
+  if(iOnb<0) return false;
+  var hay=false;
+  cols.forEach(function(l,i){
+    if(hay || i<iOnb) return;
+    var x=_deEtapa(c.citas, l);
+    if(x && x.inicio && String(x.estado||'')!=='cancelled'
+      && x.como && x.como!=='adivinada') hay=true;
+  });
+  if(!hay) return false;
+  delete c.prospecto;
+  c.archived=false; delete c.archivedAt;
+  c.altaAuto=new Date().toISOString();
+  return true;
+}
 function _citasAplicar(c, eventos, callado, totalAgenda){
   // La agenda entera queda en memoria: es lo que permite mostrar las citas que
   // no se pudieron enganchar y asignarlas de un clic, en vez de dejar la
@@ -29692,6 +29719,8 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     if(c.citas[et]) return;
     if(_fDeCitas[c.rutaAgenda[et]]) delete c.rutaAgenda[et];
   });
+  // Con las citas ya repartidas se sabe si este lead paso a cliente.
+  if(_altaPorOnboarding(c)) res.alta=true;
   res.sueltas=c.citasSinEtapa.length;
   save();
   if(!callado){
@@ -30248,9 +30277,19 @@ async function citasAuto(){
   if(deLaAgencia.length){
     var eventos=await _citasAgendaAgencia(ctx);
     if(eventos){
+      var _altas=[];
       deLaAgencia.forEach(function(c){
-        try{ _citasAplicar(c, eventos, true, eventos.length); }catch(e){}
+        try{
+          var r=_citasAplicar(c, eventos, true, eventos.length);
+          if(r && r.alta) _altas.push(String(c.name||''));
+        }catch(e){}
       });
+      // Pasar de lead a cliente no es un detalle: entra en la cartera y en las
+      // metricas. Se avisa en vez de que aparezca solo en otra columna.
+      if(_altas.length && typeof toast==='function'){
+        toast(_altas.join(', ')+(_altas.length===1?' paso a cliente':' pasaron a cliente')
+          +': tiene'+(_altas.length===1?'':'n')+' el onboarding agendado');
+      }
       save();
       if(typeof renderTab==='function' && S.view==='tickets') showTickets();
     }
