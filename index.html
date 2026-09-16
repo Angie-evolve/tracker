@@ -30112,11 +30112,14 @@ function p360IrACita(clientId, etapa){
     if(caja && caja.scrollIntoView) caja.scrollIntoView({block:'center'});
   }, 60);
 }
-async function citasHuecos(clientId){
-  var caja=document.getElementById('cita-huecos');
+async function citasHuecos(clientId, ids){
+  // Los mismos horarios sirven en dos lugares: el formulario de arriba y la
+  // cita abierta abajo. Se parametrizan los campos en vez de duplicar todo.
+  ids=ids||{fecha:'cita-fecha', hora:'cita-hora', etapa:'cita-etapa', caja:'cita-huecos'};
+  var caja=document.getElementById(ids.caja);
   if(!caja) return;
-  var f=(document.getElementById('cita-fecha')||{}).value||'';
-  var et=(document.getElementById('cita-etapa')||{}).value||'';
+  var f=(document.getElementById(ids.fecha)||{}).value||'';
+  var et=ids.et || (document.getElementById(ids.etapa)||{}).value||'';
   if(!f||!et){ caja.innerHTML=''; return; }
   var def=rutaDef().filter(function(e){ return e.l===et; })[0];
   var cal=String((def&&def.cal)||'');
@@ -30146,16 +30149,88 @@ async function citasHuecos(clientId){
       +hoy.map(function(d){
         var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
         return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;margin:0 4px 4px 0" '
-          +'onclick="citasElegirHora(\''+hh+'\')">'+hh+'</button>';
+          +'onclick="citasElegirHora(\''+hh+'\',\''+ids.hora+'\')">'+hh+'</button>';
       }).join('');
   }catch(e){
     caja.innerHTML='<span style="font-size:10.5px;color:var(--redx)">No pude traer los '
       +'horarios: '+esc(e&&e.message||'')+'</span>';
   }
 }
-function citasElegirHora(hh){
-  var i=document.getElementById('cita-hora');
+// El panelito de reprogramar, debajo de la cita abierta. Se dibuja a mano sobre
+// el detalle ya renderizado: no vale la pena rearmar toda la malla por esto.
+function citasAbrirReprog(clientId, etapa){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var x=_deEtapa(c.citas, etapa);
+  if(!x) return;
+  var cont=document.getElementById('p3-cita-detalle');
+  if(!cont) return;
+  var ya=document.getElementById('rp-caja');
+  if(ya){ ya.parentNode.removeChild(ya); }
+  var d=new Date(x.inicio);
+  var fv=isNaN(d.getTime())?'':(d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)
+        +'-'+('0'+d.getDate()).slice(-2));
+  var hv=isNaN(d.getTime())?'':(('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2));
+  var caja=document.createElement('div');
+  caja.id='rp-caja';
+  caja.style.cssText='margin-top:9px;padding-top:9px;border-top:1px solid var(--border)';
+  caja.innerHTML='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<input id="rp-fecha" type="date" value="'+esc(fv)+'" style="'+_citaEst()+'">'
+    +'<input id="rp-hora" type="time" value="'+esc(hv)+'" style="'+_citaEst()+'">'
+    +'<input id="rp-min" type="number" min="5" max="480" step="5" value="60" '
+      +'title="Cuanto dura, en minutos" style="'+_citaEst()+';width:64px">'
+    +'<button class="btn btn-sm btn-primary" style="font-size:10.5px;padding:3px 9px" '
+      +'onclick="citasReprogramar('+c.id+',\''+esc(etapa).replace(/'/g,"\\'")+'\')">'
+      +'Guardar</button>'
+    +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 9px" '
+      +'onclick="var q=document.getElementById(\'rp-caja\');if(q)q.remove()">Cancelar</button>'
+  +'</div>'
+  +'<div id="rp-huecos" style="margin-top:7px;line-height:1.9"></div>'
+  +'<div id="rp-msg" style="font-size:11px;color:var(--text3);min-height:14px;margin-top:4px"></div>';
+  cont.appendChild(caja);
+  var pedir=function(){
+    citasHuecos(clientId, {fecha:'rp-fecha', hora:'rp-hora', et:etapa, caja:'rp-huecos'});
+  };
+  document.getElementById('rp-fecha').addEventListener('change', pedir);
+  pedir();
+  if(caja.scrollIntoView) caja.scrollIntoView({block:'nearest'});
+}
+function citasElegirHora(hh, idHora){
+  var i=document.getElementById(idHora||'cita-hora');
   if(i){ i.value=hh; i.style.borderColor='var(--accent)'; }
+}
+// Reprogramar desde la cita misma, sin subir al formulario. Es la accion mas
+// probable cuando uno abre una reunion: mirarla y moverla.
+async function citasReprogramar(clientId, etapa){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var x=_deEtapa(c.citas, etapa);
+  if(!x||!x.id){ toast('Esa reunión ya no está','amber'); return; }
+  var f=(document.getElementById('rp-fecha')||{}).value||'';
+  var h=(document.getElementById('rp-hora')||{}).value||'';
+  var min=parseInt((document.getElementById('rp-min')||{}).value,10)||60;
+  var est=document.getElementById('rp-msg');
+  var di=function(t,col){ if(est){ est.innerHTML=t; est.style.color=col||'var(--text3)'; } };
+  if(!f){ di('Falta la fecha.','var(--amberx)'); return; }
+  var d=new Date(f+'T'+(h||'09:00')+':00');
+  if(isNaN(d.getTime())){ di('Esa fecha no se entiende.','var(--amberx)'); return; }
+  if(String(x.id).indexOf('mano-')===0){
+    di('Esta reunión no existe en GHL: se cargó a mano. Cambiá la fecha desde arriba.',
+       'var(--amberx)'); return;
+  }
+  di('Reprogramando en GHL\u2026');
+  try{
+    var r=await agLlamar({accion:'reprogramar', eventId:String(x.id),
+                          inicio:d.toISOString(), minutos:min});
+    x.inicio=r.inicio||d.toISOString();
+    c.rutaAgenda=c.rutaAgenda||{};
+    c.rutaAgenda[etapa]=_citaFechaAR(x.inicio);
+    save();
+    _citasRepintar();
+    toast(etapa+' quedó para el '+c.rutaAgenda[etapa]+' '+_citaHora(x.inicio));
+  }catch(e){
+    di('No se pudo: '+esc(e&&e.message||''),'var(--redx)');
+  }
 }
 async function citasAgendarGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -30547,6 +30622,14 @@ function _citasHtml(c){
       accion='<button class="btn btn-sm" onclick="citasBorrarMano('+c.id+',\''
         +esc(e.k).replace(/'/g,"\\'")+'\')" style="flex:none;font-size:10.5px;'
         +'padding:2px 8px">Sacar</button>';
+    } else if(e.t==='cita' && e.dato && e.dato.id
+              && String(e.dato.id).indexOf('mano-')!==0
+              && String(e.dato.estado||'')!=='cancelled'){
+      // Mirar una reunion y moverla es la misma accion: el boton abre aca
+      // abajo la fecha, la hora y los horarios libres de ese dia.
+      accion='<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+        +'onclick="citasAbrirReprog('+c.id+',\''+esc(e.k).replace(/'/g,"\\'")+'\')">'
+        +'Cambiar fecha</button>';
     }
     // Quien se la lleva segun el reconocimiento automatico: es lo que explica
     // por que una cita no cayo en el cliente que uno esperaba.
