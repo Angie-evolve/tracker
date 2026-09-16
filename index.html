@@ -29399,8 +29399,12 @@ function citasAMano(clientId){
 }
 function citasBorrarMano(clientId, etapa){
   var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c||!c.citas||!c.citas[etapa]) return;
-  delete c.citas[etapa];
+  if(!c) return;
+  if(c.citas) delete c.citas[etapa];
+  // Tambien la fecha de rutaAgenda. La ruta la mira PRIMERO, asi que borrando
+  // solo la cita la etapa seguia figurando agendada y el boton no hacia nada
+  // visible.
+  if(c.rutaAgenda) delete c.rutaAgenda[etapa];
   S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
@@ -29853,10 +29857,30 @@ function _p360FichaHtml(c){
     // Si la etapa esta hecha pero no hay llamada, fue tildada a mano.
     var hayLlamada=def && calls.some(function(x){
       return def.re.test(String(x.tipo||'')+' '+String(x.title||'')); });
-    var col=e.estado==='hecho'?'var(--accent)':(e.estado==='tarde'?'var(--redx)':'var(--text3)');
+    var col=e.estado==='hecho'?'var(--accent)'
+      :(e.estado==='tarde'?'var(--redx)'
+      :(e.estado==='agendada'?'var(--amberx)':'var(--text3)'));
+    var _f=e.cuando?e.cuando.toLocaleDateString('es-AR'):'';
     var falta = e.estado==='hecho'
-      ? (hayLlamada?'':'tildada a mano, sin llamada')
-      : ('falta '+(P360_PIDE[e.l]||'esta etapa'));
+      ? (hayLlamada?'':(e.agendada?('la reunión fue el '+_f+', falta la grabación')
+                                  :'tildada a mano, sin llamada'))
+      : (e.estado==='agendada' ? ('agendada para el '+_f)
+      : ('falta '+(P360_PIDE[e.l]||'esta etapa')));
+    // Lo que hay que resolver hoy: la reunion paso y no se sabe que paso. Las
+    // tres salidas son las tres cosas que pudieron ocurrir, y cada una deja el
+    // tablero diciendo la verdad.
+    if(e.sinConfirmar){
+      falta='<span style="color:var(--amberx)">la reunión del '+_f+' ya pasó '
+        +'y no llegó la grabación. ¿Qué pasó?</span>'
+        +'<span style="display:inline-flex;gap:6px;margin-left:8px">'
+        +'<button class="btn btn-sm" onclick="p360Tildar('+c.id+',\''
+          +esc(e.l).replace(/'/g,"\\'")+'\')" title="Queda cumplida sin grabación">'
+          +'se hizo</button>'
+        +'<button class="btn btn-sm" onclick="citasBorrarMano('+c.id+',\''
+          +esc(e.l).replace(/'/g,"\\'")+'\')" title="Saca la cita: la etapa vuelve a pendiente">'
+          +'no se hizo</button>'
+        +'</span>';
+    }
     return '<div style="display:flex;gap:10px;align-items:center;padding:4px 0">'
       +'<input type="checkbox"'+(e.estado==='hecho'?' checked':'')
         +' onchange="p360Tildar('+c.id+',\''+esc(e.l).replace(/'/g,"\\'")+'\')" '
@@ -30345,6 +30369,19 @@ function p360Html(){
             : (q.faltan===0 ? 'lanza hoy' : ('faltan '+q.faltan+' d para lanzar')))
         +'</span>';
       })()
+      // La reunion paso y nadie dijo que paso. Va en la tarjeta y no escondido
+      // en la ficha: es lo unico accionable que tiene ese cliente hoy.
+      +(function(){
+        var r=[];
+        try{ r=_ruta(d.c)||[]; }catch(e){ return ''; }
+        var pend=r.filter(function(x){ return x.sinConfirmar; })[0];
+        if(!pend) return '';
+        var f=pend.cuando?pend.cuando.toLocaleDateString('es-AR'):'';
+        return '<span class="mt" style="color:var(--amberx)" title="La reunion de '
+          +esc(pend.l)+' ya paso y no llego la grabacion. Abri la ficha para decir '
+          +'si se hizo, se reprogramo o no vino nadie.">'
+          +esc(pend.l)+(f?(' del '+f):'')+' · ¿qué pasó?</span>';
+      })()
       +'<span class="mt"'+((d.c.p360IA&&d.c.p360IA.senal)
         ?(' title="'+esc(d.c.p360IA.senal)
           +(d.c.p360IA.porque?(' \u2014 '+esc(d.c.p360IA.porque)):'')+'"')
@@ -30719,11 +30756,45 @@ function _ruta(c){
     }
     var prev=(k.arranque&&e.dia!==null)?new Date(k.arranque.getTime()+e.dia*86400000):null;
     var f=real||aMano||agenda||prev;
+    // Una reunion que todavia no paso no es una etapa cumplida. Contarla como
+    // hecha empujaba al cliente a la columna siguiente por algo que pasa
+    // manana: con la llamada de Estrategia 1 agendada para el 17, el tablero lo
+    // mostraba en Estrategia 2. Ahora se queda en la suya, marcada agendada.
+    //
+    // Lo pasado sigue contando: el onboarding se agenda al cerrar la venta y se
+    // graba dias despues, y esperar la grabacion dejaba al cliente trabado en
+    // una etapa que en los hechos ya ocurrio. Ese era el problema original.
+    // Con la hora, no solo el dia: una reunion hoy a las 19 no paso todavia, y
+    // comparando fechas pelada figuraba cumplida desde la manana. La hora sale
+    // de la cita de GHL; si se marco a mano solo hay dia, y ahi vale hasta el
+    // final de esa jornada.
+    var cuandoTs=null;
+    if(_ct && _ct.inicio){
+      var _ts=Date.parse(_ct.inicio);
+      if(!isNaN(_ts)) cuandoTs=_ts;
+    }
+    if(cuandoTs===null && agenda) cuandoTs=agenda.getTime()+86399000;
+    var futura=!!(cuandoTs!==null && cuandoTs>Date.now());
+    var soloAgenda=!!agenda && !real && !aMano;
+    var esFutura=soloAgenda && futura;
+    var cumplida=!!(real || aMano || (agenda && !futura));
     return {l:e.l, fecha:f, manual:false, aMano:!!aMano && !real,
             // La grabacion manda: cuando llega, la agenda deja de contar sola
             // y la etapa pasa a estar respaldada de verdad.
-            agendada:!!agenda && !real && !aMano,
-            estado:(real||aMano||agenda)?'hecho':((prev&&prev<hoy)?'tarde':'pendiente')};
+            agendada:soloAgenda,
+            // La reunion ya paso y no llego ninguna grabacion: alguien tiene
+            // que decir que paso. Sin esto la etapa figura cumplida sin que
+            // nadie sepa si la reunion ocurrio: pudo hacerse, reprogramarse o
+            // no haber venido nadie, y las tres se ven igual.
+            //
+            // Solo de onboarding en adelante. Las etapas comerciales -las que
+            // no tienen dia- son del embudo de venta y ahi una llamada que no
+            // ocurrio no deja a nadie a medio entregar.
+            sinConfirmar:soloAgenda && !futura && e.dia!==null,
+            cuando:agenda||null,
+            estado: cumplida ? 'hecho'
+                  : (esFutura ? 'agendada'
+                  : ((prev&&prev<hoy)?'tarde':'pendiente'))};
   });
   // Los hitos cargados a mano entran como nodos mas de la misma linea: tienen
   // fecha propia y no habia razon para mostrarlos en una segunda linea aparte.
