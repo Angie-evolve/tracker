@@ -29386,7 +29386,7 @@ function _citaFijar(c, id, etapa, aMano, origen){
   // Y de donde salio la etapa: del titulo, del reparto por orden, de una
   // asignacion a mano, o de la adivinanza. Sin esto no hay forma de listar las
   // que cayeron adivinadas, que son justo las que hay que revisar.
-  c.citaEtapa[String(id)]={e:etapa, m:aMano?1:0, o:aMano?'mano':(origen||'adivinada')};
+  c.citaEtapa[String(id)]={e:etapa, m:aMano?1:0, o:aMano?'mano':(origen||'adivinada'), v:2};
 }
 // Para que etapa es. Si el titulo la nombra, esa. Si no, la primera que tenga
 // pendiente el paso de agendar: es la reunion que se estaba esperando.
@@ -29397,6 +29397,26 @@ function _citaFijar(c, id, etapa, aMano, origen){
 // cliente cambiaba de columna sin que pasara nada. Ahora lo adivinado se anota
 // y se queda quieto. El titulo sigue mandando sobre la adivinanza vieja: si se
 // renombra el calendario de GHL con el nombre de la etapa, se corrige solo.
+// A que etapa apunta un paso de agendar. "Agendar Onboarding" es un paso de
+// Alta Cliente, pero la reunion que agenda es la del Onboarding: el paso nombra
+// la etapa de la reunion, no la suya. Ignorarlo hacia que TODA cita sin
+// reconocer cayera en Alta Cliente, que es la primera con un paso de agendar
+// pendiente, y por eso un cliente con el onboarding agendado no figuraba en
+// Onboarding.
+function _citaEtapaDelPaso(txt){
+  var t=String(txt||'').toLowerCase();
+  if(!t) return null;
+  var hit=null;
+  rutaDef().forEach(function(e){
+    if(hit) return;
+    var n=String(e.l||'').toLowerCase();
+    if(n.length>=4 && t.indexOf(n)>=0){ hit=e.l; return; }
+    var kws=String(e.kw||'').split(',').map(function(k){ return k.trim().toLowerCase(); })
+      .filter(function(k){ return k.length>=4; });
+    if(kws.some(function(k){ return t.indexOf(k)>=0; })) hit=e.l;
+  });
+  return hit;
+}
 function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
   info=info||{};
   var fijo=(c&&c.citaEtapa)?c.citaEtapa[String(id||'')]:null;
@@ -29406,7 +29426,12 @@ function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
   if(porOrden){ info.o='orden'; return porOrden; }
   var porTitulo=_citaEtapaDe(titulo, calendario);
   if(porTitulo){ info.o='titulo'; return porTitulo; }
-  if(fijo && fijo.e){ info.o=fijo.o||'adivinada'; return fijo.e; }
+  // Lo ya anotado se respeta, salvo una adivinanza hecha con la regla vieja:
+  // esas quedaron casi todas en Alta Cliente y hay que recalcularlas una vez.
+  // Las nuevas se anotan con la version y no se vuelven a tocar.
+  if(fijo && fijo.e && (fijo.o!=='adivinada' || fijo.v>=2)){
+    info.o=fijo.o||'adivinada'; return fijo.e;
+  }
   info.o='adivinada';
   var out=null;
   rutaDef().forEach(function(e){
@@ -29414,9 +29439,12 @@ function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
     var ps=(e.pasos||[]);
     if(!ps.some(function(p){ return /agend/i.test(String(p.t||'')); })) return;
     var h=rutaPasosHechos(c, e.l);
-    var pend=ps.some(function(p,i){
-      return /agend/i.test(String(p.t||'')) && h.indexOf(i)<0; });
-    if(pend) out=e.l;
+    var pt=null;
+    ps.forEach(function(p,i){
+      if(pt===null && /agend/i.test(String(p.t||'')) && h.indexOf(i)<0) pt=String(p.t||'');
+    });
+    // Si el paso nombra otra etapa, la reunion es de esa. Si no, de esta.
+    if(pt!==null) out=_citaEtapaDelPaso(pt)||e.l;
   });
   return out;
 }
