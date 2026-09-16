@@ -30101,11 +30101,20 @@ async function citasAgendarGhl(clientId){
   }
   var d=new Date(f+'T'+(h||'09:00')+':00');
   if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
-  _citasDecir(clientId,'Agendando en GHL\u2026');
+  // Si esa etapa ya tiene una reunion de GHL, esto la MUEVE. Crear otra dejaria
+  // al cliente con dos invitaciones para lo mismo y al tablero sin saber cual
+  // vale. Las cargadas a mano no cuentan: esas no existen en GHL.
+  var ya=(c.citas||{})[et];
+  var idViejo=(ya && ya.id && String(ya.id).indexOf('mano-')!==0
+    && String(ya.estado||'')!=='cancelled') ? String(ya.id) : '';
+  _citasDecir(clientId, idViejo?'Reprogramando en GHL\u2026':'Agendando en GHL\u2026');
   try{
-    var r=await agLlamar({accion:'agendar', email:mail, calendarId:cal,
-                          inicio:d.toISOString(), minutos:min,
-                          titulo:(c.name||'')+' - '+et});
+    var r=idViejo
+      ? await agLlamar({accion:'reprogramar', eventId:idViejo,
+                        inicio:d.toISOString(), minutos:min})
+      : await agLlamar({accion:'agendar', email:mail, calendarId:cal,
+                        inicio:d.toISOString(), minutos:min,
+                        titulo:(c.name||'')+' - '+et});
     // Se anota como puesta a mano: la decidiste vos, no la adivino nadie, y la
     // proxima sincronizacion no tiene que volver a clasificarla.
     c.citas=c.citas||{};
@@ -30116,8 +30125,9 @@ async function citasAgendarGhl(clientId){
     _citaFijar(c, c.citas[et].id, et, true);
     save();
     _citasRepintar();
-    _citasDecir(clientId, et+' agendada para el '+c.rutaAgenda[et]
-      +' con '+esc(r.contacto||mail)+'.','var(--accent)');
+    _citasDecir(clientId, et+(idViejo?' reprogramada':' agendada')+' para el '
+      +c.rutaAgenda[et]+' '+_citaHora(r.inicio||d.toISOString())
+      +(idViejo?'':(' con '+esc(r.contacto||mail)))+'.','var(--accent)');
   }catch(e){
     _citasDecir(clientId,'No se agendó: '+esc(e&&e.message||''),'var(--redx)');
   }
@@ -30583,7 +30593,7 @@ function _citasHtml(c){
         +'<button class="btn btn-sm btn-primary" style="font-size:10.5px;padding:3px 9px" '
           +'title="La crea en el calendario de GHL de esa etapa: el cliente recibe '
           +'invitacion, link y recordatorios." '
-          +'onclick="citasAgendarGhl('+c.id+')">Agendar en GHL</button>'
+          +'onclick="citasAgendarGhl('+c.id+')" id="cita-btn-ghl">Agendar en GHL</button>'
         +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 9px" '
           +'title="Solo la anota en el tracker. El cliente no se entera." '
           +'onclick="citasAMano('+c.id+')">Solo anotar</button>'

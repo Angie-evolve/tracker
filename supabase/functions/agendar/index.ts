@@ -141,6 +141,33 @@ Deno.serve(async (req: Request) => {
       return responder({ ok: true, location: GHL_LOCATION, calendarios: cals });
     }
 
+    // Mover una cita que ya existe. Va por el mismo camino que crearla porque
+    // es la misma decision: si la etapa ya tiene reunion, cambiar la fecha es
+    // reprogramar esa, no crear una segunda y dejar al cliente con dos
+    // invitaciones para la misma cosa.
+    if (accion === "reprogramar") {
+      const id = String(body.eventId || "").trim();
+      const inicio = String(body.inicio || "").trim();
+      const minutos = Math.max(5, Math.min(480, parseInt(body.minutos, 10) || 60));
+      if (!id) return responder({ error: "Falta el id de la cita." }, 400);
+      const t0 = Date.parse(inicio);
+      if (isNaN(t0)) return responder({ error: "La fecha no se entiende: " + inicio }, 400);
+      const r = await ghl("/calendars/events/appointments/" + encodeURIComponent(id), {
+        method: "PUT",
+        body: JSON.stringify({
+          startTime: new Date(t0).toISOString(),
+          endTime: new Date(t0 + minutos * 60000).toISOString(),
+        }),
+      });
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      const ev = (r.datos && (r.datos.event || r.datos.appointment || r.datos)) || {};
+      return responder({
+        ok: true, id: ev.id || id,
+        inicio: ev.startTime || new Date(t0).toISOString(),
+        fin: ev.endTime || new Date(t0 + minutos * 60000).toISOString(),
+      });
+    }
+
     if (accion !== "agendar") {
       return responder({ error: "Accion desconocida: " + accion }, 400);
     }
