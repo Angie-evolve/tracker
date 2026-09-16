@@ -2060,6 +2060,10 @@ async function sbBajar(){
   // termine- la fila sobrevive y esto la devolvia entera. La tarjeta volvia
   // sola en la siguiente carga y borrarla de nuevo no servia de nada, porque
   // la lista de borrados por mail solo frena a Fathom, no a la sincronizacion.
+  // Lo que vimos al bajar. Es la referencia para saber, al subir, si la nube
+  // cambio por debajo: sin esto la app pisaba con lo local sin comparar nada.
+  filas.forEach(function(f){ _sbVisto[String(f.id)]=String(f.actualizado||''); });
+  (cfg||[]).forEach(function(row){ _sbHuellas['cfg:'+row.clave]=_huella(row.valor); });
   var _bor=[].concat(DB.clientesBorrados||[], nuevo.clientesBorrados||[]).map(String);
   _bor=_bor.filter(function(v,i){ return v && _bor.indexOf(v)===i; });
   if(_bor.length){
@@ -2087,6 +2091,17 @@ async function sbBajar(){
 // varios cientos de KB, mandar todo en cada save() satura la conexion.
 var _sbHuellas={};
 var _sbPendiente=null;
+// El "actualizado" que tenia cada cliente en la nube la ultima vez que lo
+// vimos. Subir sin mirarlo es lo que dejo que una ventana con datos viejos
+// borrara el trabajo de una tarde entera: el ultimo en guardar ganaba.
+var _sbVisto={};
+function _sbAvisarChoque(quienes){
+  var t='No se subio '+quienes.slice(0,3).join(', ')
+    +(quienes.length>3?(' y '+(quienes.length-3)+' mas'):'')
+    +': cambio en la nube desde que abriste. Recarga para traer lo ultimo.';
+  try{ if(typeof toast==='function') toast(t,'amber'); }catch(e){}
+  try{ console.warn('[SB] '+t); }catch(e){}
+}
 
 function _huella(o){
   var s=JSON.stringify(o);
@@ -2112,6 +2127,48 @@ async function sbSubir(){
   if(!pend.length && !globales.length) return;
 
   try{
+    // Antes de pisar: mirar si la nube cambio desde que bajamos. Lo que cambio
+    // alla y tambien aca no se sube -no hay forma de fusionar dos versiones de
+    // un cliente- y se avisa para recargar en vez de perderlo en silencio.
+    var choque=[];
+    if(pend.length){
+      var ids=pend.map(function(c){ return c.id; }).filter(function(x){ return x!==undefined; });
+      var enNube=null;
+      try{
+        enNube=await sbFetch('clientes?select=id,actualizado&id=in.('+ids.join(',')+')');
+      }catch(e){ enNube=null; }
+      if(enNube){
+        var mapa={};
+        enNube.forEach(function(r){ mapa[String(r.id)]=String(r.actualizado||''); });
+        pend=pend.filter(function(c){
+          var k=String(c.id), ahora=mapa[k], visto=_sbVisto[k];
+          if(ahora===undefined) return true;              // todavia no esta: es nuevo
+          if(visto===undefined){ _sbVisto[k]=ahora; return true; }
+          if(ahora!==visto){ choque.push(String(c.name||k)); return false; }
+          return true;
+        });
+      }
+    }
+    if(globales.length){
+      var claves=globales.map(function(g){ return '"'+String(g.clave).replace(/"/g,'')+'"'; });
+      var cfgNube=null;
+      try{
+        cfgNube=await sbFetch('config?select=clave,valor&clave=in.('+claves.join(',')+')');
+      }catch(e){ cfgNube=null; }
+      if(cfgNube){
+        var m2={};
+        cfgNube.forEach(function(r){ m2[r.clave]=_huella(r.valor); });
+        globales=globales.filter(function(g){
+          var ahora=m2[g.clave], visto=_sbHuellas['cfg:'+g.clave];
+          if(ahora===undefined) return true;
+          if(visto===undefined){ _sbHuellas['cfg:'+g.clave]=ahora; return true; }
+          if(ahora!==visto){ choque.push(String(g.clave)); return false; }
+          return true;
+        });
+      }
+    }
+    if(choque.length) _sbAvisarChoque(choque);
+    if(!pend.length && !globales.length){ _sbMarcar('ok'); return; }
     if(pend.length){
       await sbFetch('clientes', {
         method:'POST',
@@ -2121,6 +2178,13 @@ async function sbSubir(){
         }))
       });
       pend.forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
+      // Y se vuelve a leer el "actualizado" que quedo: sin esto la proxima
+      // subida confundiria nuestro propio cambio con el de otro y se frenaria.
+      try{
+        var post=await sbFetch('clientes?select=id,actualizado&id=in.('
+          +pend.map(function(c){ return c.id; }).join(',')+')');
+        (post||[]).forEach(function(r){ _sbVisto[String(r.id)]=String(r.actualizado||''); });
+      }catch(e){}
     }
     if(globales.length){
       await sbFetch('config', {
