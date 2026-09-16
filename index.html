@@ -29497,7 +29497,8 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     _citaFijar(c, ev.id, et, false, _inf.o);
     var ant=previas[et];
     if(String(ev.estado||'')==='cancelled'){
-      c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con};
+      c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con,
+                   titulo:ev.titulo, calendario:_citaCalNombre(ev)};
       if(c.rutaAgenda) delete c.rutaAgenda[et];
       res.caidas.push(et);
       return;
@@ -29506,7 +29507,10 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
     c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
-                 como:_inf.o,
+                 // El titulo es lo primero que mira el reconocimiento de etapa.
+                 // Guardarlo es lo que permite ver, cuando una cita cae en la
+                 // etapa equivocada, si el problema es el titulo o el match.
+                 titulo:ev.titulo, como:_inf.o,
                  anterior:movida?ant.inicio:(ant&&ant.anterior)||''};
     c.rutaAgenda=c.rutaAgenda||{};
     c.rutaAgenda[et]=_citaFechaAR(ev.inicio);
@@ -29596,7 +29600,8 @@ function citasAsignarAgenda(clientId, idx, etapa){
   if(!ev) return;
   c.citas=c.citas||{};
   c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
-                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev), anterior:''};
+                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
+                  titulo:ev.titulo, como:'mano', anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
   // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
@@ -29634,7 +29639,8 @@ function citasAsignar(clientId, idx, etapa){
   if(!ev) return;
   c.citas=c.citas||{};
   c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
-                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev), anterior:''};
+                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
+                  titulo:ev.titulo, como:'mano', anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
   // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
@@ -30379,13 +30385,17 @@ function _p360Faltan(datos, sinRuta){
       var x=cs[k]||{};
       if(!x.inicio || x.manual) return;
       if(String(x.estado||'')==='cancelled') return;
-      if(x.como!=='adivinada') return;
       var t=Date.parse(x.inicio);
       if(isNaN(t) || t<desde) return;
-      adivinadas.push({c:c, etapa:k, ev:x, t:t});
+      adivinadas.push({c:c, etapa:k, ev:x, t:t, dudosa:(x.como==='adivinada')});
     });
   });
-  adivinadas.sort(function(a,b){ return a.t-b.t; });
+  // Primero las adivinadas, que son las que hay que revisar; despues el resto,
+  // que sirve para entender de donde saco la etapa cada una.
+  adivinadas.sort(function(a,b){
+    if(a.dudosa!==b.dudosa) return a.dudosa?-1:1;
+    return a.t-b.t;
+  });
   return {citas:citas, etapa:(sinRuta||[]), prod:prod, adivinadas:adivinadas};
 }
 function _p360FaltanHtml(f){
@@ -30400,17 +30410,22 @@ function _p360FaltanHtml(f){
   var ops=rutaDef().map(function(e){
     return '<option value="'+esc(e.l)+'">'+esc(e.l)+'</option>'; }).join('');
   return '<div class="p3bd">'
-    +grupo('Reuniones en una etapa adivinada',
-      'Engancharon con el cliente pero ni el titulo ni el calendario dicen de '
-      +'que reunion son, asi que cayeron en la primera etapa libre. Por eso un '
-      +'cliente con el onboarding agendado puede no figurar en Onboarding. '
-      +'Corregila aca y queda fija.',
+    +grupo('De donde salio la etapa de cada reunion',
+      'Lo que la app leyo de cada cita. Las de arriba cayeron adivinadas: ni el '
+      +'titulo ni el calendario dicen de que reunion son, asi que fueron a la '
+      +'primera etapa libre. Por eso un cliente con el onboarding agendado '
+      +'puede no figurar en Onboarding. Lo que corrijas aca queda fijo.',
       (f.adivinadas||[]).map(function(x){
         var cal=_citaCalNombre(x.ev);
+        var COMO={titulo:'por el titulo', orden:'por orden', mano:'a mano',
+                  adivinada:'ADIVINADA'};
         return '<div class="r">'+link(x.c)
           +'<span class="b" style="display:flex;gap:8px;align-items:center">'
-          +'<span style="color:var(--text3)">'+esc(_citaFechaAR(x.ev.inicio))
-          +' \u00b7 '+esc(cal||'sin nombre de calendario')
+          +'<span style="color:'+(x.dudosa?'var(--amberx)':'var(--text3)')+'">'
+          +esc(_citaFechaAR(x.ev.inicio))
+          +' \u00b7 \u201c'+esc(x.ev.titulo||'SIN TITULO')+'\u201d'
+          +' \u00b7 '+esc(cal||'sin calendario')
+          +' \u00b7 '+esc(COMO[x.ev.como]||'sin dato')
           +' \u00b7 hoy en '+esc(x.etapa)+'</span>'
           +'<select onchange="citasAsignarEtapa('+x.c.id+',\''
             +esc(String(x.etapa).replace(/'/g,"\\'"))+'\',this.value)" '
@@ -30641,7 +30656,7 @@ function p360Html(){
   var vista=(S.p360Vista||'reparto');
   var faltan=_p360Faltan(datos, sinRuta);
   var nFaltan=faltan.citas.length+faltan.etapa.length+faltan.prod.length
-    +(faltan.adivinadas||[]).length;
+    +(faltan.adivinadas||[]).filter(function(x){ return x.dudosa; }).length;
   var LEAD={
     reparto:'Quien tiene que mover a cada cliente y hace cuanto espera. '
       +'Lo unico que se pinta es lo que ya paso su plazo.',
