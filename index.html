@@ -29307,11 +29307,30 @@ function _citaEsDe(c, titulo, con, mail){
     return n.split(/\s+/).some(function(w){ return w.length>=5 && t.indexOf(w)>=0; });
   });
 }
+// Deja anotado a que etapa pertenece una cita, para que no cambie sola en la
+// proxima sincronizacion. Lo puesto a mano no lo pisa lo automatico.
+function _citaFijar(c, id, etapa, aMano){
+  if(!c || !id || !etapa) return;
+  c.citaEtapa=c.citaEtapa||{};
+  var ya=c.citaEtapa[String(id)];
+  if(ya && ya.m && !aMano) return;
+  c.citaEtapa[String(id)]={e:etapa, m:aMano?1:0};
+}
 // Para que etapa es. Si el titulo la nombra, esa. Si no, la primera que tenga
 // pendiente el paso de agendar: es la reunion que se estaba esperando.
-function _citaEtapaPara(c, titulo, calendario){
+//
+// Ese ultimo atajo es una adivinanza y dependia de que pasos estan tildados,
+// asi que se movia sola: la MISMA reunion del 14/9 figuro un dia en Onboarding,
+// al siguiente en Estrategia 1 y al siguiente en Sprint de lanzamiento, y el
+// cliente cambiaba de columna sin que pasara nada. Ahora lo adivinado se anota
+// y se queda quieto. El titulo sigue mandando sobre la adivinanza vieja: si se
+// renombra el calendario de GHL con el nombre de la etapa, se corrige solo.
+function _citaEtapaPara(c, titulo, calendario, id){
+  var fijo=(c&&c.citaEtapa)?c.citaEtapa[String(id||'')]:null;
+  if(fijo && fijo.m && fijo.e) return fijo.e;
   var porTitulo=_citaEtapaDe(titulo, calendario);
   if(porTitulo) return porTitulo;
+  if(fijo && fijo.e) return fijo.e;
   var out=null;
   rutaDef().forEach(function(e){
     if(out) return;
@@ -29347,6 +29366,11 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
   }catch(e){ /* si no entra, se sigue con la de memoria */ }
   var previas=_citasDe(c);
   c.citas={};
+  // Las cargadas a mano no vienen de GHL: al rearmar c.citas de cero
+  // desaparecian en la primera sincronizacion y habia que cargarlas otra vez.
+  Object.keys(previas).forEach(function(et){
+    if(previas[et] && previas[et].manual) c.citas[et]=previas[et];
+  });
   c.citasSinEtapa=[];
   c.citasAt=new Date().toISOString();
   var res={agendadas:0, movidas:[], caidas:[], sueltas:0};
@@ -29354,12 +29378,13 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
     if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-    var et=_citaEtapaPara(c, ev.titulo, ev.calendario);
+    var et=_citaEtapaPara(c, ev.titulo, ev.calendario, ev.id);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
       return;
     }
+    _citaFijar(c, ev.id, et, false);
     var ant=previas[et];
     if(String(ev.estado||'')==='cancelled'){
       c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con};
@@ -29410,8 +29435,10 @@ function citasAMano(clientId){
   var d=new Date(f+'T'+(h||'09:00')+':00');
   if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
   c.citas=c.citas||{};
-  c.citas[et]={id:'mano-'+Date.now(), inicio:d.toISOString(), estado:'confirmed',
+  var _id='mano-'+Date.now();
+  c.citas[et]={id:_id, inicio:d.toISOString(), estado:'confirmed',
                con:con, manual:true};
+  _citaFijar(c, _id, et, true);
   save();
   if(typeof renderTab==='function') renderTab();
   _citasDecir(clientId,'Cargada a mano.','var(--accent)');
@@ -29446,6 +29473,8 @@ function citasAsignarAgenda(clientId, idx, etapa){
                   deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
+  // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
+  _citaFijar(c, ev.id, etapa, true);
   S.p3Cita='';
   save();
   if(typeof renderTab==='function') renderTab();
@@ -29461,6 +29490,8 @@ function citasAsignar(clientId, idx, etapa){
                   deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
+  // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
+  _citaFijar(c, ev.id, etapa, true);
   c.citasSinEtapa.splice(idx,1);
   S.p3Cita='';
   save();
