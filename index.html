@@ -29033,6 +29033,19 @@ function _citaEst(){
 }
 // El titulo de la cita contra las palabras clave de cada etapa, las mismas que
 // ya usa la ruta para reconocer las llamadas de Fathom.
+// El nombre del calendario de GHL. El puente lo manda en "calendario"; si no
+// viene, se resuelve por id contra la lista que la app ya se baja al conectar.
+// Sin el nombre no hay de donde sacar la etapa: el titulo de la cita lleva el
+// nombre de la persona, no el de la reunion.
+function _citaCalNombre(ev){
+  if(!ev) return '';
+  if(ev.calendario) return String(ev.calendario);
+  var id=ev.calendarId||ev.calendarioId||ev.calendar_id||ev.idCalendario||'';
+  if(!id) return '';
+  var m=(DB.ghlCalendariosAgencia||[]).filter(function(x){
+    return String(x.id)===String(id); })[0];
+  return m?String(m.nombre||''):'';
+}
 // Todas las etapas cuyas palabras clave aparecen en el texto, en orden de ruta.
 // Son varias cuando un mismo calendario sirve a mas de una etapa: "Strategy
 // Call" es a la vez Estrategia 1 y Estrategia 2, y ahi el reparto lo hace el
@@ -29371,7 +29384,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
       }).slice(0,60).map(function(ev){
         return {id:ev.id, titulo:ev.titulo, inicio:ev.inicio, estado:ev.estado,
                 con:ev.con, mail:ev.mail, deNuestroLado:ev.deNuestroLado,
-                calendario:ev.calendario};
+                calendario:_citaCalNombre(ev)};
       }) };
   }catch(e){ /* si no entra, se sigue con la de memoria */ }
   var previas=_citasDe(c);
@@ -29399,7 +29412,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     (eventos||[]).forEach(function(ev){
       if(String(ev.estado||'')==='cancelled') return;
       if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-      var cands=_citaEtapasDe(ev.titulo, ev.calendario);
+      var cands=_citaEtapasDe(ev.titulo, _citaCalNombre(ev));
       if(cands.length<2) return;
       var k=cands.join('\u0000');
       (grupos[k]=grupos[k]||[]).push(ev);
@@ -29419,7 +29432,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
     if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-    var et=_citaEtapaPara(c, ev.titulo, ev.calendario, ev.id, _porOrden[String(ev.id)]);
+    var et=_citaEtapaPara(c, ev.titulo, _citaCalNombre(ev), ev.id, _porOrden[String(ev.id)]);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
@@ -29436,7 +29449,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     // La misma cita con otro horario es una reprogramacion, no una cita nueva.
     var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
     c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
-                 deNuestroLado:ev.deNuestroLado, calendario:ev.calendario,
+                 deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
                  anterior:movida?ant.inicio:(ant&&ant.anterior)||''};
     c.rutaAgenda=c.rutaAgenda||{};
     c.rutaAgenda[et]=_citaFechaAR(ev.inicio);
@@ -29526,7 +29539,7 @@ function citasAsignarAgenda(clientId, idx, etapa){
   if(!ev) return;
   c.citas=c.citas||{};
   c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
-                  deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
+                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev), anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
   // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
@@ -29543,7 +29556,7 @@ function citasAsignar(clientId, idx, etapa){
   if(!ev) return;
   c.citas=c.citas||{};
   c.citas[etapa]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
-                  deNuestroLado:ev.deNuestroLado, calendario:ev.calendario, anterior:''};
+                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev), anterior:''};
   c.rutaAgenda=c.rutaAgenda||{};
   c.rutaAgenda[etapa]=_citaFechaAR(ev.inicio);
   // Queda anotado para que la proxima sincronizacion no la vuelva a adivinar.
@@ -29746,6 +29759,13 @@ function _citasHtml(c){
       +_citaFechaAR(e.dato.anterior);
     if(e.dato&&e.dato.manual) extra+=' \u00b7 cargada a mano';
     if(e.dato&&e.dato.deNuestroLado) extra+=' \u00b7 la toma '+String(e.dato.deNuestroLado);
+    // De que calendario salio. Es lo que decide la etapa cuando el titulo solo
+    // lleva el nombre de la persona, asi que verlo explica por que una reunion
+    // cayo donde cayo -y si no llega, explica por que no cayo en ninguna.
+    if(!(e.dato&&e.dato.manual)){
+      var _cal=_citaCalNombre(e.dato);
+      extra+=_cal?(' \u00b7 calendario: '+_cal):' \u00b7 sin nombre de calendario';
+    }
     return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0">'
       +'<span style="flex:none;width:3px;align-self:stretch;border-radius:2px;'
         +'background:'+color(e)+'"></span>'
