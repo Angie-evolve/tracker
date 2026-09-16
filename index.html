@@ -28742,10 +28742,31 @@ function rutaModal(){
         +'placeholder="-" title="Dias desde el onboarding para la fecha estimada" '
         +'onchange="rutaSet('+sel+',\'dia\',this.value)" style="'+inp+';width:100%"></div>'
     +'</div>'
-    +(String(e.kw||'').trim()?''
+    // El calendario de GHL de esta etapa. Es el dato mas fuerte para reconocer
+    // una reunion: lo elegis vos y no se deduce de un texto. Las palabras clave
+    // quedan como plan B para lo que no venga de un calendario.
+    +(function(){
+      var cals=(DB.ghlCalendariosAgencia||[]);
+      if(!cals.length){
+        return '<div style="font-size:10.5px;color:var(--text3);line-height:1.55;'
+          +'margin-bottom:12px">Conecta GHL en Integraciones y aca vas a poder elegir de '
+          +'que calendario es esta etapa, en vez de depender de las palabras clave.</div>';
+      }
+      var act=String(e.cal||'');
+      return '<div style="margin-bottom:12px">'
+        +'<span style="'+rot+'">Calendario de GHL</span>'
+        +'<select onchange="rutaSet('+sel+',\'cal\',this.value)" style="'+inp+';width:100%">'
+          +'<option value="">Ninguno \u2014 reconocer por palabras clave</option>'
+          +cals.map(function(x){
+            return '<option value="'+esc(x.id)+'"'+((String(x.id)===act)?' selected':'')+'>'
+              +esc(x.nombre||x.id)+'</option>';
+          }).join('')
+        +'</select></div>';
+    })()
+    +((String(e.kw||'').trim()||String(e.cal||'').trim())?''
       :'<div style="font-size:10.5px;color:var(--amberx);line-height:1.55;margin-bottom:12px">'
-       +'Sin palabras clave no se marca sola nunca: un cliente entra ahi solo si alguien lo '
-       +'arrastra a mano en el Panel 360.</div>')
+       +'Sin calendario ni palabras clave no se marca sola nunca: un cliente entra ahi solo '
+       +'si alguien lo arrastra a mano en el Panel 360.</div>')
     +'<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;'
       +'padding-bottom:12px;border-bottom:1px solid var(--border)">'
       +'<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3);'
@@ -29477,6 +29498,12 @@ function _citaEst(){
 // viene, se resuelve por id contra la lista que la app ya se baja al conectar.
 // Sin el nombre no hay de donde sacar la etapa: el titulo de la cita lleva el
 // nombre de la persona, no el de la reunion.
+// El id del calendario de GHL de una cita, venga en el campo que venga.
+function _citaCalId(ev){
+  if(!ev) return '';
+  return String(ev.calendarioId||ev.calendarId||ev.calendar_id||ev.idCalendario
+    ||ev.calendario||'');
+}
 function _citaCalNombre(ev){
   if(!ev) return '';
   var lista=(DB.ghlCalendariosAgencia||[]);
@@ -29499,6 +29526,15 @@ function _citaCalNombre(ev){
 // Son varias cuando un mismo calendario sirve a mas de una etapa: "Strategy
 // Call" es a la vez Estrategia 1 y Estrategia 2, y ahi el reparto lo hace el
 // orden de las reuniones, no la palabra.
+// Las etapas que tienen atado ESE calendario de GHL. Es el dato mas fuerte que
+// hay: lo elegiste vos, no se deduce de un texto. Cuando existe, las palabras
+// clave no hacen falta -son un plan B para cuando el calendario no dice nada.
+function _citaEtapasPorCal(calId){
+  var id=String(calId||'');
+  if(!id) return [];
+  return rutaDef().filter(function(e){ return String(e.cal||'')===id; })
+    .map(function(e){ return e.l; });
+}
 function _citaEtapasDe(titulo, calendario){
   // El titulo de la cita lleva el nombre de la persona, no el de la etapa:
   // "Pablo De Paoli Software Partners - Sales Process". El calendario de GHL en
@@ -29834,13 +29870,17 @@ function _citaEtapaDelPaso(txt){
   });
   return hit;
 }
-function _citaEtapaPara(c, titulo, calendario, id, porOrden, info){
+function _citaEtapaPara(c, titulo, calendario, id, porOrden, info, calId){
   info=info||{};
   var fijo=(c&&c.citaEtapa)?c.citaEtapa[String(id||'')]:null;
   if(fijo && fijo.m && fijo.e){ info.o='mano'; return fijo.e; }
   // El reparto por orden ya miro el titulo, y ademas sabe cuantas reuniones
   // iguales tiene este cliente. Manda sobre mirar el titulo de a una.
   if(porOrden){ info.o='orden'; return porOrden; }
+  // El calendario atado a la etapa, si hay uno solo. Con varios decide el
+  // reparto por orden, que ya paso por aca arriba.
+  var porCal=_citaEtapasPorCal(calId);
+  if(porCal.length===1){ info.o='calendario'; return porCal[0]; }
   var porTitulo=_citaEtapaDe(titulo, calendario);
   if(porTitulo){ info.o='titulo'; return porTitulo; }
   // Lo ya anotado se respeta, salvo una adivinanza hecha con la regla vieja:
@@ -29943,7 +29983,8 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     (eventos||[]).forEach(function(ev){
       if(String(ev.estado||'')==='cancelled') return;
       if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-      var cands=_citaEtapasDe(ev.titulo, _citaCalNombre(ev));
+      var cands=_citaEtapasPorCal(_citaCalId(ev));
+      if(!cands.length) cands=_citaEtapasDe(ev.titulo, _citaCalNombre(ev));
       if(cands.length<2) return;
       var k=cands.join('\u0000');
       (grupos[k]=grupos[k]||[]).push(ev);
@@ -29965,7 +30006,7 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
     var _inf={};
     var et=_citaEtapaPara(c, ev.titulo, _citaCalNombre(ev), ev.id,
-                          _porOrden[String(ev.id)], _inf);
+                          _porOrden[String(ev.id)], _inf, _citaCalId(ev));
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
