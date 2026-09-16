@@ -29033,7 +29033,11 @@ function _citaEst(){
 }
 // El titulo de la cita contra las palabras clave de cada etapa, las mismas que
 // ya usa la ruta para reconocer las llamadas de Fathom.
-function _citaEtapaDe(titulo, calendario){
+// Todas las etapas cuyas palabras clave aparecen en el texto, en orden de ruta.
+// Son varias cuando un mismo calendario sirve a mas de una etapa: "Strategy
+// Call" es a la vez Estrategia 1 y Estrategia 2, y ahi el reparto lo hace el
+// orden de las reuniones, no la palabra.
+function _citaEtapasDe(titulo, calendario){
   // El titulo de la cita lleva el nombre de la persona, no el de la etapa:
   // "Pablo De Paoli Software Partners - Sales Process". El calendario de GHL en
   // cambio se llama por la etapa —Onboarding, Sales Process— y es el dato que
@@ -29041,17 +29045,20 @@ function _citaEtapaDe(titulo, calendario){
   // especifico, y despues el calendario.
   var buscar=function(txt){
     var t=String(txt||'').toLowerCase();
-    if(!t) return null;
-    var hit=null;
+    if(!t) return [];
+    var out=[];
     rutaDef().forEach(function(e){
-      if(hit) return;
       var kws=String(e.kw||'').split(',').map(function(k){ return k.trim().toLowerCase(); })
         .filter(Boolean);
-      if(kws.some(function(k){ return t.indexOf(k)>=0; })) hit=e.l;
+      if(kws.some(function(k){ return t.indexOf(k)>=0; })) out.push(e.l);
     });
-    return hit;
+    return out;
   };
-  return buscar(titulo) || buscar(calendario);
+  var porTitulo=buscar(titulo);
+  return porTitulo.length ? porTitulo : buscar(calendario);
+}
+function _citaEtapaDe(titulo, calendario){
+  return _citaEtapasDe(titulo, calendario)[0] || null;
 }
 function _citaFechaAR(iso){
   var d=new Date(iso);
@@ -29325,9 +29332,12 @@ function _citaFijar(c, id, etapa, aMano){
 // cliente cambiaba de columna sin que pasara nada. Ahora lo adivinado se anota
 // y se queda quieto. El titulo sigue mandando sobre la adivinanza vieja: si se
 // renombra el calendario de GHL con el nombre de la etapa, se corrige solo.
-function _citaEtapaPara(c, titulo, calendario, id){
+function _citaEtapaPara(c, titulo, calendario, id, porOrden){
   var fijo=(c&&c.citaEtapa)?c.citaEtapa[String(id||'')]:null;
   if(fijo && fijo.m && fijo.e) return fijo.e;
+  // El reparto por orden ya miro el titulo, y ademas sabe cuantas reuniones
+  // iguales tiene este cliente. Manda sobre mirar el titulo de a una.
+  if(porOrden) return porOrden;
   var porTitulo=_citaEtapaDe(titulo, calendario);
   if(porTitulo) return porTitulo;
   if(fijo && fijo.e) return fijo.e;
@@ -29374,11 +29384,42 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
   c.citasSinEtapa=[];
   c.citasAt=new Date().toISOString();
   var res={agendadas:0, movidas:[], caidas:[], sueltas:0};
+  // Reparto por orden. Un mismo calendario sirve a mas de una etapa —"Strategy
+  // Call" es Estrategia 1 y Estrategia 2— y ninguna palabra clave puede
+  // distinguirlas: las dos reuniones llegan con el mismo nombre. Entonces manda
+  // el orden: la primera es la 1 y la segunda es la 2. Para que una etapa entre
+  // en el reparto tiene que compartir la palabra clave con la otra.
+  //
+  // Las canceladas no ocupan lugar: si se cae la primera Strategy Call y se
+  // reagenda, la nueva sigue siendo la 1. Esas caen en lo ya anotado para esa
+  // cita, que es donde estaban antes de cancelarse.
+  var _porOrden={};
+  (function(){
+    var grupos={};
+    (eventos||[]).forEach(function(ev){
+      if(String(ev.estado||'')==='cancelled') return;
+      if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
+      var cands=_citaEtapasDe(ev.titulo, ev.calendario);
+      if(cands.length<2) return;
+      var k=cands.join('\u0000');
+      (grupos[k]=grupos[k]||[]).push(ev);
+    });
+    Object.keys(grupos).forEach(function(k){
+      var cands=k.split('\u0000');
+      grupos[k].slice().sort(function(a,b){
+        return (Date.parse(a.inicio||'')||0)-(Date.parse(b.inicio||'')||0);
+      }).forEach(function(ev,j){
+        // Si hay mas reuniones que etapas, las de mas se apilan en la ultima:
+        // es preferible a tirarlas y que no figure ninguna.
+        _porOrden[String(ev.id)]=cands[Math.min(j, cands.length-1)];
+      });
+    });
+  })();
   eventos.forEach(function(ev){
     // De la agenda de la agencia viene todo: lo que no es de este cliente se
     // ignora, o cada tarjeta se llenaria con las reuniones de las demas.
     if(!_citaEsDe(c, ev.titulo, ev.con, ev.mail)) return;
-    var et=_citaEtapaPara(c, ev.titulo, ev.calendario, ev.id);
+    var et=_citaEtapaPara(c, ev.titulo, ev.calendario, ev.id, _porOrden[String(ev.id)]);
     if(!et){
       // Las que no matchean no se tiran: se muestran para asignarlas a mano.
       if(String(ev.estado||'')!=='cancelled') c.citasSinEtapa.push(ev);
