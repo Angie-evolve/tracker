@@ -28815,7 +28815,11 @@ function rutaModal(){
         +'Renombrar una etapa <b style="color:var(--text2)">se lleva</b> su historial: lo '
         +'tildado a mano, las fechas agendadas y las citas se mudan al nombre nuevo en todos '
         +'los clientes. Borrarla no: los que estaban ahi pasan a la etapa siguiente.</div>'
-      +'<div class="modal-footer">'
+      +'<div class="modal-footer" style="display:flex;justify-content:space-between;'
+        +'align-items:center;gap:10px">'
+        +'<button class="btn btn-sm" style="font-size:11px" onclick="agProbar()" '
+          +'title="Pide la lista de calendarios a GHL. No agenda nada.">'
+          +'Probar conexión con GHL</button>'
         +'<button class="btn btn-primary" onclick="closeModal();showTickets()">Listo</button>'
       +'</div>'
     +'</div></div>';
@@ -58309,6 +58313,42 @@ function fathomProxyUrl(){
 // La lista se lee directo porque tiene policy de select. Invitar y sacar no:
 // las dos necesitan la service_role key, asi que pasan por la edge function,
 // que es el unico lugar donde esa clave puede vivir sin quedar a la vista.
+// Llamar a la funcion que agenda en GHL. Mismo patron que la de invitaciones:
+// la sesion del que llama va en el header y el token de GHL vive del otro lado.
+async function agLlamar(cuerpo){
+  var r;
+  try{
+    r=await fetch(SB_URL+'/functions/v1/agendar',{
+      method:'POST',
+      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify(cuerpo||{})
+    });
+  }catch(e){
+    throw new Error('No encontré la función "agendar" en tu Supabase. Falta deployarla.');
+  }
+  var d=null; try{ d=await r.json(); }catch(e){}
+  if(!r.ok || (d && d.error)) throw new Error((d&&d.error)||('HTTP '+r.status));
+  return d||{};
+}
+// Prueba de conexion: pide la lista de calendarios y no agenda nada. Es la
+// forma de saber si los secretos quedaron bien sin crear una cita de mentira
+// en el calendario de alguien.
+async function agProbar(){
+  toast('Probando la conexión con GHL...');
+  try{
+    var d=await agLlamar({accion:'ping'});
+    var cals=(d.calendarios||[]);
+    DB.ghlCalendariosAgencia=cals.map(function(c){ return {id:c.id, nombre:c.nombre}; });
+    save();
+    toast('Conectado. '+cals.length+' calendario'+(cals.length===1?'':'s')+': '
+      +cals.slice(0,4).map(function(c){ return c.nombre; }).join(', ')
+      +(cals.length>4?'...':''));
+    return d;
+  }catch(e){
+    toast('No anduvo: '+(e&&e.message||''),'red');
+    throw e;
+  }
+}
 async function eqLlamar(accion, email){
   var r;
   try{
