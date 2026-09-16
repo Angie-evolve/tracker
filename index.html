@@ -30076,6 +30076,52 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
 // Una reunion agendada fuera de GHL —el Google Calendar de alguien del equipo,
 // sin sincronizar— no llega nunca a GHL, asi que ninguna consulta la va a
 // encontrar. Cargarla a mano es la unica salida, y hasta ahora no existia.
+// Agendar de verdad: crea la cita en el calendario de GHL de esa etapa, asi el
+// cliente recibe la invitacion, el link y los recordatorios. "Cargar a mano"
+// solo la anota en el tracker: sirve para registrar algo que ya existe, no para
+// crear una reunion -el cliente nunca se entera de esas.
+async function citasAgendarGhl(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var f=(document.getElementById('cita-fecha')||{}).value||'';
+  var h=(document.getElementById('cita-hora')||{}).value||'';
+  var et=(document.getElementById('cita-etapa')||{}).value||'';
+  var min=parseInt((document.getElementById('cita-min')||{}).value,10)||60;
+  if(!f||!et){ _citasDecir(clientId,'Falta la fecha y la etapa.','var(--amberx)'); return; }
+  var mail=String(c.contactoEmail||c.email||'').trim();
+  if(!mail){
+    _citasDecir(clientId,'Este cliente no tiene mail en la ficha, y es con eso que se '
+      +'busca el contacto en GHL.','var(--amberx)'); return;
+  }
+  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
+  var cal=String((def&&def.cal)||'');
+  if(!cal){
+    _citasDecir(clientId,'"'+et+'" no tiene calendario de GHL. Elegiselo en el editor '
+      +'de etapas.','var(--amberx)'); return;
+  }
+  var d=new Date(f+'T'+(h||'09:00')+':00');
+  if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
+  _citasDecir(clientId,'Agendando en GHL\u2026');
+  try{
+    var r=await agLlamar({accion:'agendar', email:mail, calendarId:cal,
+                          inicio:d.toISOString(), minutos:min,
+                          titulo:(c.name||'')+' - '+et});
+    // Se anota como puesta a mano: la decidiste vos, no la adivino nadie, y la
+    // proxima sincronizacion no tiene que volver a clasificarla.
+    c.citas=c.citas||{};
+    c.citas[et]={id:r.id||('ghl-'+Date.now()), inicio:r.inicio||d.toISOString(),
+                 estado:'confirmed', titulo:(c.name||'')+' - '+et, como:'mano'};
+    c.rutaAgenda=c.rutaAgenda||{};
+    c.rutaAgenda[et]=_citaFechaAR(r.inicio||d.toISOString());
+    _citaFijar(c, c.citas[et].id, et, true);
+    save();
+    _citasRepintar();
+    _citasDecir(clientId, et+' agendada para el '+c.rutaAgenda[et]
+      +' con '+esc(r.contacto||mail)+'.','var(--accent)');
+  }catch(e){
+    _citasDecir(clientId,'No se agendó: '+esc(e&&e.message||''),'var(--redx)');
+  }
+}
 function citasAMano(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -30526,13 +30572,23 @@ function _citasHtml(c){
         +'<input id="cita-con" placeholder="Con quien" style="'+_citaEst()+';flex:1;min-width:130px">'
         +'<select id="cita-etapa" style="'+_citaEst()+'">'
           +'<option value="">Etapa...</option>'+ops+'</select>'
+        +'<input id="cita-min" type="number" min="5" max="480" step="5" value="60" '
+          +'title="Cuanto dura, en minutos" style="'+_citaEst()+';width:64px">'
+        +'<button class="btn btn-sm btn-primary" style="font-size:10.5px;padding:3px 9px" '
+          +'title="La crea en el calendario de GHL de esa etapa: el cliente recibe '
+          +'invitacion, link y recordatorios." '
+          +'onclick="citasAgendarGhl('+c.id+')">Agendar en GHL</button>'
         +'<button class="btn btn-sm" style="font-size:10.5px;padding:3px 9px" '
-          +'onclick="citasAMano('+c.id+')">Cargar</button>'
+          +'title="Solo la anota en el tracker. El cliente no se entera." '
+          +'onclick="citasAMano('+c.id+')">Solo anotar</button>'
       +'</div>'
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px;line-height:1.5;'
-        +'max-width:74ch">Para las que se agendaron en un Google Calendar que no esta '
-        +'sincronizado con GHL: ahi la cita no existe para GHL y no hay busqueda que la '
-        +'traiga.</div>'
+        +'max-width:74ch"><b style="color:var(--text2)">Agendar en GHL</b> la crea de '
+        +'verdad: el cliente recibe la invitacion, el link y los recordatorios. Necesita '
+        +'que la etapa tenga su calendario elegido y que el cliente tenga mail en la ficha.'
+        +'<br><b style="color:var(--text2)">Solo anotar</b> la registra aca y nada mas. Es '
+        +'para reuniones que ya existen en otro lado -un Google Calendar suelto, por '
+        +'ejemplo-: GHL no las conoce y ninguna busqueda las trae.</div>'
     +'</details>'
     +'<div id="p3-citas-msg" style="font-size:11px;color:var(--text3);min-height:14px;'
       +'margin-bottom:4px">'
