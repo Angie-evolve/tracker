@@ -16044,7 +16044,10 @@ function _edTipoSalida(){
 // Se reproduce el video contra un canvas y se graba la salida. Va a velocidad
 // real —no hay forma de apurarlo sin acelerar tambien el audio—, pero igual
 // termina antes que subir dos giga, y el worker recibe algo que entra.
-function _edComprimir(f, onProg){
+// techo: bits por segundo con los que reintentar. MediaRecorder trata el
+// bitrate como sugerencia y no como limite: con mucho movimiento se pasa, y
+// por eso hace falta poder volver a pedirlo mas abajo.
+function _edComprimir(f, onProg, techo){
   return new Promise(function(res, rej){
     var url=URL.createObjectURL(f);
     var v=document.createElement('video');
@@ -16112,6 +16115,9 @@ function _edComprimir(f, onProg){
       // fijado. Probado de nuevo ahora que el tipo de salida va sin fijar,
       // codifica sin problema.
       if(bVideo>6000000) bVideo=6000000;
+      // El reintento manda: si la primera pasada se paso del tope, el numero
+      // que viene de afuera ya esta corregido con lo que de verdad peso.
+      if(techo>0 && techo<bVideo) bVideo=Math.round(techo);
       // Se limita el lado LARGO. Mirando solo el ancho, un video vertical de
       // 1080x1920 pasaba sin achicarse nada.
       var vw=v.videoWidth||1280, vh=v.videoHeight||720;
@@ -16174,7 +16180,8 @@ function _edComprimir(f, onProg){
           return rej(new Error('la compresión cortó en el segundo '+v.currentTime.toFixed(1)
             +' de '+dur.toFixed(1)+': se perdió el final. Volvé a intentar con esta pestaña '
             +'adelante.'));
-        res({datos:blob, nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
+        res({datos:blob, bitrate:bVideo,
+             nombre:String(f.name||'video').replace(/\.[^.]+$/,'')+'-liviano'+base});
       };
       // Avisar APENAS pasa, no al final. El navegador frena el dibujado cuando la
       // pestana deja de estar adelante, y la compresion corre en tiempo real:
@@ -16348,6 +16355,24 @@ async function edSubir(modo){
           if(p<0){ decir(cual+'⚠ Volvé a esta pestaña: en segundo plano la compresión se rompe'); return; }
           decir(cual+'Comprimiendo… '+Math.round(p*100)+'% · tarda lo que dura el video · no cambies de pestaña'); });
         datos=r.datos; nombre=r.nombre;
+        // El presupuesto se calcula bien, pero MediaRecorder lo toma como una
+        // sugerencia: con mucho movimiento se pasa igual, y el 8% de margen no
+        // alcanza. Antes eso terminaba en "cortalo en partes mas cortas", que
+        // para un archivo de 800 MB no es una respuesta.
+        //
+        // Si se paso, se vuelve a pedir una sola vez con el bitrate corregido
+        // por cuanto se paso de verdad, mas un margen. Como se sabe lo que
+        // sobro, la segunda pasada entra: no es adivinar otro numero.
+        if(datos.size > ED_LIMITE_MB*1048576 && r.bitrate>0){
+          var objetivo=ED_LIMITE_MB*0.92*1048576;
+          var nuevo=Math.round(r.bitrate*(objetivo/datos.size)*0.93);
+          decir(cual+'Quedó en '+_matTam(datos.size)+', apenas pasado. Lo hago de nuevo más liviano');
+          var r2=await _edComprimir(f, function(p){
+            if(p<0){ decir(cual+'⚠ Volvé a esta pestaña: en segundo plano la compresión se rompe'); return; }
+            decir(cual+'Comprimiendo de nuevo… '+Math.round(p*100)+'% · segunda y última pasada');
+          }, nuevo);
+          if(r2.datos.size < datos.size){ datos=r2.datos; nombre=r2.nombre; }
+        }
         e.comprimido={de:f.size, a:datos.size};
         if(datos.size > ED_LIMITE_MB*1048576)
           throw new Error(nombre+' quedó en '+_matTam(datos.size)+' y el tope es '
