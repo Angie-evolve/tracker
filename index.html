@@ -26797,6 +26797,7 @@ async function extractContractWithAI(clientId, file, driveUrl, texto){
     if(extracted.serviceType==='recurrente') c.recurrente=true;
     c.contract._analyzing=false;
     save();renderTab();
+    _materialRepintar();
     toast('Contrato analizado - campos completados automaticamente');
   } catch(e){
     if(c.contract) c.contract._analyzing=false;
@@ -26810,7 +26811,7 @@ function removeContract(clientId){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
   c.contract={...c.contract,fileName:null,fileSize:null,driveUrl:null};
-  save();renderTab();toast('Contrato eliminado');
+  save();renderTab();_materialRepintar();toast('Contrato eliminado');
 }
 
 function openAddMilestoneModal(clientId){
@@ -34290,13 +34291,14 @@ function _materialCuerpoHtml(c){
 function materialModal(clientId, anclar){
   var c=DB.clients.find(function(x){ return x.id===clientId; });
   if(!c) return;
+  S._matAbierto=clientId;
   document.getElementById('modal-root').innerHTML=
     '<div class="modal-overlay" onclick="if(event.target===this)materialCerrar()">'
     +'<div class="modal" style="max-width:860px;max-height:88vh;overflow-y:auto">'
       +'<div class="modal-title">Material de '+esc(c.name||'')+'</div>'
       +'<div class="modal-sub">Todo lo que el cliente manda o lo que juntamos de el. '
         +'Lo que tenga texto entra en los prompts.</div>'
-      +_materialCuerpoHtml(c)
+      +'<div id="mat-cuerpo">'+_materialCuerpoHtml(c)+'</div>'
       +'<div class="modal-footer">'
         +'<button class="btn btn-primary" onclick="materialCerrar()">Listo</button>'
       +'</div>'
@@ -34309,8 +34311,27 @@ function materialModal(clientId, anclar){
 // Cerrar repinta: lo que se cargo tiene que verse en el resumen de Contexto
 // sin tener que refrescar.
 function materialCerrar(){
+  S._matAbierto=null;
   closeModal();
   if(typeof renderTab==='function') renderTab();
+}
+// Todo lo que se carga desde este modal -documentos, contrato, marca- llamaba a
+// renderTab, que redibuja la pantalla de ATRAS. El modal, que es lo unico que
+// se esta mirando, se quedaba con el texto viejo: subias un documento, se
+// guardaba bien, y el cartel seguia diciendo "todavia no hay ninguno". Desde
+// afuera eso es identico a que no se haya guardado.
+function _materialRepintar(){
+  if(!S._matAbierto) return;
+  var caja=document.getElementById('mat-cuerpo');
+  if(!caja) { S._matAbierto=null; return; }
+  var c=DB.clients.find(function(x){ return x.id===S._matAbierto; });
+  if(!c) return;
+  // La posicion del scroll se conserva: si no, cargar un documento te manda al
+  // principio del modal y perdes de vista lo que estabas haciendo.
+  var sc=caja.closest ? caja.closest('.modal') : null;
+  var y=sc?sc.scrollTop:0;
+  caja.innerHTML=_materialCuerpoHtml(c);
+  if(sc) sc.scrollTop=y;
 }
 function materialHtml(c){
   var propios=(c.material||[]);
@@ -51456,6 +51477,7 @@ function docGuardar(clientId, i){
   else l.unshift({ titulo:t, texto:x, uso:uso, at:new Date().toISOString() });
   save(); closeModal();
   if(typeof renderTab==='function') renderTab();
+  _materialRepintar();
   toast(cortado
     ? ('Guardado, recortado a '+_docKb(_DOC_MAX)+' caracteres. Si falta algo, subilo como un segundo documento.')
     : 'Documento guardado. Ya entra en los prompts.');
@@ -51466,6 +51488,7 @@ function docQuitar(clientId, i){
   docs(c).splice(i,1);
   save();
   if(typeof renderTab==='function') renderTab();
+  _materialRepintar();
 }
 // Solo formatos de texto: un PDF o un docx abiertos crudos entran como binario
 // y ensucian el prompt sin aportar nada legible.
@@ -51491,6 +51514,7 @@ function docSubir(clientId, uso){
     }
     if(ok) save();
     if(typeof renderTab==='function') renderTab();
+    _materialRepintar();
     toast(ok
       ? (ok+' documento'+(ok===1?'':'s')+' cargado'+(ok===1?'':'s')+' como "'
          +_docUsoL(uso||'todo')+'"'+(mal.length?(' \u00b7 no pude leer: '+mal.join(', ')):''))
