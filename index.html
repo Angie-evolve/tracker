@@ -8265,16 +8265,23 @@ function _ctxResumenHtml(c){
   var der=bloque('Documentos','',
     ds.length
       ? ds.map(function(d){
+          // Los archivados no entran en ningun analisis, asi que no pueden
+          // decir "leido": era la unica etiqueta y afirmaba lo contrario.
+          var arch=(_docUso(d)==='archivo');
           return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;'
               +'border-bottom:1px solid var(--border)">'
-            +punto(true,'Su texto entra en los prompts')
+            +punto(!arch, arch?'Guardado, no entra en ningun analisis'
+                              :'Su texto entra en los prompts')
             +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);'
               +'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
               +esc(d.titulo||'sin nombre')
               +'<span style="color:var(--text3)"> \u00b7 '
               +_docKb(String(d.texto||'').length)+' car.</span></span>'
-            +'<span style="flex:none;font-size:10px;color:var(--accent);border:1px solid '
-              +'rgba(78,207,160,.3);border-radius:99px;padding:0 8px">leido</span>'
+            +(arch
+              ?('<span style="flex:none;font-size:10px;color:var(--text3);border:1px solid '
+                +'var(--border2);border-radius:99px;padding:0 8px">guardado</span>')
+              :('<span style="flex:none;font-size:10px;color:var(--accent);border:1px solid '
+                +'rgba(78,207,160,.3);border-radius:99px;padding:0 8px">leido</span>'))
           +'</div>';
         }).join('')
       : vacio('Ninguno.'));
@@ -47484,6 +47491,10 @@ async function onbMercado(clientId){
     }
     o.at=new Date().toISOString();
     c.onbMercado=o;
+    // Queda tambien como documento del cliente: ahi es donde uno la busca
+    // despues, y no adentro del modal de onboarding.
+    docAuto(c, 'mercado', 'Investigacion de mercado \u2014 '+String(c.name||''),
+            _docMercadoTexto(o), 'archivo');
     save();
     S._onbMk={cid:clientId, cargando:false, err:''};
   }catch(e){
@@ -47870,6 +47881,10 @@ function onbCrearForm(clientId){
   } else {
     formularios().unshift(nuevo);
   }
+  // Aparte del de mercado, como pidio: son dos cosas distintas y se buscan
+  // por separado.
+  docAuto(c, 'formulario-onb', 'Formulario de onboarding \u2014 '+String(c.name||''),
+          _docFormTexto(nuevo), 'archivo');
   save();
   closeModal();
   abrirForm(nuevo.id);
@@ -50895,14 +50910,73 @@ async function _archivoATexto(f, avisar){
 var DOC_USOS=[
   {k:'todo',      l:'Todo',              d:'Entra en el copy de la landing, en la promesa del quiz y en las preguntas.'},
   {k:'copy',      l:'Oferta y copy',     d:'Producto, oferta, avatar. Landing, promesa y preguntas.'},
-  {k:'comercial', l:'Proceso comercial', d:'Llamadas de venta del cliente con sus leads. Solo en las preguntas, para diagnosticar el proceso.'}
+  {k:'comercial', l:'Proceso comercial', d:'Llamadas de venta del cliente con sus leads. Solo en las preguntas, para diagnosticar el proceso.'},
+  // Los tres de arriba entran en los prompts. Este no, y hace falta: la
+  // investigacion de mercado habla de la COMPETENCIA, no del cliente. Metida
+  // en el prompt como si fuera material suyo, el modelo termina atribuyendole
+  // al cliente cosas que salieron de la web -es el mismo error que el analisis
+  // de onboarding se cuida de no cometer, rotulandola aparte-.
+  {k:'archivo',   l:'Solo guardarlo',    d:'Queda archivado y a mano, pero no entra en ningun analisis. Para lo que es referencia y no material del cliente.'}
 ];
 function _docUso(d){ return (d&&d.uso)||'todo'; }
 function _docUsoL(k){ var u=DOC_USOS.filter(function(x){return x.k===k;})[0]; return u?u.l:'Todo'; }
 // Los que alimentan lo que se publica: landing, promesa del quiz, preguntas del
 // quiz. Un doc marcado como comercial queda afuera de estos.
-function docsCopy(c){ return docs(c).filter(function(d){ return _docUso(d)!=='comercial'; }); }
+function docsCopy(c){
+  return docs(c).filter(function(d){
+    var u=_docUso(d);
+    return u!=='comercial' && u!=='archivo';
+  });
+}
 function docs(c){ if(!Array.isArray(c.docs)) c.docs=[]; return c.docs; }
+// Guarda algo que genera la app como un documento del cliente, y lo pisa si ya
+// estaba. La marca -no el titulo- es lo que identifica: el titulo lleva el
+// nombre del cliente y cambia si lo renombran, y ahi quedarian dos.
+function docAuto(c, marca, titulo, texto, uso){
+  if(!String(texto||'').trim()) return null;
+  var l=docs(c), t=String(texto).slice(0, _DOC_MAX);
+  var i=-1;
+  l.forEach(function(d,j){ if(i<0 && d && d.auto===marca) i=j; });
+  var d={ titulo:titulo, texto:t, uso:uso||'archivo', auto:marca,
+          at:new Date().toISOString() };
+  if(i>=0) l[i]=d; else l.unshift(d);
+  return d;
+}
+// La investigacion en texto plano. Se guarda escrita y no como JSON: un
+// documento se lee, y ademas asi sirve para pegarlo en cualquier lado.
+function _docMercadoTexto(mk){
+  var L=[];
+  if(mk.mercado) L.push('MERCADO: '+mk.mercado, '');
+  (mk.avisos||[]).forEach(function(x){
+    L.push('AVISO: '+String(x.txt||''));
+    if(x.evidencia) L.push('   '+x.evidencia);
+    if(x.fuente) L.push('   '+x.fuente);
+    L.push('');
+  });
+  (mk.competidores||[]).forEach(function(x){
+    L.push('COMPETIDOR: '+String(x.n||''));
+    if(x.que) L.push('   '+x.que);
+    if(x.precio) L.push('   precio: '+x.precio);
+    if(x.ventaja) L.push('   tiene: '+x.ventaja);
+    if(x.fuente) L.push('   '+x.fuente);
+    L.push('');
+  });
+  (mk.alternativas||[]).forEach(function(x){
+    L.push('SIN CONTRATAR A NADIE: '+String(x.n||'')
+      +(x.porque?(' \u2014 '+x.porque):''));
+  });
+  if((mk.noPude||[]).length){ L.push(''); L.push('No pude abrir: '+(mk.noPude||[]).join(', ')); }
+  return L.join('\n').trim();
+}
+function _docFormTexto(f){
+  var L=[];
+  (f.campos||[]).forEach(function(cp,i){
+    L.push((i+1)+'. '+String(cp.l||'')
+      +' ['+String(cp.tipo||'texto')+(cp.req?', obligatoria':'')+']');
+    if(cp.ayuda) L.push('   '+cp.ayuda);
+  });
+  return L.join('\n').trim();
+}
 function _docChars(c){ return docs(c).reduce(function(a,d){ return a+String(d.texto||'').length; },0); }
 function _docKb(n){ return n>=1000 ? (Math.round(n/1000)+'k') : (n+''); }
 function docsHtml(c){
@@ -51173,6 +51247,7 @@ function _llamadasParaIA(c, opt){
   // tope: si no entran, se avisa igual que una llamada omitida.
   docs(c).forEach(function(d){
     var com=(_docUso(d)==='comercial');
+    if(_docUso(d)==='archivo') return;
     if(com && sinComerciales) return;
     var titulo=(com?'LLAMADA DE VENTA DEL CLIENTE: ':'DOCUMENTO: ')+(d.titulo||'sin titulo');
     var cuerpo=String(d.texto||'');
