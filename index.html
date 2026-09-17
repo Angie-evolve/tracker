@@ -47634,6 +47634,7 @@ function onbModal(clientId){
         ?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:16px">'
           +esc(o.arquetipo.porque)+'</div>'):'')
       +_onbMercadoHtml(c)
+      +_onbRevHtml(c)
       +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
         +'letter-spacing:.06em;margin-bottom:6px">Que sabemos ya</div>'
       +(o.variables||[]).map(function(v){
@@ -47843,6 +47844,296 @@ function onbCrearForm(clientId){
   save();
   closeModal();
   abrirForm(nuevo.id);
+}
+// ---- Revision de la llamada de onboarding -------------------------------
+// Lo que se preparo contra lo que se pregunto de verdad. La unica fuente es la
+// grabacion: el guion casi nunca se tilda y el formulario casi nunca se
+// completa, asi que apoyarse en eso seria apoyarse en nada.
+var ONB_REV_SOP = "Sos analista de una agencia de performance. Abajo esta la transcripcion de la llamada de onboarding de {{CLIENTE}}, y lo que se habia preparado para esa llamada.\n\nTrabajas en cuatro pasos y EN ESTE ORDEN. El orden no es un detalle: si empezaras por la lista preparada tendrias que ir buscando cada pregunta adentro de la transcripcion, y las que se hicieron con otras palabras se pierden. La forma de preguntar cambia mucho segun quien toma la llamada y segun el cliente, asi que primero se lee lo que paso y recien despues se compara.\n\nPASO 1 \u2014 Sin mirar todavia lo preparado, lee la transcripcion y lista TODO lo que la agencia le pregunto al cliente. Una entrada por pregunta, con la cita textual de como se pregunto. No incluyas las preguntas del cliente a la agencia.\n\nPASO 2 \u2014 Recien ahora compara esa lista contra las preguntas preparadas:\n{{PREPARADAS}}\nPara cada preparada, uno de tres estados:\n  hecha     \u2014 se pregunto, con estas palabras o muy parecidas\n  parecida  \u2014 se pregunto algo que apunta a lo mismo pero por otro lado\n  no        \u2014 no se pregunto nada que apunte a eso\nEn 'hecha' y 'parecida' va la cita de como se pregunto de verdad. En 'no' no hay cita: poné en 'cerca' lo mas parecido que si se pregunto, o dejalo vacio si no hay nada que se le acerque. Ese campo existe para que quien lo lea pueda ver de un vistazo si fue un olvido real o la misma pregunta dicha distinto.\nAdemas, para las que se hicieron: si el cliente contesto algo que sirva (si), contesto al pasar sin bajar al hecho concreto (al_pasar), o la esquivo (esquivo).\n\nPASO 3 \u2014 Formulario. Estos son los campos del formulario que se habia preparado:\n{{CAMPOS}}\nPara cada uno, si el cliente lo contesto en algun momento de la llamada, extrae la respuesta con su cita. Si no lo contesto, no lo incluyas: una lista corta y cierta vale mas que una larga con relleno. Nada de deducir: si no lo dijo, no esta.\n\nPASO 4 \u2014 Arquetipo. La llamada se preparo como {{ARQPREVIO}}, elegido con el material de venta. Ahora hay evidencia mejor. Elegi de esta lista:\n{{ARQUETIPOS}}\nDos ejes deciden: si hay clientes pagando hoy, y de que lado del embudo esta el cuello. Un costo de adquisicion bueno con conversion pobre es fuga, no falta de leads, por mas que el cliente lo cuente al reves. Contesta los dos ejes con una cita de esta llamada cada uno. Si la evidencia de la llamada no alcanza para mover el que ya estaba, dejalo y decilo.\n\nLAS CITAS SON TEXTUALES. Copialas tal cual aparecen en la transcripcion, sin corregir, sin completar y sin acortar por el medio. La app las busca literalmente en el texto y descarta la que no encuentra, asi que una cita retocada se pierde igual que una inventada.\n\nDevolve SOLO un JSON, sin markdown ni texto alrededor, con esta forma:\n{\"preguntado\":[{\"q\":\"la pregunta como se hizo\",\"cita\":\"\"}],\"cruce\":[{\"q\":\"la pregunta preparada, textual\",\"estado\":\"hecha|parecida|no\",\"como\":\"como se pregunto de verdad\",\"cita\":\"\",\"respondio\":\"si|al_pasar|esquivo\",\"cerca\":\"\"}],\"formulario\":[{\"l\":\"el campo, textual\",\"valor\":\"lo que contesto\",\"cita\":\"\"}],\"arquetipo\":{\"k\":\"B\",\"porque\":\"una frase\",\"ejes\":[{\"eje\":\"clientes pagando hoy\",\"valor\":\"\",\"cita\":\"\"},{\"eje\":\"de que lado esta el cuello\",\"valor\":\"\",\"cita\":\"\"}]}}\n";
+function onbRevSop(){
+  var t=DB.onbRevSop;
+  return (typeof t==='string' && t.trim()) ? t : ONB_REV_SOP;
+}
+// Cual de las llamadas de Fathom es la del onboarding. Primero por titulo, que
+// es lo que pasa siempre; si no, la que cae el dia de la cita de esa etapa.
+function _onbLlamadaDe(c){
+  var ls=(c.fathomCalls||[]).filter(function(x){
+    return x.transcript && String(x.transcript).length>400; });
+  if(!ls.length) return null;
+  var nuevaPrimero=function(a,b){
+    var da=parseDDMMYYYY(a.date||''), db=parseDDMMYYYY(b.date||'');
+    return (db?db.getTime():0)-(da?da.getTime():0);
+  };
+  var porTitulo=ls.filter(function(x){ return _norm(x.title||'').indexOf('onboarding')>=0; });
+  if(porTitulo.length) return porTitulo.sort(nuevaPrimero)[0];
+  var et=rutaDef().filter(function(e){ return _norm(e.l).indexOf('onboarding')>=0; })[0];
+  var cita=et ? _deEtapa(c.citas, et.l) : null;
+  var f=cita ? _citaFechaAR(cita.inicio||'') : '';
+  if(f){
+    var m=ls.filter(function(x){ return String(x.date||'')===f; });
+    if(m.length) return m[0];
+  }
+  return null;
+}
+function _onbRevPedido(c, ll){
+  var o=c.onboarding||{};
+  var preg=[];
+  ((o.guion||{}).bloques||[]).forEach(function(b){
+    (b.preguntas||[]).forEach(function(q){
+      if(q && q.q) preg.push({q:q.q, bloque:b.t||''});
+    });
+  });
+  var campos=((o.formulario||{}).campos||[]).map(function(x){ return x.l||''; }).filter(Boolean);
+  return onbRevSop()
+      .replace('{{CLIENTE}}', c.name||'')
+      .replace('{{PREPARADAS}}', preg.length
+        ? preg.map(function(p,i){
+            return (i+1)+'. '+p.q+(p.bloque?('   [bloque: '+p.bloque+']'):''); }).join('\n')
+        : '(no se habia preparado ninguna)')
+      .replace('{{CAMPOS}}', campos.length
+        ? campos.map(function(x,i){ return (i+1)+'. '+x; }).join('\n')
+        : '(no se habia preparado ninguno)')
+      .replace('{{ARQPREVIO}}', String((o.arquetipo||{}).k||'sin definir'))
+      .replace('{{ARQUETIPOS}}', onbArq().map(function(a){
+        return a.k+' · '+a.l+' ('+a.cuando+')'; }).join('\n'))
+    +'\n\nTRANSCRIPCION DE LA LLAMADA DE ONBOARDING ('+(ll.date||'')+', '+(ll.duration||'')+'):\n'
+    +String(ll.transcript||'').slice(0, 90000);
+}
+// Una cita vale solo si aparece de verdad en la transcripcion. Es la unica
+// parte de esto que se puede verificar sola, asi que se verifica.
+function _onbRevSellar(o, ll){
+  var T=_norm(ll.transcript||'');
+  var mirar=function(x){
+    if(!x || typeof x!=='object') return;
+    var q=_norm(x.cita||'');
+    x._sinRespaldo = !(q.length>=12 && T.indexOf(q)>=0);
+  };
+  (o.preguntado||[]).forEach(mirar);
+  (o.cruce||[]).forEach(function(x){
+    // En "no se hizo" no hay nada que respaldar: se esta afirmando una
+    // ausencia, y para eso no existe cita posible.
+    if(x && x.estado==='no'){ x._sinRespaldo=false; return; }
+    mirar(x);
+  });
+  (o.formulario||[]).forEach(mirar);
+  ((o.arquetipo||{}).ejes||[]).forEach(mirar);
+  return o;
+}
+async function onbRevisar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  if(!c.onboarding){ toast('Primero hay que preparar el onboarding.','amber'); return; }
+  var ll=_onbLlamadaDe(c);
+  if(!ll){ toast('Todavia no hay una llamada de onboarding con transcripcion.','amber'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaPorOtroLado()){
+    toast('Falta la clave de Anthropic en Configuracion de agencia.','red'); return; }
+  S._onbRev={cid:clientId, cargando:true, err:''};
+  onbModal(clientId);
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:8000,
+        messages:[{role:'user', content:_onbRevPedido(c, ll)}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var txt=String(((d.content||[])[0]||{}).text||'');
+    txt=txt.replace(/^[\s\S]*?```(?:json)?/,'').replace(/```[\s\S]*$/,'').trim()||txt;
+    var o=JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1));
+    _onbRevSellar(o, ll);
+    o.at=new Date().toISOString();
+    o.llamadaId=ll.id;
+    o.llamadaFecha=ll.date||'';
+    // Con que arquetipo se preparo y quien tomo la llamada. Los dos hacen falta
+    // despues: una pregunta que no se hizo puede ser que sobre, que no aplique
+    // a ese arquetipo, o que esa persona no la haga. Sin estas dos etiquetas
+    // los tres casos se ven iguales.
+    o.quien=String(ll.grabaNombre||ll.grabo||'');
+    o.arqPrevio=String((c.onboarding.arquetipo||{}).k||'');
+    c.onbRevision=o;
+    save();
+    S._onbRev={cid:clientId, cargando:false, err:''};
+  }catch(e){
+    S._onbRev={cid:clientId, cargando:false, err:e.message||'no pude leer la respuesta'};
+  }
+  onbModal(clientId);
+}
+// El arquetipo pasa a ser un dato del cliente y no una conclusion enterrada en
+// un analisis: es lo que despues permite mirar los patrones por arquetipo. Se
+// asigna a mano a proposito.
+function onbArqAsignar(clientId, k){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var a=onbArq().filter(function(x){ return x.k===k; })[0];
+  if(!a) return;
+  c.arquetipo={k:a.k, l:a.l, at:new Date().toISOString(),
+               porque:String(((c.onbRevision||{}).arquetipo||{}).porque||'')};
+  save();
+  toast('Arquetipo '+a.k+' · '+a.l+' asignado.');
+  onbModal(clientId);
+}
+function onbRevVolcar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.onbRevision) return;
+  var f=formularios().filter(function(x){ return x.deOnb===c.id; })[0];
+  if(!f){ toast('Primero crea el formulario.','amber'); return; }
+  var r=formResp(c, f.id), n=0;
+  (c.onbRevision.formulario||[]).forEach(function(x){
+    if(!x || x._sinRespaldo) return;
+    var i=-1;
+    (f.campos||[]).forEach(function(cp,j){
+      if(i<0 && _norm(cp.l||'')===_norm(x.l||'')) i=j; });
+    if(i<0) return;
+    var k=_formCampoK(i, f.campos[i]);
+    // Lo escrito a mano gana siempre: esto completa lo vacio, no corrige.
+    if(String(r.v[k]==null?'':r.v[k]).trim()) return;
+    r.v[k]=String(x.valor||'');
+    n++;
+  });
+  if(n){ r.at=new Date().toISOString(); save(); }
+  toast(n ? ('Se completaron '+n+' respuesta'+(n===1?'':'s')+' con lo que dijo en la llamada.')
+          : 'No habia nada nuevo para volcar.');
+  onbModal(clientId);
+}
+function _onbRevHtml(c){
+  var st=(S._onbRev&&S._onbRev.cid===c.id)?S._onbRev:null;
+  var rev=c.onbRevision, ll=_onbLlamadaDe(c);
+  if(!rev && !ll && !st) return '';
+  var cab='<div style="display:flex;align-items:baseline;gap:9px;margin:20px 0 8px">'
+    +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.06em">La llamada de onboarding</span>'
+    +(rev?('<span style="font-size:10.5px;color:var(--text3)">'+esc(rev.llamadaFecha||'')
+      +(rev.quien?(' · la tomo '+esc(_p360Corto(rev.quien))):'')+'</span>'):'')
+    +'<span style="flex:1"></span>'
+    +(ll&&!(st&&st.cargando)
+      ?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+        +'onclick="onbRevisar('+c.id+')">'+(rev?'Volver a leerla':'Leerla')+'</button>'):'')
+  +'</div>';
+  if(st&&st.cargando)
+    return cab+'<div style="display:flex;align-items:center;gap:9px;padding:10px 0;'
+      +'font-size:12px;color:var(--text3)"><span class="carga-spin"></span>'
+      +'<span>Leyendo la llamada y comparandola con lo que preparamos...</span></div>';
+  if(st&&st.err)
+    return cab+'<div style="padding:8px 0;font-size:12px;color:var(--redx)">'+esc(st.err)+'</div>';
+  if(!rev)
+    return cab+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Ya esta grabada. Leerla compara lo que preparamos con lo que se pregunto de verdad, '
+      +'completa el formulario con lo que el cliente ya contesto y revisa el arquetipo.</div>';
+
+  // --- arquetipo ---
+  var ar=rev.arquetipo||{};
+  var rec=onbArq().filter(function(a){ return a.k===ar.k; })[0];
+  var asig=c.arquetipo||null;
+  var cambia=ar.k && rev.arqPrevio && ar.k!==rev.arqPrevio;
+  var prev=onbArq().filter(function(a){ return a.k===rev.arqPrevio; })[0];
+  var arqHtml='';
+  if(rec){
+    arqHtml='<div style="background:var(--bg2);border:1px solid '
+        +(cambia?'rgba(224,163,58,.35)':'var(--border)')+';border-radius:var(--radius-md);'
+        +'padding:11px 13px;margin-bottom:12px">'
+      +'<div style="font-size:12px;color:var(--text);font-weight:500">'
+        +(cambia
+          ? ('Se preparo como '+esc(prev?(prev.k+' · '+prev.l):rev.arqPrevio)
+             +', pero la llamada dice '+esc(rec.k+' · '+rec.l))
+          : ('Sigue siendo '+esc(rec.k+' · '+rec.l)))
+      +'</div>'
+      +(ar.porque?('<div style="font-size:11.5px;color:var(--text3);line-height:1.6;'
+        +'margin-top:3px">'+esc(ar.porque)+'</div>'):'')
+      +(ar.ejes||[]).map(function(e){
+        return '<div style="display:flex;gap:9px;align-items:baseline;margin-top:7px">'
+          +'<span style="flex:none;width:150px;font-size:10.5px;color:var(--text3)">'
+            +esc(e.eje||'')+'</span>'
+          +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);line-height:1.5">'
+            +esc(e.valor||'')+_onbRevCita(e)+'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:11px">'
+        +((asig&&asig.k===ar.k)
+          ?'<span style="font-size:11px;color:var(--accent)">Asignado</span>'
+          :('<button class="btn btn-sm btn-primary" style="font-size:10.5px;padding:3px 9px" '
+            +'onclick="onbArqAsignar('+c.id+',\''+esc(ar.k)+'\')">Asignar '+esc(ar.k)+'</button>'))
+        +onbArq().filter(function(a){ return a.k!==ar.k; }).map(function(a){
+          return '<button class="btn btn-sm" style="font-size:10.5px;padding:3px 9px" '
+            +'title="'+esc(a.l+' — '+a.cuando)+'" '
+            +'onclick="onbArqAsignar('+c.id+',\''+esc(a.k)+'\')">'+esc(a.k)+'</button>';
+        }).join('')
+        +(asig?('<span style="flex:1"></span><span style="font-size:10.5px;color:var(--text3)">'
+          +'hoy tiene '+esc(asig.k)+'</span>'):'')
+      +'</div>'
+    +'</div>';
+  }
+
+  // --- cruce ---
+  var col={hecha:'var(--accent)', parecida:'var(--amberx)', no:'var(--redx)'};
+  var lbl={hecha:'se hizo', parecida:'parecida', no:'no se hizo'};
+  var resp={si:'', al_pasar:'contesto al pasar', esquivo:'la esquivo'};
+  var cr=(rev.cruce||[]);
+  var nHechas=cr.filter(function(x){ return x.estado==='hecha'||x.estado==='parecida'; }).length;
+  var cruceHtml=cr.length
+    ? '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+        +'letter-spacing:.06em;margin-bottom:6px">Lo preparado contra lo que se pregunto'
+        +' · '+nHechas+' de '+cr.length+'</div>'
+      +cr.map(function(x){
+        var e=String(x.estado||'no');
+        return '<div style="display:flex;gap:9px;align-items:baseline;padding:6px 0;'
+            +'border-top:1px solid var(--border)">'
+          +'<span style="flex:none;width:66px;font-size:9.5px;letter-spacing:.05em;'
+            +'color:'+(col[e]||'var(--text3)')+'">'+esc(lbl[e]||e)+'</span>'
+          +'<span style="flex:1;min-width:0">'
+            +'<div style="font-size:11.5px;color:var(--text2);line-height:1.5">'
+              +esc(x.q||'')+'</div>'
+            +(e!=='no'&&x.como
+              ?('<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
+                +'se pregunto: '+esc(x.como)+_onbRevCita(x)+'</div>'):'')
+            +(e==='no'&&x.cerca
+              ?('<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px">'
+                +'lo mas parecido que si se pregunto: '+esc(x.cerca)+'</div>'):'')
+            +(resp[String(x.respondio||'')]
+              ?('<div style="font-size:11px;color:var(--amberx);margin-top:2px">'
+                +esc(resp[x.respondio])+'</div>'):'')
+          +'</span>'
+        +'</div>';
+      }).join('')
+    : '';
+
+  // --- formulario ---
+  var fs=(rev.formulario||[]).filter(function(x){ return x && !x._sinRespaldo; });
+  var formHtml=fs.length
+    ? '<div style="display:flex;align-items:baseline;gap:9px;margin:16px 0 6px">'
+        +'<span style="font-size:10px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em">Del formulario, ya contestado en la llamada · '
+          +fs.length+'</span>'
+        +'<span style="flex:1"></span>'
+        +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
+          +'onclick="onbRevVolcar('+c.id+')">Volcarlo al formulario</button>'
+      +'</div>'
+      +fs.map(function(x){
+        return '<div style="display:flex;gap:9px;align-items:baseline;padding:5px 0;'
+            +'border-top:1px solid var(--border)">'
+          +'<span style="flex:none;width:150px;font-size:11px;color:var(--text3);'
+            +'line-height:1.45">'+esc(x.l||'')+'</span>'
+          +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text2);'
+            +'line-height:1.5">'+esc(x.valor||'')+'</span>'
+        +'</div>';
+      }).join('')
+    : '';
+
+  return cab+arqHtml+cruceHtml+formHtml;
+}
+// La cita, y el aviso cuando no aparece en la transcripcion. No se borra: que
+// el modelo haya afirmado algo sin respaldo es informacion, y tapandola lo que
+// se pierde es justamente la senal de que ahi no hay que confiar.
+function _onbRevCita(x){
+  if(!x||!x.cita) return '';
+  if(x._sinRespaldo)
+    return '<span style="color:var(--amberx)"> — dice “'+esc(String(x.cita).slice(0,140))
+      +'”, que no aparece asi en la transcripcion</span>';
+  return '<span style="color:var(--text3);opacity:.7"> — “'
+    +esc(String(x.cita).slice(0,140))+'”</span>';
 }
 function briefModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
