@@ -24818,7 +24818,11 @@ function renderTab(){
 
   else if(S.tab==='success'){
     const contract = c.contract||{};
-    const contractLoaded = !!(contract.driveUrl||contract.fileName);
+    // Tambien cuenta como cargado cuando las condiciones salieron de la llamada
+    // de venta: el punto de sacarlas de ahi es justamente que no hay archivo
+    // subido, y exigirlo dejaba los campos llenos y la pantalla vacia. El
+    // cartel de arriba del panel dice de donde salen.
+    const contractLoaded = !!(contract.driveUrl||contract.fileName||contract.origen==='llamada');
     // OCs = SQL (reuniones calificadas), NO registros
     const ocs = c.conversionLines.reduce((s,l)=>{
       const v = l.metrics?.sql;
@@ -24905,6 +24909,12 @@ function renderTab(){
 
         ${contractLoaded && minDaily!==null ? `
         <div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px">Condiciones de garantia</div>
+        ${contract.origen==='llamada'?`
+        <div style="margin-bottom:10px;padding:9px 12px;border-radius:var(--radius-md);border:1px solid rgba(224,168,60,.3);background:rgba(224,168,60,.06);font-size:11.5px;color:var(--amberx);line-height:1.55">
+          Estas condiciones salen de lo que se dijo en la llamada de venta, no de un contrato firmado. Sirven para medir, no para reclamar.
+          ${(contract.falta||[]).length?`<span style="display:block;color:var(--text3);margin-top:3px">Sin hablar todavia: ${esc((contract.falta||[]).join(' · '))}</span>`:''}
+          ${contract.enPesos?`<span style="display:block;color:var(--text3);margin-top:3px">Se hablo en pesos (${esc(contract.enPesos)}): no lo converti, cargá el valor en dolares a mano.</span>`:''}
+        </div>`:''}
         <div class="st-grid" style="grid-template-columns:repeat(2,1fr)">
           <div class="st-card ${dailyStatus}">
             <div class="st-top">
@@ -26567,6 +26577,123 @@ function releerContrato(clientId){
   extractContractWithAI(clientId, null, c.contract.driveUrl);
 }
 
+// ---- Las condiciones, sacadas de la llamada de venta ---------------------
+// Hasta ahora las condiciones salian de un PDF firmado. Un cliente sin contrato
+// subido quedaba con el panel de garantia vacio, aunque el precio, el plazo y
+// lo prometido se hubieran dicho con todo detalle en la llamada de cierre.
+//
+// Esto NO redacta un contrato. Rellena los mismos campos que rellena el PDF,
+// pero desde lo que se dijo, y lo deja marcado como tal: lo que se acordo
+// hablando no es lo mismo que lo que alguien firmo, y el panel tiene que poder
+// decir de donde salio cada numero.
+function _ctrLlamadas(c){
+  // Las de venta, que es donde se cierra. Sin transcripcion no hay nada que
+  // leer: el resumen de Fathom no trae las cifras.
+  return (c.fathomCalls||[])
+    .filter(function(l){ return String(l.transcript||'').trim().length>400; })
+    .sort(function(a,b){
+      var da=parseDDMMYYYY(a.date||''), db=parseDDMMYYYY(b.date||'');
+      return (da?da.getTime():0)-(db?db.getTime():0);
+    });
+}
+function _ctrDecir(t, col){
+  var e=document.getElementById('ctr-llamada-est');
+  if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; return; }
+  if(typeof toast==='function') toast(String(t).replace(/<[^>]+>/g,''));
+}
+async function contratoDeLlamada(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var lls=_ctrLlamadas(c);
+  if(!lls.length){
+    _ctrDecir('No hay llamadas con transcripcion de este cliente: sin el texto no hay cifras '
+      +'que leer.','var(--amberx)'); return;
+  }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !iaPorOtroLado()){
+    _ctrDecir('Falta la clave de Anthropic en Integraciones.','var(--amberx)'); return;
+  }
+  _ctrDecir('Leyendo '+lls.length+' llamada'+(lls.length===1?'':'s')+'…');
+  // Lo que ya se leyo de palabra sirve de ayuda: son los mismos numeros y ya
+  // vienen con su cita. Se pasa como pista, no como verdad.
+  var ac=_acordado(c);
+  var pista=ac ? ('\n\nYA SE HABIA LEIDO ESTO DE LAS MISMAS LLAMADAS (usalo como pista, '
+      +'verificalo igual):\n'
+      +['precio','pago','plazo','renovacion'].map(function(k){
+          var x=ac[k]||{};
+          return k+': '+(x.valor||'(vacio)')+(x.detalle?(' — '+x.detalle):'');
+        }).join('\n')) : '';
+  var pedido='Abajo estan las llamadas de venta de "'+String(c.name||'')+'". Sacá de ahí las '
+    +'condiciones comerciales que se acordaron, para cargarlas en el tracker.\n\n'
+    +'REGLAS:\n'
+    +'- Solo lo que se dijo. Si un dato no está en la transcripción, va en null. Un contrato '
+    +'con un número inventado es peor que uno incompleto: alguien lo va a usar para reclamar.\n'
+    +'- Los montos en dólares y como número pelado, sin símbolo ni separadores. Si se '
+    +'dijeron en pesos, dejá el valor en "enPesos" y poné null en el campo en dólares: no '
+    +'conviertas, no sabés a qué cambio.\n'
+    +'- Si el precio se dijo en cuotas, sumalas para "contractValue" y dejá el detalle en '
+    +'"comoSePaga".\n'
+    +'- Para cada dato que completes, la cita textual de donde sale y el minuto.\n'
+    +'- "falta" es la lista de las condiciones que hacen falta para un contrato y que en la '
+    +'llamada no se hablaron. Sirve más que rellenarlas.\n\n'
+    +'Devolvé SOLO este JSON, sin markdown:\n'
+    +'{"contractValue":null,"monthlyFee":null,"durationDays":null,"startDate":null,'
+    +'"minDailyBudget":null,"minOCsMonth":null,"totalOCs":null,'
+    +'"serviceType":"garantia|recurrente|one-time|null","enPesos":"","comoSePaga":"",'
+    +'"fuentes":{"campo":{"cita":"","ll":"","m":"mm:ss"}},"falta":["condicion que no se hablo"]}\n\n'
+    +pista
+    +'\n\nLLAMADAS:\n'
+    +lls.map(function(l,i){
+        return '--- Llamada '+(i+1)+': '+String(l.title||'')+' ('+(l.date||'')+') ---\n'
+          +String(l.transcript||'').slice(0,70000);
+      }).join('\n\n');
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5', max_tokens:4000,
+        messages:[{role:'user', content:pedido}]})
+    });
+    var d=await r.json();
+    if(!r.ok) throw new Error((d&&d.error&&d.error.message)||('HTTP '+r.status));
+    var txt=String(((d.content||[])[0]||{}).text||'');
+    txt=txt.replace(/^[\s\S]*?```(?:json)?/,'').replace(/```[\s\S]*$/,'').trim()||txt;
+    var o=JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1));
+    var num=function(v){ var n=parseFloat(v); return isFinite(n)?n:null; };
+    c.contract=c.contract||{};
+    // Los campos numericos solo si vinieron: una corrida que no encontro el
+    // plazo no tiene que borrar el que ya estaba cargado a mano.
+    [['contractValue','contractValue'],['monthlyFee','monthlyFee'],
+     ['durationDays','durationDays'],['minDailyBudget','minDailyBudget'],
+     ['minOCsMonth','minOCsMonth'],['totalOCs','totalOCs']].forEach(function(k){
+      var v=num(o[k[0]]);
+      if(v!==null) c.contract[k[1]]=v;
+    });
+    if(o.startDate) c.contract.startDate=String(o.startDate);
+    if(o.serviceType && o.serviceType!=='null') c.contract.serviceType=String(o.serviceType);
+    // De donde salio todo esto. Es lo que permite que el panel avise que estos
+    // numeros no los firmo nadie todavia.
+    c.contract.origen='llamada';
+    c.contract.origenAt=new Date().toISOString();
+    c.contract.fuentes=o.fuentes||{};
+    c.contract.falta=(o.falta||[]).map(String);
+    c.contract.enPesos=String(o.enPesos||'');
+    c.contract.comoSePaga=String(o.comoSePaga||'');
+    c.contract._analyzing=false;
+    save();
+    var puestos=['contractValue','durationDays','minOCsMonth','totalOCs','minDailyBudget']
+      .filter(function(k){ return c.contract[k]; }).length;
+    _ctrDecir(puestos
+      ? ('Listo: '+puestos+' condicion'+(puestos===1?'':'es')+' cargada'+(puestos===1?'':'s')
+         +(c.contract.falta.length?(' · faltan '+c.contract.falta.length+' por hablar'):''))
+      : 'Leí las llamadas y no encontré condiciones: no se hablaron cifras.', 'var(--accent)');
+    if(typeof renderTab==='function') renderTab();
+  }catch(e){
+    _ctrDecir('No pude leerlas: '+esc(e&&e.message||''),'var(--redx)');
+  }
+}
 async function extractContractWithAI(clientId, file, driveUrl){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
@@ -34102,6 +34229,14 @@ function _materialCuerpoHtml(c){
           <div style="font-size:11px;color:var(--text3);margin-top:5px">Tambien podes subir: <span style="color:var(--green);cursor:pointer" onclick="document.getElementById('contract-upload-${c.id}').click()">seleccionar archivo</span>
             <input id="contract-upload-${c.id}" type="file" accept=".pdf,.doc,.docx" style="display:none" onchange="uploadContract(${c.id},this)">
           </div>
+          ${_ctrLlamadas(c).length?`
+          <div style="margin-top:12px;padding-top:11px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+              <span style="flex:1;min-width:210px;font-size:11px;color:var(--text3);line-height:1.55">Sin contrato subido el panel de garantia queda vacio, aunque el precio y el plazo se hayan dicho en la llamada de cierre. Esto los saca de ahi.</span>
+              <button class="btn btn-sm" onclick="contratoDeLlamada(${c.id})">Sacarlo de la llamada de venta</button>
+            </div>
+            <div id="ctr-llamada-est" style="font-size:11px;color:var(--text3);min-height:15px;margin-top:6px"></div>
+          </div>`:''}
         </div>`}
 `;
 }
