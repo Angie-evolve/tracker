@@ -51345,6 +51345,14 @@ function docsHtml(c){
         +_docKb(total)+' caracteres</span>'):'')
       // La seccion se cargaba desde el "+" de las llamadas, que vive en otra
       // hoja: se subia en Contexto y aparecia en Material. Tiene el suyo.
+      // Solo aparece si hay algo que limpiar: un boton que nunca hace nada es
+      // ruido, y cuando hace falta tiene que estar a la vista.
+      +((function(){
+          var r=docsRepetidos(c);
+          return r ? ('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px;'
+            +'color:var(--amberx)" onclick="docsQuitarRepetidos('+c.id+')">'
+            +'Quitar '+r+' repetido'+(r===1?'':'s')+'</button>') : '';
+        })())
       +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
         +'onclick="docPegarModal('+c.id+')">Pegar un texto</button>'
       +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 9px" '
@@ -51482,6 +51490,36 @@ function docGuardar(clientId, i){
     ? ('Guardado, recortado a '+_docKb(_DOC_MAX)+' caracteres. Si falta algo, subilo como un segundo documento.')
     : 'Documento guardado. Ya entra en los prompts.');
 }
+// Los que ya quedaron repetidos de antes. Se juntan por nombre y texto, que es
+// lo unico que los hace el mismo documento: la fecha de carga cambia y el uso
+// se pudo haber tocado.
+function docsRepetidos(c){
+  var visto={}, n=0;
+  docs(c).forEach(function(d){
+    var k=_norm(d.titulo||'')+'\u0000'+String(d.texto||'').length+'\u0000'+String(d.texto||'').slice(0,400);
+    if(visto[k]) n++; else visto[k]=1;
+  });
+  return n;
+}
+function docsQuitarRepetidos(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var n=docsRepetidos(c);
+  if(!n){ toast('No hay repetidos.'); return; }
+  if(!confirm('Hay '+n+' documento'+(n===1?'':'s')+' repetido'+(n===1?'':'s')
+    +'. Se queda el primero de cada uno y se borran las copias.\n\nSeguir?')) return;
+  var visto={}, quedan=[];
+  docs(c).forEach(function(d){
+    var k=_norm(d.titulo||'')+'\u0000'+String(d.texto||'').length+'\u0000'+String(d.texto||'').slice(0,400);
+    if(visto[k]) return;
+    visto[k]=1; quedan.push(d);
+  });
+  c.docs=quedan;
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _materialRepintar();
+  toast('Listo: '+n+' copia'+(n===1?'':'s')+' borrada'+(n===1?'':'s')+'.');
+}
 function docQuitar(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -51500,15 +51538,30 @@ function docSubir(clientId, uso){
   inp.accept='.pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.vtt,.srt,text/*';
   inp.onchange=async function(){
     var fs=[].slice.call(inp.files||[]);
-    var ok=0, mal=[];
+    var ok=0, mal=[], repes=0;
     var avisar=function(t){ toast(t); };
     for(var j=0;j<fs.length;j++){
       var f=fs[j];
       try{
         var res=await _archivoATexto(f, avisar);
         if(res.error){ mal.push(f.name+' ('+res.error+')'); continue; }
-        docs(c).unshift({ titulo:f.name.replace(/\.[^.]+$/,''), texto:res.texto.slice(0,_DOC_MAX),
-                          uso:(uso||'todo'), at:new Date().toISOString() });
+        var _tit=f.name.replace(/\.[^.]+$/,''), _tx=res.texto.slice(0,_DOC_MAX);
+        // Subir dos veces el mismo archivo dejaba dos copias. Paso de verdad:
+        // como el modal no se repintaba, parecia que no se habia guardado y se
+        // reintentaba, y quedaban tres del mismo documento. Se pisa el que ya
+        // estaba con el mismo nombre y el mismo texto.
+        var _ya=-1;
+        docs(c).forEach(function(d,k){
+          if(_ya<0 && _norm(d.titulo||'')===_norm(_tit) && String(d.texto||'')===_tx) _ya=k;
+        });
+        if(_ya>=0){
+          docs(c)[_ya].uso=(uso||docs(c)[_ya].uso||'todo');
+          docs(c)[_ya].at=new Date().toISOString();
+          repes++;
+        } else {
+          docs(c).unshift({ titulo:_tit, texto:_tx,
+                            uso:(uso||'todo'), at:new Date().toISOString() });
+        }
         ok++;
       }catch(err){ mal.push(f.name+' ('+err.message+')'); }
     }
@@ -51517,7 +51570,10 @@ function docSubir(clientId, uso){
     _materialRepintar();
     toast(ok
       ? (ok+' documento'+(ok===1?'':'s')+' cargado'+(ok===1?'':'s')+' como "'
-         +_docUsoL(uso||'todo')+'"'+(mal.length?(' \u00b7 no pude leer: '+mal.join(', ')):''))
+         +_docUsoL(uso||'todo')+'"'
+         +(repes?(' \u00b7 '+repes+' ya estaba'+(repes===1?'':'n')+', lo'+(repes===1?'':'s')
+                  +' actualice en vez de repetirlo'+(repes===1?'':'s')):'')
+         +(mal.length?(' \u00b7 no pude leer: '+mal.join(', ')):''))
       : ('No pude leer: '+mal.join(', ')), ok?'':'amber');
   };
   inp.click();
