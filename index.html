@@ -15241,7 +15241,8 @@ function showTickets(){
     // El Mirador es la pantalla de arriba: lo que hay que mirar hoy, todo junto.
     // Tickets y Actividad son pantallas aparte porque son listas largas.
     +(_torre==='mirador'
-      ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
+      ? (cobrosHtml()
+         +(_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
          +rvPanelHtml())
       :(soloCartera()?p360Html()
@@ -27211,6 +27212,155 @@ function setHojaSuccess(k){
 // El valor del contrato dice cuanto se acordo; esto dice cuando entra y cuanto
 // entro. Sin el, "cobrado" era una cuenta que cada uno hacia de memoria y la
 // proyeccion no tenia con que distinguir lo facturado de lo pagado.
+// ---- Cobros que dependen de un hito -------------------------------------
+// Una cuota "por hito" se queda esperando a que alguien se acuerde. El hito se
+// cumple un martes, nadie lo mira, y el cobro aparece tres semanas despues
+// cuando se revisa la facturacion.
+//
+// Varios de los hitos que se usan son medibles con datos que la app ya tiene.
+// Esos se detectan solos; el resto se tilda a mano. Los que se detectan NUNCA
+// marcan la cuota como cobrada: marcan que se puede cobrar, que es otra cosa.
+function _hitoNum(t){
+  var m=String(t||'').match(/(\d+)/);
+  return m?parseInt(m[1],10):null;
+}
+function _hitoSqls(c){
+  return ((c.ghl&&c.ghl.opportunities)||[]).filter(function(o){ return o && o._sql; });
+}
+function _hitoLlamadasCalificadas(c){
+  var ops=(c.ghl&&c.ghl.opportunities)||[];
+  return (c.fathomCalls||[]).filter(function(cl){
+    var o=ops.filter(function(x){ return x.id===cl.linkedOppId; })[0];
+    return o && o._sql;
+  }).length;
+}
+// Devuelve null cuando el hito no se puede medir: es una respuesta, no una
+// falla. Decir "no lo se" deja que se tilde a mano; adivinar un "todavia no"
+// haria creer que se esta vigilando algo que nadie mira.
+function _hitoEstado(c, x){
+  var t=_norm(x.hito||'');
+  if(!t) return null;
+  var n=_hitoNum(t);
+  if(/lead(s)? calificad/.test(t)){
+    var q=_hitoSqls(c).length, meta=n||1;
+    return {ok:q>=meta, porque:q+' de '+meta+' leads calificados'};
+  }
+  if(/llamada(s)? (en vivo )?calificad/.test(t)){
+    var l=_hitoLlamadasCalificadas(c), meta2=n||1;
+    return {ok:l>=meta2, porque:l+' de '+meta2+' llamadas calificadas'};
+  }
+  if(/^dia \d+/.test(t)){
+    var d0=_hitoDesde(c);
+    if(!d0) return null;
+    var pasados=Math.floor((Date.now()-d0.getTime())/86400000);
+    return {ok:pasados>=(n||0), porque:'dia '+pasados+' de '+(n||0)};
+  }
+  if(/onboarding/.test(t)){
+    var e=rutaDef().filter(function(y){ return _norm(y.l).indexOf('onboarding')>=0; })[0];
+    if(!e) return null;
+    var hecha=!!_deEtapa(c.rutaHechas, e.l) || !!_deEtapa(c.citas, e.l);
+    return {ok:hecha, porque:hecha?('la etapa '+e.l+' tiene fecha'):'sin fecha en la etapa de onboarding'};
+  }
+  if(/firma del contrato/.test(t)){
+    var ct=c.contract||{};
+    var hay=!!(ct.driveUrl||ct.fileName||ct.signDate);
+    return {ok:hay, porque:hay?'el contrato esta cargado':'todavia no hay contrato cargado'};
+  }
+  if(/campana(s)? prendida|campanas activas/.test(t)){
+    var viva=(c.conversionLines||[]).some(function(L){ return L.live; });
+    return {ok:viva, porque:viva?'hay una linea de conversion activa':'ninguna linea activa'};
+  }
+  return null;   // no medible: se tilda a mano
+}
+function _hitoDesde(c){
+  var f=(c.contract&&c.contract.startDate)||c.clienteDesde||c.startDate||'';
+  var d=f?new Date(f):null;
+  return (d && !isNaN(d.getTime())) ? d : null;
+}
+// Las cuotas por hito que ya se pueden cobrar y todavia no se cobraron.
+function cobrosDesbloqueados(c){
+  return _pagos(c).map(function(x,i){ return {x:x, i:i}; })
+    .filter(function(o){
+      var x=o.x;
+      if(x.pagadoAt) return false;
+      if(x.tipo!=='hito') return false;
+      if(x.hitoAt) return true;                 // tildado a mano o detectado antes
+      var st=_hitoEstado(c, x);
+      return !!(st && st.ok);
+    });
+}
+// Marca los que se cumplieron desde la ultima vez. Se guarda cuando se detecto
+// para poder avisar una sola vez: sin eso el aviso sale en cada carga y se
+// vuelve parte del paisaje.
+function cobrosRevisar(callado){
+  var nuevos=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    _pagos(c).forEach(function(x){
+      if(x.pagadoAt || x.tipo!=='hito' || x.hitoAt) return;
+      var st=_hitoEstado(c, x);
+      if(st && st.ok){
+        x.hitoAt=new Date().toISOString();
+        x.hitoPorque=st.porque;
+        nuevos.push({c:c, x:x});
+      }
+    });
+  });
+  if(nuevos.length){
+    save();
+    if(!callado && typeof toast==='function'){
+      toast(nuevos.length===1
+        ? ('Se desbloqueo un cobro: '+(nuevos[0].c.name||'')+' · '+(nuevos[0].x.hito||''))
+        : (nuevos.length+' cobros desbloqueados. Estan en el Mirador.'));
+    }
+  }
+  return nuevos;
+}
+function cobroHitoTildar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var x=_pagos(c)[i]; if(!x) return;
+  if(x.hitoAt){ delete x.hitoAt; delete x.hitoPorque; }
+  else { x.hitoAt=new Date().toISOString(); x.hitoPorque='tildado a mano'; }
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+// El bloque del Mirador. Es plata que se puede pedir hoy y no se esta pidiendo,
+// asi que va arriba y con el monto a la vista.
+function cobrosHtml(){
+  var filas=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    cobrosDesbloqueados(c).forEach(function(o){ filas.push({c:c, x:o.x, i:o.i}); });
+  });
+  if(!filas.length) return '';
+  var total=filas.reduce(function(a,f){ return a+(parseFloat(f.x.monto)||0); },0);
+  return '<div style="background:rgba(78,207,160,.05);border:1px solid rgba(78,207,160,.22);'
+      +'border-radius:var(--radius-lg);padding:13px 16px;margin-bottom:20px">'
+    +'<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:7px;flex-wrap:wrap">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--text)">'
+        +'Cobros desbloqueados</span>'
+      +'<span style="flex:1"></span>'
+      +'<span style="font-size:12.5px;color:var(--accent)">$'+Math.round(total)+'</span>'
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:9px">'
+      +'El hito que las disparaba ya se cumplio y todavia no se cobraron.</div>'
+    +filas.map(function(f){
+      return '<div style="display:flex;gap:10px;align-items:baseline;padding:6px 0;'
+          +'border-top:1px solid var(--border)">'
+        +'<a href="javascript:void(0)" onclick="selectClient('+f.c.id+')" '
+          +'style="flex:none;width:150px;font-size:12px;color:var(--text);'
+          +'text-decoration:none">'+esc(f.c.name||'')+'</a>'
+        +'<span style="flex:1;min-width:0;font-size:11.5px;color:var(--text3);line-height:1.5">'
+          +esc(f.x.hito||'')
+          +(f.x.hitoPorque?('<span style="opacity:.75"> — '+esc(f.x.hitoPorque)+'</span>'):'')
+        +'</span>'
+        +'<span style="flex:none;font-size:12px;color:var(--accent)">$'
+          +Math.round(parseFloat(f.x.monto)||0)+'</span>'
+      +'</div>';
+    }).join('')
+  +'</div>';
+}
 function _pagos(c){
   if(!Array.isArray(c.pagos)) c.pagos=[];
   return c.pagos;
@@ -27392,7 +27542,24 @@ function _pagosHtml(c){
         ? ('<input value="'+esc(x.hito||'')+'" list="pg-hitos" '
           +'placeholder="Con que se dispara: primera venta, 20 leads calificados..." '
           +'oninput="pagoCampo('+c.id+','+i+',\'hito\',this.value)" '
-          +'style="'+est+';flex:1;min-width:0">')
+          +'style="'+est+';flex:1;min-width:0">'
+          // El estado del hito al lado de la cuota. Lo medible se dice con el
+          // numero -"12 de 10 leads calificados"- porque un "cumplido" pelado
+          // no se puede discutir con el cliente.
+          +(function(){
+              var st=_hitoEstado(c, x);
+              if(x.hitoAt)
+                return '<span style="flex:none;font-size:10.5px;color:var(--accent);'
+                  +'white-space:nowrap" title="'+esc(x.hitoPorque||'')+'">se puede cobrar</span>';
+              if(st)
+                return '<span style="flex:none;font-size:10.5px;color:var(--text3);'
+                  +'white-space:nowrap">'+esc(st.porque)+'</span>';
+              return '<button onclick="cobroHitoTildar('+c.id+','+i+')" '
+                +'title="Este hito no lo puedo medir solo: tildalo cuando se cumpla" '
+                +'style="flex:none;border:1px solid var(--border2);background:none;'
+                +'color:var(--text3);border-radius:99px;font-size:10px;padding:1px 8px;'
+                +'cursor:pointer;font-family:var(--font);white-space:nowrap">ya se cumplio</button>';
+            })())
         : ('<input type="date" value="'+esc(String(x.fecha||'').slice(0,10))+'" '
           +'onchange="pagoCampo('+c.id+','+i+',\'fecha\',this.value)" '
           +'style="'+est+';flex:1;min-width:0">'))
@@ -60942,7 +61109,8 @@ async function arrancarConSesion(){
    ['asistente',function(){ _asMontar(); }],
    ['version',  function(){ verVigilar(); }],
    ['citas',    function(){ setTimeout(citasAuto, 4000); citasVigilar(); }],
-   ['leads',    function(){ p360LeerVigilar(); }]
+   ['leads',    function(){ p360LeerVigilar(); }],
+   ['cobros',   function(){ setTimeout(function(){ cobrosRevisar(); }, 6000); }]
   ].forEach(function(x){
     try{ x[1](); }catch(e){ console.warn('[arranque '+x[0]+']', e); }
   });
