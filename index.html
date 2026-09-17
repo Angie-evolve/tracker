@@ -48211,6 +48211,15 @@ function _onbDocCss(){
    +'.fila .k{flex:none;width:210px;font-size:13px;color:var(--text-secondary)}'
    +'.fila .v{flex:1;font-size:13px;color:var(--text-primary)}'
    +'.fila .t{font-family:"Geist Mono",monospace;font-size:10px;color:var(--text-muted)}'
+   // Tres hojas, una a la vez. Un documento de seis secciones se recorre
+   // scrolleando y buscando; en tres pasos se lee en el orden en que se usa:
+   // el contexto antes, la investigacion antes, y las preguntas en la hora.
+   +'.pg{display:none}.pg.on{display:block}'
+   +'.pasos{display:flex;gap:7px;margin:26px 0 0}'
+   +'.paso{font-family:"Geist Mono",monospace;font-size:10px;letter-spacing:.09em;'
+      +'text-transform:uppercase;color:var(--text-muted);background:none;border:0;'
+      +'border-bottom:2px solid transparent;padding:6px 0;margin-right:14px;cursor:pointer}'
+   +'.paso.on{color:var(--text-primary);border-bottom-color:var(--lime)}'
    +'.aviso{border-left:2px solid var(--amber);padding:2px 0 2px 13px;margin-bottom:11px}'
    +'.aviso .t{font-size:13.5px;color:var(--text-primary);line-height:1.55}'
    +'.aviso .e{font-size:12px;color:var(--text-muted);line-height:1.5;margin-top:3px}'
@@ -48232,7 +48241,9 @@ function _onbDocCss(){
         +'--border:#ddd;--border-hover:#bbb;'
         +'--text-primary:#111;--text-secondary:#333;--text-muted:#666;'
         +'--lime:#0a7d55;--teal:#0a7d55;--amber:#a35a00;--red:#b3261e}'
-      +'.imp{display:none}'
+      +'.imp{display:none}.pasos{display:none}'
+      // Impreso no hay pasos: en papel se quiere el documento entero.
+      +'.pg{display:block!important}'
       +'.blq{break-inside:avoid}.preg{break-inside:avoid}'
       +'h2{break-after:avoid}}';
 }
@@ -48362,6 +48373,15 @@ function _onbDocHtml(c){
     pills.push(((o.formulario||{}).campos||[]).length+' en el formulario');
   if(asig && (!arq || asig.k!==arq.k)) pills.push('asignado hoy: '+asig.k);
 
+  // Las paginas que de verdad existen: sin investigacion hecha, la de mercado
+  // no va y el paso siguiente pasa a ser el onboarding.
+  var paginas=[{id:'pg1', l:'El contexto', ir:'Ver el contexto'}];
+  if(mercado) paginas.push({id:'pg2', l:'Mercado', ir:'Ver investigacion de mercado'});
+  paginas.push({id:'pg3', l:'La hora', ir:'Empezar onboarding'});
+  var pasosHtml='<div class="pasos">'+paginas.map(function(x,j){
+    return '<button class="paso" data-i="'+j+'" onclick="_ver('+j+')">'+E(x.l)+'</button>';
+  }).join('')+'</div>';
+
   return '<!DOCTYPE html><html lang="es-AR"><head><meta charset="UTF-8">'
     +'<meta name="viewport" content="width=device-width,initial-scale=1">'
     +'<title>Onboarding — '+E(c.name||'Cliente')+'</title>'
@@ -48370,22 +48390,60 @@ function _onbDocHtml(c){
     +'<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600'
     +'&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">'
     +'<style>'+_briefCSS()+_onbDocCss()+'</style></head><body>'
-    +'<div class="wrap"><header>'
-      +'<div class="kicker">Llamada de onboarding · una hora</div>'
+    +'<div class="wrap">'
+    // 1 \u2014 la caratula: quien es, que sabemos y que vamos a apostar.
+    +'<section class="pg on" id="pg1"><header>'
+      +'<div class="kicker">Llamada de onboarding \u00b7 una hora</div>'
       +'<h1>'+E(c.name||'Cliente')+'</h1>'
       +((o.arquetipo&&o.arquetipo.porque)
         ?('<p class="sub">'+E(o.arquetipo.porque)+'</p>'):'')
       +(pills.length?('<div class="meta-row">'+pills.map(function(t){
           return '<span class="pill">'+E(t)+'</span>'; }).join('')+'</div>'):'')
+      +pasosHtml
     +'</header>'
-    +sec('La hora', hora)
-    +sec('Al formulario, antes de la llamada', form)
-    +sec('El mercado \u2014 el que tiene, no el que cree tener', mercado)
-    +sec('Que ya sabemos', vars)
-    +sec('La hipotesis — interna, no se lee en esta llamada', hip)
-    +sec('Despues de la llamada', desp)
+      +sec('Que ya sabemos', vars)
+      +sec('La hipotesis \u2014 interna, no se lee en esta llamada', hip)
+    +'</section>'
+    // 2 \u2014 contra que compite de verdad.
+    +(mercado?('<section class="pg" id="pg2"><header>'
+      +'<div class="kicker">Antes de entrar</div>'
+      +'<h1>La investigacion de mercado</h1>'
+      +'<p class="sub">El mercado que tiene, no el que cree tener. Nada de esto se le '
+        +'atribuye a el ni se nombra en la llamada.</p>'
+      +pasosHtml
+    +'</header>'+mercado+'</section>'):'')
+    // 3 \u2014 la hora en si.
+    +'<section class="pg" id="pg3"><header>'
+      +'<div class="kicker">La hora</div>'
+      +'<h1>Empezar el onboarding</h1>'
+      +pasosHtml
+    +'</header>'
+      +sec('', hora)
+      +sec('Al formulario, antes de la llamada', form)
+      +sec('Despues de la llamada', desp)
+    +'</section>'
     +'</div>'
-    +'<button class="imp" onclick="window.print()">Imprimir o guardar en PDF</button>'
+    +'<button class="imp" id="sig" onclick="_sig()"></button>'
+    +'<script>'
+      +'var PG='+JSON.stringify(paginas)+';'
+      +'var i=0;'
+      +'function _ver(n){'
+        +'i=n;'
+        +'PG.forEach(function(p,j){'
+          +'var e=document.getElementById(p.id); if(e) e.className="pg"+(j===n?" on":"");'
+        +'});'
+        +'[].forEach.call(document.querySelectorAll(".paso"),function(b){'
+          +'b.className="paso"+(+b.dataset.i===n?" on":"");'
+        +'});'
+        +'document.getElementById("sig").textContent='
+          +'(n<PG.length-1)?PG[n+1].ir:"Imprimir o guardar en PDF";'
+        +'window.scrollTo(0,0);'
+      +'}'
+      // El ultimo paso imprime: no hay a donde seguir y es lo que uno quiere
+      // hacer con esto una vez que lo leyo entero.
+      +'function _sig(){ if(i<PG.length-1) _ver(i+1); else window.print(); }'
+      +'_ver(0);'
+    +'<\/script>'
     +'</body></html>';
 }
 function onbDescargar(clientId){
