@@ -52270,7 +52270,18 @@ async function syncGhl(clientId, silent, skipEnrich){
       const text=await res.text();
       let data;
       try{ data=JSON.parse(text); }
-      catch(pe){ throw new Error('El proxy no devolvio JSON. Empieza con: '+text.slice(0,80)); }
+      catch(pe){
+        // Decia "Empieza con:" y despues nada, porque el cuerpo venia vacio: el
+        // mensaje no alcanzaba ni para saber si el proxy contesto. Con el codigo
+        // y el tipo se distingue solo: 302 vacio es que la implementacion de
+        // Apps Script pide permisos, text/html es Google rechazando por
+        // saturacion, y 200 vacio es el script que murio sin devolver nada.
+        var _ct=(res.headers&&res.headers.get)?(res.headers.get('content-type')||''):'';
+        var _cu=String(text||'').trim();
+        throw new Error('El proxy contesto '+res.status
+          +(_ct?(' ('+_ct.split(';')[0]+')'):'')
+          +(_cu ? (' y no es JSON: '+_cu.slice(0,120)) : ' con el cuerpo vacio'));
+      }
       if(!data || data.ok===false) throw new Error((data&&data.error)||'Respuesta invalida del proxy');
       const batch=data.opportunities||[];
       allOpps=allOpps.concat(batch);
@@ -52305,9 +52316,29 @@ async function syncGhl(clientId, silent, skipEnrich){
     const msg='Error GHL: '+c.ghl._syncError;
     toast(msg,'red');
     console.error('GHL sync error',e);
-    // Don't call renderTab here to avoid infinite loop
+    // renderTab no se llama aca a proposito: volveria a disparar la
+    // sincronizacion. Pero el reemplazo era peor: se escribia el error ENCIMA de
+    // todo el tab y la ficha entera quedaba en blanco con una linea roja, por
+    // una sincronizacion de fondo que fallo. Ahora es un cartel arriba de lo que
+    // ya estaba, que se puede cerrar.
     const el=document.getElementById('tab-content');
-    if(el) el.innerHTML='<div style="padding:20px;color:var(--redx);font-size:13px">Error: '+c.ghl._syncError+'<br><button class="btn btn-sm" style="margin-top:10px" onclick="syncGhl('+clientId+',false)">Reintentar</button></div>';
+    if(el){
+      var _vj=document.getElementById('ghl-err');
+      if(_vj && _vj.parentNode) _vj.parentNode.removeChild(_vj);
+      var _bx=document.createElement('div');
+      _bx.id='ghl-err';
+      _bx.style.cssText='margin:0 0 12px;padding:11px 13px;border-radius:var(--radius-md);'
+        +'border:1px solid rgba(240,86,74,.35);background:rgba(240,86,74,.07);'
+        +'color:var(--redx);font-size:12.5px;line-height:1.55;display:flex;gap:10px;'
+        +'align-items:baseline;flex-wrap:wrap';
+      _bx.innerHTML='<span style="flex:1;min-width:200px">No pude sincronizar con GHL: '
+          +esc(c.ghl._syncError)+'</span>'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:2px 9px" '
+          +'onclick="syncGhl('+clientId+',false)">Reintentar</button>'
+        +'<button class="btn btn-sm" style="font-size:11px;padding:2px 9px" '
+          +'onclick="var q=document.getElementById(\'ghl-err\');if(q)q.remove()">Cerrar</button>';
+      el.insertBefore(_bx, el.firstChild);
+    }
   }
 }
 
