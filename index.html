@@ -23933,6 +23933,33 @@ function _asTranscripciones(c){
   }
   return out.join('\n');
 }
+// Los documentos del cliente. No entraban en ningun momento: se le subia un
+// documento que habla justo de lo que se pregunta y el asistente contestaba que
+// no sabia nada. Van enteros, con su propio techo: son lo que alguien cargo a
+// mano para que se use, asi que valen mas que un resumen.
+var AS_TOPE_DOC=90000;
+function _asDocumentos(c){
+  var l=(typeof docs==='function'?docs(c):(c.docs||[]))
+    .filter(function(d){ return String(d&&d.texto||'').trim().length>40; });
+  var mat=(c.material||[]).filter(function(m){ return String(m&&m.texto||'').trim().length>40; });
+  if(!l.length && !mat.length) return '';
+  var out=['=== DOCUMENTOS DEL CLIENTE ('+(l.length+mat.length)+') ==='], usado=0, fuera=0;
+  var meter=function(titulo, texto, nota){
+    var t=String(texto||'').trim();
+    if(usado>=AS_TOPE_DOC){ fuera++; return; }
+    var queda=AS_TOPE_DOC-usado, corte=(t.length>queda);
+    out.push('--- '+titulo+(nota?(' \u00b7 '+nota):'')+' ---');
+    out.push(corte?(t.slice(0,queda)+'\n[...cortado por largo]'):t);
+    usado+=Math.min(t.length, queda);
+  };
+  l.forEach(function(d){
+    meter(String(d.titulo||'sin titulo'), d.texto,
+          (_docUso(d)==='archivo')?'archivado':'');
+  });
+  mat.forEach(function(m){ meter('MATERIAL: '+String(m.label||m.nombre||'sin nombre'), m.texto); });
+  if(fuera) out.push('[Faltan '+fuera+' documento'+(fuera===1?'':'s')+' que no entraron por largo.]');
+  return out.join('\n');
+}
 function _asContexto(){
   var hoy=new Date().toLocaleDateString('es-AR');
   var cli=DB.clients.find(function(x){return x.id===S.clientId;});
@@ -23942,6 +23969,10 @@ function _asContexto(){
     vivos.slice(0,40).map(_asLineaCliente).join('\n')];
   if(cli){
     partes.push(_asFicha(cli));
+    // Los documentos antes de las transcripciones: son mas cortos y mas
+    // densos, y si algo hay que recortar por largo que sea la charla.
+    var dc=_asDocumentos(cli);
+    if(dc) partes.push(dc);
     var tx=_asTranscripciones(cli);
     if(tx) partes.push(tx);
   } else {
@@ -34439,12 +34470,21 @@ function iaSinApiSet(v){
 function _iaPromptDe(opts){
   try{
     var b=JSON.parse((opts&&opts.body)||'{}');
+    // El system iba a la basura. El asistente manda TODO el contexto del
+    // tracker ahi -la ficha del cliente, las transcripciones, los documentos- y
+    // por el puente llegaba solo la pregunta pelada. Del otro lado hay un Claude
+    // Code con sus propias notas, asi que contestaba con eso y sonaba como una
+    // respuesta de verdad: "no tengo nada guardado sobre ojapo".
+    var sys=(typeof b.system==='string')
+      ? b.system
+      : (b.system||[]).map(function(x){ return (x&&x.text)||''; }).join('\n');
     var partes=(b.messages||[]).map(function(m){
       var ct=m.content;
       if(typeof ct==='string') return ct;
       return (ct||[]).map(function(x){ return x.text||''; }).join('\n');
     }).filter(Boolean);
     var t=partes.join('\n\n');
+    if(String(sys||'').trim()) t=sys.trim()+'\n\n'+t;
     if((b.tools||[]).some(function(x){ return /web_search|web_fetch/.test(x.type||''); }))
       t='[Para esto hace falta navegar: prendé la busqueda web en el chat.]\n\n'+t;
     return t;
