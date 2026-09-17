@@ -26552,7 +26552,7 @@ function saveDriveUrl(clientId){
   extractContractWithAI(clientId, null, url);
 }
 
-function uploadContract(clientId, inputEl){
+async function uploadContract(clientId, inputEl){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c||!inputEl.files[0]) return;
   const f=inputEl.files[0];
@@ -26561,6 +26561,30 @@ function uploadContract(clientId, inputEl){
   c.contract.fileSize=Math.round(f.size/1024)+'KB';
   c.contract.driveUrl=null;
   save();renderTab();
+  // El selector acepta .docx desde siempre, pero el archivo se mandaba como si
+  // fuera un PDF y la API de documentos solo entiende PDF: cargaba y tiraba
+  // error sin decir por que. El .docx se abre aca -la app ya lo hace para los
+  // guiones, es un zip con XML adentro- y se manda el texto.
+  if(/\.docx$/i.test(f.name)){
+    const key0=localStorage.getItem('evold-anthropic-key')||'';
+    if(!key0 && !iaPorOtroLado()){ openAnthropicKeyModal(); return; }
+    try{
+      const texto=await _edLeerDocx(f);
+      if(!String(texto||'').trim()) throw new Error('el .docx no tiene texto adentro');
+      await extractContractWithAI(clientId, null, null, texto);
+    }catch(err){
+      if(c.contract) c.contract._analyzing=false;
+      save(); renderTab();
+      toast('No pude leer el .docx: '+(err&&err.message||'')+'. Guardalo como PDF y proba de nuevo.','red');
+    }
+    return;
+  }
+  if(/\.doc$/i.test(f.name)){
+    if(c.contract) c.contract._analyzing=false;
+    save(); renderTab();
+    toast('El .doc viejo de Word no lo puedo abrir. Guardalo como .docx o PDF.','amber');
+    return;
+  }
   // Read file as base64 for PDF or text
   const reader=new FileReader();
   reader.onload=ev=>{
@@ -26703,7 +26727,12 @@ async function contratoDeLlamada(clientId){
     _ctrDecir('No pude leerlas: '+esc(e&&e.message||''),'var(--redx)');
   }
 }
-async function extractContractWithAI(clientId, file, driveUrl){
+// El pedido es el mismo venga el contrato como PDF o como texto: tenerlo dos
+// veces garantiza que uno de los dos se quede viejo.
+function _ctrPedidoCampos(){
+  return 'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia de inversion minima en pauta, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de inicio en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null, "contractValue": monto total que paga el cliente por el servicio principal en USD como numero (sin simbolo). Buscalo en todo el documento: puede estar en letras, en una tabla de pagos, como suma de cuotas o en otra moneda. Si son cuotas, sumalas. Devolve null solo si no figura ningun importe, "monthlyFee": monto del fee mensual opcional o de renovacion en USD como numero o null si no existe, "serviceType": "garantia" si es un contrato de servicios con garantia de resultados, "recurrente" si paga mensualmente sin contrato de garantia, o "one-time" si es un pago unico sin renovacion }';
+}
+async function extractContractWithAI(clientId, file, driveUrl, texto){
   const c=DB.clients.find(x=>x.id===clientId);
   if(!c) return;
   // Check API key FIRST before anything
@@ -26721,10 +26750,15 @@ async function extractContractWithAI(clientId, file, driveUrl){
   toast('Analizando contrato con IA...');
   try {
     let messages;
-    if(file){
+    if(texto){
+      // Mismo pedido que para el PDF, con el texto en vez del documento: lo que
+      // cambia es como llega, no que se busca.
+      messages=[{role:'user',content:[{type:'text',text:_ctrPedidoCampos()
+        +'\n\nCONTRATO:\n'+String(texto).slice(0,180000)}]}];
+    } else if(file){
       messages=[{role:'user',content:[
         {type:'document',source:{type:'base64',media_type:file.type||'application/pdf',data:file.base64}},
-        {type:'text',text:'Extrae del contrato los siguientes campos y responde SOLO con un JSON valido sin markdown ni texto extra: { "minDailyBudget": numero en USD por dia de inversion minima en pauta, "minOCsMonth": numero de OCs/registros calificados garantizados por mes, "totalOCs": numero total de OCs garantizadas en el contrato, "durationDays": duracion del contrato en dias, "startDate": fecha de inicio en formato YYYY-MM-DD o null, "endDate": fecha de vencimiento en formato YYYY-MM-DD o null, "signDate": fecha de firma en formato DD/MM/YYYY o null, "contractValue": monto total que paga el cliente por el servicio principal en USD como numero (sin simbolo). Buscalo en todo el documento: puede estar en letras, en una tabla de pagos, como suma de cuotas o en otra moneda. Si son cuotas, sumalas. Devolve null solo si no figura ningun importe, "monthlyFee": monto del fee mensual opcional o de renovacion en USD como numero o null si no existe, "serviceType": "garantia" si es un contrato de servicios con garantia de resultados, "recurrente" si paga mensualmente sin contrato de garantia, o "one-time" si es un pago unico sin renovacion }'}
+        {type:'text',text:_ctrPedidoCampos()}
       ]}];
     } else {
       // Drive URL - can't access directly, skip AI and let user fill manually
