@@ -202,6 +202,70 @@ def bajar(path, destino):
     return _reintentar(hacer, f"bajar {path.split('/')[-1]}")
 
 
+# Un archivo que no entra en el tope por archivo de Supabase -50 MB en el plan
+# gratuito, y es del plan, no del bucket- se sube partido en bloques de bytes.
+# La ruta lo dice: "...-p03de19.mp4". Aca se vuelven a juntar en orden.
+#
+# Concatenar los bloques devuelve el archivo original bit por bit. Esto no sabe
+# nada de mp4 y no hace falta que sepa: son los mismos bytes en el mismo orden.
+PARTE_RE = re.compile(r"^(?P<base>.+)-p(?P<i>\d+)de(?P<n>\d+)(?P<ext>\.[^.]+)$")
+
+
+def agrupar_partes(rutas):
+    """Devuelve la lista de rutas con las partidas juntadas en un solo item.
+
+    Cada item es (nombre, [rutas]): una sola ruta si el archivo vino entero, o
+    todas sus partes en orden si vino cortado. Se respeta el orden de llegada
+    para no mezclar el de una tanda con varios videos.
+    """
+    grupos, salida, vistos = {}, [], set()
+    for r in rutas:
+        m = PARTE_RE.match(r)
+        if not m:
+            salida.append((r, [r]))
+            continue
+        clave = m.group("base") + m.group("ext")
+        if clave not in grupos:
+            grupos[clave] = []
+            salida.append((clave, grupos[clave]))
+        grupos[clave].append((int(m.group("i")), int(m.group("n")), r))
+    # Ordenar cada grupo y avisar si falta alguna: pegar un video al que le
+    # falta un pedazo del medio da un archivo roto que falla mucho despues, con
+    # un error de ffmpeg que no dice nada de esto.
+    final = []
+    for nombre, items in salida:
+        if items and isinstance(items[0], tuple):
+            items.sort(key=lambda x: x[0])
+            esperadas = items[0][1]
+            if len(items) != esperadas:
+                raise RuntimeError(
+                    "faltan partes de %s: llegaron %d de %d"
+                    % (nombre.split("/")[-1], len(items), esperadas))
+            final.append((nombre, [x[2] for x in items]))
+        else:
+            final.append((nombre, items))
+    return final
+
+
+def bajar_junto(partes, destino):
+    """Baja una o varias partes y las deja pegadas en un solo archivo."""
+    if len(partes) == 1:
+        return bajar(partes[0], destino)
+    print("  pegando %d partes -> %s" % (len(partes), os.path.basename(destino)), flush=True)
+    with open(destino, "wb") as salida:
+        for i, ruta in enumerate(partes):
+            trozo = destino + ".p%02d" % i
+            bajar(ruta, trozo)
+            with open(trozo, "rb") as f:
+                while True:
+                    bloque = f.read(1024 * 1024)
+                    if not bloque:
+                        break
+                    salida.write(bloque)
+            os.remove(trozo)
+    return destino
+
+
 def borrar_archivo(path):
     """
     Saca un archivo del bucket. No se reintenta ni se rompe si falla: es
@@ -1086,15 +1150,19 @@ def procesar(fila, tmp):
         return procesar_correccion(fila, tmp)
     carpeta = fila["video_path"].split("/")[0]        # el uuid del usuario
     rutas   = fila.get("videos") or [fila["video_path"]]
+    # Los archivos que vinieron partidos se cuentan como uno solo: si no, una
+    # tanda de diecinueve partes de un mismo video se toma por diecinueve
+    # videos distintos y se transcribe cada pedazo por separado.
+    piezas  = agrupar_partes(rutas)
     guiones = fila.get("guiones") or []
     op      = fila.get("opciones") or {}
     modo    = fila["modo"]
     sello   = str(int(time.time()))
 
     # --- video suelto: el camino de siempre --------------------------------
-    if len(rutas) <= 1 and len(guiones) <= 1:
+    if len(piezas) <= 1 and len(guiones) <= 1:
         base = os.path.join(tmp, "fuente.mp4")
-        bajar(rutas[0], base)
+        bajar_junto(piezas[0][1], base)
         palabras = corregir_propias(transcribir(base, tmp), op.get('propias'))
         if guiones:
             op = dict(op, guion=guiones[0].get("texto") or op.get("guion"))
@@ -1111,11 +1179,11 @@ def procesar(fila, tmp):
     # estar en cualquier video, y saber cual no se grabo exige haber mirado
     # todos.
     locales = []
-    for k, ruta in enumerate(rutas):
+    for k, (nombre, partes) in enumerate(piezas):
         f = os.path.join(tmp, "v%02d.mp4" % k)
-        bajar(ruta, f)
-        print("  transcribiendo %s" % ruta, flush=True)
-        locales.append({"id": ruta, "archivo": f,
+        bajar_junto(partes, f)
+        print("  transcribiendo %s" % nombre, flush=True)
+        locales.append({"id": nombre, "archivo": f,
                         "palabras": corregir_propias(transcribir(f, tmp), op.get("propias")),
                         "duracion": auto_editor.ffprobe_duration(f)})
 

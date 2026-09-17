@@ -16025,6 +16025,30 @@ function edLimpiar(){
   _edPintar();
 }
 
+// ---- Partir los que no entran -------------------------------------------
+// El tope por archivo es del plan de Supabase y no se puede correr. Pero nada
+// obliga a que un archivo viaje entero: se corta en bloques de bytes, se suben
+// como piezas sueltas y el worker los concatena. Concatenar los bloques en
+// orden devuelve el archivo original bit por bit -esto no sabe nada de mp4 ni
+// falta que sepa-, asi que no se pierde calidad en ningun lado.
+var ED_PARTE_MB=45;   // margen contra el tope de 50
+// El nombre es el contrato con el worker: no hace falta tocar la tabla ni
+// inventar una columna, la ruta ya dice todo lo que hay que saber.
+function _edParteSufijo(i, total, nombre){
+  var ext=(String(nombre||'').match(/\.[^.]+$/)||['.mp4'])[0];
+  return '-p'+('0'+(i+1)).slice(-2)+'de'+('0'+total).slice(-2)+ext;
+}
+function _edPartible(f){
+  // Solo video: un guion o un pdf que se pase de 50 MB es otro problema y
+  // pegarlo de vuelta no es lo que corresponde.
+  return /^video\//.test(String(f.type||'')) || /\.(mp4|mov|m4v|webm)$/i.test(String(f.name||''));
+}
+function _edPartir(f){
+  var tam=ED_PARTE_MB*1048576, out=[];
+  for(var o=0; o<f.size; o+=tam) out.push(f.slice(o, Math.min(o+tam, f.size)));
+  return out;
+}
+
 // ---- Comprimir antes de subir -------------------------------------------
 // El tope de Supabase es por archivo, y el iPhone graba a ~22 Mbps: para
 // alguien hablando eso es como seis veces mas de lo necesario. Se recomprime
@@ -16356,8 +16380,34 @@ async function edSubir(modo){
         continue;
       }
       var datos=f, nombre=f.name;
-      // Comprimir solo cuando no entra. Recomprimir uno que ya entra es tiempo
-      // regalado —va a velocidad real— y calidad perdida al pedo.
+      // No entra: se parte en pedazos y el worker lo vuelve a pegar antes de
+      // tocarlo. Es preferible a comprimir por tres razones: no se pierde un
+      // solo bit -partir y concatenar bytes devuelve el archivo identico-, se
+      // sube en segundo plano porque una transferencia de red no la frena
+      // Chrome cuando la pestaña no esta adelante, y no cuesta los minutos que
+      // dura el video, que es lo que tarda recomprimir a velocidad real.
+      //
+      // El tope de 50 MB es del plan de Supabase, no del bucket: no se puede
+      // subir sin pagar Pro. Partir lo esquiva sin cambiar de plan.
+      if(f.size > ED_LIMITE_MB*1048576 && _edPartible(f)){
+        var trozos=_edPartir(f);
+        decir(cual+'Pesa '+_matTam(f.size)+': lo subo en '+trozos.length+' partes');
+        for(var t=0; t<trozos.length; t++){
+          var pth=uid+'/'+Date.now()+'-'+('0'+i).slice(-2)+'-'+huella
+            +_edParteSufijo(t, trozos.length, f.name);
+          var _t=t;
+          await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(pth),
+            trozos[t], function(pp){
+              var total=(_t+pp)/trozos.length;
+              e.pct=total;
+              decir(cual+'Subiendo parte '+(_t+1)+' de '+trozos.length
+                +'… '+Math.round(total*100)+'% del archivo');
+            });
+          rutas.push(pth);
+        }
+        yaEstan[huella]=rutas[rutas.length-1];
+        continue;
+      }
       if(f.size > ED_LIMITE_MB*1048576){
         if(!_edSoporte()) throw new Error(nombre+' pesa '+_matTam(f.size)+' y el tope es '
           +ED_LIMITE_MB+' MB, pero este navegador no puede comprimirlo. Probá desde Chrome.');
