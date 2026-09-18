@@ -30973,23 +30973,71 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
 // Agendar una reunion nueva desde la tarjeta del tablero. Es p360IrACita sin
 // cita: abre la ficha del cliente con el formulario desplegado y en blanco, con
 // la fecha de hoy puesta para no arrancar de cero.
+// Agendar desde la tarjeta, sin preguntar la etapa. El "+" aparece en una
+// columna: esa columna ES la etapa, preguntarla de nuevo es pedir un dato que
+// ya esta en la pantalla. Se abre un popup con los horarios libres de ese
+// calendario, que es lo unico que hay que elegir.
+//
+// Usa los mismos ids que el formulario de la ficha -cita-fecha, cita-hora,
+// cita-etapa, cita-huecos- para que citasHuecos, citasAgendarGhl y citasAMano
+// funcionen sin cambiarles una linea.
 function p360Agendar(clientId){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
-  S.p360Abierto=clientId;
-  S._p3Mano=true;
-  S.p3Cita='';
-  _citasRepintar();
-  setTimeout(function(){
-    var f=document.getElementById('cita-fecha');
-    if(f && !f.value){
-      var d=new Date();
-      f.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
-    }
-    var e=document.getElementById('cita-etapa');
-    if(e && e.focus) e.focus();
-    if(f && f.scrollIntoView) f.scrollIntoView({block:'center'});
-  }, 60);
+  var et=(function(){ var e=_p360Etapa(c); return e?e.l:''; })();
+  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
+  var cal=String((def&&def.cal)||'');
+  var mail=String(c.contactoEmail||c.email||'').trim();
+  var hoy=new Date();
+  var f0=hoy.getFullYear()+'-'+('0'+(hoy.getMonth()+1)).slice(-2)+'-'+('0'+hoy.getDate()).slice(-2);
+  var est=_citaEst();
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">'+esc(et||'Reunion')+' con '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">'
+        +(cal ? 'Elegi el dia y despues uno de los horarios libres de ese calendario.'
+              : '"'+esc(et)+'" no tiene calendario de GHL elegido, asi que no puedo traer '
+                +'los horarios. Podes anotarla igual.')
+      +'</div>'
+      // La etapa va escrita y no se elige: es la columna donde estaba la tarjeta.
+      +'<input type="hidden" id="cita-etapa" value="'+esc(et)+'">'
+      +'<input type="hidden" id="cita-con" value="'+esc(c.contacto||c.name||'')+'">'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">'
+        +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
+          +'onchange="citasHuecos('+c.id+',{fecha:\'cita-fecha\',hora:\'cita-hora\','
+          +'et:\''+esc(et).replace(/'/g,"\\'")+'\',caja:\'cita-huecos\'})" style="'+est+'">'
+        +'<input id="cita-hora" type="time" value="09:00" style="'+est+'">'
+      +'</div>'
+      +'<div id="cita-huecos" style="margin-top:10px;line-height:2"></div>'
+      +'<div id="p3-citas-msg" style="font-size:11.5px;color:var(--text3);min-height:16px;'
+        +'margin-top:8px"></div>'
+      +(mail?'':('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;'
+        +'margin-top:4px">Este cliente no tiene mail en la ficha. Sin eso no se puede crear '
+        +'en GHL, porque es con el mail que se busca el contacto. Anotarla si se puede.</div>'))
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn" onclick="p360AgendarHacer('+c.id+',\'mano\')" '
+          +'title="Solo la anota en el tracker. El cliente no se entera.">Solo anotar</button>'
+        +(cal&&mail
+          ?('<button class="btn btn-primary" onclick="p360AgendarHacer('+c.id+',\'ghl\')" '
+            +'title="La crea en GHL: el cliente recibe invitacion y recordatorios.">'
+            +'Agendar en GHL</button>'):'')
+      +'</div>'
+    +'</div></div>';
+  if(cal) citasHuecos(c.id, {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'});
+}
+// Se cierra sola cuando la cita quedo: mirar si aparecio es mas confiable que
+// confiar en que la funcion de abajo no fallo en el medio.
+async function p360AgendarHacer(clientId, modo){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var et=(document.getElementById('cita-etapa')||{}).value||'';
+  var antes=JSON.stringify((c.citas||{})[et]||null);
+  if(modo==='ghl') await citasAgendarGhl(clientId);
+  else citasAMano(clientId);
+  var ahora=JSON.stringify((c.citas||{})[et]||null);
+  if(ahora!==antes){ closeModal(); _citasRepintar(); }
 }
 function p360IrACita(clientId, etapa){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
