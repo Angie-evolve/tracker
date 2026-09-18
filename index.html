@@ -29311,28 +29311,13 @@ function p360BorrarProspecto(clientId){
     toast('Prospecto borrado de este navegador');
   }
 }
-// Por si se borro de mas: sin esto, un mail en la lista queda sin forma de
-// volver, y el unico camino seria tocar la base a mano.
-function p360ProspectosNoHtml(){
-  var L=(DB.prospectosNo||[]);
-  if(!L.length) return '';
-  return '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);'
-      +'font-size:11.5px;color:var(--text3);line-height:1.55">'
-    +'<b style="color:var(--text2)">Prospectos borrados:</b> '
-    +L.map(function(m,i){
-      return '<span style="white-space:nowrap">'+esc(m)
-        +' <a href="javascript:void(0)" onclick="p360Reponer('+i+')" '
-        +'style="color:var(--accent);text-decoration:none">volver a permitir</a></span>';
-    }).join(' \u00b7 ')
-    +'. No se vuelven a crear aunque aparezcan llamadas con ese mail.</div>';
-}
-function p360Reponer(i){
-  var L=(DB.prospectosNo||[]);
-  if(!L[i]) return;
-  // Misma puerta que el link de "Llamadas sin cliente": ademas de sacarlo de la
-  // lista, recupera las llamadas ya procesadas para que la tarjeta vuelva.
-  fathomReponerMail(L[i]);
-}
+// La lista de prospectos borrados ocupaba un renglon al pie del tablero para
+// algo que se toca una vez cada tanto. Se saco a pedido.
+//
+// El bloqueo sigue funcionando igual: un mail borrado no vuelve a crear
+// prospecto. Para desbloquearlo esta el "volver a permitir" de Llamadas sin
+// cliente, que aparece al lado de la llamada -o sea, cuando hay una llamada de
+// ese mail, que es justo cuando importa poder reponerlo.
 function p360ConfirmarMover(clientId, etapa, _reabrir){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -32638,11 +32623,11 @@ function p360Html(){
     var clase=f?(f.de==='cliente'?' espera':' viejo'):'';
     var mt;
     if(f){
-      // Los dias del freno ya estan en el circulo, al lado. Repetirlos aca
-      // hacia que el mismo numero apareciera dos veces y que el otro numero de
-      // la tarjeta -los dias que faltan para lanzar- se leyera como si fuera
-      // una tercera cuenta del mismo tipo.
-      mt=(abiertas>1?(abiertas+' abiertas'):'1 abierta');
+      // Los dias del freno van aca: el circulo de al lado ahora cuenta siempre
+      // el lanzamiento, asi que este numero ya no se repite ni se confunde con
+      // aquel.
+      mt=(abiertas>1?(abiertas+' abiertas'):'1 abierta')
+        +((f.dias!==null&&f.dias!==undefined)?(' \u00b7 '+f.dias+' d trabado'):'');
     } else {
       mt=(d.et&&d.et.estado==='tarde')?'etapa atrasada':'sin frenos';
       // Un prospecto que nunca va a moverse solo tiene que decirlo. Sin
@@ -32718,33 +32703,33 @@ function p360Html(){
       +'<span class="p3kmasb">+</span></span>');
     // Los dias del circulo, y de que color. El freno manda; si no hay, la
     // cuenta al lanzamiento; y si tampoco, hace cuanto entro el cliente.
+    // El circulo dice dos cosas a la vez, cada una por su lado: el COLOR es el
+    // freno -rojo nuestro, ambar del cliente, verde sin frenos- y el NUMERO es
+    // siempre lo mismo, los dias del lanzamiento. Antes el numero tambien
+    // cambiaba de significado segun el caso, y dos tarjetas con el mismo "15d"
+    // podian estar diciendo cosas distintas.
     var col=f ? (f.de==='cliente'?'var(--amberx)':'var(--redx)') : 'var(--accent)';
+    var deFreno=f ? ('Freno abierto hace '+((f.dias!==null&&f.dias!==undefined)?(f.dias+' d'):'un tiempo')
+        +(f.de==='cliente'?', lo destraba el cliente.':', lo destrabamos nosotros.'))
+      : 'Sin frenos.';
     var dias=null, queCuenta='';
-    if(f && f.dias!==null && f.dias!==undefined){
-      dias=f.dias;
-      queCuenta='Hace '+dias+' d que esta abierto este freno'
-        +(f.de==='cliente'?', y lo tiene que destrabar el cliente.':', y lo tenemos que destrabar nosotros.');
+    var q2=(typeof _lanzaCuenta==='function')?_lanzaCuenta(d.c):null;
+    if(q2){
+      dias=Math.abs(q2.faltan);
+      queCuenta=(q2.faltan<0) ? ('Lanzo hace '+dias+' d.')
+              : (q2.faltan===0 ? 'Lanza hoy.' : ('Faltan '+dias+' d para lanzar.'));
     }
-    if(dias===null){
-      var q2=(typeof _lanzaCuenta==='function')?_lanzaCuenta(d.c):null;
-      if(q2){
-        dias=Math.abs(q2.faltan);
-        queCuenta=(q2.faltan<0) ? ('Lanzo hace '+dias+' d.')
-                : (q2.faltan===0 ? 'Lanza hoy.' : ('Faltan '+dias+' d para lanzar.'));
-      }
-    }
+    // Sin fecha de lanzamiento no hay cuenta que mostrar; se cae en hace cuanto
+    // es cliente, que es lo unico comparable que queda.
     if(dias===null && typeof clienteAlta==='function'){
       var fa=clienteAlta(d.c);
       if(fa){
         dias=Math.max(0, Math.floor((Date.now()-fa.getTime())/86400000));
-        queCuenta='Hace '+dias+' d que es cliente.';
+        queCuenta='Sin fecha de lanzamiento. Hace '+dias+' d que es cliente.';
       }
     }
-    // El circulo cuenta tres cosas distintas segun el caso -el freno, el
-    // lanzamiento, la antiguedad- y desde afuera son todas "un numero con una
-    // d". Cual es se dice al pasar el cursor, que es donde se va a buscar.
     var circulo=(dias===null) ? ''
-      : ('<div class="p3kdia" title="'+esc(queCuenta)+'" '
+      : ('<div class="p3kdia" title="'+esc(queCuenta+' \u2014 '+deFreno)+'" '
         +'style="background:'+col+'22;color:'+col+'">'+dias+'d</div>');
     // Tocarla abre la ruta aca mismo: mover de etapa y ver que falta es lo que
     // se viene a hacer al panel, e irse a la ficha pierde las otras columnas.
@@ -32756,18 +32741,8 @@ function p360Html(){
     // cancelo- sigue como lineas sueltas. Son accionables y sacarlas seria
     // perder informacion, no simplificar.
     var lineas='';
-    var q=(typeof _lanzaCuenta==='function')?_lanzaCuenta(d.c):null;
-    // Solo si el circulo no lo esta diciendo ya: con freno el circulo muestra
-    // los dias del freno y esta cuenta se perderia.
-    if(q && f){
-      var colQ=(q.faltan<0)?'var(--text3)':(q.faltan<=7?'var(--amberx)':'var(--text3)');
-      lineas+='<span class="p3klin" style="color:'+colQ+'" title="Dia '+q.dia+' de '+q.total
-        +' desde el onboarding. Lanzamiento estimado el '
-        +q.fin.toLocaleDateString('es-AR')+'">'
-        +(q.faltan<0 ? ('lanzo hace '+Math.abs(q.faltan)+' d')
-          : (q.faltan===0 ? 'lanza hoy' : ('faltan '+q.faltan+' d para lanzar')))
-      +'</span>';
-    }
+    // La cuenta del lanzamiento ya no va como linea: el circulo la muestra
+    // siempre, con o sin freno, asi que este renglon la repetia.
     // La reunion paso y nadie dijo que paso: es lo unico accionable que tiene
     // ese cliente hoy, asi que va en la tarjeta y no escondido en la ficha.
     (function(){
@@ -32939,7 +32914,6 @@ function p360Html(){
     // desplegable al lado ocupaba media pantalla del tablero para un dato que
     // se toca una vez.
     +''
-    +p360ProspectosNoHtml()
     // La isla del pie: las tres vistas y los filtros de producto, con la misma
     // gramatica que la del embudo. Deja de ocupar dos filas arriba del tablero
     // y queda a mano sin tapar nada.
