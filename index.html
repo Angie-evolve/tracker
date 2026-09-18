@@ -53573,8 +53573,76 @@ function openGhlProxyModal(){
     +'<input id="ghl-proxy-url" type="text" value="'+esc(p.url)+'" placeholder="https://script.google.com/macros/s/.../exec" style="width:100%;margin-top:4px;padding:9px 11px;font-size:13px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--strong);font-family:var(--font);outline:none"></div>'
     +'<div style="margin-top:12px"><label style="font-size:11px;color:var(--text3)">Secreto compartido</label>'
     +'<input id="ghl-proxy-secret" type="text" value="'+esc(p.secret)+'" placeholder="el mismo que pusiste en el Apps Script" style="width:100%;margin-top:4px;padding:9px 11px;font-size:13px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--strong);font-family:var(--font);outline:none"></div>'
-    +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveGhlProxy()">Guardar</button></div>'
+    +'<div id="ghl-proxy-test" style="margin-top:12px"></div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+      +'<button class="btn" onclick="probarGhlProxy()">Probar conexion</button>'
+      +'<button class="btn btn-primary" onclick="saveGhlProxy()">Guardar</button>'
+    +'</div>'
     +'</div></div>';
+}
+// La URL del despliegue de Apps Script tiene una forma sola. Pegarla mal -la de
+// /dev, la del editor, la de googleusercontent- no da error al guardar: da un
+// 404 recien en la proxima sincronizacion, y ahi parece que se rompio GHL.
+function _ghlProxyPega(url){
+  var u=String(url||'').trim();
+  if(!u) return 'Falta la URL.';
+  if(!/^https:\/\//i.test(u)) return 'Tiene que empezar con https://';
+  if(/script\.googleusercontent\.com/i.test(u))
+    return 'Esa es la direccion a la que Apps Script redirige, no la del despliegue. '
+      +'La buena sale de Implementar \u2192 Administrar implementaciones y termina en /exec.';
+  if(/\/dev(\?|$)/i.test(u))
+    return 'Esa es la URL de prueba (/dev): solo funciona con tu sesion de Google abierta. '
+      +'Usa la del despliegue, que termina en /exec.';
+  if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec/i.test(u))
+    return 'No parece la URL de un Web App de Apps Script. Tendria que ser '
+      +'https://script.google.com/macros/s/.../exec';
+  return '';
+}
+// Probar de verdad, antes de guardar: se llama al proxy y se dice exactamente
+// que contesto. Sin esto la unica forma de saber si la URL sirve era esperar a
+// que fallara una sincronizacion y leer el error a medias.
+async function probarGhlProxy(){
+  var caja=document.getElementById('ghl-proxy-test');
+  if(!caja) return;
+  var url=(document.getElementById('ghl-proxy-url').value||'').trim();
+  var secret=_cleanSecret(document.getElementById('ghl-proxy-secret').value);
+  var decir=function(color, titulo, detalle){
+    caja.innerHTML='<div style="border:1px solid '+color+'44;background:'+color+'12;'
+      +'border-radius:var(--radius);padding:10px 12px;font-size:12px;line-height:1.55">'
+      +'<b style="color:'+color+'">'+titulo+'</b>'
+      +(detalle?('<div style="margin-top:4px;color:var(--text3)">'+detalle+'</div>'):'')
+      +'</div>';
+  };
+  var pega=_ghlProxyPega(url);
+  if(pega){ decir('var(--redx)','La URL no tiene la forma correcta', esc(pega)); return; }
+  decir('var(--text3)','Probando\u2026','');
+  try{
+    var u=url+(url.indexOf('?')>=0?'&':'?')+'secret='+encodeURIComponent(secret)+'&action=ping';
+    var r=await fetch(u, {method:'GET'});
+    var txt=await r.text();
+    var ct=(r.headers&&r.headers.get)?(r.headers.get('content-type')||''):'';
+    var data=null; try{ data=JSON.parse(txt); }catch(e){}
+    if(!data){
+      decir('var(--redx)','Google no encontro ese despliegue ('+r.status+')',
+        'Contesto '+esc(ct.split(';')[0]||'sin tipo')+' en vez de JSON, asi que la respuesta '
+        +'no viene del script. Casi siempre es que el despliegue se borro o se reemplazo: '
+        +'abri el Apps Script, Implementar \u2192 Administrar implementaciones, y copia la URL '
+        +'que figura ahi. Si no hay ninguna, crea una nueva como Aplicacion web, ejecutando '
+        +'como vos y con acceso para Cualquier usuario.');
+      return;
+    }
+    if(data.ok===false){
+      decir('var(--amberx)','El script contesto, pero rechazo el pedido',
+        esc(String(data.error||'sin detalle'))+'. La URL sirve: lo que falla es el secreto '
+        +'o lo que se le pidio.');
+      return;
+    }
+    decir('var(--accent)','La conexion funciona','El script contesto JSON. Ya podes guardar.');
+  }catch(e){
+    decir('var(--redx)','No pude llegar a esa direccion',
+      esc(String(e&&e.message||e))+'. Revisa que la URL este completa y que tengas internet.');
+  }
 }
 function _cleanSecret(s){
   // Normaliza el secreto para evitar 'Secreto invalido' por caracteres invisibles o guiones largos
@@ -53587,6 +53655,10 @@ function _cleanSecret(s){
 function saveGhlProxy(){
   const url=(document.getElementById('ghl-proxy-url').value||'').trim().replace(/[\u200B-\u200D\uFEFF]/g,'');
   const secret=_cleanSecret(document.getElementById('ghl-proxy-secret').value);
+  // Avisar, no impedir: si la forma no es la esperada casi seguro esta mal, pero
+  // Google podria cambiarla y no quiero dejar trabada la unica via de entrada.
+  var _p=_ghlProxyPega(url);
+  if(_p && !confirm(_p+'\n\nGuardar igual?')) return;
   localStorage.setItem('evold-ghl-proxy-url',url);
   localStorage.setItem('evold-ghl-proxy-secret',secret);
   closeModal(); toast('Conexion GHL guardada'); renderTab();
