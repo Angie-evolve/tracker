@@ -34131,6 +34131,56 @@ function _telInternacional(tel){
   return d.length>=10?d:'';
 }
 function _waLink(tel){ var d=_telInternacional(tel); return d?('https://wa.me/'+d):''; }
+// Quien lleva la cuenta. El dato existia -el asistente lo lee para contestar
+// "quien no tiene responsable"- pero no habia donde ponerlo: nadie lo escribia
+// nunca, asi que la respuesta era siempre "ninguno".
+// _eqNombre solo desenvuelve un objeto: un mail suelto lo devuelve tal cual, y
+// el menu mostraba "joela@evolve.com" en vez de "Joela Colman".
+function _respNombre(mail){
+  var k=String(mail||'').toLowerCase();
+  if(!k) return '';
+  var p=(DB.personas||[]).filter(function(x){
+    return String(x&&x.email||'').toLowerCase()===k; })[0];
+  return (p&&p.nombre) ? p.nombre : String(mail||'');
+}
+function fichaResponsable(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var gente=(DB.personas||[]).filter(function(x){ return x && x.email; });
+  if(!gente.length){
+    toast('Todavia no hay nadie cargado en el equipo. Se cargan en Herramientas.','amber');
+    return;
+  }
+  var actual=String(c.responsable||'');
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:420px">'
+      +'<div class="modal-title">Responsable de '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Quien lleva la cuenta. Sale en el asistente y en '
+        +'los avisos.</div>'
+      +'<select id="resp-sel" style="width:100%;box-sizing:border-box;padding:8px 11px;'
+        +'border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);'
+        +'color:var(--text);font-size:13px;font-family:var(--font);margin-top:10px">'
+        +'<option value="">Sin responsable</option>'
+        +gente.map(function(x){
+          return '<option value="'+esc(x.email)+'"'+(actual===x.email?' selected':'')+'>'
+            +esc(x.nombre||x.email)+'</option>'; }).join('')
+      +'</select>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="fichaResponsableSet('+c.id+')">'
+          +'Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function fichaResponsableSet(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  c.responsable=String((document.getElementById('resp-sel')||{}).value||'');
+  save(); closeModal();
+  if(typeof renderTab==='function') renderTab();
+  toast(c.responsable?('Responsable: '+_respNombre(c.responsable)):'Quedo sin responsable.');
+}
 function fichaEditar(clientId, campo){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -34504,8 +34554,8 @@ function _fichaHtml(c){
       ? productos().filter(function(p){ return p.activo!==false; }) : [];
     if(!ops.length) return;
     var actual=String(c.productoId||'');
-    filas.push('<div style="display:flex;align-items:center;gap:12px;padding:9px 0;'
-      +'border-bottom:1px solid var(--border)">'
+    filas.push('<div id="sh-producto" style="display:flex;align-items:center;gap:12px;'
+      +'padding:9px 0;border-bottom:1px solid var(--border);scroll-margin-top:14px">'
       +'<div style="flex:none;width:120px;font-size:11.5px;color:var(--text3)">Producto</div>'
       +'<select style="flex:1;min-width:0;font-size:12px;padding:5px 8px" '
         +'onchange="p360SetProd('+c.id+', this.value)">'
@@ -51310,6 +51360,16 @@ function genteAbrir(clientId, btn){
     return op('fichaEditar('+c.id+',\''+x[0]+'\')', x[1], falta(x[2]));
   }).join('');
   h+='<div class="mas-sep"></div>';
+  // Los dos que faltaban en este menu. El producto se elige en la ficha -ahi
+  // esta la lista- y el responsable no tenia donde ponerse en ninguna parte.
+  h+=op('fichaResponsable('+c.id+')','Responsable',
+        c.responsable ? esc(_respNombre(c.responsable))
+                      : '<span style="color:var(--amberx)">sin asignar</span>');
+  h+=op('materialModal('+c.id+',\'sh-producto\')','Producto',
+        (function(){
+          var pr=(typeof _p360Prod==='function')?_p360Prod(c):(c.producto||'');
+          return pr ? esc(pr) : '<span style="color:var(--amberx)">sin definir</span>';
+        })());
   h+=op('closerModal('+c.id+')','Cerro',
         (function(){
           var cl=_closerDe(c);
