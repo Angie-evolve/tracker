@@ -16575,7 +16575,13 @@ function edPoll(){
       var f=r&&r[0];
       if(f){
         e.fila=f; _edPintar();
-        if(f.estado==='listo'||f.estado==='error'){ e.timer=null; edCargar(); return; }
+        if(f.estado==='listo'||f.estado==='error'){
+          e.timer=null;
+          edCargar();
+          // El crudo se saca recien aca: con el render ya guardado del otro lado.
+          if(f.estado==='listo') edLimpiarCrudo(f.id);
+          return;
+        }
       }
     }catch(err){}
     edPoll();
@@ -16868,6 +16874,78 @@ function _edArchivosDe(f){
   return out;
 }
 
+// ---- Sacar el crudo cuando el trabajo termino bien ----------------------
+// Con 1 GB de plan, un video de diez minutos se come el 80% del disco. Una vez
+// que el render salio, el crudo ya hizo su trabajo.
+//
+// Lo que NO se toca: el render, el .srt, el proyecto de CapCut y las piezas.
+// Y no se borra nada que use otro trabajo -rehacer reencola los mismos videos,
+// asi que dos filas apuntan a los mismos archivos y mas de uno los comparte.
+function edLimpiarOn(){
+  try{ return localStorage.getItem('evold-ed-limpiar')!=='0'; }catch(e){ return true; }
+}
+function edLimpiarSet(v){
+  try{ localStorage.setItem('evold-ed-limpiar', v?'1':'0'); }catch(e){}
+  toast(v ? 'El crudo se va a borrar solo cuando el render salga bien.'
+          : 'El crudo se queda. Ojo con el espacio.');
+  _edPintar();
+}
+function _edFuentesDe(f){
+  // Solo las fuentes. resultado_path, el srt, capcut y las piezas quedan afuera
+  // a proposito: son el entregable.
+  var l=[].concat(f.videos||[], [f.video_path]);
+  var visto={}, out=[];
+  l.forEach(function(x){ if(x && !visto[x]){ visto[x]=1; out.push(x); } });
+  return out;
+}
+async function edLimpiarCrudo(id, aMano){
+  if(!aMano && !edLimpiarOn()) return;
+  var filas=null;
+  try{ filas=await sbFetch('trabajos_video?select=id,estado,videos,video_path,'
+        +'resultado_path,resultado_srt_path,piezas,analisis'); }catch(e){ return; }
+  if(!filas) return;
+  var f=filas.filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!f) return;
+  // Solo si termino bien y hay algo entregado: si el render no salio, el crudo
+  // es lo unico que queda y borrarlo deja el trabajo sin nada.
+  var hayResultado=!!(f.resultado_path || (f.piezas||[]).length);
+  if(f.estado!=='listo' || !hayResultado) return;
+  var fuentes=_edFuentesDe(f);
+  if(!fuentes.length) return;
+  // Lo que usa cualquier OTRO trabajo se queda, sea fuente o entregable.
+  var deOtros={};
+  filas.forEach(function(x){
+    if(String(x.id)===String(id)) return;
+    _edArchivosDe(x).forEach(function(r){ deOtros[r]=1; });
+  });
+  var borrar=fuentes.filter(function(r){ return !deOtros[r]; });
+  if(!borrar.length){
+    if(aMano) toast('El crudo lo comparte otro trabajo: no se borra.','amber');
+    return;
+  }
+  if(aMano && !confirm('Borrar el crudo de este trabajo?\n\n'
+    +borrar.length+' archivo'+(borrar.length===1?'':'s')+'. El render, el .srt y el '
+    +'proyecto de CapCut se quedan.\n\nDespues de esto no se puede Rehacer: para volver a '
+    +'editarlo habria que subir el video de nuevo.')) return;
+  try{
+    for(var i=0;i<borrar.length;i+=200){
+      var r=await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET, {
+        method:'DELETE',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+                 'Content-Type':'application/json'},
+        body:JSON.stringify({prefixes:borrar.slice(i,i+200)})
+      });
+      if(!r.ok) throw new Error('HTTP '+r.status);
+    }
+  }catch(err){
+    if(aMano) toast('No pude borrar el crudo: '+_edMsg(err.message),'red');
+    return;
+  }
+  toast('Crudo borrado: '+borrar.length+' archivo'+(borrar.length===1?'':'s')
+    +'. El render queda.');
+  await edCargar();
+  edMedirEspacio(true);
+}
 async function edBorrarTrabajo(id){
   var e=_edEstado();
   var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0];
@@ -17141,6 +17219,35 @@ function _edCorreccionHtml(f){
 // el bucket: lo unico que cambia entre una corrida y la siguiente es el codigo
 // del worker, asi que recomprimir y resubir medio giga para probar un arreglo
 // es tiempo regalado. Se encola una fila nueva con las mismas entradas.
+// Cuales de estas rutas ya no estan en el bucket. Devuelve null si no se pudo
+// preguntar: no es lo mismo que "no falta ninguna", y confundirlos haria que
+// Rehacer encole un trabajo condenado a fallar en el worker.
+async function _edFaltanArchivos(rutas){
+  try{
+    var porCarpeta={};
+    rutas.forEach(function(r){
+      var i=String(r).indexOf('/');
+      var carp=(i>0)?r.slice(0,i):'';
+      (porCarpeta[carp]=porCarpeta[carp]||[]).push(r);
+    });
+    var hay={};
+    var carpetas=Object.keys(porCarpeta);
+    for(var k=0;k<carpetas.length;k++){
+      var r0=await fetch(SB_URL+'/storage/v1/object/list/'+ED_BUCKET,{
+        method:'POST',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+                 'Content-Type':'application/json'},
+        body:JSON.stringify({prefix:carpetas[k], limit:1000,
+                             sortBy:{column:'name', order:'asc'}})
+      });
+      if(!r0.ok) return null;
+      ((await r0.json())||[]).forEach(function(o){
+        if((o.metadata||{}).size) hay[carpetas[k]+'/'+o.name]=1;
+      });
+    }
+    return rutas.filter(function(r){ return !hay[r]; });
+  }catch(e){ return null; }
+}
 async function edRehacer(id){
   var e=_edEstado();
   var f=(e.hist||[]).filter(function(x){ return String(x.id)===String(id); })[0]
@@ -17148,6 +17255,20 @@ async function edRehacer(id){
   if(!f){ toast('No encontré ese trabajo. Actualizá y probá de nuevo.','amber'); return; }
   var vs=(f.videos&&f.videos.length)?f.videos:(f.video_path?[f.video_path]:[]);
   if(!vs.length){ toast('Ese trabajo no tiene los videos guardados, hay que subirlos de nuevo.','amber'); return; }
+  // Los videos pueden no estar: el crudo se borra solo cuando el render sale
+  // bien. Se pregunta en el momento en vez de anotarlo en una columna, y asi
+  // tambien acierta cuando los archivos se fueron por cualquier otra via.
+  var faltan=await _edFaltanArchivos(vs);
+  if(faltan===null){
+    if(!confirm('No pude chequear si los videos siguen subidos.\n\nSeguir igual?')) return;
+  } else if(faltan.length>=vs.length){
+    toast('El crudo de ese trabajo ya no está: se borró cuando salió el render. '
+      +'Para rehacerlo hay que subir el video de nuevo.','amber');
+    return;
+  } else if(faltan.length){
+    if(!confirm('Faltan '+faltan.length+' de '+vs.length+' videos: se borraron del bucket.'
+      +'\n\nRehacer va a fallar salvo que subas esos de nuevo. Seguir igual?')) return;
+  }
   var cuantos=vs.length+' video'+(vs.length===1?'':'s');
   if(!confirm('Rehacer con los mismos '+cuantos+' que ya están subidos?\n\n'
     +'No se vuelve a subir ni a comprimir nada. El trabajo anterior queda como está.')) return;
@@ -17533,8 +17654,19 @@ function _edEspacioHtml(){
     titulo='Te pasaste del espacio del plan'; }
   else if(gb>=ED_TOPE_GB*0.8){ col='var(--amberx)'; urge=true;
     titulo='Estás por quedarte sin espacio'; }
-  if(!urge) return '<div style="font-size:11px;color:var(--text3);margin-bottom:10px">'
-    +'Espacio usado: '+gb.toFixed(2)+' GB de '+ED_TOPE_GB+' GB · '+c.archivos+' archivos</div>';
+  // El interruptor va siempre, aunque el espacio alcance: es el que decide si
+  // el crudo se borra solo, y tiene que poder apagarse antes de que haga falta.
+  var sw='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;'
+      +'font-size:11px;color:var(--text3);margin-left:10px" '
+      +'title="Cuando el render sale bien, borra el video crudo y deja el resultado. '
+      +'Despues de eso ese trabajo no se puede Rehacer.">'
+    +'<input type="checkbox" class="sw"'+(edLimpiarOn()?' checked':'')
+      +' onchange="edLimpiarSet(this.checked)">'
+    +'<span>borrar el crudo al terminar</span></label>';
+  if(!urge) return '<div style="font-size:11px;color:var(--text3);margin-bottom:10px;'
+    +'display:flex;align-items:center;flex-wrap:wrap">'
+    +'<span>Espacio usado: '+gb.toFixed(2)+' GB de '+ED_TOPE_GB+' GB · '+c.archivos
+    +' archivos</span>'+sw+'</div>';
   return '<div class="ed-panel" style="border-color:'+col+';margin-bottom:14px">'
     +'<h3 style="color:'+col+'">'+esc(titulo)+' · '+gb.toFixed(2)+' GB de '+ED_TOPE_GB+' GB</h3>'
     +'<div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin:8px 0 10px">'
@@ -17553,6 +17685,7 @@ function _edEspacioHtml(){
         ? ('<button class="btn btn-sm" style="color:var(--amberx)" '
            +'onclick="edBorrarHuerfanos()">Borrar los '+c.huerfanos+' sueltos</button>')
         : '')
+      +sw
     +'</div>'
   +'</div>';
 }
