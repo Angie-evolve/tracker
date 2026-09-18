@@ -9639,6 +9639,9 @@ function convPintarBell(n){
   const bell=document.getElementById('tk-bell');
   if(!bell) return;
   window._convNuevas=n;
+  // El pintado vive en un solo lugar: si no, la campanita de Tickets pisaba la
+  // de la pantalla en la que uno estaba parado.
+  if(typeof campanaPintar==='function'){ campanaPintar(); return; }
   // Sacar badge viejo
   const old=bell.querySelector('.tk-bell-badge'); if(old) old.remove();
   if(n>0){
@@ -9654,9 +9657,125 @@ function convPintarBell(n){
     bell.title='Sin conversaciones nuevas';
   }
 }
+// ---- La campanita, segun la pantalla -------------------------------------
+// Antes hacia lo mismo en todas: abria Conversaciones. En Rentabilidad eso no
+// tiene nada que ver con lo que se esta mirando, y los avisos propios de esa
+// pantalla -contratos vencidos, altas estimadas, clientes que no entran en la
+// proyeccion- quedaban perdidos entre los numeros. Cada pantalla tiene lo suyo.
+function _campanaCtx(){
+  var t=(S.torreVista||'mirador');
+  if(t==='tickets'){
+    var n=window._convNuevas||0;
+    return {hay:true, n:n, abrir:'openConvTestModal()',
+      titulo:n ? (n+' conversacion'+(n>1?'es':'')+' nueva'+(n>1?'s':'')+' sin escanear')
+               : 'Sin conversaciones nuevas'};
+  }
+  if(t==='rentabilidad'){
+    var r=_campanaRent();
+    return {hay:true, n:r.n, abrir:'campanaRentAbrir()',
+      titulo:r.n ? (r.n+(r.n===1?' cosa que afecta':' cosas que afectan')+' la proyeccion')
+                 : 'La proyeccion no tiene datos faltantes'};
+  }
+  // En el resto no hay nada propio que avisar todavia: mejor sin campanita que
+  // con una que abre algo de otra pantalla.
+  return {hay:false, n:0, abrir:'', titulo:''};
+}
+// Lo que le falta a la proyeccion, agrupado. Son los mismos avisos que ya se
+// dibujan en la pantalla; aca se cuentan para el badge y para el detalle.
+function _campanaRent(){
+  var g=[];
+  try{
+    var v=(typeof eerrVencen==='function')?eerrVencen():[];
+    var vencidos=v.filter(function(x){ return _eerrVencida(x.c); });
+    if(vencidos.length) g.push({t:'con la fecha vencida',
+      d:'No entran en la proyeccion. Si siguen mes a mes, marca "Se renueva sola" en su ficha.',
+      cs:vencidos.map(function(x){ return x.c; }), col:'var(--redx)'});
+    var vigentes=v.filter(function(x){ return !_eerrVencida(x.c); });
+    if(vigentes.length) g.push({t:'que terminan lo pactado este ano',
+      d:'Suman hasta ese mes y despues no: por eso la proyeccion baja.',
+      cs:vigentes.map(function(x){ return x.c; }), col:'var(--text2)'});
+  }catch(e){}
+  try{
+    var est=(DB.clients||[]).filter(function(c){
+      var i=clienteAltaInfo(c);
+      return i.fecha && i.fuente==='app';
+    });
+    if(est.length) g.push({t:'con la fecha de alta estimada',
+      d:'No tienen fecha de contrato, asi que se usa el dia en que se cargaron en la app. '
+        +'Se corrige en la ficha, en "Cliente desde".', cs:est, col:'var(--amberx)'});
+  }catch(e){}
+  try{
+    var sa=(typeof eerrSinAporte==='function')?eerrSinAporte():[];
+    var NOM={'sin-datos':'sin abono ni contrato cargado','sin-monto':'con contrato pero sin monto',
+      'sin-plazo':'con monto pero sin plazo','vencido':'con el contrato ya terminado',
+      'termina':'que terminan durante el ano','fin-viejo':'con el contrato vencido antes del alta'};
+    var vistos={};
+    sa.forEach(function(x){ (vistos[x.motivo]=vistos[x.motivo]||[]).push(x.c); });
+    Object.keys(vistos).forEach(function(k){
+      g.push({t:NOM[k]||k, d:'No suman lo que deberian a la proyeccion.',
+              cs:vistos[k], col:'var(--amberx)'});
+    });
+  }catch(e){}
+  return {n:g.length, grupos:g};
+}
+function campanaRentAbrir(){
+  var r=_campanaRent();
+  var cuerpo=r.n
+    ? r.grupos.map(function(x){
+        var nombres=x.cs.slice(0,10).map(function(c){
+          return '<span onclick="closeModal();irCliente('+c.id+')" style="cursor:pointer;'
+            +'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" '
+            +'title="Abrir la ficha">'+esc(c.name||'')+'</span>'; }).join(' \u00b7 ');
+        return '<div style="padding:10px 0;border-top:1px solid var(--border)">'
+          +'<b style="color:'+x.col+';font-size:12.5px">'+x.cs.length+' cliente'
+            +(x.cs.length===1?'':'s')+' '+esc(x.t)+'</b>'
+          +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:3px">'
+            +x.d+'</div>'
+          +'<div style="font-size:11.5px;color:var(--text2);line-height:1.7;margin-top:4px">'
+            +nombres+(x.cs.length>10?(' y '+(x.cs.length-10)+' mas'):'')+'</div>'
+        +'</div>'; }).join('')
+    : '<div style="padding:12px 0;font-size:12.5px;color:var(--text3)">'
+      +'La proyeccion no tiene datos faltantes.</div>';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:720px;width:94%;max-height:86vh;overflow:auto">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:2px">'
+      +'Lo que le falta a la proyeccion</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
+      +'Cada uno de estos hace que el ingreso proyectado sea menor que el real, o que una '
+      +'fecha no sea la que parece. Toca un nombre para abrir su ficha.</div>'
+    +cuerpo
+    +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cerrar</button></div>'
+    +'</div></div>';
+}
+// Se deja el nombre viejo: lo usan la campanita de Tickets y el boton Actualizar.
 function convAbrirDesdeBell(){
-  // Al tocar la campanita, abre el modal de Conversaciones listo para escanear
+  var ctx=_campanaCtx();
+  if(!ctx.hay) return;
+  if(ctx.abrir==='campanaRentAbrir()'){ campanaRentAbrir(); return; }
   openConvTestModal();
+}
+// Repinta la campanita para la pantalla en la que se esta.
+function campanaPintar(){
+  var bell=document.getElementById('tk-bell');
+  if(!bell) return;
+  var ctx=_campanaCtx();
+  bell.style.display=ctx.hay?'':'none';
+  if(!ctx.hay) return;
+  var old=bell.querySelector('.tk-bell-badge'); if(old) old.remove();
+  bell.title=ctx.titulo;
+  if(ctx.n>0){
+    bell.style.color='var(--accent)';
+    var b=document.createElement('span');
+    b.className='tk-bell-badge';
+    b.style.cssText='position:absolute;top:0;right:0;min-width:15px;height:15px;padding:0 3px;'
+      +'border-radius:20px;background:var(--redx);color:#fff;font-size:9px;font-weight:600;'
+      +'display:flex;align-items:center;justify-content:center;line-height:1';
+    b.textContent=ctx.n>9?'9+':String(ctx.n);
+    bell.appendChild(b);
+  } else {
+    bell.style.color='var(--text3)';
+  }
 }
 
 // ================= CONFIGURACION DE AGENCIA =================
@@ -15350,7 +15469,7 @@ function showTickets(){
     +'<div style="display:flex;align-items:center;gap:12px">'
     +'<span style="font-size:11px;color:var(--text3)">'+_tkUltimaAct(tickets)+'</span>'
     +'<button class="btn btn-sm btn-primary" onclick="actualizarTodo()" title="Sincroniza llamadas de Fathom y escanea conversaciones de WhatsApp">Actualizar</button>'
-    +'<button id="tk-bell" class="btn btn-sm" style="border:none;padding:4px 8px;position:relative;color:var(--text3)" aria-label="Conversaciones nuevas" onclick="convAbrirDesdeBell()" title="Conversaciones nuevas sin escanear"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0"/></svg></button>'
+    +'<button id="tk-bell" class="btn btn-sm" style="border:none;padding:4px 8px;position:relative;color:var(--text3);display:none" aria-label="Avisos de esta pantalla" onclick="convAbrirDesdeBell()" title="Avisos de esta pantalla"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M12 3a6 6 0 016 6v3l2 4H4l2-4V9a6 6 0 016-6zm-2 15a2 2 0 004 0"/></svg></button>'
     // El menu cambia segun la seccion: en Tickets estan las acciones de tickets,
     // en el resto solo la configuracion de agencia.
     +'<div style="position:relative">'
@@ -15428,8 +15547,13 @@ function showTickets(){
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
         +'</div>'))))))))))) 
     +'</div>';
-  // Chequeo liviano de conversaciones nuevas (campanita). Sin IA, un solo llamado.
-  if(typeof convChequearNuevas==='function') convChequearNuevas();
+  // La campanita se repinta en cada render: lo que muestra depende de la
+  // pantalla, y el render es el unico momento en que se sabe cual es.
+  if(typeof campanaPintar==='function') campanaPintar();
+  // Chequeo liviano de conversaciones nuevas. Sin IA, un solo llamado, y solo
+  // en Tickets: en las otras pantallas la campanita no habla de eso.
+  if((S.torreVista||'mirador')==='tickets' && typeof convChequearNuevas==='function')
+    convChequearNuevas();
 }
 
 
