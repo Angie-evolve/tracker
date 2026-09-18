@@ -51,8 +51,13 @@ def repartir(videos, guiones, minimo=0.35):
     candidatos = []
     for g in (guiones or []):
         mejor = None
+        # Igual que armar: se compara contra lo que se dice en camara, no contra
+        # el documento. Un bloque de rodaje trae las indicaciones adentro -"un
+        # solo clip continuo, camara rodando"- y eso nunca se dijo en voz alta:
+        # comparandolo se hunde el puntaje de todos los guiones por igual.
+        txt = _lo_que_se_dice(g.get("texto") or "")
         for v in (videos or []):
-            c = _cobertura(v.get("palabras") or [], g.get("texto") or "")
+            c = _cobertura(v.get("palabras") or [], txt)
             if not c:
                 continue
             if not mejor or c["score"] > mejor["score"]:
@@ -273,6 +278,39 @@ def _separar_cierre(guiones):
         salida.append(dict(g, texto=txt,
                            _lleva_cierre=bool(_RX_CIERRE_MARCA.search(txt))))
     return salida, cierre
+
+
+def cortar_uno(videos, guiones, minimo=0.35):
+    """Una sola toma larga con todos los fragmentos adentro.
+
+    armar() reparte clips ENTEROS: sirve cuando cada pieza se grabo en su propio
+    archivo. Cuando llega un solo video de diez minutos con los veinticinco
+    fragmentos seguidos, no hay clips que repartir: hay que cortar adentro, que
+    es lo que hace repartir(). Esto devuelve lo de repartir con la forma que
+    espera el worker, para que el resto del camino no cambie.
+    """
+    piezas, sin_grabar, descartados = repartir(videos, guiones, minimo=minimo)
+    porId = {v.get("id"): v for v in (videos or [])}
+    encontradas = []
+    for pz in piezas:
+        dur = float(pz.get("fin") or 0) - float(pz.get("inicio") or 0)
+        if dur <= 0:
+            continue
+        bl = pz.get("bloques") or []
+        dichos = sum(1 for b in bl if b.get("encontrado"))
+        encontradas.append({
+            "titulo": pz.get("titulo") or "Pieza",
+            "tramos": [{"video": pz.get("video"),
+                        "inicio": round(float(pz.get("inicio") or 0), 2),
+                        "fin": round(float(pz.get("fin") or 0), 2),
+                        "score": round(float(pz.get("score") or 0), 3),
+                        "bloque": (pz.get("titulo") or "")[:70]}],
+            "duracion": round(dur, 2),
+            "score": round(float(pz.get("score") or 0), 3),
+            "bloques": dichos or len(bl),
+            "bloques_total": len(bl) or 1,
+        })
+    return encontradas, sin_grabar, descartados
 
 
 def armar(videos, guiones, minimo=0.10, min_palabras=4, borde=1.5):

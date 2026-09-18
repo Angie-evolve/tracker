@@ -1188,7 +1188,17 @@ def procesar(fila, tmp):
                         "duracion": auto_editor.ffprobe_duration(f)})
 
     if guiones:
-        encontradas, sin_grabar, descartados = Piezas.armar(locales, guiones)
+        # Dos formas de grabar, dos caminos. Si vinieron varios archivos, cada
+        # uno es una toma y lo que hay que hacer es repartirlos enteros. Si vino
+        # UNO solo con varios guiones, los guiones estan todos adentro de esa
+        # toma y hay que cortar por adentro: repartir clips cuando hay un solo
+        # clip no reparte nada, y el resultado era "el cliente no grabo ninguno"
+        # con el video entero como tramo sin guion.
+        if len(locales) == 1 and len(guiones) > 1:
+            print("  un solo video con %d guiones: corto adentro" % len(guiones), flush=True)
+            encontradas, sin_grabar, descartados = Piezas.cortar_uno(locales, guiones)
+        else:
+            encontradas, sin_grabar, descartados = Piezas.armar(locales, guiones)
     else:
         # Carpeta sin guiones: cada video es su propia pieza, entero. Es lo que
         # promete el arrastrable y lo que espera cualquiera que tire una carpeta
