@@ -115,6 +115,47 @@ async function buscarContacto(email: string) {
   return { id: exacto.id, nombre: exacto.contactName || exacto.firstName || "" };
 }
 
+// Le pregunta a GHL los huecos del dia del horario que rechazo y los devuelve
+// junto al que se mando. Con eso se ve de un vistazo si el nuestro esta en la
+// lista -y entonces el problema es el formato o algo del lado de GHL- o si no
+// esta -y entonces el hueco se ocupo de verdad.
+async function diagnosticarHueco(calendarId: string, inicio: string) {
+  try {
+    const t = Date.parse(inicio);
+    if (isNaN(t)) return { nota: "la fecha no se entiende" };
+    const r = await ghl(
+      "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" +
+      "?startDate=" + (t - 12 * 3600 * 1000) + "&endDate=" + (t + 12 * 3600 * 1000),
+    );
+    if (!r.ok) return { nota: "no pude releer los huecos: " + r.status };
+    const slots: string[] = [];
+    const juntar = (v: any) => {
+      if (!v) return;
+      if (Array.isArray(v)) { v.forEach((x) => typeof x === "string" && slots.push(x)); return; }
+      if (typeof v === "object") Object.keys(v).forEach((k) => juntar(v[k]));
+    };
+    juntar(r.datos);
+    // Dos comparaciones: la cadena exacta, y el instante. Si coincide el
+    // instante pero no la cadena, lo que molesta es el formato.
+    const exacto = slots.includes(inicio);
+    const mismoInstante = slots.some((x) => Date.parse(x) === t);
+    return {
+      mandamos: inicio,
+      huecos: slots.slice(0, 12),
+      total: slots.length,
+      coincide_exacto: exacto,
+      coincide_el_instante: mismoInstante,
+      lectura: exacto
+        ? "el hueco sigue libre y lo mandamos igual: el rechazo es de GHL por otra cosa"
+        : (mismoInstante
+          ? "el instante esta libre pero la cadena no coincide: es el formato"
+          : "ese horario ya no esta entre los libres: lo tomo alguien"),
+    };
+  } catch (e) {
+    return { nota: String((e as Error).message || e) };
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -260,6 +301,15 @@ Deno.serve(async (req: Request) => {
     });
 
     if (!r.ok) {
+      // "The slot you have selected is no longer available" no dice nada por si
+      // solo: el horario venia de la lista que GHL acababa de dar. Asi que
+      // cuando pasa eso, se le vuelve a preguntar por los huecos de ese dia y
+      // se compara, para saber de una vez si el problema es que el hueco se
+      // ocupo, o que lo que mandamos no es lo que el espera.
+      if (/no longer available/i.test(r.crudo || "")) {
+        const diag = await diagnosticarHueco(calendarId, inicio);
+        return responder({ error: "GHL " + r.status + ": " + r.crudo, diagnostico: diag }, 502);
+      }
       // El texto de GHL va tal cual. Traducirlo a "no se pudo agendar" es lo
       // que hace imposible entender por que falla -paso hoy con otra API.
       return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
