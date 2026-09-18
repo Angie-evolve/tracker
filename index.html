@@ -34822,6 +34822,9 @@ function _materialCuerpoHtml(c){
           ${materialHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${docsHtml(c)}
+        </div>
+        <div style="margin-bottom:20px">
+          ${accesosHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           ${formsClienteHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
@@ -51921,6 +51924,139 @@ function _docFormTexto(f){
 }
 function _docChars(c){ return docs(c).reduce(function(a,d){ return a+String(d.texto||'').length; },0); }
 function _docKb(n){ return n>=1000 ? (Math.round(n/1000)+'k') : (n+''); }
+// ---- Accesos a los SaaS del cliente -------------------------------------
+// Link, usuario y clave, que es lo que se pidio. Queda escrito aca: esto viaja
+// a Supabase con el resto del cliente y entra en el backup, asi que la clave no
+// esta cifrada ni se puede tratar como si lo estuviera. Lo que si se hace:
+//
+//  - Nunca entra en un prompt de IA. La ficha que se le manda al asistente se
+//    arma campo por campo y los accesos no estan en esa lista, a proposito.
+//  - En pantalla va tapada. Se ve solo si se toca el ojo, y hay boton de
+//    copiar para no tener que mostrarla: una captura de pantalla con la clave a
+//    la vista es la forma mas facil de que se escape.
+function accesos(c){ if(!Array.isArray(c.accesos)) c.accesos=[]; return c.accesos; }
+function accesoAgregar(clientId){ _accesoForm(clientId, -1); }
+function accesoEditar(clientId, i){ _accesoForm(clientId, i); }
+function _accesoForm(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var a=(i>=0 ? accesos(c)[i] : null) || {};
+  var inp='width:100%;box-sizing:border-box;padding:8px 11px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+    +'font-size:13px;font-family:var(--font);outline:none;margin-bottom:8px';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px">'
+      +'<div class="modal-title">'+(i>=0?'Editar acceso':'Nuevo acceso')+'</div>'
+      +'<div class="modal-sub">De que cuenta del cliente. La clave se guarda tal cual y '
+        +'viaja con el resto de los datos: no la uses para nada que no puedas rotar.</div>'
+      +'<input id="ac-serv" value="'+esc(a.servicio||'')+'" placeholder="Que es: Shopify, Meta Business, Klaviyo..." style="'+inp+'">'
+      +'<input id="ac-url" value="'+esc(a.url||'')+'" placeholder="Link para entrar" style="'+inp+'">'
+      +'<input id="ac-user" value="'+esc(a.usuario||'')+'" placeholder="Usuario o mail" style="'+inp+'">'
+      +'<input id="ac-pass" value="'+esc(a.clave||'')+'" placeholder="Contrasena" style="'+inp+'">'
+      +'<input id="ac-nota" value="'+esc(a.nota||'')+'" placeholder="Nota: permisos, quien la tiene, 2FA..." style="'+inp+'">'
+      +'<div class="modal-footer">'
+        +(i>=0?('<button class="btn" style="color:var(--redx);margin-right:auto" '
+                +'onclick="accesoQuitar('+c.id+','+i+')">Borrar</button>'):'')
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="accesoGuardar('+c.id+','+i+')">Guardar</button>'
+      +'</div>'
+    +'</div></div>';
+  setTimeout(function(){ var e=document.getElementById('ac-serv'); if(e) e.focus(); },50);
+}
+function accesoGuardar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var v=function(id){ return String((document.getElementById(id)||{}).value||'').trim(); };
+  var a={servicio:v('ac-serv'), url:v('ac-url'), usuario:v('ac-user'),
+         clave:v('ac-pass'), nota:v('ac-nota'), at:new Date().toISOString()};
+  if(!a.servicio && !a.url){ toast('Poné al menos de qué es o el link.','amber'); return; }
+  if(i>=0) accesos(c)[i]=a; else accesos(c).unshift(a);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _accesoVolver(clientId);
+}
+// El formulario se dibuja en modal-root, que es el mismo lugar donde vive el
+// Material: cerrarlo cerraba los dos y te dejaba afuera. Se vuelve al Material
+// si de ahi veniamos.
+function _accesoVolver(clientId){
+  if(S._matAbierto===clientId) materialModal(clientId);
+  else closeModal();
+}
+function accesoQuitar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var a=accesos(c)[i]||{};
+  if(!confirm('Borrar el acceso a '+(a.servicio||a.url||'esta cuenta')+'?')) return;
+  accesos(c).splice(i,1);
+  save();
+  if(typeof renderTab==='function') renderTab();
+  _accesoVolver(clientId);
+}
+// Se muestra solo mientras se mira. Al repintar vuelve a quedar tapada: si
+// quedara destapada, la proxima captura se la lleva puesta.
+function accesoVer(clientId, i, btn){
+  var e=document.getElementById('ac-v-'+clientId+'-'+i);
+  if(!e) return;
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var a=(c?accesos(c)[i]:null)||{};
+  var tapada=(e.getAttribute('data-ver')!=='1');
+  e.textContent=tapada ? (a.clave||'') : '••••••••';
+  e.setAttribute('data-ver', tapada?'1':'0');
+  if(btn) btn.title=tapada?'Ocultar':'Ver';
+}
+function accesoCopiar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var a=(c?accesos(c)[i]:null)||{};
+  if(!a.clave){ toast('Ese acceso no tiene contrasena guardada.','amber'); return; }
+  try{
+    navigator.clipboard.writeText(a.clave);
+    toast('Contrasena copiada.');
+  }catch(e){ toast('No pude copiarla. Tocá el ojo y copiala a mano.','amber'); }
+}
+function accesosHtml(c){
+  var l=accesos(c);
+  var cab='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'margin-bottom:10px">'
+    +'<div style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:0.07em">Accesos</div>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
+      +'onclick="accesoAgregar('+c.id+')">Agregar</button>'
+  +'</div>';
+  if(!l.length) return cab+'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+    +'Las cuentas del cliente a las que te dieron acceso: link, usuario y clave.</div>';
+  var ico=function(d){ return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" '
+    +'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+    +d+'</svg>'; };
+  return cab+l.map(function(a,i){
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">'
+        +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text)">'
+          +esc(a.servicio||'Sin nombre')
+          +(a.usuario?('<span style="color:var(--text3)"> · '+esc(a.usuario)+'</span>'):'')
+        +'</span>'
+        +(a.url?('<a href="'+esc(a.url)+'" target="_blank" rel="noopener" class="btn btn-sm" '
+          +'style="font-size:10.5px;padding:2px 8px;text-decoration:none">Entrar</a>'):'')
+        +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+          +'onclick="accesoEditar('+c.id+','+i+')">Editar</button>'
+      +'</div>'
+      +(a.clave?('<div style="display:flex;align-items:center;gap:7px;margin-top:4px">'
+        +'<span id="ac-v-'+c.id+'-'+i+'" data-ver="0" class="mono" '
+          +'style="font-size:11.5px;color:var(--text2)">••••••••</span>'
+        +'<button onclick="accesoVer('+c.id+','+i+',this)" title="Ver" aria-label="Ver" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;padding:0 2px">'
+          +ico('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>')
+        +'</button>'
+        +'<button onclick="accesoCopiar('+c.id+','+i+')" title="Copiar" aria-label="Copiar" '
+          +'style="border:0;background:none;color:var(--text3);cursor:pointer;padding:0 2px">'
+          +ico('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>')
+        +'</button>'
+      +'</div>'):'')
+      +(a.nota?('<div style="font-size:11px;color:var(--text3);margin-top:3px;line-height:1.5">'
+        +esc(a.nota)+'</div>'):'')
+    +'</div>';
+  }).join('');
+}
 function docsHtml(c){
   var l=docs(c);
   var total=_docChars(c);
