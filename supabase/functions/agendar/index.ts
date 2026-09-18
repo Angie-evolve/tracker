@@ -190,8 +190,21 @@ Deno.serve(async (req: Request) => {
     // acotarlo aca obligaria a hacer cuentas de zona horaria del lado del
     // servidor, que es donde se cuelan los errores de un dia de corrimiento.
     if (accion === "huecos") {
-      const calendarId = String(body.calendarId || "").trim();
+      let calendarId = String(body.calendarId || "").trim();
       const dia = String(body.dia || "").trim();            // AAAA-MM-DD
+      // Cuando se esta moviendo una cita que ya existe, los horarios tienen que
+      // salir del calendario DE ESA CITA y no del que tenga configurado la
+      // etapa. Pueden ser distintos -la cita se creo antes, o la etapa cambio
+      // de calendario- y ahi se muestran los huecos de uno y se intenta mover
+      // en el otro: la lista dice 10, 11, 12 y GHL en realidad tiene 8:00,
+      // 8:30, 10:00, 10:30. Todo lo que se elija va a rebotar.
+      const eventId = String(body.eventId || "").trim();
+      if (eventId) {
+        const ra = await ghl("/calendars/events/appointments/" + encodeURIComponent(eventId));
+        const ap = (ra.datos && (ra.datos.event || ra.datos.appointment || ra.datos)) || {};
+        const propio = String(ap.calendarId || "").trim();
+        if (propio) calendarId = propio;
+      }
       if (!calendarId) return responder({ error: "Esa etapa no tiene calendario de GHL." }, 400);
       const base = Date.parse(dia + "T00:00:00Z");
       if (isNaN(base)) return responder({ error: "El dia no se entiende: " + dia }, 400);
@@ -212,7 +225,9 @@ Deno.serve(async (req: Request) => {
         if (typeof v === "object") Object.keys(v).forEach((k) => juntar(v[k]));
       };
       juntar(r.datos);
-      return responder({ ok: true, slots: slots.slice(0, 400) });
+      // Se devuelve de que calendario salieron: quien pregunta necesita saberlo
+      // para mover la cita en ESE y no en otro.
+      return responder({ ok: true, slots: slots.slice(0, 400), calendarId });
     }
 
     // Mover una cita que ya existe. Va por el mismo camino que crearla porque

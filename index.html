@@ -31082,7 +31082,17 @@ async function citasHuecos(clientId, ids){
   }
   caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando horarios\u2026</span>';
   try{
-    var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f});
+    // Si esa etapa ya tiene una cita de GHL, se manda su id: los horarios
+    // tienen que salir del calendario donde ESA cita vive, que no siempre es el
+    // que tiene configurado la etapa.
+    var _c0=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+    var _ya=_c0 ? _deEtapa(_c0.citas, et) : null;
+    var _ev=(_ya && _ya.id && String(_ya.id).indexOf('mano-')!==0
+             && String(_ya.estado||'')!=='cancelled') ? String(_ya.id) : '';
+    var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f, eventId:_ev});
+    // El calendario del que salieron de verdad: es en ese donde hay que mover.
+    S._huecosCal=S._huecosCal||{};
+    S._huecosCal[ids.caja]=String(r.calendarId||cal||'');
     // Se filtra al dia elegido con la hora local: el rango que se pide es ancho
     // a proposito para no hacer cuentas de zona horaria del otro lado.
     var hoy=(r.slots||[]).map(function(x){ return new Date(x); })
@@ -31224,7 +31234,8 @@ async function citasReprogramar(clientId, etapa){
   di('Reprogramando en GHL\u2026');
   try{
     var r=await agLlamar({accion:'reprogramar', eventId:String(x.id),
-                          calendarId:String((_def2&&_def2.cal)||''),
+                          calendarId:((S._huecosCal||{})['rp-huecos']
+                                      ||String((_def2&&_def2.cal)||'')),
                           inicio:_envio2});
     x.inicio=r.inicio||_envio2;
     c.rutaAgenda=c.rutaAgenda||{};
@@ -31275,7 +31286,8 @@ async function citasAgendarGhl(clientId){
       // El calendario va tambien al reprogramar: del otro lado hace falta para
       // poder releer los huecos cuando GHL rechaza el horario.
       ? await agLlamar({accion:'reprogramar', eventId:idViejo,
-                        calendarId:cal, inicio:_envio})
+                        calendarId:((S._huecosCal||{})['cita-huecos']||cal),
+                        inicio:_envio})
       : await agLlamar({accion:'agendar', email:mail, calendarId:cal,
                         inicio:_envio,
                         titulo:(c.name||'')+' - '+et});
