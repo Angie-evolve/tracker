@@ -31100,7 +31100,21 @@ async function citasHuecos(clientId, ids){
     // esta libre vuelve como "The slot you have selected is no longer
     // available", que es cierto pero llega tarde y suena a error del sistema.
     S._huecos=S._huecos||{};
-    S._huecos[ids.caja]={dia:f, horas:hoy.map(function(d){
+    // Ademas de la hora legible, el ISO tal cual lo devolvio GHL. Reconstruirlo
+    // despues a partir de la fecha y la hora locales es lo que hacia que GHL
+    // contestara "the slot you have selected is no longer available" sobre un
+    // hueco que acababa de ofrecer: si el calendario esta en otra zona horaria,
+    // o si su formato no es el que arma toISOString, el horario que se manda no
+    // es el mismo que el que dio. Devolver el suyo saca el problema de raiz.
+    var _isos={};
+    (r.slots||[]).forEach(function(x){
+      var d2=new Date(x);
+      if(isNaN(d2.getTime())) return;
+      var y=d2.getFullYear()+'-'+('0'+(d2.getMonth()+1)).slice(-2)+'-'+('0'+d2.getDate()).slice(-2);
+      if(y!==f) return;
+      _isos[('0'+d2.getHours()).slice(-2)+':'+('0'+d2.getMinutes()).slice(-2)]=String(x);
+    });
+    S._huecos[ids.caja]={dia:f, isos:_isos, horas:hoy.map(function(d){
       return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); })};
     caja.innerHTML='<span style="font-size:10.5px;color:var(--text3);margin-right:6px">'
       +hoy.length+' libre'+(hoy.length===1?'':'s')+':</span>'
@@ -31224,6 +31238,11 @@ async function citasAgendarGhl(clientId){
   if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
   var aviso=_citasHoraLibre('cita-huecos', f, h||'09:00');
   if(aviso){ _citasDecir(clientId, aviso, 'var(--amberx)'); return; }
+  // El horario que se manda es el que dio GHL, letra por letra, cuando lo
+  // tenemos. Solo se rearma cuando la cita se carga sin haber pedido huecos.
+  var _g=(S._huecos||{})['cita-huecos'];
+  var _iso=(_g && _g.dia===f && _g.isos) ? _g.isos[h||'09:00'] : '';
+  var _envio=_iso||d.toISOString();
   // Si esa etapa ya tiene una reunion de GHL, esto la MUEVE. Crear otra dejaria
   // al cliente con dos invitaciones para lo mismo y al tablero sin saber cual
   // vale. Las cargadas a mano no cuentan: esas no existen en GHL.
@@ -31234,22 +31253,22 @@ async function citasAgendarGhl(clientId){
   try{
     var r=idViejo
       ? await agLlamar({accion:'reprogramar', eventId:idViejo,
-                        inicio:d.toISOString()})
+                        inicio:_envio})
       : await agLlamar({accion:'agendar', email:mail, calendarId:cal,
-                        inicio:d.toISOString(),
+                        inicio:_envio,
                         titulo:(c.name||'')+' - '+et});
     // Se anota como puesta a mano: la decidiste vos, no la adivino nadie, y la
     // proxima sincronizacion no tiene que volver a clasificarla.
     c.citas=c.citas||{};
-    c.citas[et]={id:r.id||('ghl-'+Date.now()), inicio:r.inicio||d.toISOString(),
+    c.citas[et]={id:r.id||('ghl-'+Date.now()), inicio:r.inicio||_envio,
                  estado:'confirmed', titulo:(c.name||'')+' - '+et, como:'mano'};
     c.rutaAgenda=c.rutaAgenda||{};
-    c.rutaAgenda[et]=_citaFechaAR(r.inicio||d.toISOString());
+    c.rutaAgenda[et]=_citaFechaAR(r.inicio||_envio);
     _citaFijar(c, c.citas[et].id, et, true);
     save();
     _citasRepintar();
     _citasDecir(clientId, et+(idViejo?' reprogramada':' agendada')+' para el '
-      +c.rutaAgenda[et]+' '+_citaHora(r.inicio||d.toISOString())
+      +c.rutaAgenda[et]+' '+_citaHora(r.inicio||_envio)
       +(idViejo?'':(' con '+esc(r.contacto||mail)))+'.','var(--accent)');
   }catch(e){
     _citasDecir(clientId,'No se agendó: '+esc(e&&e.message||''),'var(--redx)');
