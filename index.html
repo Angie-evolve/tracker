@@ -31103,17 +31103,27 @@ async function citasHuecos(clientId, ids){
   }
   caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando horarios\u2026</span>';
   try{
-    // Si esa etapa ya tiene una cita de GHL, se manda su id: los horarios
-    // tienen que salir del calendario donde ESA cita vive, que no siempre es el
-    // que tiene configurado la etapa.
+    // Los horarios salen SIEMPRE del calendario de la etapa: es el que la
+    // agencia publica y el unico donde la reunion tiene que terminar. Si ya hay
+    // una cita vieja se manda su id, pero solo para averiguar en que calendario
+    // quedo: si no es este, no se la mueve, se agenda de nuevo donde va.
     var _c0=(DB.clients||[]).find(function(x){ return x.id===clientId; });
     var _ya=_c0 ? _deEtapa(_c0.citas, et) : null;
     var _ev=(_ya && _ya.id && String(_ya.id).indexOf('mano-')!==0
              && String(_ya.estado||'')!=='cancelled') ? String(_ya.id) : '';
     var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f, eventId:_ev});
-    // El calendario del que salieron de verdad: es en ese donde hay que mover.
+    // Donde vive la cita vieja, para decidir despues si se mueve o se rehace.
+    S._huecosCitaCal=S._huecosCitaCal||{};
+    S._huecosCitaCal[ids.caja]=String(r.citaCalendarId||'');
+    // Reprogramar mueve la reunion sin sacarla de su calendario, asi que ahi los
+    // horarios son los de ese. Agendar, en cambio, la crea donde va.
+    var calUsar=(ids.mover && r.citaCalendarId) ? String(r.citaCalendarId) : String(cal||'');
+    if(calUsar!==String(cal||'')){
+      var r2=await agLlamar({accion:'huecos', calendarId:calUsar, dia:f});
+      r={slots:(r2.slots||[]), citaCalendarId:r.citaCalendarId};
+    }
     S._huecosCal=S._huecosCal||{};
-    S._huecosCal[ids.caja]=String(r.calendarId||cal||'');
+    S._huecosCal[ids.caja]=calUsar;
     // Se filtra al dia elegido con la hora local: el rango que se pide es ancho
     // a proposito para no hacer cuentas de zona horaria del otro lado.
     var hoy=(r.slots||[]).map(function(x){ return new Date(x); })
@@ -31160,19 +31170,20 @@ async function citasHuecos(clientId, ids){
         ih.style.borderColor='var(--accent)';
       }
     })();
-    // De que calendario salieron. Importa porque no siempre es el de la etapa:
-    // cuando se esta moviendo una cita, los horarios salen del calendario donde
-    // esa cita vive, y si los dos no coinciden conviene verlo.
-    var _calUsado=String(r.calendarId||cal||'');
+    // De que calendario salieron: el de la etapa. Si ademas hay una cita vieja
+    // colgada en otro, conviene decirlo, porque no se la va a mover: se va a
+    // agendar una nueva aca y la otra queda donde esta.
     var _calNom=(DB.ghlCalendariosAgencia||[]).filter(function(x){
-      return String(x.id)===_calUsado; })[0];
-    var _distinto=(_calUsado && cal && _calUsado!==cal);
+      return String(x.id)===calUsar; })[0];
+    var _otroCal=String(r.citaCalendarId||'');
+    var _distinto=(!ids.mover && _otroCal && cal && _otroCal!==String(cal));
     caja.innerHTML='<span style="font-size:10.5px;color:var(--text3);margin-right:6px">'
       +hoy.length+' libre'+(hoy.length===1?'':'s')
       +(_calNom?(' en '+esc(_calNom.nombre||'')):'')
-      +(_distinto?(' <span style="color:var(--amberx)" title="La etapa apunta a otro '
-        +'calendario. Los horarios salen de donde vive la reunion, que es donde hay que '
-        +'moverla.">\u00b7 no es el de la etapa</span>'):'')
+      +(_distinto?(' <span style="color:var(--amberx)" title="La reunion que ya '
+        +'estaba cargada quedo en otro calendario. Se va a agendar una nueva en el de '
+        +'la etapa; la vieja hay que cancelarla a mano en GHL.">\u00b7 la reunion vieja '
+        +'esta en otro calendario</span>'):'')
       +':</span>'
       +hoy.map(function(d){
         var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
@@ -31218,7 +31229,8 @@ function citasAbrirReprog(clientId, etapa, contId){
   +'<div id="rp-msg" style="font-size:11px;color:var(--text3);min-height:14px;margin-top:4px"></div>';
   cont.appendChild(caja);
   var pedir=function(){
-    citasHuecos(clientId, {fecha:'rp-fecha', hora:'rp-hora', et:etapa, caja:'rp-huecos'});
+    citasHuecos(clientId, {fecha:'rp-fecha', hora:'rp-hora', et:etapa, caja:'rp-huecos',
+                          mover:true});
   };
   document.getElementById('rp-fecha').addEventListener('change', pedir);
   pedir();
@@ -31313,6 +31325,13 @@ async function citasAgendarGhl(clientId){
   var ya=(c.citas||{})[et];
   var idViejo=(ya && ya.id && String(ya.id).indexOf('mano-')!==0
     && String(ya.estado||'')!=='cancelled') ? String(ya.id) : '';
+  // Salvo que esa reunion vieja este en OTRO calendario. Moverla ahi la dejaria
+  // para siempre fuera del calendario que la agencia publica, y con los
+  // horarios de ese otro, que no son los que la etapa ofrece. En ese caso se
+  // agenda una nueva donde va y la vieja queda para cancelar a mano.
+  var _citaCal=String((S._huecosCitaCal||{})['cita-huecos']||'');
+  var _mudada=(idViejo && _citaCal && cal && _citaCal!==String(cal));
+  if(_mudada) idViejo='';
   _citasDecir(clientId, idViejo?'Reprogramando en GHL\u2026':'Agendando en GHL\u2026');
   try{
     var r=idViejo
@@ -31336,7 +31355,10 @@ async function citasAgendarGhl(clientId){
     _citasRepintar();
     _citasDecir(clientId, et+(idViejo?' reprogramada':' agendada')+' para el '
       +c.rutaAgenda[et]+' '+_citaHora(r.inicio||_envio)
-      +(idViejo?'':(' con '+esc(r.contacto||mail)))+'.','var(--accent)');
+      +(idViejo?'':(' con '+esc(r.contacto||mail)))+'.'
+      +(_mudada?(' La reunion que estaba cargada vivia en otro calendario, asi que '
+        +'quedo ahi: conviene cancelarla a mano en GHL.'):'')
+      ,_mudada?'var(--amberx)':'var(--accent)');
   }catch(e){
     _citasDecir(clientId,'No se agendó: '+esc(e&&e.message||''),'var(--redx)');
   }

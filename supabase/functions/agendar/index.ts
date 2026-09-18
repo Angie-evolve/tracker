@@ -198,12 +198,19 @@ Deno.serve(async (req: Request) => {
       // de calendario- y ahi se muestran los huecos de uno y se intenta mover
       // en el otro: la lista dice 10, 11, 12 y GHL en realidad tiene 8:00,
       // 8:30, 10:00, 10:30. Todo lo que se elija va a rebotar.
+      // Cuando hay una cita previa se averigua en que calendario vive, pero NO
+      // se cambia el de la etapa: los horarios tienen que ser los del calendario
+      // donde la reunion TIENE que quedar, no los del lugar donde quedo colgada
+      // una vieja. Se devuelve el dato para que la app decida si mover esa o
+      // crear una nueva en el correcto.
       const eventId = String(body.eventId || "").trim();
+      let citaCalendarId = "";
       if (eventId) {
         const ra = await ghl("/calendars/events/appointments/" + encodeURIComponent(eventId));
         const ap = (ra.datos && (ra.datos.event || ra.datos.appointment || ra.datos)) || {};
-        const propio = String(ap.calendarId || "").trim();
-        if (propio) calendarId = propio;
+        citaCalendarId = String(ap.calendarId || "").trim();
+        // Sin calendario de etapa, el de la cita es mejor que nada.
+        if (!calendarId && citaCalendarId) calendarId = citaCalendarId;
       }
       if (!calendarId) return responder({ error: "Esa etapa no tiene calendario de GHL." }, 400);
       const base = Date.parse(dia + "T00:00:00Z");
@@ -227,7 +234,7 @@ Deno.serve(async (req: Request) => {
       juntar(r.datos);
       // Se devuelve de que calendario salieron: quien pregunta necesita saberlo
       // para mover la cita en ESE y no en otro.
-      return responder({ ok: true, slots: slots.slice(0, 400), calendarId });
+      return responder({ ok: true, slots: slots.slice(0, 400), calendarId, citaCalendarId });
     }
 
     // Mover una cita que ya existe. Va por el mismo camino que crearla porque
