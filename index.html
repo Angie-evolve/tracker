@@ -17420,6 +17420,10 @@ async function edMedirEspacio(forzar){
   if(!forzar && c.bytes!==undefined && (Date.now()-(c.cuando||0))<600000) return c;
   if(c.midiendo) return c;
   c.midiendo=true;
+  // Medir tarda: lista el bucket carpeta por carpeta. Sin repintar aca, tocar
+  // "Volver a medir" no producia ninguna senal y parecia un boton muerto.
+  c.huerfanosRutas=null;
+  _edPintar();
   var pedir=async function(prefijo){
     var r=await fetch(SB_URL+'/storage/v1/object/list/'+ED_BUCKET,{
       method:'POST',
@@ -17453,17 +17457,59 @@ async function edMedirEspacio(forzar){
         _edArchivosDe(t).forEach(function(x){ usados[x]=1; });
       });
     }catch(err){ usados=null; }
-    var hb=0, hn=0;
+    var hb=0, hn=0, hr=[];
     if(usados) Object.keys(rutas).forEach(function(x){
-      if(!usados[x]){ hb+=rutas[x]; hn++; }
+      if(!usados[x]){ hb+=rutas[x]; hn++; hr.push(x); }
     });
+    var antes=c.bytes;
     c.bytes=bytes; c.archivos=archivos;
     c.huerfanosBytes=usados?hb:null; c.huerfanos=usados?hn:null;
+    // Las rutas hacen falta para poder borrarlos: antes solo se contaban y
+    // habia que pedirmelos a mano.
+    c.huerfanosRutas=usados?hr:null;
     c.error=''; c.cuando=Date.now();
-  }catch(err){ c.error=err.message; c.cuando=Date.now(); }
+    if(forzar && typeof toast==='function'){
+      var gbn=(bytes/1073741824).toFixed(2);
+      toast(antes===undefined || antes===bytes
+        ? ('Medido: '+gbn+' GB en '+archivos+' archivos. Sin cambios.')
+        : ('Medido: '+gbn+' GB en '+archivos+' archivos.'));
+    }
+  }catch(err){
+    c.error=err.message; c.cuando=Date.now();
+    if(forzar && typeof toast==='function') toast('No pude medir: '+err.message,'red');
+  }
   c.midiendo=false;
   _edPintar();
   return c;
+}
+// Los archivos que no nombra ningun trabajo. Quedan de subidas que fallaron a
+// mitad de camino, y no habia forma de sacarlos desde la app.
+async function edBorrarHuerfanos(){
+  var c=_edEspacio();
+  var L=(c.huerfanosRutas||[]);
+  if(!L.length){ toast('No hay archivos sueltos. Proba "Volver a medir" primero.','amber'); return; }
+  if(!confirm('Borrar '+L.length+' archivo'+(L.length===1?'':'s')+' que no usa ningun trabajo?\n\n'
+    +'Son '+((c.huerfanosBytes||0)/1073741824).toFixed(2)+' GB. Quedaron de subidas que no '
+    +'terminaron.\n\nNo hay vuelta atras.')) return;
+  var e=_edEstado();
+  try{
+    // De a doscientos: el endpoint acepta una lista, pero mil rutas en un
+    // pedido es donde empieza a cortar.
+    for(var i=0;i<L.length;i+=200){
+      var r=await fetch(SB_URL+'/storage/v1/object/'+ED_BUCKET, {
+        method:'DELETE',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,
+                 'Content-Type':'application/json'},
+        body:JSON.stringify({prefixes:L.slice(i,i+200)})
+      });
+      if(!r.ok){
+        var d=null; try{ d=await r.json(); }catch(e2){}
+        throw new Error((d&&(d.message||d.error))||('HTTP '+r.status));
+      }
+    }
+  }catch(err){ toast('No pude borrarlos: '+_edMsg(err.message),'red'); return; }
+  toast(L.length+' archivo'+(L.length===1?' suelto borrado':'s sueltos borrados'));
+  await edMedirEspacio(true);
 }
 
 function _edEspacioHtml(){
@@ -17498,11 +17544,16 @@ function _edEspacioHtml(){
       +'y su proyecto de CapCut. Los archivos que comparte con otro trabajo se quedan.</div>'
     +(c.huerfanos ? ('<div class="s" style="color:var(--amberx)">Además hay '+c.huerfanos
         +' archivo'+(c.huerfanos===1?'':'s')+' ('+(c.huerfanosBytes/1073741824).toFixed(2)
-        +' GB) que no usa ningún trabajo. Esos no los alcanza ningún botón de acá: '
-        +'pedímelos y los saco.</div>') : '')
-    +'<div class="ed-acciones" style="margin-top:10px">'
-      +'<button class="btn btn-sm" onclick="edMedirEspacio(true)" style="color:var(--text3)">'
-        +'Volver a medir</button></div>'
+        +' GB) que no usa ningún trabajo: quedaron de subidas que no terminaron.</div>') : '')
+    +'<div class="ed-acciones" style="margin-top:10px;display:flex;gap:7px;align-items:center">'
+      +'<button class="btn btn-sm" onclick="edMedirEspacio(true)" style="color:var(--text3)"'
+        +(c.midiendo?' disabled':'')+'>'
+        +(c.midiendo?'Midiendo…':'Volver a medir')+'</button>'
+      +((c.huerfanos && (c.huerfanosRutas||[]).length)
+        ? ('<button class="btn btn-sm" style="color:var(--amberx)" '
+           +'onclick="edBorrarHuerfanos()">Borrar los '+c.huerfanos+' sueltos</button>')
+        : '')
+    +'</div>'
   +'</div>';
 }
 
@@ -17538,7 +17589,7 @@ function _edCuerpo(){
       +'<b>Traé los videos</b>'
       +'Arrastrá acá lo que sea —la carpeta entera, los clips sueltos o el .zip '
       +'tal cual te llegó— o elegí abajo. '
-      +'Los que pesen más de '+ED_LIMITE_MB+' MB se comprimen solos antes de subir.'
+      +'Los que pasen los '+ED_LIMITE_MB+' MB se suben partidos, sin perder calidad.'
       +'<div style="display:flex;gap:10px;justify-content:center;margin-top:14px;'
         +'flex-wrap:wrap">'
         +'<button class="btn" onclick="document.getElementById(\'ed-file\').click()">'
