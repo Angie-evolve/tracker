@@ -807,7 +807,12 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .p3tk2 .p3knom.b2::before{content:'';float:right;width:50px;height:2px}
 .p3tk2:hover{background:var(--bg4)}
 .p3tk2.sel{box-shadow:0 8px 24px rgba(0,0,0,.35),0 0 0 1px var(--border2)}
-.p3tk2 .p3kdia{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;
+.p3tk2 .p3kvivo{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--accent);margin-right:5px;vertical-align:middle;
+  animation:p3lat 1.6s ease-in-out infinite}
+@keyframes p3lat{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.p3kvivo{animation:none}}
+.p3kdia{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;
   justify-content:center;font-size:10.5px;font-weight:700;flex:none;
   font-variant-numeric:tabular-nums}
 /* El nombre entero en dos lineas antes que cortado: "Juann Q..." y "Matias
@@ -30437,6 +30442,9 @@ function _citaCalNombre(ev){
 // Las etapas que tienen atado ESE calendario de GHL. Es el dato mas fuerte que
 // hay: lo elegiste vos, no se deduce de un texto. Cuando existe, las palabras
 // clave no hacen falta -son un plan B para cuando el calendario no dice nada.
+// Cuanto se da por que dura una reunion cuando solo tenemos la hora de inicio.
+// Sirve para saber si esta ocurriendo ahora y no preguntar "que paso" encima.
+var CITA_DURA_MS=60*60*1000;
 function _citaEtapasPorCal(calId){
   var id=String(calId||'');
   if(!id) return [];
@@ -31591,6 +31599,32 @@ function _citasRepintar(){
   try{ if(typeof showTickets==='function' && S.view==='tickets') showTickets(); }catch(e){}
   _citasPintando=false;
 }
+// "En vivo" y "\u00bfque paso?" son estados que cambian solos con el reloj, no
+// con lo que uno toca: sin esto la reunion arranca y la tarjeta sigue diciendo
+// lo de antes hasta que algo mas repinte la pantalla. Se repinta solo cuando la
+// lista de reuniones en curso cambia, para no redibujar el tablero cada minuto.
+var _VIVO={timer:null, firma:''};
+function _vivoFirma(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    var r=[];
+    try{ r=_ruta(c)||[]; }catch(e){ return; }
+    r.forEach(function(x){ if(x.enCurso) out.push(c.id+':'+x.l); });
+  });
+  return out.sort().join('|');
+}
+function _vivoTick(){
+  var f;
+  try{ f=_vivoFirma(); }catch(e){ return; }
+  if(f===_VIVO.firma) return;
+  _VIVO.firma=f;
+  _citasRepintar();
+}
+function _vivoMontar(){
+  if(_VIVO.timer) return;
+  try{ _VIVO.firma=_vivoFirma(); }catch(e){}
+  _VIVO.timer=setInterval(_vivoTick, 60000);
+}
 function citasSel(clave){
   S.p3Cita=(S.p3Cita===clave)?'':clave;
   _citasRepintar();
@@ -32086,7 +32120,10 @@ function _p360FichaHtml(c){
     var falta = e.estado==='hecho'
       ? (hayLlamada?'':(e.agendada?('la reunión fue el '+_f+', falta la grabación')
                                   :'tildada a mano, sin llamada'))
-      : (e.estado==='agendada' ? (e.sinConfirmar?'':('agendada para el '+_f))
+      : (e.estado==='agendada' ? (e.sinConfirmar?'':(e.enCurso
+          ? '<span style="color:var(--accent)"><span class="p3kvivo"></span>'
+            +'est\u00e1 ocurriendo ahora</span>'
+          : ('agendada para el '+_f)))
       : ('falta '+(P360_PIDE[e.l]||'esta etapa')));
     // Lo que hay que resolver hoy: la reunion paso y no se sabe que paso. Las
     // tres salidas son las tres cosas que pudieron ocurrir, y cada una deja el
@@ -32718,6 +32755,14 @@ function p360Html(){
     (function(){
       var r=[];
       try{ r=_ruta(d.c)||[]; }catch(e){ return; }
+      // Si esta ocurriendo ahora, eso: no hay nada que preguntar todavia.
+      var vivo=r.filter(function(x){ return x.enCurso; })[0];
+      if(vivo){
+        lineas+='<span class="p3klin" style="color:var(--accent)" title="La reunion de '
+          +esc(vivo.l)+' esta ocurriendo ahora.">'
+          +'<span class="p3kvivo"></span>'+esc(vivo.l)+' \u00b7 en vivo</span>';
+        return;
+      }
       var pend=r.filter(function(x){ return x.sinConfirmar; })[0];
       if(!pend) return;
       var fp=pend.cuando?pend.cuando.toLocaleDateString('es-AR'):'';
@@ -33199,8 +33244,18 @@ function _ruta(c){
       var _ts=Date.parse(_ct.inicio);
       if(!isNaN(_ts)) cuandoTs=_ts;
     }
+    var horaExacta=(cuandoTs!==null);
     if(cuandoTs===null && agenda) cuandoTs=agenda.getTime()+86399000;
     var futura=!!(cuandoTs!==null && cuandoTs>Date.now());
+    // Mientras la reunion esta ocurriendo no se puede decir todavia que paso:
+    // preguntarlo a los dos minutos de empezar es pedir algo que nadie puede
+    // contestar, y encima en ambar, como si algo estuviera mal.
+    //
+    // No guardamos hora de fin -GHL la tiene, nosotros solo el inicio- asi que
+    // se usa una hora, que es lo que duran estas reuniones. Solo con hora
+    // exacta: las cargadas a mano tienen dia pelado y no hay nada que medir.
+    var enCurso=!!(horaExacta && !futura
+      && (Date.now()-cuandoTs) < CITA_DURA_MS);
     var soloAgenda=!!agenda && !real && !aMano;
     // Cumplida es con evidencia: la grabacion, o alguien que la tildo. Que la
     // reunion figure en el calendario dice que se acordo, no que ocurrio.
@@ -33223,7 +33278,9 @@ function _ruta(c){
             // Solo de onboarding en adelante. Las etapas comerciales -las que
             // no tienen dia- son del embudo de venta y ahi una llamada que no
             // ocurrio no deja a nadie a medio entregar.
-            sinConfirmar:soloAgenda && !futura && e.dia!==null,
+            sinConfirmar:soloAgenda && !futura && !enCurso && e.dia!==null,
+            // Esta ocurriendo ahora. Se muestra en vez de la pregunta.
+            enCurso:soloAgenda && enCurso && e.dia!==null,
             cuando:agenda||null,
             estado: cumplida ? 'hecho'
                   : (soloAgenda ? 'agendada'
@@ -61981,7 +62038,8 @@ async function arrancarConSesion(){
    ['version',  function(){ verVigilar(); }],
    ['citas',    function(){ setTimeout(citasAuto, 4000); citasVigilar(); }],
    ['leads',    function(){ p360LeerVigilar(); }],
-   ['cobros',   function(){ setTimeout(function(){ cobrosRevisar(); }, 6000); }]
+   ['cobros',   function(){ setTimeout(function(){ cobrosRevisar(); }, 6000); }],
+   ['envivo',   function(){ _vivoMontar(); }]
   ].forEach(function(x){
     try{ x[1](); }catch(e){ console.warn('[arranque '+x[0]+']', e); }
   });
