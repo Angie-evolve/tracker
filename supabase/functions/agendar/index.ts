@@ -239,7 +239,50 @@ Deno.serve(async (req: Request) => {
         method: "PUT",
         body: JSON.stringify(cuerpo),
       });
-      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      if (!r.ok) {
+        // Mismo tratamiento que al agendar. Faltaba aca, y aca es donde caen
+        // los clientes que YA tenian una reunion: mover la del 16 al 23 pasa
+        // por PUT, no por POST, asi que todo lo que se arreglo del otro lado no
+        // llegaba a tocarse.
+        if (/no longer available/i.test(r.crudo || "")) {
+          const calId = String(body.calendarId || "").trim();
+          const diag = calId
+            ? await diagnosticarHueco(calId, inicio)
+            : { lectura: "no puedo releer los huecos: falta el calendario en el pedido" };
+          const d = diag as any;
+          if (d && d.coincide_exacto) {
+            const r2 = await ghl("/calendars/events/appointments/" + encodeURIComponent(id), {
+              method: "PUT",
+              body: JSON.stringify({ ...cuerpo, ignoreFreeSlotValidation: true }),
+            });
+            if (r2.ok) {
+              const e2 = (r2.datos && (r2.datos.event || r2.datos.appointment || r2.datos)) || {};
+              return responder({
+                ok: true, id: e2.id || id,
+                inicio: e2.startTime || inicio,
+                fin: e2.endTime || "",
+                nota: "GHL rechazo el horario que el mismo ofrecia; se movio igual.",
+              });
+            }
+            return responder({
+              error: "GHL " + r2.status + ": " + r2.crudo
+                + " \u2014 el hueco seguia libre y tampoco entro sin validacion",
+              diagnostico: diag,
+            }, 502);
+          }
+          const resumen = d && d.lectura
+            ? (" \u2014 " + d.lectura +
+               (d.huecos && d.huecos.length
+                 ? (" | mandamos " + d.mandamos +
+                    " | GHL ofrece ahora: " + d.huecos.slice(0, 6).join(", ")) : ""))
+            : "";
+          return responder({
+            error: "GHL " + r.status + ": " + r.crudo + resumen,
+            diagnostico: diag,
+          }, 502);
+        }
+        return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      }
       const ev = (r.datos && (r.datos.event || r.datos.appointment || r.datos)) || {};
       return responder({
         ok: true, id: ev.id || id,
