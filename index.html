@@ -4749,9 +4749,23 @@ function _overviewMetricsHtml(_ovDonde){
     +'</div>';
   }
 
+  // Los que lanzan esta semana. Es la unica de estas cifras que tiene fecha de
+  // vencimiento: si el numero sube y nadie lo mira, el que se pasa ya no se
+  // puede recuperar.
+  var LANZA_DIAS=7;
+  var porLanzar=_base.map(function(cl){
+      var q=(typeof _lanzaCuenta==='function')?_lanzaCuenta(cl):null;
+      return (q && q.faltan>=0 && q.faltan<=LANZA_DIAS) ? {cl:cl, q:q} : null;
+    }).filter(Boolean)
+    .sort(function(a,b){ return a.q.faltan-b.q.faltan; });
+
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
     +_ovCard('Clientes activos', activos.length, activos.map(function(cl){ return _nom(cl); }),
              'Todos los que no estan archivados.')
+    +_ovCard('Proximos a lanzar &middot; 7d', porLanzar.length, porLanzar.map(function(o){
+        return _nom(o.cl, o.q.faltan===0?'lanza hoy':('faltan '+o.q.faltan+' d')); }),
+             'Los que lanzan en los proximos '+LANZA_DIAS+' dias, contando desde el onboarding.',
+             'var(--amberx)', 'rgba(240,168,48,0.08)', 'rgba(240,168,48,0.2)')
     +_ovCard('Sin cierres &middot; 30d', enRiesgo.length, enRiesgo.map(function(cl){
         return _nom(cl, ((cl.ghl.opportunities||[]).length)+' oportunidades, ninguna ganada'); }),
              'Con GHL conectado y sin ninguna oportunidad ganada en 30 dias.', 'var(--redx)', 'rgba(216,90,48,0.08)', 'rgba(216,90,48,0.2)')
@@ -27662,8 +27676,27 @@ function _hitoEstado(c, x){
   if(/onboarding/.test(t)){
     var e=rutaDef().filter(function(y){ return _norm(y.l).indexOf('onboarding')>=0; })[0];
     if(!e) return null;
-    var hecha=!!_deEtapa(c.rutaHechas, e.l) || !!_deEtapa(c.citas, e.l);
-    return {ok:hecha, porque:hecha?('la etapa '+e.l+' tiene fecha'):'sin fecha en la etapa de onboarding'};
+    // Que exista una cita no alcanza. Antes alcanzaba, y desbloqueaba el cobro
+    // de un onboarding que todavia no habia ocurrido -o que ni siquiera se
+    // habia agendado, si la cita que figuraba en esa etapa habia caido ahi por
+    // descarte-. Cobrar por algo que no se entrego es el peor error posible
+    // aca, asi que se pide la misma evidencia que la ruta: la grabacion, o
+    // alguien que la haya tildado.
+    if(_deEtapa(c.rutaHechas, e.l))
+      return {ok:true, porque:'la etapa '+e.l+' esta tildada como hecha'};
+    var nodo=null;
+    try{ nodo=(_ruta(c)||[]).filter(function(y){ return y.l===e.l; })[0]; }catch(err){}
+    if(!nodo) return {ok:false, porque:'sin fecha en la etapa de onboarding'};
+    if(nodo.estado==='hecho')
+      return {ok:true, porque:'la reunion de '+e.l+' se hizo'};
+    if(nodo.enCurso)
+      return {ok:false, porque:'la reunion de '+e.l+' esta ocurriendo ahora'};
+    if(nodo.sinConfirmar)
+      return {ok:false, porque:'la reunion de '+e.l+' ya paso y nadie confirmo que se haya hecho'};
+    if(nodo.estado==='agendada')
+      return {ok:false, porque:'la reunion de '+e.l+' esta agendada'
+        +(nodo.cuando?(' para el '+_citaFechaAR(nodo.cuando)):'')+', todavia no ocurrio'};
+    return {ok:false, porque:'sin fecha en la etapa de onboarding'};
   }
   if(/firma del contrato/.test(t)){
     var ct=c.contract||{};
@@ -27688,7 +27721,15 @@ function cobrosDesbloqueados(c){
       var x=o.x;
       if(x.pagadoAt) return false;
       if(x.tipo!=='hito') return false;
-      if(x.hitoAt) return true;                 // tildado a mano o detectado antes
+      if(x.hitoAt){
+        // Lo que tildaste vos queda tildado. Lo que se detecto solo se vuelve a
+        // mirar: un hito detectado con la regla vieja -o con datos que despues
+        // cambiaron- seguia figurando como cobrable para siempre, porque nadie
+        // volvia a preguntarse si todavia era cierto.
+        if(String(x.hitoPorque||'')==='tildado a mano') return true;
+        var st0=_hitoEstado(c, x);
+        return !(st0 && !st0.ok);
+      }
       var st=_hitoEstado(c, x);
       return !!(st && st.ok);
     });
@@ -27697,11 +27738,24 @@ function cobrosDesbloqueados(c){
 // para poder avisar una sola vez: sin eso el aviso sale en cada carga y se
 // vuelve parte del paisaje.
 function cobrosRevisar(callado){
-  var nuevos=[];
+  var nuevos=[], sueltos=0;
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
     _pagos(c).forEach(function(x){
-      if(x.pagadoAt || x.tipo!=='hito' || x.hitoAt) return;
+      if(x.pagadoAt || x.tipo!=='hito') return;
+      if(x.hitoAt){
+        // Se borra la marca que ya no corresponde, para que el hito pueda
+        // volver a dispararse de verdad cuando la reunion ocurra. Solo las
+        // automaticas: las tildadas a mano son una decision tuya.
+        if(String(x.hitoPorque||'')!=='tildado a mano'){
+          var stv=_hitoEstado(c, x);
+          if(stv && !stv.ok){
+            delete x.hitoAt; delete x.hitoPorque;
+            sueltos++;
+          }
+        }
+        return;
+      }
       var st=_hitoEstado(c, x);
       if(st && st.ok){
         x.hitoAt=new Date().toISOString();
@@ -27710,6 +27764,7 @@ function cobrosRevisar(callado){
       }
     });
   });
+  if(sueltos && !nuevos.length) save();
   if(nuevos.length){
     save();
     if(!callado && typeof toast==='function'){
@@ -32847,6 +32902,10 @@ function p360Html(){
       +'ninguna de las dos vistas.'
   };
   return '<div class="tk-card" style="padding:18px 20px 22px">'
+    // Las mismas cifras que el Mirador, arriba del tablero: aca es donde se
+    // trabaja la cartera todos los dias, y tenerlas en otra pantalla obligaba a
+    // ir y volver para saber quien lanza esta semana.
+    +((typeof _overviewMetricsHtml==='function')?_overviewMetricsHtml():'')
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;'
       +'flex-wrap:wrap;margin-bottom:4px">'
       // El titulo lo pone la cabecera de la pantalla: aca era el mismo texto
