@@ -26167,8 +26167,13 @@ function _ncCobroCambio(){
   if(!l) return;
   l.textContent=(t==='recurrente')?'Fee mensual (USD)'
     :(t==='one-time')?'Pago unico (USD)'
-    :(t==='garantia')?'Valor del contrato (USD)'
+    :(t==='garantia')?'Fee de implementacion (USD)'
     :'Monto (USD)';
+  // El fee mensual y la duracion solo tienen sentido en un contrato con
+  // garantia: en un pago unico no hay mes que valga, y en un fee mensual el
+  // monto de arriba YA es el fee.
+  var ex=document.getElementById('nc-extra');
+  if(ex) ex.style.display=(t==='garantia')?'':'none';
 }
 
 var NC_SECCIONES=[
@@ -26209,7 +26214,7 @@ function _ncNavPuntos(){
   var chk=document.getElementById('nc-ghl');
   var estado={
     identidad: lleno(['nc-name','nc-industry','nc-contact','nc-email','nc-phone']),
-    comercial: lleno(['nc-tipocobro','nc-monto','nc-inicio','nc-contrato']),
+    comercial: lleno(['nc-tipocobro','nc-monto','nc-fee','nc-dias','nc-inicio','nc-contrato']),
     contactos: lleno(['nc-owner']) || _ncEquipo.length>0,
     llamadas:  _ncLlamadas.length>0,
     ghl:       !!(chk&&chk.checked)
@@ -26287,6 +26292,18 @@ function openNewClientModal(){
                   <input id="nc-monto" type="number" step="0.01" placeholder="0" oninput="_ncNavPuntos()"></div>
                 <div class="form-row"><label class="form-label">Inicio</label>
                   <input id="nc-inicio" type="date" onchange="_ncNavPuntos()"></div>
+              </div>
+              <!-- Un contrato con garantia casi siempre tiene las dos cosas: lo que
+                   se cobra por armarlo y lo que se cobra por mes. El alta pedia un
+                   monto solo, asi que el cliente entraba con la mitad del acuerdo y
+                   habia que completarlo despues en la ficha. -->
+              <div class="form-grid" id="nc-extra" style="display:none">
+                <div class="form-row"><label class="form-label">Fee mensual (USD)</label>
+                  <input id="nc-fee" type="number" step="0.01" placeholder="0"
+                    oninput="_ncNavPuntos()"></div>
+                <div class="form-row"><label class="form-label">Duracion (dias)</label>
+                  <input id="nc-dias" type="number" step="1" placeholder="30"
+                    oninput="_ncNavPuntos()"></div>
               </div>
               <div class="form-row"><label class="form-label">Link al contrato</label>
                 <input id="nc-contrato" placeholder="Drive, Dropbox o donde este firmado" oninput="_ncNavPuntos()">
@@ -26394,8 +26411,12 @@ async function createClient(){
   // Se usan los mismos nombres que escribe el extractor de contratos: si despues
   // subis el PDF, completa o corrige estos campos en vez de crear otros.
   const _fee=(tipoCobro==='recurrente');
-  const contratoObj=(inicio||linkContrato)
-    ? {startDate:inicio||undefined, driveUrl:linkContrato||undefined}
+  const _feeExtra=(tipoCobro==='garantia')
+    ? (parseFloat(((document.getElementById('nc-fee')||{}).value||'').trim())||0) : 0;
+  const _dias=parseFloat(((document.getElementById('nc-dias')||{}).value||'').trim())||0;
+  const contratoObj=(inicio||linkContrato||_dias)
+    ? {startDate:inicio||undefined, driveUrl:linkContrato||undefined,
+       durationDays:_dias||undefined}
     : undefined;
   const equipo=_ncEquipo.slice();
   // Las llamadas del alta entran al mismo array que las de Fathom, con la misma
@@ -26464,8 +26485,10 @@ async function createClient(){
     owner:owner||undefined,
     serviceType:tipoCobro||undefined,
     contractValue:(monto&&!_fee)?monto:undefined,
-    monthlyFee:(monto&&_fee)?monto:undefined,
-    recurrente:_fee||undefined,
+    // Con garantia el fee mensual va aparte; con "fee mensual" a secas, el
+    // monto de arriba ES el fee.
+    monthlyFee:_fee ? (monto||undefined) : (_feeExtra||undefined),
+    recurrente:(_fee||!!_feeExtra)||undefined,
     contract:contratoObj,
     fathomCalls: llamadas,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
@@ -32324,9 +32347,14 @@ function p360Html(){
   if(_sinVenta) cols=cols.filter(function(c){ return !p360EsVenta(c.l); });
   // Y el conteo de arriba cuenta lo que se ve: si dijera 29 con trece leads
   // escondidos, estaria mintiendo justo arriba del tablero.
+  var _ocultos=0;
   if(_sinVenta){
     var _vis=[];
     cols.forEach(function(c){ c.cards.forEach(function(d){ _vis.push(d); }); });
+    // Cuantos quedaron afuera. Sin esto, un cliente recien creado -que arranca
+    // en la primera etapa, que es de venta- desaparecia del tablero sin una
+    // sola senal, y desde afuera se lee como que no se creo.
+    _ocultos=ver.length-_vis.length;
     ver=_vis;
   }
   // La misma gramatica que el reparto: un cliente, un chip. Antes cada tarjeta
@@ -32524,7 +32552,14 @@ function p360Html(){
       +'<div style="font-size:11px;color:var(--text3)">'
         +ver.length+' cliente'+(ver.length===1?'':'s')
         +(sel?(' en '+esc(selLabel)):'')
-        +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado</div>'
+        +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado'
+        +(_ocultos
+          ? (' \u00b7 <a href="javascript:void(0)" onclick="p360VerVenta(true)" '
+             +'style="color:var(--amberx)" title="Estan en Diagnostico, Presentacion o '
+             +'Alta cliente, que estan ocultas">'+_ocultos+' oculto'
+             +(_ocultos===1?'':'s')+' en etapas de venta</a>')
+          : '')
+        +'</div>'
     +'</div>'
     // La frase que explicaba cada vista se saco: ocupaba una fila arriba del
     // tablero para decir algo que se entiende mirandolo. LEAD queda definido
