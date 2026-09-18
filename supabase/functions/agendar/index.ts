@@ -187,7 +187,9 @@ Deno.serve(async (req: Request) => {
       // Sin endTime: la duracion la define el calendario. Mandarla nuestra da
       // "Selected slot duration is not a valid duration option for this
       // calendar" -GHL solo acepta las duraciones que tiene configuradas.
-      const cuerpo: Record<string, unknown> = { startTime: new Date(t0).toISOString() };
+      // Igual que al agendar: el horario va tal cual lo dio GHL. Reescribirlo
+      // en UTC lo hace irreconocible para su propia validacion de huecos.
+      const cuerpo: Record<string, unknown> = { startTime: inicio };
       if (body.minutos) {
         const m = Math.max(5, Math.min(480, parseInt(body.minutos, 10)));
         cuerpo.endTime = new Date(t0 + m * 60000).toISOString();
@@ -231,7 +233,17 @@ Deno.serve(async (req: Request) => {
       calendarId,
       locationId: GHL_LOCATION,
       contactId: c.id,
-      startTime: new Date(t0).toISOString(),
+      // El horario va TAL CUAL lo mando la app, que a su vez es tal cual lo
+      // devolvio free-slots. Aca se pasaba por new Date().toISOString(), que lo
+      // reescribe en UTC: "2026-09-23T12:00:00-03:00" salia como
+      // "2026-09-23T15:00:00.000Z". Con ignoreFreeSlotValidation en false, GHL
+      // compara contra su propia lista de huecos y no lo reconoce, y contesta
+      // "The slot you have selected is no longer available" sobre un horario
+      // que el mismo acababa de ofrecer.
+      //
+      // Date.parse de arriba se sigue usando, pero solo para validar que la
+      // fecha se entienda y para calcular endTime cuando viene minutos.
+      startTime: inicio,
       title: titulo || "Reunion",
       appointmentStatus: "confirmed",
       // Que el cliente reciba lo que recibe siempre: invitacion, link y
