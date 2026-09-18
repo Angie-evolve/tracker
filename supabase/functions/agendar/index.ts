@@ -245,10 +245,19 @@ Deno.serve(async (req: Request) => {
         // por PUT, no por POST, asi que todo lo que se arreglo del otro lado no
         // llegaba a tocarse.
         if (/no longer available/i.test(r.crudo || "")) {
-          const calId = String(body.calendarId || "").trim();
+          // Si la app no lo mando -una pestana con la version vieja en cache-
+          // se le pregunta a GHL por la cita: ella sabe de que calendario es.
+          // Depender de que el navegador se actualice para poder diagnosticar
+          // es lo que hace que un error se quede sin explicacion por horas.
+          let calId = String(body.calendarId || "").trim();
+          if (!calId) {
+            const ra = await ghl("/calendars/events/appointments/" + encodeURIComponent(id));
+            const ap = (ra.datos && (ra.datos.event || ra.datos.appointment || ra.datos)) || {};
+            calId = String(ap.calendarId || "").trim();
+          }
           const diag = calId
             ? await diagnosticarHueco(calId, inicio)
-            : { lectura: "no puedo releer los huecos: falta el calendario en el pedido" };
+            : { lectura: "no pude averiguar de que calendario es esta cita" };
           const d = diag as any;
           if (d && d.coincide_exacto) {
             const r2 = await ghl("/calendars/events/appointments/" + encodeURIComponent(id), {
