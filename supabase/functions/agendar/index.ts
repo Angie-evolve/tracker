@@ -335,11 +335,25 @@ Deno.serve(async (req: Request) => {
             });
           }
           return responder({
-            error: "GHL " + r2.status + ": " + r2.crudo,
+            error: "GHL " + r2.status + ": " + r2.crudo
+              + " \u2014 el hueco seguia libre y tampoco entro sin validacion",
             diagnostico: diag,
           }, 502);
         }
-        return responder({ error: "GHL " + r.status + ": " + r.crudo, diagnostico: diag }, 502);
+        // El diagnostico va DENTRO del texto del error y no solo en un campo
+        // aparte: el campo lo muestra la version nueva de la app, y el navegador
+        // puede estar sirviendo la vieja de cache. En el texto lo ve cualquiera.
+        const d = diag as any;
+        const resumen = d && d.lectura
+          ? (" \u2014 " + d.lectura +
+             (d.huecos && d.huecos.length
+               ? (" | mandamos " + d.mandamos +
+                  " | GHL ofrece ahora: " + d.huecos.slice(0, 6).join(", ")) : ""))
+          : "";
+        return responder({
+          error: "GHL " + r.status + ": " + r.crudo + resumen,
+          diagnostico: diag,
+        }, 502);
       }
       // El texto de GHL va tal cual. Traducirlo a "no se pudo agendar" es lo
       // que hace imposible entender por que falla -paso hoy con otra API.
