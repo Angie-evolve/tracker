@@ -308,6 +308,37 @@ Deno.serve(async (req: Request) => {
       // ocupo, o que lo que mandamos no es lo que el espera.
       if (/no longer available/i.test(r.crudo || "")) {
         const diag = await diagnosticarHueco(calendarId, inicio);
+        // Si el hueco SIGUE en la lista de GHL y aun asi lo rechazo, el que se
+        // esta equivocando es su validacion, no nosotros. En ese caso -y solo
+        // en ese- se reintenta pidiendole que no valide: ya validamos nosotros
+        // contra su propia lista, un segundo antes, con su propia respuesta.
+        //
+        // Cuando el hueco NO esta en la lista se respeta el rechazo: ahi el
+        // horario se ocupo de verdad y saltearse la validacion crearia una
+        // reunion encima de otra.
+        if (diag && (diag as any).coincide_exacto) {
+          const r2 = await ghl("/calendars/events/appointments", {
+            method: "POST",
+            body: JSON.stringify({ ...nueva, ignoreFreeSlotValidation: true }),
+          });
+          if (r2.ok) {
+            // La misma forma que la respuesta normal: quien llama no tiene
+            // por que saber que hubo un reintento.
+            const e2 = (r2.datos && (r2.datos.event || r2.datos.appointment || r2.datos)) || {};
+            return responder({
+              ok: true,
+              id: e2.id || "",
+              inicio: e2.startTime || inicio,
+              fin: e2.endTime || "",
+              contacto: c.nombre || email,
+              nota: "GHL rechazo el horario que el mismo ofrecia; se creo igual.",
+            });
+          }
+          return responder({
+            error: "GHL " + r2.status + ": " + r2.crudo,
+            diagnostico: diag,
+          }, 502);
+        }
         return responder({ error: "GHL " + r.status + ": " + r.crudo, diagnostico: diag }, 502);
       }
       // El texto de GHL va tal cual. Traducirlo a "no se pudo agendar" es lo
