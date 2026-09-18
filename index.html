@@ -53707,6 +53707,10 @@ async function syncGhl(clientId, silent, skipEnrich){
     const nChanges=computeGhlChanges(c, allOpps);
     c.ghl.opportunities=mergeGhlOpps(c.ghl.opportunities, allOpps, truncated);
     c.ghl.lastSync=new Date().toISOString();
+    // Cuantas trajo esta vuelta, y que el error viejo deje de contar: sin esto
+    // un fallo de la semana pasada seguia figurando como el estado actual.
+    c.ghl.lastSyncCount=allOpps.length;
+    delete c.ghl._syncError;
     c.ghl._syncing=false; save();
     clearTimeout(window._ghlVeloTimer);
     if(!silent||nChanges) toast(allOpps.length+' oportunidades sincronizadas'+(nChanges?' \u00b7 '+nChanges+' novedades':''));
@@ -57577,7 +57581,37 @@ function renderVentasTab(c, el){
     +'</span>';
 
   if(!ops.length){
-    el.innerHTML=header(right)+'<div class="empty"><div class="empty-icon"></div><div>'+(c.ghl._syncing?'Sincronizando...':'Sin oportunidades sincronizadas todavia.')+'</div></div>';
+    // Vacio por tres motivos distintos que se veian iguales: nunca se
+    // sincronizo, se sincronizo bien y GHL no tiene nada, o la ultima
+    // sincronizacion fallo. El error quedaba guardado pero solo se mostraba en
+    // el cartel del momento: al recargar desaparecia y esto se leia como
+    // "todavia no hay nada", que es justo lo contrario de lo que pasaba.
+    var _err=c.ghl._syncError||'';
+    var _hs=_vtHorasDesdeSync(c);
+    var _cuerpo;
+    if(c.ghl._syncing){
+      _cuerpo='<div>Sincronizando...</div>';
+    } else if(_err){
+      _cuerpo='<div style="color:var(--redx)">La ultima sincronizacion con GHL fallo.</div>'
+        +'<div style="margin-top:6px;font-size:12px;max-width:560px;margin-left:auto;'
+          +'margin-right:auto;color:var(--text3);line-height:1.55">'+esc(_err)+'</div>'
+        +'<div style="margin-top:11px"><button class="btn btn-sm btn-primary" '
+          +'onclick="syncGhl('+c.id+',false)">Reintentar</button></div>';
+    } else if(_hs==null){
+      _cuerpo='<div>Todavia no se sincronizo con GHL.</div>'
+        +'<div style="margin-top:11px"><button class="btn btn-sm btn-primary" '
+          +'onclick="syncGhl('+c.id+',false)">Sincronizar ahora</button></div>';
+    } else {
+      _cuerpo='<div>GHL no devolvio ninguna oportunidad.</div>'
+        +'<div style="margin-top:6px;font-size:12px;max-width:560px;margin-left:auto;'
+          +'margin-right:auto;color:var(--text3);line-height:1.55">'
+          +'La sincronizacion de '+esc(_vtHaceTxt(_hs))+' funciono y trajo cero. '
+          +'Suele ser el Location ID apuntando a otra subcuenta, o que el pipeline '
+          +'esta vacio.</div>'
+        +'<div style="margin-top:11px"><button class="btn btn-sm" '
+          +'onclick="syncGhl('+c.id+',false)">Sincronizar de nuevo</button></div>';
+    }
+    el.innerHTML=header(right)+'<div class="empty"><div class="empty-icon"></div>'+_cuerpo+'</div>';
     return;
   }
 
