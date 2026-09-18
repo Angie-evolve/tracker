@@ -16290,6 +16290,37 @@ function _edComprimir(f, onProg, techo){
 
 // fetch no informa progreso de subida, y con archivos de un giga eso importa:
 // sin porcentaje no hay forma de distinguir "va lento" de "se colgo".
+// Supabase esta detras de Cloudflare. Cuando su storage se cae, lo que vuelve
+// no es un JSON con el error: es la pagina de error de Cloudflare entera, y esos
+// cuatro mil caracteres de HTML terminaban pegados tal cual en la pantalla. El
+// dato util son dos: que fallo del lado de ellos y con que codigo.
+function _edMsgHttp(status, texto){
+  var t=String(texto||'').trim();
+  if(/^\s*<(!doctype|html)/i.test(t) || /cf-error-details|cloudflare/i.test(t)){
+    var m=t.match(/<title>([^<]*)<\/title>/i);
+    var tit=m?String(m[1]).replace(/\s+/g,' ').trim():'';
+    return 'Supabase no respondio'+(tit?(' \u2014 '+tit):(' (HTTP '+status+')'))
+      +'. Es un problema de ellos, no del archivo. Volve a intentar en un rato.';
+  }
+  return t.slice(0,300)||('HTTP '+status);
+}
+// Un 502 dura segundos. Antes tiraba la tanda entera; ahora que un video va en
+// diecinueve partes, que una sola falle y se pierda todo lo subido es peor:
+// bastan tres reintentos con espera creciente.
+async function _edPostR(url, f, onProg, decirlo){
+  var esperas=[2000, 6000, 15000];
+  for(var intento=0;;intento++){
+    try{ return await _edPost(url, f, onProg); }
+    catch(e){
+      var st=(e&&e._status)||0;
+      var seRecupera=(st>=500 || st===408 || st===429 || (e&&e._red));
+      if(!seRecupera || intento>=esperas.length) throw e;
+      if(decirlo) decirlo('Supabase no respondio. Reintento en '
+        +(esperas[intento]/1000)+'s (van '+(intento+1)+' de '+esperas.length+')');
+      await new Promise(function(r){ setTimeout(r, esperas[intento]); });
+    }
+  }
+}
 function _edPost(url, f, onProg){
   return new Promise(function(res, rej){
     var x=new XMLHttpRequest();
@@ -16310,9 +16341,14 @@ function _edPost(url, f, onProg){
       if(x.status===403||/row-level security|Unauthorized/i.test(t))
         return rej(new Error('El bucket existe pero no te deja escribir: faltan las policies '
           +'de editor-ia/01-tabla.sql.'));
-      rej(new Error(t||('HTTP '+x.status)));
+      var _e=new Error(_edMsgHttp(x.status, t));
+      _e._status=x.status;
+      rej(_e);
     };
-    x.onerror=function(){ rej(new Error('se corto la conexion durante la subida')); };
+    x.onerror=function(){
+      var _e=new Error('se corto la conexion durante la subida');
+      _e._red=true; rej(_e);
+    };
     x.onabort=function(){ rej(new Error('subida cancelada')); };
     x.send(f);
   });
@@ -16405,13 +16441,13 @@ async function edSubir(modo){
         for(var t=0; t<trozos.length; t++){
           var pth=uid+'/'+sello+_edParteSufijo(t, trozos.length, f.name);
           var _t=t;
-          await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(pth),
+          await _edPostR(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(pth),
             trozos[t], function(pp){
               var total=(_t+pp)/trozos.length;
               e.pct=total;
               decir(cual+'Subiendo parte '+(_t+1)+' de '+trozos.length
                 +'… '+Math.round(total*100)+'% del archivo');
-            });
+            }, function(m){ decir(cual+'Parte '+(_t+1)+' de '+trozos.length+' \u00b7 '+m); });
           rutas.push(pth);
         }
         yaEstan[huella]=rutas[rutas.length-1];
@@ -16452,9 +16488,9 @@ async function edSubir(modo){
       }
       if(!datos.size) throw new Error(nombre+' quedó en 0 bytes, no lo subo');
       var path=uid+'/'+Date.now()+'-'+('0'+i).slice(-2)+'-'+huella+'-'+_matSlug(nombre);
-      await _edPost(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos, function(p){
-        e.pct=p; decir(cual+'Subiendo… '+Math.round(p*100)+'%');
-      });
+      await _edPostR(SB_URL+'/storage/v1/object/'+ED_BUCKET+'/'+encodeURI(path), datos,
+        function(p){ e.pct=p; decir(cual+'Subiendo… '+Math.round(p*100)+'%'); },
+        function(m){ decir(cual+m); });
       rutas.push(path);
       yaEstan[huella]=path;   // por si el mismo archivo viene dos veces en la tanda
     }
