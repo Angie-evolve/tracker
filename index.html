@@ -31226,7 +31226,11 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
 // Usa los mismos ids que el formulario de la ficha -cita-fecha, cita-hora,
 // cita-etapa, cita-huecos- para que citasHuecos, citasAgendarGhl y citasAMano
 // funcionen sin cambiarles una linea.
-function p360Agendar(clientId){
+// `elegir` muestra el selector de etapa. Desde la tarjeta del tablero va sin
+// el: la etapa es la columna donde estaba parada y preguntarla seria preguntar
+// algo que ya se sabe. Desde el calendario de la ficha si, porque ahi se carga
+// cualquier reunion, no la de la etapa actual.
+function p360Agendar(clientId, elegir){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
   var et=(function(){ var e=_p360Etapa(c); return e?e.l:''; })();
@@ -31245,13 +31249,24 @@ function p360Agendar(clientId){
               : '"'+esc(et)+'" no tiene calendario de GHL elegido, asi que no puedo traer '
                 +'los horarios. Podes anotarla igual.')
       +'</div>'
-      // La etapa va escrita y no se elige: es la columna donde estaba la tarjeta.
-      +'<input type="hidden" id="cita-etapa" value="'+esc(et)+'">'
+      +(elegir
+        ? ('<div style="margin-top:12px"><label style="font-size:11px;color:var(--text3);'
+            +'display:block;margin-bottom:4px">De que reunion es</label>'
+          +'<select id="cita-etapa" style="'+est+';width:100%" '
+            +'onchange="citasHuecos('+c.id+',{fecha:\'cita-fecha\',hora:\'cita-hora\','
+            +'etapa:\'cita-etapa\',caja:\'cita-huecos\'})">'
+          +rutaDef().map(function(e){
+              return '<option value="'+esc(e.l)+'"'+(e.l===et?' selected':'')+'>'
+                +esc(e.l)+'</option>'; }).join('')
+          +'</select></div>')
+        // Sin selector la etapa va escrita: es la columna donde estaba la tarjeta.
+        : ('<input type="hidden" id="cita-etapa" value="'+esc(et)+'">'))
       +'<input type="hidden" id="cita-con" value="'+esc(c.contacto||c.name||'')+'">'
       +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">'
         +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
           +'onchange="citasHuecos('+c.id+',{fecha:\'cita-fecha\',hora:\'cita-hora\','
-          +'et:\''+esc(et).replace(/'/g,"\\'")+'\',caja:\'cita-huecos\'})" style="'+est+'">'
+          +(elegir?'etapa:\'cita-etapa\'':('et:\''+esc(et).replace(/'/g,"\\'")+'\''))
+          +',caja:\'cita-huecos\'})" style="'+est+'">'
         +'<input id="cita-hora" type="time" value="09:00" style="'+est+'">'
       +'</div>'
       +'<div id="cita-huecos" style="margin-top:10px;line-height:2"></div>'
@@ -31270,7 +31285,9 @@ function p360Agendar(clientId){
             +'Agendar en GHL</button>'):'')
       +'</div>'
     +'</div></div>';
-  if(cal) citasHuecos(c.id, {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'});
+  if(cal) citasHuecos(c.id, elegir
+    ? {fecha:'cita-fecha', hora:'cita-hora', etapa:'cita-etapa', caja:'cita-huecos'}
+    : {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'});
 }
 // Se cierra sola cuando la cita quedo: mirar si aparecio es mas confiable que
 // confiar en que la funcion de abajo no fallo en el medio.
@@ -31284,30 +31301,22 @@ async function p360AgendarHacer(clientId, modo){
   var ahora=JSON.stringify((c.citas||{})[et]||null);
   if(ahora!==antes){ closeModal(); _citasRepintar(); }
 }
+// El calendario de una tarjeta lleva a cambiarle la fecha a ESA reunion. Antes
+// abria el formulario de cargar a mano con los campos pre-cargados, que creaba
+// una nueva en vez de mover la que ya estaba. Ahora abre el panel de
+// reprogramar, que es lo que se viene a hacer.
 function p360IrACita(clientId, etapa){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
-  var x=_deEtapa(c.citas, etapa);
   S.p360Abierto=clientId;
-  S._p3Mano=true;                     // el formulario abierto
   _citasRepintar();
   setTimeout(function(){
-    var f=document.getElementById('cita-fecha'),
-        h=document.getElementById('cita-hora'),
-        e=document.getElementById('cita-etapa');
-    if(e) e.value=etapa;
-    if(x && x.inicio){
-      var d=new Date(x.inicio);
-      if(!isNaN(d.getTime())){
-        if(f) f.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)
-                     +'-'+('0'+d.getDate()).slice(-2);
-        if(h) h.value=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
-      }
-    }
-    try{ citasHuecos(clientId); }catch(err){}
-    var caja=document.getElementById('cita-fecha');
-    if(caja && caja.scrollIntoView) caja.scrollIntoView({block:'center'});
-  }, 60);
+    var x=_deEtapa(c.citas, etapa);
+    // Sin reunion en GHL no hay nada que mover: se ofrece agendar una.
+    if(!x || !x.inicio){ p360Agendar(clientId, true); return; }
+    try{ citasAbrirReprog(clientId, etapa, 'p3-cita-detalle'); }
+    catch(err){ p360Agendar(clientId, true); }
+  }, 80);
 }
 async function citasHuecos(clientId, ids){
   // Los mismos horarios sirven en dos lugares: el formulario de arriba y la
@@ -32146,7 +32155,8 @@ function _citasHtml(c){
           +'onclick="citasBuscar('+c.id+')">Buscar</button>')
         : '')
       +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:4px 10px" '
-        +'onclick="citasForm()">'+(S._p3Mano?'Cerrar':'+ Cita')+'</button>'
+        +'title="Agendar o anotar una reunion con '+esc(String(c.name||''))+'" '
+        +'onclick="p360Agendar('+c.id+',true)">+ Cita</button>'
     +'</div>'
   +'</div>';
 
@@ -32157,42 +32167,11 @@ function _citasHtml(c){
     +punto('var(--text2)','resto de la agenda')
   +'</div>';
 
-  // Lo que se agendo fuera de GHL no llega por ninguna consulta: se carga.
-  var form=!S._p3Mano ? '' :
-    '<div style="margin:2px 0 14px;padding:12px 14px;border:1px solid var(--border2);'
-      +'border-radius:10px;background:var(--bg2)">'
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
-        +'<input id="cita-fecha" type="date" onchange="citasHuecos('+c.id+')" '
-          +'style="'+_citaEst()+'">'
-        +'<input id="cita-hora" type="time" value="09:00" style="'+_citaEst()+'">'
-        // Viene puesto con el contacto del cliente: es con quien es la reunion en
-        // el 99% de los casos, y escribirlo cada vez era trabajo de mas. Para
-        // "Agendar en GHL" ni se usa -el contacto sale del mail de la ficha.
-        +'<input id="cita-con" value="'+esc(c.contacto||c.name||'')+'" '
-          +'placeholder="Con quien" title="Solo para anotar. Al agendar en GHL el '
-          +'contacto sale del mail de la ficha." style="'+_citaEst()+';flex:1;min-width:130px">'
-        +'<select id="cita-etapa" onchange="citasHuecos('+c.id+')" style="'+_citaEst()+'">'
-          +'<option value="">Etapa...</option>'+ops+'</select>'
-      +'</div>'
-      +'<div id="cita-huecos" style="margin-top:8px;line-height:1.9"></div>'
-      +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
-        +'<button class="btn btn-sm btn-primary" style="font-size:11px;padding:4px 10px" '
-          +'title="La crea en el calendario de GHL de esa etapa: el cliente recibe '
-          +'invitacion, link y recordatorios." '
-          +'onclick="citasAgendarGhl('+c.id+')" id="cita-btn-ghl">Agendar en GHL</button>'
-        +'<button class="btn btn-sm" style="font-size:11px;padding:4px 10px" '
-          +'title="Solo la anota en el tracker. El cliente no se entera." '
-          +'onclick="citasAMano('+c.id+')">Solo anotar</button>'
-      +'</div>'
-      +'<div style="font-size:10.5px;color:var(--text3);margin-top:8px;line-height:1.5;'
-        +'max-width:74ch"><b style="color:var(--text2)">Agendar en GHL</b> la crea de '
-        +'verdad: el cliente recibe la invitacion, el link y los recordatorios. Necesita '
-        +'que la etapa tenga su calendario elegido y que el cliente tenga mail en la ficha. '
-        +'Cuanto dura lo define el calendario, no se elige aca.'
-        +'<br><b style="color:var(--text2)">Solo anotar</b> la registra aca y nada mas. Es '
-        +'para reuniones que ya existen en otro lado -un Google Calendar suelto, por '
-        +'ejemplo-: GHL no las conoce y ninguna busqueda las trae.</div>'
-    +'</div>';
+  // El formulario salio de aca: ocupaba media pantalla arriba del calendario,
+  // siempre, con su parrafo de explicacion, para algo que se usa de vez en
+  // cuando. Ahora el mismo "+ Cita" abre el popup de las tarjetas del tablero,
+  // que ademas trae los horarios libres del calendario de la etapa.
+  var form='';
 
   return '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">'
     +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;'
@@ -32237,12 +32216,6 @@ function _citasHtml(c){
       +'</details>';
     })()
   +'</div>';
-}
-// El formulario de cargar a mano. Comparte la bandera con p360IrACita, que lo
-// abre con la reunion ya cargada al tocar el calendario de una ficha.
-function citasForm(v){
-  S._p3Mano=(v===undefined)?!S._p3Mano:!!v;
-  _citasRepintar();
 }
 // Una vuelta automatica: el cliente que hace mas que no se revisa.
 var _citasLatido=null;
