@@ -31318,6 +31318,24 @@ function p360IrACita(clientId, etapa){
     catch(err){ p360Agendar(clientId, true); }
   }, 80);
 }
+// Que se esta viendo en el calendario de la ficha: todo, ventas o delivery.
+function _citaVer(){ return String(S.p3Ver||'todo'); }
+function citasVer(v){
+  S.p3Ver=String(v||'todo');
+  _citasRepintar();
+}
+// De que lado de la linea cae una etapa. La linea es el onboarding: de ahi en
+// adelante se esta entregando. Sale de la ruta y no de una lista escrita aca,
+// asi renombrar una etapa no lo rompe.
+function _citaAreaDe(etapa){
+  var cols=rutaColumnas().map(function(e){ return String(e.l||''); });
+  var iOnb=-1;
+  cols.forEach(function(l,i){ if(iOnb<0 && /onboarding/i.test(l)) iOnb=i; });
+  if(iOnb<0) return 'delivery';            // sin onboarding en la ruta no hay corte
+  var i=cols.map(_norm).indexOf(_norm(etapa));
+  if(i<0) return 'delivery';               // una etapa que ya no existe no es venta
+  return (i<iOnb) ? 'venta' : 'delivery';
+}
 async function citasHuecos(clientId, ids){
   // Los mismos horarios sirven en dos lugares: el formulario de arriba y la
   // cita abierta abajo. Se parametrizan los campos en vez de duplicar todo.
@@ -31898,6 +31916,17 @@ function _citasHtml(c){
     ev.push({t:'agenda', i:i, titulo:x.titulo, inicio:x.inicio, estado:x.estado,
              con:x.con, mail:x.mail, dato:x});
   });
+  // El filtro de arriba. Una reunion de agenda -de otro cliente, o sin
+  // enganchar- no tiene etapa, asi que no es ni venta ni delivery: se esconde
+  // en los dos, que es lo que uno quiere cuando pide ver uno de los dos.
+  if(_citaVer()!=='todo'){
+    var _quiero=_citaVer();
+    ev=ev.filter(function(e){
+      var et=(e.t==='cita') ? String(e.k||'') : '';
+      if(!et) return false;
+      return _citaAreaDe(et)===_quiero;
+    });
+  }
   ev.forEach(function(e,i){ e._i=i; });
 
   var hoy=new Date(); hoy.setHours(0,0,0,0);
@@ -32160,7 +32189,24 @@ function _citasHtml(c){
     +'</div>'
   +'</div>';
 
-  var leyenda='<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;'
+  // Ventas y delivery son dos trabajos distintos y casi nunca se miran juntos:
+  // quien entrega no necesita ver las auditorias, y quien vende no necesita las
+  // llamadas de sistemas. El corte es la etapa de Onboarding: de ahi en
+  // adelante ya se esta entregando. Los colores siguen abajo, mas chicos: son
+  // una referencia, no algo que se toque.
+  var _fv=String(S.p3Ver||'todo');
+  var _pest=function(k,t,ay){
+    return '<button class="eb'+(_fv===k?' on':'')+'" style="font-size:10.5px;'
+      +'padding:3px 10px" title="'+esc(ay)+'" onclick="citasVer(\''+k+'\')">'+t+'</button>';
+  };
+  var leyenda='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;'
+      +'margin-bottom:8px">'
+    +_pest('todo','Todo','Todas las reuniones de la agenda.')
+    +_pest('venta','Ventas','Solo las reuniones de las etapas anteriores al onboarding.')
+    +_pest('delivery','Delivery','Solo las reuniones de onboarding en adelante, que es '
+      +'cuando se empieza a entregar.')
+  +'</div>'
+  +'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10px;'
       +'color:var(--text3);margin-bottom:10px">'
     +punto('var(--accent)','de este cliente')
     +punto('var(--amberx)','sin etapa')
