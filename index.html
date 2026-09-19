@@ -812,6 +812,10 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
    una reunion en vivo: las dos cosas quieren decir "esto esta pasando ahora". */
 .p3kpulso{width:10px;height:10px;border-radius:50%;background:var(--accent);
   animation:p3lat 1.6s ease-in-out infinite}
+/* Dato viejo: el circulo queda hueco y quieto. Un punto latiendo dice "esto
+   esta pasando ahora", y de un dato de hace cuatro dias no se sabe. */
+.p3kpulso.viejo{animation:none;background:transparent;
+  border:1.5px solid var(--accent);opacity:.55}
 @media (prefers-reduced-motion:reduce){.p3kpulso{animation:none}}
 .p3tk2r{min-height:109px}
 .p3tk2 .p3knom.b1::before{content:'';float:right;width:26px;height:2px}
@@ -12171,6 +12175,34 @@ function _mpEdadTxt(iso){
   var h=Math.round(min/60);
   if(h<24) return 'hace '+h+' h';
   return 'hace '+Math.round(h/24)+' d';
+}
+// Si las campanas estan al aire, y de cuando es ese dato.
+//
+// Hay dos fuentes y una es mucho mas fresca que la otra. El arbol de campanas
+// (adsDot) solo se actualiza cuando alguien abre el embudo de ESE cliente: si
+// hace cuatro dias que nadie lo abre, el dato es de hace cuatro dias, y un
+// punto verde afirmando "al aire" con eso es una mentira con cara de dato. El
+// Pulso, en cambio, se consulta solo, una cuenta cada cinco minutos.
+//
+// Asi que manda el Pulso cuando hay, y el arbol queda de respaldo. Y si lo
+// unico que hay ya esta viejo se dice, en vez de mostrarlo como si fuera de
+// ahora.
+var AIRE_VIEJO_H=24;
+function _estadoAire(c){
+  var p=c&&c.metaPulso;
+  if(p && p.at && !p.error && (p.activos!==undefined)){
+    return { live:!!(p.activos>0 && p.gasto>0), at:p.at, fuente:'pulso',
+             viejo:_horasDesde(p.at)>AIRE_VIEJO_H };
+  }
+  var a=null;
+  try{ if(typeof adsDot==='function') a=adsDot(c); }catch(e){}
+  if(!a) return null;
+  return { live:!!a.live, at:a.syncAt||null, fuente:'arbol',
+           viejo:(!a.syncAt || _horasDesde(a.syncAt)>AIRE_VIEJO_H) };
+}
+function _horasDesde(iso){
+  var t=Date.parse(iso||'');
+  return isNaN(t) ? 1e9 : (Date.now()-t)/3600000;
 }
 // Que hay que mirar de este cliente. Devuelve null si esta todo bien.
 function mpDiagnostico(c){
@@ -33079,14 +33111,22 @@ function p360Html(){
     // aire, no cuantos dias pasaron desde una fecha estimada. Cuando Meta dice
     // que hay anuncios entregando, el circulo late en verde; los dias siguen
     // estando al pasar el cursor.
-    var _ads=null;
-    try{ if(typeof adsDot==='function') _ads=adsDot(d.c); }catch(e){}
+    var _ads=(typeof _estadoAire==='function')?_estadoAire(d.c):null;
+    var _deDonde=_ads
+      ? ((_ads.fuente==='pulso')
+          ? 'Pulso de Meta, consultado '+_mpEdadTxt(_ads.at)+'.'
+          : 'Ultimo sync del embudo de este cliente, '+_mpEdadTxt(_ads.at)
+            +'. Eso solo se actualiza cuando alguien abre su pestana de embudo.')
+      : '';
     var circulo;
     if(_ads && _ads.live){
-      circulo='<div class="p3kdia" title="'+esc('Campanas al aire segun Meta ('
-          +_mpEdadTxt(_ads.syncAt)+'). '
+      // Un dato viejo no late: late lo que esta pasando ahora, y de esto no
+      // sabemos si sigue pasando.
+      circulo='<div class="p3kdia" title="'+esc('Campanas al aire. '+_deDonde
+          +(_ads.viejo?' Ojo: es un dato viejo, puede haber cambiado.':'')+' '
           +(queCuenta||'Sin fecha de lanzamiento.')+' \u2014 '+deFreno)+'" '
-        +'style="background:var(--accent)22"><span class="p3kpulso"></span></div>';
+        +'style="background:var(--accent)22">'
+        +'<span class="p3kpulso'+(_ads.viejo?' viejo':'')+'"></span></div>';
     } else {
       circulo=(dias===null) ? ''
         : ('<div class="p3kdia" title="'+esc(queCuenta+' \u2014 '+deFreno)+'" '
@@ -33157,7 +33197,7 @@ function p360Html(){
         lineas+='<span class="p3klin" style="color:var(--amberx)" title="'
           +esc('Abri el Mirador para verlas.')+'">'
           +_alr.n+' alarma'+(_alr.n===1?'':'s')+'</span>';
-      } else if(q2 && q2.faltan<0 && _ads && !_ads.live){
+      } else if(q2 && q2.faltan<0 && _ads && !_ads.live && !_ads.viejo){
         // Paso la fecha de lanzar y no hay nada entregando: eso es lo unico
         // accionable que tiene ese cliente hoy.
         lineas+='<span class="p3klin" style="color:var(--amberx)" '
