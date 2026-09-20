@@ -197,7 +197,30 @@
         border-radius:16px 16px 0 0;padding:6px 0 calc(14px + env(safe-area-inset-bottom));
         transition:transform .22s cubic-bezier(.32,.72,0,1);max-height:86vh;overflow-y:auto}
   .hoja.ver{transform:translate(-50%,0)}
-  .tirador{width:36px;height:4px;border-radius:2px;background:var(--line2);margin:8px auto 10px}
+  /* `touch-action:none` es lo que deja que el arrastre del tirador sea
+     nuestro: sin eso el navegador se queda el gesto para hacer scroll. */
+  .tirador{width:36px;height:4px;border-radius:2px;background:var(--line2);
+           margin:8px auto 10px;touch-action:none;cursor:grab}
+  /* El area que se puede agarrar es mucho mas grande que la barrita: 4px de
+     alto no se aciertan con el pulgar. */
+  .tirador::before{content:"";position:absolute;left:0;right:0;top:0;height:30px}
+  .hoja.arrastrando{transition:none}
+
+  .cerrar-hoja{position:absolute;z-index:2;top:6px;right:8px;width:38px;height:38px;
+               display:flex;align-items:center;justify-content:center;
+               background:none;border:0;color:var(--text3);font-size:24px;line-height:1;
+               border-radius:9px}
+  .cerrar-hoja:hover,.cerrar-hoja:focus-visible{color:var(--text)}
+  .cerrar-hoja:focus-visible{outline:2px solid var(--line2);outline-offset:-2px}
+
+  .cancelar{width:calc(100% - 36px);margin:10px 18px 4px;background:none;
+            border:1px solid var(--line);color:var(--text2);font-size:14px;
+            padding:12px;border-radius:10px}
+
+  /* Que el scroll de la hoja no se contagie a la pagina de atras. Es la mitad
+     del arreglo del "pull to refresh"; la otra mitad es trabar el body. */
+  .hoja{overscroll-behavior:contain}
+  body.hoja-abierta{overflow:hidden;overscroll-behavior:none}
   .hoja h3{font-size:14px;font-weight:500;color:var(--strong);padding:0 18px 4px}
   .hoja .sub{font-size:12.5px;color:var(--text3);padding:0 18px 12px}
   .grupo{font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--text3);padding:12px 18px 6px}
@@ -363,12 +386,19 @@
 
 <div class="velo" id="velo"></div>
 <div class="hoja" id="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-nom">
-  <div class="tirador"></div>
+  <!-- El tirador ARRASTRA de verdad: ver `_hojaArrastre`. Una barrita que
+       dice "arrastrame" y no hace nada es peor que no tenerla. -->
+  <div class="tirador" id="tirador"></div>
+  <button class="cerrar-hoja" id="b-cerrar-hoja" type="button"
+          aria-label="Cerrar">&times;</button>
   <h3 id="hoja-nom">—</h3>
   <!-- El texto cambia según para qué se abrió la hoja: la misma hoja sirve
        para la etapa y para la calificación. -->
   <div class="sub" id="hoja-sub">¿En qué etapa está?</div>
   <div id="hoja-ops"></div>
+  <!-- Con 12 etapas la hoja tapa casi toda la pantalla y no queda velo para
+       tocar afuera. Este botón es la salida que no depende de eso. -->
+  <button class="cancelar" id="b-cancelar-hoja" type="button">Cancelar</button>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -479,9 +509,40 @@ function _delMail(){
   }
   if(!p.access_token) return null;
   if(p.type !== 'recovery' && p.type !== 'invite') return null;
+
+  /* ⚠️  Que venga algo en `access_token` no quiere decir que sirva. Un
+     fragmento viejo queda guardado en el historial del navegador y Chrome lo
+     autocompleta ENTERO, hash incluido: se abre "Elegí tu contraseña" con un
+     token que no vale, y recién falla cuando la persona ya eligió una.
+
+     Un JWT son tres partes separadas por puntos. Esto descarta la basura sin
+     pedirle nada al servidor. Lo que pasa este filtro se verifica de verdad
+     en `_tokenSirve()`. */
+  if(!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(p.access_token)){
+    limpiar();
+    return { error:'Ese link no sirve. Pedí uno nuevo desde "Olvidé mi contraseña".' };
+  }
+
   limpiar();
   return { token:p.access_token, refresh:p.refresh_token || '',
            expira:parseInt(p.expires_in || '3600', 10) };
+}
+
+/* Le pregunta al servidor si el token todavía vale, ANTES de mostrar la
+   pantalla de elegir contraseña. Sin esto, un link vencido deja escribir una
+   contraseña nueva, apretar Guardar, y recién ahí enterarse. */
+async function _tokenSirve(token){
+  try{
+    const r = await fetch(SB_URL + '/auth/v1/user', {
+      headers:{ apikey:SB_KEY, authorization:'Bearer ' + token }
+    });
+    return r.ok;
+  }catch(_){
+    // Sin red no se puede saber. Se deja pasar: si de verdad no sirve, el
+    // guardado lo va a rechazar y ahí se explica. Frenar acá dejaría a alguien
+    // con un link bueno sin poder usarlo.
+    return true;
+  }
 }
 
 /* ── Las reglas de la contraseña ──────────────────────────────────────
@@ -902,8 +963,7 @@ function abrirHoja(lead){
           + '<span class="pt" style="background:' + (e.color || '#5c5c5c') + '"></span>'
           + esc(e.nombre) + '</button>').join('');
   }).join('');
-  $('velo').classList.add('ver');
-  $('hoja').classList.add('ver');
+  _hojaAbrir();
 }
 /* La misma hoja sirve para las dos cosas. `hojaModo` es lo que le dice al
    click qué hacer con lo que se tocó: sin eso, elegir "Alta" intentaría
@@ -926,6 +986,24 @@ function abrirHojaCalif(lead){
           + '<span class="pt" style="background:transparent;border:1px solid var(--line2)"></span>'
           + 'Quitar la calificación</button>'
         : '');
+  _hojaAbrir();
+}
+
+/* Abrir y cerrar pasan por acá las dos hojas, para que no se pueda arreglar
+   una y olvidarse de la otra.
+
+   ⚠️  Se traba el scroll del body mientras la hoja está abierta. En el
+       teléfono, arrastrar dentro de la hoja llegaba al final de su scroll y
+       seguía tirando de la página: en Safari de iOS eso es el "pull to
+       refresh" y RECARGABA LA PÁGINA en vez de cerrar la hoja.
+       `overscroll-behavior` solo no alcanza en todas las versiones, así que
+       además se traba el body y se repone el scroll al cerrar. */
+let _scrollGuardado = 0;
+
+function _hojaAbrir(){
+  _scrollGuardado = window.scrollY || 0;
+  document.body.classList.add('hoja-abierta');
+  document.body.style.top = (-_scrollGuardado) + 'px';
   $('velo').classList.add('ver');
   $('hoja').classList.add('ver');
 }
@@ -934,7 +1012,68 @@ function cerrarHoja(){
   abierto = null;
   hojaModo = 'etapa';
   $('velo').classList.remove('ver');
-  $('hoja').classList.remove('ver');
+  const h = $('hoja');
+  h.classList.remove('ver');
+  h.classList.remove('arrastrando');
+  h.style.transform = '';                 // por si quedó a mitad de un arrastre
+  document.body.classList.remove('hoja-abierta');
+  document.body.style.top = '';
+  window.scrollTo(0, _scrollGuardado);    // volver a donde estaba la lista
+}
+
+/* El tirador arrastra de verdad. Se sigue el dedo, y al soltar decide:
+   pasó de 70px o venía rápido, se cierra; si no, vuelve a su lugar.
+
+   `preventDefault` en cada movimiento es lo que impide que el gesto se lo
+   quede el navegador — que es justamente el que recargaba la página. */
+function _hojaArrastre(){
+  const h = $('hoja'), t = $('tirador');
+  let y0 = null, t0 = 0, dy = 0;
+
+  const empezar = ev => {
+    y0 = ev.touches ? ev.touches[0].clientY : ev.clientY;
+    t0 = Date.now(); dy = 0;
+    h.classList.add('arrastrando');
+  };
+  const mover = ev => {
+    if(y0 === null) return;
+    const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+    dy = Math.max(0, y - y0);             // sólo hacia abajo
+    if(ev.cancelable) ev.preventDefault();
+    h.style.transform = _bajada(dy);
+  };
+  const soltar = () => {
+    if(y0 === null) return;
+    const rapido = dy > 20 && (Date.now() - t0) < 300;
+    h.classList.remove('arrastrando');
+    h.style.transform = '';
+    y0 = null;
+    if(dy > 70 || rapido) cerrarHoja();
+  };
+
+  t.addEventListener('touchstart', empezar, {passive:true});
+  t.addEventListener('touchmove',  mover,   {passive:false});
+  t.addEventListener('touchend',   soltar);
+  t.addEventListener('touchcancel',soltar);
+  t.addEventListener('mousedown', ev => {
+    empezar(ev);
+    const mm = e => mover(e), mu = () => {
+      document.removeEventListener('mousemove', mm);
+      document.removeEventListener('mouseup', mu);
+      soltar();
+    };
+    document.addEventListener('mousemove', mm);
+    document.addEventListener('mouseup', mu);
+  });
+}
+
+/* En pantalla ancha la hoja está centrada y su transform lleva un -50% en Y;
+   en el teléfono sale de abajo. La bajada tiene que respetar cada caso o la
+   hoja pega un salto al primer movimiento. */
+function _bajada(px){
+  return matchMedia('(min-width:860px)').matches
+    ? 'translate(-50%, calc(-50% + ' + px + 'px))'
+    : 'translate(-50%, ' + px + 'px)';
 }
 
 /* Se pinta primero y se vuelve atrás si la base lo rechaza, igual que la
@@ -1223,6 +1362,12 @@ $('q').addEventListener('input', ev => { busca = ev.target.value; pintar(); });
 
 $('b-salir').addEventListener('click', salir);
 $('velo').addEventListener('click', cerrarHoja);
+// Tres formas de salir sin elegir nada: la × de arriba, el Cancelar del final
+// y arrastrar el tirador. Tocar afuera ya no alcanza: con 12 etapas la hoja
+// tapa casi toda la pantalla y no queda velo donde tocar.
+$('b-cerrar-hoja').addEventListener('click', cerrarHoja);
+$('b-cancelar-hoja').addEventListener('click', cerrarHoja);
+_hojaArrastre();
 document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && abierto) cerrarHoja(); });
 
 document.addEventListener('click', ev => {
@@ -1271,15 +1416,29 @@ const DEL_MAIL = _delMail();
 $('a-clave').textContent = CLAVE_PISTA;
 montarOjos();
 
+function _linkNoSirve(txt){
+  const e = $('e-entrar');
+  e.textContent = txt || 'Ese link ya venció. Pedí uno nuevo desde "Olvidé mi contraseña".';
+  e.hidden = false;
+}
+
 cargarSesion();
 if(DEL_MAIL && DEL_MAIL.token){
-  $('p-entrar').hidden = true;
-  $('p-clave').hidden = false;
-  $('i-nueva').focus();
+  /* La pantalla de elegir contraseña sólo tiene sentido con un token que
+     sirva. Se pregunta primero y recién después se muestra: si el token no
+     vale, mostrarla sería pedirle a alguien que elija una contraseña que no
+     vamos a poder guardar. */
+  _tokenSirve(DEL_MAIL.token).then(sirve => {
+    if(sirve){
+      $('p-entrar').hidden = true;
+      $('p-clave').hidden = false;
+      $('i-nueva').focus();
+    }else{
+      _linkNoSirve();
+    }
+  });
 }else if(DEL_MAIL && DEL_MAIL.error){
-  const e = $('e-entrar');
-  e.textContent = DEL_MAIL.error;
-  e.hidden = false;
+  _linkNoSirve(DEL_MAIL.error);
 }else if(sesion && sesion.access_token){
   mostrarPortal();
 }
