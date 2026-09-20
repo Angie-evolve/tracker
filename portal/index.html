@@ -808,6 +808,19 @@ function preguntasDe(lead){
 // lead, porque `pintar()` vuelve a dibujar las tarjetas de cero.
 const formAbierto = new Set();
 
+/* ── Dónde se presentó la oferta ──────────────────────────────────────
+   Un número de reunión, no una etapa. Antes esto se deducía del embudo
+   —reunion1 → reunion2 → presentacion— y eso da por sentado que la oferta
+   se presenta después de la segunda. Si se presentó en la primera, el
+   embudo no lo puede decir: los dos casos caen en la misma etapa.
+
+   Por eso NO depende de la etapa, ni para mostrarse ni para guardarse:
+   volver a atarlas sería deshacer el arreglo. */
+const REUNIONES = [1, 2, 3];
+const reunionTxt = n => n === 1 ? '1ª reunión'
+                      : n === 2 ? '2ª reunión'
+                      : n + 'ª reunión';
+
 const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
 const COLOR_CALIF = { alta:'#7ae0a8', media:'#e8b56a', no_califica:'#6b6b6b' };
 const puedeCalificar = l => {
@@ -941,6 +954,9 @@ function pintarLista(){
               + '" data-a="calif">'
               + (l.calificacion ? esc(CALIF[l.calificacion]) : '☆ calificar') + '</button>'
             : '')
+      // No mira la etapa: presentar es un hecho aparte del embudo.
+      +   '<button class="mini' + (l.presento_en ? ' hay' : '') + '" data-a="presento">'
+      +     (l.presento_en ? 'Ofertó en la ' + l.presento_en + 'ª' : '⊕ ofertó') + '</button>'
       // Las 21 tarjetas con tres preguntas cada una son ilegibles en un
       // teléfono, así que van plegadas. El botón dice cuántas hay, para que
       // se sepa si vale la pena abrirlo sin abrirlo.
@@ -1097,6 +1113,51 @@ function _bajada(px){
   return matchMedia('(min-width:860px)').matches
     ? 'translate(-50%, calc(-50% + ' + px + 'px))'
     : 'translate(-50%, ' + px + 'px)';
+}
+
+function abrirHojaPresento(lead){
+  abierto = lead;
+  hojaModo = 'presento';
+  $('hoja-nom').textContent = nombreDe(lead);
+  $('hoja-sub').textContent = '¿En qué reunión le presentaste la oferta?';
+  $('hoja-ops').innerHTML = REUNIONES.map(n =>
+      '<button class="op" data-v="' + n + '" aria-current="'
+      + (Number(lead.presento_en) === n) + '">'
+      + '<span class="pt" style="background:#6aa9e8"></span>'
+      + esc(reunionTxt(n)) + '</button>').join('')
+    + (lead.presento_en
+        ? '<div class="grupo">o</div>'
+          + '<button class="op" data-v="__quitar">'
+          + '<span class="pt" style="background:transparent;border:1px solid var(--line2)"></span>'
+          + 'Todavía no le presenté</button>'
+        : '');
+  _hojaAbrir();
+}
+
+async function marcarPresento(lead, valor){
+  const quitar = valor === '__quitar';
+  const n = quitar ? null : Number(valor);
+  if(!quitar && Number(lead.presento_en) === n) return;
+
+  const antes = lead.presento_en;
+  lead.presento_en = n;
+  pintar();
+
+  const tarjeta = document.querySelector('.lead[data-id="' + CSS.escape(String(lead.id)) + '"]');
+  if(tarjeta) tarjeta.classList.add('guardando');
+
+  try{
+    await api('/rest/v1/rpc/lead_presento', {
+      method:'POST',
+      body: JSON.stringify({ p_lead_id: lead.id, p_reunion: n, p_borrar: quitar })
+    });
+    avisar(quitar ? 'Sacamos la presentación' : 'Guardado: ofertó en la ' + n + 'ª');
+  }catch(err){
+    lead.presento_en = antes;
+    avisar('No se guardó: ' + err.message, true);
+  }finally{
+    pintar();
+  }
 }
 
 /* Se pinta primero y se vuelve atrás si la base lo rechaza, igual que la
@@ -1415,6 +1476,7 @@ document.addEventListener('click', ev => {
     const lead = LEADS.find(l => String(l.id) === id);
     if(!lead) return;
     if(mini.dataset.a === 'calif'){ abrirHojaCalif(lead); return; }
+    if(mini.dataset.a === 'presento'){ abrirHojaPresento(lead); return; }
     if(mini.dataset.a === 'form'){
       const k = String(lead.id);
       formAbierto.has(k) ? formAbierto.delete(k) : formAbierto.add(k);
@@ -1437,8 +1499,9 @@ document.addEventListener('click', ev => {
   if(op && abierto){
     const lead = abierto, v = op.dataset.v, modo = hojaModo;
     cerrarHoja();                       // ojo: esto deja `hojaModo` en 'etapa'
-    if(modo === 'calif') calificar(lead, v);
-    else                 cambiarEtapa(lead, v);
+    if(modo === 'calif')         calificar(lead, v);
+    else if(modo === 'presento') marcarPresento(lead, v);
+    else                         cambiarEtapa(lead, v);
   }
 });
 
