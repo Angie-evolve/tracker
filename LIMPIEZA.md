@@ -130,17 +130,43 @@ dato real cuando está, y la inferencia vieja marcada como tal cuando no.
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
 otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
 
-## La prueba 3.d quedó sin correr
+## La prueba 3.d — corrida y pasada el 2026-09-20
 
 `006_pruebas.sql`, prueba **3.d**: verifica que un usuario **sin perfil** no
 pueda mover un lead de cualquier cliente con `lead_etapa()`. Es la más
 importante de la prueba 3 — las otras tres frenan una etapa mal creada, esta
 frena tocar los datos de un cliente.
 
-Hoy devuelve *"sin leads en la tabla, no se pudo probar"*, porque `leads`
-está vacía. **Hay que volver a correrla apenas haya datos**, aunque sea uno.
+Quedó sin correr mucho tiempo porque `leads` estaba vacía. **Corrida el
+2026-09-20 con 288 filas en la tabla, y la prueba 3 entera dio ✅:**
 
-Las otras tres de la prueba 3 sí corrieron y dieron ✅.
+```
+mi_rol()             (NULL)  ← el rol es desconocido
+es_agencia()         false   ← tiene que decir false, NUNCA null
+etapa_crear          ✅ freno -> Solo la agencia puede crear etapas
+etapa_borrar         ✅ freno -> Solo la agencia puede borrar etapas
+etapas_reordenar     ✅ freno -> Solo la agencia puede reordenar etapas
+lead_etapa           ✅ freno -> Ese lead no existe
+```
+
+El lead que usó era de Zentenio, o sea **ajeno** al usuario simulado. El
+mensaje es el mismo que para un lead inexistente, así que el guarda tampoco
+confirma que ese id exista.
+
+El rollback no dejó nada: 0 etapas `hackeada`, las 12 en su orden, 288 leads y
+los 4 de siempre en `compro`.
+
+**Por qué queda anotado en vez de borrado:** esto no se corre solo. Si mañana
+alguien toca `es_agencia()`, `mi_rol()` o cualquiera de las cuatro funciones,
+hay que volver a correr la prueba 3 y actualizar esta fecha. Una fecha vieja
+es la señal de que hace mucho que nadie lo comprueba.
+
+⚠️ La trampa que la hacía mentir ya está arreglada en el arnés, pero conviene
+saberla: si el lead se busca DESPUÉS de cambiar de rol, la RLS se lo esconde
+al usuario sin perfil, la variable queda NULL y la prueba **se saltea sola**
+diciendo "no hay leads" — con la tabla llena. Por eso la búsqueda va antes del
+cambio de rol, y los resultados se juntan en variables para escribirlos recién
+al volver a `postgres`.
 
 ## El segundo candado de `leads`
 
