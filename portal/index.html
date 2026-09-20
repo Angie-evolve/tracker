@@ -65,6 +65,7 @@
   .err{font-size:13px;color:var(--rojo);margin-top:12px;line-height:1.45;text-align:center}
   .ayuda{font-size:12.5px;color:var(--text3);text-align:center;margin-top:18px;line-height:1.55}
   .ayuda a{color:var(--text2);text-decoration:underline;text-underline-offset:2px}
+  .pista{font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:6px}
   /* El mismo cartel sirve para el error y para el aviso de "te mandamos el
      mail", que no es un error. Sin esto, una buena noticia se lee en rojo. */
   .err.ok{color:var(--text2)}
@@ -195,7 +196,12 @@
     <form id="f-clave">
       <div class="campo">
         <label for="i-nueva">Contraseña nueva</label>
-        <input id="i-nueva" type="password" autocomplete="new-password" required>
+        <input id="i-nueva" type="password" autocomplete="new-password" required
+               aria-describedby="a-clave">
+        <!-- Visible desde el arranque, no despues de fallar: los requisitos
+             que aparecen recien cuando ya te equivocaste llegan tarde. -->
+        <div class="pista" id="a-clave">Al menos 8 caracteres, con una mayúscula,
+          una minúscula, un número y un símbolo.</div>
       </div>
       <div class="campo">
         <label for="i-nueva2">Repetila</label>
@@ -354,6 +360,46 @@ function _delMail(){
            expira:parseInt(p.expires_in || '3600', 10) };
 }
 
+/* ── Las reglas de la contraseña ──────────────────────────────────────
+   Tienen que ser LAS MISMAS que las del proyecto en Supabase. Si acá
+   pedimos menos, la persona pasa este chequeo y la frena el servidor con
+   un mensaje en inglés; si pedimos más, la frenamos nosotros sin motivo.
+
+   ⚠️  Estos dos valores son la copia de lo que dice
+       Supabase -> Authentication -> Providers -> Email:
+         · "Minimum password length"
+         · "Password Requirements"
+       Si allá se cambian, acá también. No hay forma de leerlos desde el
+       navegador: la API valida el carnet antes que la contraseña, así que
+       nunca contesta cuáles son sus reglas.
+
+   El conjunto de símbolos NO es "todo lo que no sea letra ni número": es
+   esta lista, la que usa Supabase. Un caracter de afuera (una ñ, un
+   acento, un espacio) no cuenta como símbolo para el servidor, y si acá
+   lo contáramos volveríamos a tener el error que esto viene a evitar. */
+const CLAVE_LARGO   = 8;
+const CLAVE_SIMBOLOS = '!@#$%^&*()_+-=[]{};\'\\:"|<>?,./`~';
+
+const CLAVE_REGLAS = [
+  { falta:'largo',     ok: p => p.length >= CLAVE_LARGO,
+    texto:'al menos ' + CLAVE_LARGO + ' caracteres' },
+  { falta:'mayuscula', ok: p => /[A-Z]/.test(p),        texto:'una mayúscula' },
+  { falta:'minuscula', ok: p => /[a-z]/.test(p),        texto:'una minúscula' },
+  { falta:'numero',    ok: p => /[0-9]/.test(p),        texto:'un número' },
+  { falta:'simbolo',   ok: p => [...p].some(c => CLAVE_SIMBOLOS.includes(c)),
+    texto:'un símbolo' },
+];
+
+/* Devuelve el mensaje de lo que falta, o '' si está bien. Se nombra todo
+   lo que falta junto: decirlo de a uno obliga a probar cinco veces. */
+function revisarClave(p){
+  const faltan = CLAVE_REGLAS.filter(r => !r.ok(p)).map(r => r.texto);
+  if(!faltan.length) return '';
+  if(faltan.length === 1) return 'A la contraseña le falta ' + faltan[0] + '.';
+  return 'A la contraseña le falta: ' + faltan.slice(0,-1).join(', ')
+       + ' y ' + faltan[faltan.length-1] + '.';
+}
+
 /* Guarda la contraseña nueva usando el token del mail y deja la sesión
    armada, para que la persona entre sin tener que loguearse otra vez. */
 async function guardarClave(delMail, clave){
@@ -371,6 +417,16 @@ async function guardarClave(delMail, clave){
     // nada que corregir en la contraseña.
     if(/jwt|token|expired|invalid/i.test(crudo) && !/password|contrase/i.test(crudo)){
       throw new Error('Ese link ya venció. Pedí uno nuevo desde "Olvidé mi contraseña".');
+    }
+    // Si el servidor igual la rechaza, es que sus reglas y las de arriba se
+    // separaron. El mensaje crudo viene en inglés y enumera los alfabetos
+    // permitidos, asi que se muestra el nuestro. Que llegue acá es un aviso
+    // de que hay que revisar CLAVE_LARGO y CLAVE_REGLAS contra el panel.
+    if(d.error_code === 'weak_password' || d.weak_password
+       || /password/i.test(crudo)){
+      throw new Error('Esa contraseña no la acepta el sistema. Necesita al menos '
+        + CLAVE_LARGO + ' caracteres, con una mayúscula, una minúscula, '
+        + 'un número y un símbolo.');
     }
     throw new Error(crudo);
   }
@@ -777,10 +833,8 @@ $('f-clave').addEventListener('submit', async ev => {
   const p1 = $('i-nueva').value, p2 = $('i-nueva2').value;
   e.hidden = true;
   if(p1 !== p2){ e.textContent = 'Las dos no coinciden.'; e.hidden = false; return; }
-  // Este largo es sólo para atajar un tipeo sin ir y volver. Las reglas de
-  // verdad las pone el proyecto, y si el servidor la rechaza se muestra SU
-  // mensaje, que dice qué le falta.
-  if(p1.length < 8){ e.textContent = 'Poné al menos 8 caracteres.'; e.hidden = false; return; }
+  const falta = revisarClave(p1);
+  if(falta){ e.textContent = falta; e.hidden = false; return; }
   b.disabled = true; b.textContent = 'Guardando…';
   try{
     await guardarClave(DEL_MAIL, p1);
