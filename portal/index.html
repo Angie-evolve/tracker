@@ -132,6 +132,11 @@
   .mini{font-size:12.5px;color:var(--text3);padding:9px 11px;border-radius:9px;
         border:1px solid var(--line)}
   .mini.hay{color:var(--text2);border-color:var(--line2)}
+  /* La calificación no es una etapa, así que no se pinta como una. Va en
+     color sólo cuando ya está puesta: sin calificar es un botón más. */
+  .mini.alta{color:var(--verde);border-color:rgba(122,224,168,.45)}
+  .mini.media{color:#e8b56a;border-color:rgba(232,181,106,.45)}
+  .mini.no_califica{color:var(--text3);border-color:var(--line2);text-decoration:line-through}
   .nota{font-size:13px;color:var(--text2);line-height:1.5;background:var(--bg3);
         border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
 
@@ -295,7 +300,9 @@
 <div class="hoja" id="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-nom">
   <div class="tirador"></div>
   <h3 id="hoja-nom">—</h3>
-  <div class="sub">¿En qué etapa está?</div>
+  <!-- El texto cambia según para qué se abrió la hoja: la misma hoja sirve
+       para la etapa y para la calificación. -->
+  <div class="sub" id="hoja-sub">¿En qué etapa está?</div>
   <div id="hoja-ops"></div>
 </div>
 
@@ -604,6 +611,22 @@ function hace(iso){
 }
 
 const grupoDe = l => { const e = etapaDe(l.etapa_portal); return e ? e.grupo : 'nuevo'; };
+
+/* ── La calificación ──────────────────────────────────────────────────
+   No es una etapa ni un paso del embudo: es cuánto vale el lead. Un lead
+   puede estar en "Presentación programada" y no calificar.
+
+   Sólo se puede calificar si ya pasó la primera reunión. Eso NO se deduce
+   del orden de las etapas —las frenadas van al final, y "No asistió"
+   quedaría adentro— sino de `reunion1_hecha`, que viene de la base con
+   cada etapa. La base lo vuelve a chequear igual: esto es para no
+   ofrecer un botón que va a fallar, no para reemplazar el candado. */
+const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
+const COLOR_CALIF = { alta:'#7ae0a8', media:'#e8b56a', no_califica:'#6b6b6b' };
+const puedeCalificar = l => {
+  const e = etapaDe(l.etapa_portal);
+  return !!(e && e.reunion1_hecha);
+};
 const equivaleDe = l => { const e = etapaDe(l.etapa_portal); return e ? e.equivale : 'open'; };
 
 const FILTROS = [
@@ -705,6 +728,14 @@ function pintarLista(){
       +     (l.monto ? fmtMonto(l.monto) : '$ monto') + '</button>'
       +   '<button class="mini' + (l.nota ? ' hay' : '') + '" data-a="nota">'
       +     (l.nota ? 'Ver nota' : '+ nota') + '</button>'
+      // El botón aparece cuando ya se puede calificar, y también si el lead
+      // quedó calificado y después se movió para atrás: si no, esa
+      // calificación vieja no habría forma de sacarla desde acá.
+      +   ((puedeCalificar(l) || l.calificacion)
+            ? '<button class="mini' + (l.calificacion ? ' ' + l.calificacion : '')
+              + '" data-a="calif">'
+              + (l.calificacion ? esc(CALIF[l.calificacion]) : '☆ calificar') + '</button>'
+            : '')
       + '</div>'
       + (l.nota ? '<div class="nota">' + esc(l.nota) + '</div>' : '')
       + '</div>';
@@ -725,7 +756,9 @@ const TITULOS = [
 
 function abrirHoja(lead){
   abierto = lead;
+  hojaModo = 'etapa';
   $('hoja-nom').textContent = nombreDe(lead);
+  $('hoja-sub').textContent = '¿En qué etapa está?';
   $('hoja-ops').innerHTML = TITULOS.map(gr => {
     const ops = ETAPAS.filter(e => e.grupo === gr.g);
     if(!ops.length) return '';
@@ -739,10 +772,65 @@ function abrirHoja(lead){
   $('velo').classList.add('ver');
   $('hoja').classList.add('ver');
 }
+/* La misma hoja sirve para las dos cosas. `hojaModo` es lo que le dice al
+   click qué hacer con lo que se tocó: sin eso, elegir "Alta" intentaría
+   moverlo a una etapa llamada "alta", que no existe. */
+let hojaModo = 'etapa';
+
+function abrirHojaCalif(lead){
+  abierto = lead;
+  hojaModo = 'calif';
+  $('hoja-nom').textContent = nombreDe(lead);
+  $('hoja-sub').textContent = '¿Cuánto vale este lead?';
+  $('hoja-ops').innerHTML = Object.keys(CALIF).map(k =>
+        '<button class="op" data-v="' + k + '" aria-current="'
+        + (lead.calificacion === k) + '">'
+        + '<span class="pt" style="background:' + COLOR_CALIF[k] + '"></span>'
+        + esc(CALIF[k]) + '</button>').join('')
+    + (lead.calificacion
+        ? '<div class="grupo">o</div>'
+          + '<button class="op" data-v="__quitar">'
+          + '<span class="pt" style="background:transparent;border:1px solid var(--line2)"></span>'
+          + 'Quitar la calificación</button>'
+        : '');
+  $('velo').classList.add('ver');
+  $('hoja').classList.add('ver');
+}
+
 function cerrarHoja(){
   abierto = null;
+  hojaModo = 'etapa';
   $('velo').classList.remove('ver');
   $('hoja').classList.remove('ver');
+}
+
+/* Se pinta primero y se vuelve atrás si la base lo rechaza, igual que la
+   etapa y que la nota. Nunca queda mostrando algo que no se guardó. */
+async function calificar(lead, valor){
+  const quitar = valor === '__quitar';
+  if(!quitar && lead.calificacion === valor) return;
+
+  const antes = lead.calificacion;
+  lead.calificacion = quitar ? null : valor;
+  pintar();
+
+  const tarjeta = document.querySelector('.lead[data-id="' + CSS.escape(String(lead.id)) + '"]');
+  if(tarjeta) tarjeta.classList.add('guardando');
+
+  try{
+    await api('/rest/v1/rpc/lead_calificar', {
+      method:'POST',
+      body: JSON.stringify({ p_lead_id: lead.id,
+                             p_calificacion: quitar ? null : valor,
+                             p_borrar: quitar })
+    });
+    avisar(quitar ? 'Calificación quitada' : 'Guardado: ' + CALIF[valor]);
+  }catch(err){
+    lead.calificacion = antes;
+    avisar('No se guardó: ' + err.message, true);
+  }finally{
+    pintar();
+  }
 }
 
 let tToast;
@@ -984,7 +1072,9 @@ document.addEventListener('click', ev => {
   if(mini){
     const id = mini.closest('.lead').dataset.id;
     const lead = LEADS.find(l => String(l.id) === id);
-    if(lead) editarDato(lead, mini.dataset.a);
+    if(!lead) return;
+    if(mini.dataset.a === 'calif') abrirHojaCalif(lead);
+    else editarDato(lead, mini.dataset.a);
     return;
   }
 
@@ -998,9 +1088,10 @@ document.addEventListener('click', ev => {
 
   const op = ev.target.closest('.op');
   if(op && abierto){
-    const lead = abierto, slug = op.dataset.v;
-    cerrarHoja();
-    cambiarEtapa(lead, slug);
+    const lead = abierto, v = op.dataset.v, modo = hojaModo;
+    cerrarHoja();                       // ojo: esto deja `hojaModo` en 'etapa'
+    if(modo === 'calif') calificar(lead, v);
+    else                 cambiarEtapa(lead, v);
   }
 });
 
