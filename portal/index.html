@@ -140,6 +140,19 @@
   .nota{font-size:13px;color:var(--text2);line-height:1.5;background:var(--bg3);
         border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
 
+  /* La campaña, en su propio renglón. `min-width:0` lo hereda del padre:
+     acá lo que importa es que se corte sola en vez de estirar la tarjeta. */
+  .camp{font-size:11.5px;color:var(--text3);margin-top:3px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* Las respuestas del formulario, plegadas. `word-break` no es decorativo:
+     hay una respuesta de 1229 caracteres y sin esto estira la tarjeta. */
+  .form{background:var(--bg3);border-radius:9px;padding:4px 12px 10px}
+  .qa{padding:8px 0;border-bottom:1px solid var(--line)}
+  .qa:last-child{border-bottom:0}
+  .q{font-size:11.5px;color:var(--text3);line-height:1.45;margin-bottom:3px}
+  .r{font-size:13.5px;color:var(--text);line-height:1.45;word-break:break-word}
+
   .chips{display:flex;gap:7px;padding:14px 18px 10px;overflow-x:auto;scrollbar-width:none}
   .chips::-webkit-scrollbar{display:none}
   .chip{flex:0 0 auto;font-size:12.5px;padding:7px 12px;border-radius:999px;
@@ -543,7 +556,13 @@ function campo(o, nombres){
 }
 const telDe    = l => campo(l, ['telefono','phone','celular','tel','contact_phone']);
 const nombreDe = l => campo(l, ['nombre','name','contact_name','contactName']) || 'Sin nombre';
-const origenDe = l => campo(l, ['origen','source','fuente','utm_source']);
+/* `origen` es lo primero que se busca por compatibilidad, pero hoy está en
+   NULL a propósito: en GHL `source` es un OBJETO, y mapearlo con `->>` metía
+   el JSON entero en la columna. La atribución de verdad quedó partida en
+   `fuente`, `campania` y `anuncio` desde el 009. */
+const origenDe   = l => campo(l, ['origen','source','fuente','utm_source']);
+const campaniaDe = l => campo(l, ['campania','campaign','utm_campaign']);
+const anuncioDe  = l => campo(l, ['anuncio','ad','utm_ad']);
 const fechaDe  = l => campo(l, ['creado_at','created_at','fecha','createdAt']);
 
 async function traerEtapas(){
@@ -621,6 +640,38 @@ const grupoDe = l => { const e = etapaDe(l.etapa_portal); return e ? e.grupo : '
    quedaría adentro— sino de `reunion1_hecha`, que viene de la base con
    cada etapa. La base lo vuelve a chequear igual: esto es para no
    ofrecer un botón que va a fallar, no para reemplazar el candado. */
+/* ── Las respuestas del formulario ────────────────────────────────────
+   Vienen crudas de GHL y traen tres clases de cosas mezcladas. Se muestran
+   sólo las preguntas de verdad:
+
+     "¿Cuántas propiedades tenes publicadas hoy?": "10 o más"   ← ésta
+     "IeS2u5wMU3mpxvewgNqG": "10 o más"     ← la misma, por id interno
+     "utm_ad": "H1B1C1 con1"                ← metadata, no es pregunta
+     "link_origen": "https://…"             ← metadata, 469 caracteres
+
+   Las preguntas cambian por cliente, así que nada de nombres de campo
+   fijos: se dibuja lo que venga.
+
+   ⚠️ Si mañana GHL agrega otra clave de metadata hay que sumarla acá: no
+      hay forma de distinguirla sola de una pregunta. */
+const META_FORM = ['link_origen','source','referrer'];
+const esPregunta = k =>
+     !/^[A-Za-z0-9]{20}$/.test(k)      // id interno de GHL
+  && !/^utm_/i.test(k)
+  && META_FORM.indexOf(k.toLowerCase()) < 0;
+
+function preguntasDe(lead){
+  const fa = lead.form_respuestas;
+  if(!fa || typeof fa !== 'object') return [];
+  return Object.keys(fa)
+    .filter(k => esPregunta(k) && String(fa[k] ?? '').trim() !== '')
+    .map(k => [k, String(fa[k])]);
+}
+
+// Qué tarjetas tienen el formulario desplegado. Se guarda el id y no el
+// lead, porque `pintar()` vuelve a dibujar las tarjetas de cero.
+const formAbierto = new Set();
+
 const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
 const COLOR_CALIF = { alta:'#7ae0a8', media:'#e8b56a', no_califica:'#6b6b6b' };
 const puedeCalificar = l => {
@@ -668,7 +719,11 @@ function coincide(l){
   if(!busca) return true;
   const q = _sinAcento(busca).trim();
   if(!q) return true;
+  // Las respuestas del formulario entran a la búsqueda: buscar "planilla
+  // propia" y que aparezcan los leads que contestaron eso es la forma más
+  // directa de usarlas.
   const enTexto = [nombreDe(l), l.email, origenDe(l), l.campania, l.anuncio, l.nota]
+                    .concat(preguntasDe(l).map(([q, r]) => q + ' ' + r))
                     .filter(Boolean).map(_sinAcento).join(' ');
   if(enTexto.includes(q)) return true;
   // El telefono aparte: se comparan solo los digitos, asi "11 2345" encuentra
@@ -713,10 +768,24 @@ function pintarLista(){
     const metas = [org, hace(fechaDe(l))].filter(Boolean)
                     .map(esc).join('<span class="sep">·</span>');
 
+    /* La campaña va en su propio renglón y no en la meta. En la meta
+       compartiría el ancho con "hace 2 días", y un nombre largo como
+       "Clientes potenciales Embudo B - Zentenio & Evolve" se comería la
+       fecha, que importa más. Acá se corta sola con puntos suspensivos.
+       El anuncio va en el título: está, sin ocupar un renglón más. */
+    const preg = preguntasDe(l);
+    const abiertoF = formAbierto.has(String(l.id));
+    const camp = campaniaDe(l), anun = anuncioDe(l);
+    const lineaCamp = camp
+      ? '<div class="camp"' + (anun ? ' title="Anuncio: ' + esc(anun) + '"' : '')
+        + '>' + esc(camp) + '</div>'
+      : '';
+
     return '<div class="lead" data-id="' + esc(l.id) + '">'
       + '<div class="top"><div>'
       +   '<div class="nom">' + esc(nombreDe(l)) + '</div>'
       +   (metas ? '<div class="meta">' + metas + '</div>' : '')
+      +   lineaCamp
       + '</div>'
       + (tel ? '<a class="wa" href="https://wa.me/' + waNumero(tel) + '" target="_blank" rel="noopener">'
              + ICONO_WA + 'WhatsApp</a>' : '')
@@ -736,8 +805,20 @@ function pintarLista(){
               + '" data-a="calif">'
               + (l.calificacion ? esc(CALIF[l.calificacion]) : '☆ calificar') + '</button>'
             : '')
+      // Las 21 tarjetas con tres preguntas cada una son ilegibles en un
+      // teléfono, así que van plegadas. El botón dice cuántas hay, para que
+      // se sepa si vale la pena abrirlo sin abrirlo.
+      +   (preg.length
+            ? '<button class="mini' + (abiertoF ? ' hay' : '') + '" data-a="form">'
+              + (abiertoF ? '▾' : '▸') + ' formulario (' + preg.length + ')</button>'
+            : '')
       + '</div>'
       + (l.nota ? '<div class="nota">' + esc(l.nota) + '</div>' : '')
+      + (abiertoF && preg.length
+          ? '<div class="form">' + preg.map(([q, r]) =>
+              '<div class="qa"><div class="q">' + esc(q) + '</div>'
+              + '<div class="r">' + esc(r) + '</div></div>').join('') + '</div>'
+          : '')
       + '</div>';
   }).join('');
 }
@@ -1073,8 +1154,14 @@ document.addEventListener('click', ev => {
     const id = mini.closest('.lead').dataset.id;
     const lead = LEADS.find(l => String(l.id) === id);
     if(!lead) return;
-    if(mini.dataset.a === 'calif') abrirHojaCalif(lead);
-    else editarDato(lead, mini.dataset.a);
+    if(mini.dataset.a === 'calif'){ abrirHojaCalif(lead); return; }
+    if(mini.dataset.a === 'form'){
+      const k = String(lead.id);
+      formAbierto.has(k) ? formAbierto.delete(k) : formAbierto.add(k);
+      pintar();
+      return;
+    }
+    editarDato(lead, mini.dataset.a);
     return;
   }
 
