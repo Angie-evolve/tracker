@@ -86,6 +86,20 @@
   .num .l{font-size:11px;color:var(--text3);margin-top:3px}
   .num.ok .n{color:var(--verde)}
 
+  .buscar{padding:14px 14px 0}
+  .buscar input{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+                padding:12px 14px;color:var(--text)}
+  .buscar input::placeholder{color:var(--text3)}
+  .buscar input:focus{border-color:var(--line2);outline:none}
+
+  /* La nota y el monto: dos botones chicos al lado de la etapa. Si hay nota,
+     se lee entera abajo — para eso se escribio. */
+  .mini{font-size:12.5px;color:var(--text3);padding:9px 11px;border-radius:9px;
+        border:1px solid var(--line)}
+  .mini.hay{color:var(--text2);border-color:var(--line2)}
+  .nota{font-size:13px;color:var(--text2);line-height:1.5;background:var(--bg3);
+        border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
+
   .chips{display:flex;gap:7px;padding:14px 18px 10px;overflow-x:auto;scrollbar-width:none}
   .chips::-webkit-scrollbar{display:none}
   .chip{flex:0 0 auto;font-size:12.5px;padding:7px 12px;border-radius:999px;
@@ -99,7 +113,12 @@
         display:flex;flex-direction:column;gap:10px}
   .lead.guardando{opacity:.55}
 
+  /* El `min-width:0` del hijo no es decorativo: sin el, un texto largo en la
+     meta no puede encogerse y empuja el boton de WhatsApp fuera de la tarjeta.
+     Ya paso una vez, con el JSON de `source` entero adentro de `origen`. */
   .top{display:flex;align-items:flex-start;gap:10px}
+  .top > div:first-child{min-width:0;flex:1}
+  .top .meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .nom{font-size:16.5px;font-weight:500;color:var(--strong);line-height:1.25;word-break:break-word}
   .meta{font-size:12.5px;color:var(--text3);margin-top:3px}
   .meta .sep{opacity:.45;margin:0 5px}
@@ -182,6 +201,10 @@
       <div class="num ok"><div class="n" id="n-compro">0</div><div class="l">Compraron</div></div>
     </div>
 
+    <div class="buscar">
+      <input id="q" type="search" inputmode="search" autocomplete="off"
+             placeholder="Buscar por nombre, teléfono o mail" aria-label="Buscar un lead">
+    </div>
     <div class="chips" id="chips"></div>
     <div class="lista" id="lista"></div>
   </div>
@@ -277,6 +300,7 @@ let ETAPAS = [];   // vienen de la base, no están escritas acá
 let LEADS  = [];
 let filtro = 'todos';
 let abierto = null;
+let busca = '';
 
 const etapaDe = v => ETAPAS.find(e => e.slug === v) || null;
 
@@ -304,6 +328,16 @@ async function traerEtapas(){
 async function traerLeads(){
   // La RLS ya filtra por cliente: no hace falta (ni sirve) filtrar acá.
   LEADS = await api('/rest/v1/leads?select=*&order=creado_at.desc.nullslast') || [];
+}
+
+/* Se escribe por lead_datos, que toca la nota y el monto y NADA mas: el
+   nombre, el telefono, la etapa y el estado ni aparecen en su update. */
+async function guardarDatos(lead, nota, monto, borrarNota, borrarMonto){
+  await api('/rest/v1/rpc/lead_datos', {
+    method:'POST',
+    body: JSON.stringify({ p_lead_id: lead.id, p_nota: nota, p_monto: monto,
+                           p_borrar_nota: !!borrarNota, p_borrar_monto: !!borrarMonto })
+  });
 }
 
 async function guardarEtapa(lead, slug, monto){
@@ -363,10 +397,31 @@ function pintarNumeros(){
   $('n-compro').textContent  = LEADS.filter(FILTROS[3].f).length;
 }
 
+/* Busca en todo lo que el cliente puede tener en la cabeza: el nombre, el
+   telefono -con o sin espacios ni guiones-, el mail, la campania y el anuncio. */
+const _sinAcento = t => String(t||'').toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+function coincide(l){
+  if(!busca) return true;
+  const q = _sinAcento(busca).trim();
+  if(!q) return true;
+  const enTexto = [nombreDe(l), l.email, origenDe(l), l.campania, l.anuncio, l.nota]
+                    .filter(Boolean).map(_sinAcento).join(' ');
+  if(enTexto.includes(q)) return true;
+  // El telefono aparte: se comparan solo los digitos, asi "11 2345" encuentra
+  // a +5491123456789.
+  const qd = soloDigitos(q);
+  return qd.length >= 3 && soloDigitos(telDe(l) || '').includes(qd);
+}
+
 function pintarChips(){
+  // Los contadores cuentan lo que se ve: con una busqueda puesta, decir el
+  // total de todos seria decir un numero que no lleva a ninguna lista.
+  const base = LEADS.filter(coincide);
   $('chips').innerHTML = FILTROS.map(d =>
     '<button class="chip" data-f="' + d.v + '" aria-pressed="' + (filtro === d.v) + '">'
-    + d.l + '<span class="c">' + LEADS.filter(d.f).length + '</span></button>'
+    + d.l + '<span class="c">' + base.filter(d.f).length + '</span></button>'
   ).join('');
 }
 
@@ -375,13 +430,15 @@ const esc = s => String(s).replace(/[&<>"']/g, c =>
 
 function pintarLista(){
   const def = FILTROS.find(f => f.v === filtro);
-  const visibles = LEADS.filter(def.f);
+  const visibles = LEADS.filter(coincide).filter(def.f);
   const cont = $('lista');
 
   if(!visibles.length){
-    cont.innerHTML = LEADS.length
-      ? '<div class="vacio"><b>Nada en este filtro</b>Probá con “Todos”.</div>'
-      : '<div class="vacio"><b>Todavía no hay leads</b>Cuando entre el primero, lo vas a ver acá.</div>';
+    cont.innerHTML = !LEADS.length
+      ? '<div class="vacio"><b>Todavía no hay leads</b>Cuando entre el primero, lo vas a ver acá.</div>'
+      : busca
+      ? '<div class="vacio"><b>Nadie con “' + esc(busca) + '”</b>Probá con parte del nombre o del teléfono.</div>'
+      : '<div class="vacio"><b>Nada en este filtro</b>Probá con “Todos”.</div>';
     return;
   }
 
@@ -405,8 +462,12 @@ function pintarLista(){
       + '<div class="fila">'
       +   '<button class="etapa" style="' + fondo + '">'
       +     esc(e ? e.nombre : l.etapa_portal) + '<span class="fl">▾</span></button>'
-      +   (l.monto ? '<span class="monto">' + fmtMonto(l.monto) + '</span>' : '')
+      +   '<button class="mini' + (l.monto ? ' hay' : '') + '" data-a="monto">'
+      +     (l.monto ? fmtMonto(l.monto) : '$ monto') + '</button>'
+      +   '<button class="mini' + (l.nota ? ' hay' : '') + '" data-a="nota">'
+      +     (l.nota ? 'Ver nota' : '+ nota') + '</button>'
       + '</div>'
+      + (l.nota ? '<div class="nota">' + esc(l.nota) + '</div>' : '')
       + '</div>';
   }).join('');
 }
@@ -493,6 +554,39 @@ async function cambiarEtapa(lead, slug){
   }
 }
 
+/* Nota y monto. Se pinta primero y si la base lo rechaza se vuelve atras,
+   igual que al cambiar de etapa: nunca queda mostrando algo que no se guardo. */
+async function editarDato(lead, cual){
+  const esMonto = cual === 'monto';
+  const actual = esMonto ? (lead.monto == null ? '' : lead.monto) : (lead.nota || '');
+  const pedido = prompt(
+    esMonto ? '¿Por cuánto es la oportunidad de ' + nombreDe(lead) + '?\n(vacío para borrarlo)'
+            : 'Nota sobre ' + nombreDe(lead) + '\n(vacío para borrarla)',
+    actual);
+  if(pedido === null) return;                       // cancelo
+
+  const vacio = String(pedido).trim() === '';
+  const valor = vacio ? null : (esMonto ? (Number(soloDigitos(pedido)) || null) : String(pedido).trim());
+  if(esMonto && !vacio && valor === null){ avisar('Ese monto no se entiende', true); return; }
+
+  const antes = { nota: lead.nota, monto: lead.monto };
+  if(esMonto) lead.monto = valor; else lead.nota = valor;
+  pintar();
+
+  try{
+    await guardarDatos(lead,
+      esMonto ? null : valor,
+      esMonto ? valor : null,
+      !esMonto && vacio,
+      esMonto && vacio);
+    avisar(vacio ? 'Borrado' : 'Guardado');
+  }catch(err){
+    lead.nota = antes.nota; lead.monto = antes.monto;
+    avisar('No se guardó: ' + err.message, true);
+    pintar();
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════
    ARRANQUE
    ══════════════════════════════════════════════════════════════ */
@@ -535,6 +629,10 @@ $('f-entrar').addEventListener('submit', async ev => {
   }
 });
 
+// Se repinta mientras se escribe: con 267 tarjetas alcanza y sobra, y esperar
+// a que aprete Enter en un telefono es una friccion que no hace falta.
+$('q').addEventListener('input', ev => { busca = ev.target.value; pintar(); });
+
 $('b-salir').addEventListener('click', salir);
 $('velo').addEventListener('click', cerrarHoja);
 document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && abierto) cerrarHoja(); });
@@ -542,6 +640,14 @@ document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && abierto) 
 document.addEventListener('click', ev => {
   const chip = ev.target.closest('.chip');
   if(chip){ filtro = chip.dataset.f; pintar(); return; }
+
+  const mini = ev.target.closest('.mini');
+  if(mini){
+    const id = mini.closest('.lead').dataset.id;
+    const lead = LEADS.find(l => String(l.id) === id);
+    if(lead) editarDato(lead, mini.dataset.a);
+    return;
+  }
 
   const et = ev.target.closest('.etapa');
   if(et){

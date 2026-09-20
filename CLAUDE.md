@@ -110,7 +110,7 @@ la vez, y el cliente se entera antes que yo.
 ├── CLAUDE.md
 ├── index.html              ← LIBRE      el tracker
 ├── editor-ia/              ← LIBRE
-├── portal/                 ← CLIENTE    (todavía no existe, se crea ahora)
+├── portal/                 ← CLIENTE    la pantalla de leads
 └── supabase/
     ├── migraciones/        ← COMPARTIDA el SQL, numerado
     └── functions/          ← COMPARTIDA
