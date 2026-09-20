@@ -99,36 +99,41 @@ No se automatiza porque el remedio sería peor: una regla del tipo "descartar
 todo lo que esté en minúsculas y sin espacios" se llevaría puesta una pregunta
 legítima que se llame `presupuesto`, y eso no se nota nunca.
 
-# Mejoras futuras
+---
 
-## El tracker todavía deduce la presentación de la etapa
+# Lo que se comprueba y cuándo se comprobó
 
-En [index.html:5419] el recorrido del lead arma el paso "Presentacion de
-oferta" mirando `rules.presentaciones`, o sea la **etapa** de GHL. El propio
-código lo marca como `approx:true` y lo explica: *"Como se infiere: Stage
-actual de presentacion"*.
+Las pruebas de `supabase/pruebas/` **se corren a mano**. No hay nada que las
+dispare solo, así que lo único que dice si siguen pasando es la fecha de la
+última vez que alguien las corrió.
 
-Eso quedó viejo. Desde el 017 hay un dato de verdad: `leads.presento_en`, que
-dice en qué reunión se presentó la oferta (1, 2, 3…). El portal ya lo escribe.
+**Una fecha vieja acá no es un error: es la señal de que hace mucho que nadie
+lo comprueba.** Si tocás `es_agencia()`, `mi_rol()`, una policy o cualquiera de
+las funciones `lead_*` / `etapa_*`, corré la prueba que corresponda y
+actualizá la fecha en el mismo commit.
 
-**Qué falta:** que el tracker lea esa columna en vez de deducirla, y que el
-paso deje de ser `approx`. Donde hoy dice "se infiere del stage" debería decir
-"lo marcó el cliente el día tal, en la 1ª reunión".
+| prueba | qué asegura | última corrida |
+|---|---|---|
+| 1 — traducción de GHL | que un stage de GHL caiga en la etapa correcta | **2026-09-20** ✅ |
+| 2 — reordenar no rompe | que mover una etapa de lugar no cambie a dónde van los leads | sin fecha anotada |
+| 3 — usuario sin perfil | que quien no tiene perfil no pueda nada (ver abajo) | **2026-09-20** ✅ |
+| 4 — etapas de otro cliente | que un cliente no lea las etapas de otro | sin fecha anotada |
+| 5 — borrar una etapa | que los leads se muden en vez de quedar huérfanos | sin fecha anotada |
+| 6 — estructura y permisos | que `anon` no ejecute ninguna función | parcial, ver abajo |
 
-**Por qué importa más de lo que parece:** deducirlo de la etapa da por sentado
-que la oferta se presenta después de la segunda reunión, porque ése es el
-orden del embudo. Quien presentó en la primera y quien presentó en la segunda
-caen en la misma etapa y no se distinguen. Es justamente el número que hace
-falta para saber si conviene ofertar antes.
+**Sobre la 1:** el 2026-09-20, al aplicar el `011`, se corrieron las 14 de la
+prueba 1 más 3 del `007` —"Asistió a llamada", "Oferta presentada" y "No
+asisitó a llamada" con el typo—. Los 17 en ✅, cero regresiones.
 
-**Cuidado al hacerlo:** `presento_en` va a estar en NULL para casi todos los
-leads por un tiempo —sólo se llena cuando alguien lo marca en el portal—, así
-que hay que mostrar las dos cosas y no reemplazar una por la otra de golpe: el
-dato real cuando está, y la inferencia vieja marcada como tal cuando no.
+**Sobre la 6:** no se corrió entera. Sí se verificó, función por función y a
+medida que se crearon, que `anon` no pueda ejecutar `lead_calificar`,
+`lead_presento`, `portal_cuentas` ni `mi_cliente_nombre`. Falta la corrida
+completa, que además lista las 45 variantes de stage y las que no se traducen.
 
-
-Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
-otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
+**Las que dicen "sin fecha anotada"** corrieron alguna vez y dieron bien, pero
+no quedó registro de cuándo. Vale la pena correrlas una vez y anotarlas: son
+rápidas y las tres tocan cosas que ya cambiaron desde entonces (el `011` sumó
+una etapa, el `013` sumó una columna a `etapas`).
 
 ## La prueba 3.d — corrida y pasada el 2026-09-20
 
@@ -167,6 +172,39 @@ al usuario sin perfil, la variable queda NULL y la prueba **se saltea sola**
 diciendo "no hay leads" — con la tabla llena. Por eso la búsqueda va antes del
 cambio de rol, y los resultados se juntan en variables para escribirlos recién
 al volver a `postgres`.
+
+---
+
+# Mejoras futuras
+
+## El tracker todavía deduce la presentación de la etapa
+
+En [index.html:5419] el recorrido del lead arma el paso "Presentacion de
+oferta" mirando `rules.presentaciones`, o sea la **etapa** de GHL. El propio
+código lo marca como `approx:true` y lo explica: *"Como se infiere: Stage
+actual de presentacion"*.
+
+Eso quedó viejo. Desde el 017 hay un dato de verdad: `leads.presento_en`, que
+dice en qué reunión se presentó la oferta (1, 2, 3…). El portal ya lo escribe.
+
+**Qué falta:** que el tracker lea esa columna en vez de deducirla, y que el
+paso deje de ser `approx`. Donde hoy dice "se infiere del stage" debería decir
+"lo marcó el cliente el día tal, en la 1ª reunión".
+
+**Por qué importa más de lo que parece:** deducirlo de la etapa da por sentado
+que la oferta se presenta después de la segunda reunión, porque ése es el
+orden del embudo. Quien presentó en la primera y quien presentó en la segunda
+caen en la misma etapa y no se distinguen. Es justamente el número que hace
+falta para saber si conviene ofertar antes.
+
+**Cuidado al hacerlo:** `presento_en` va a estar en NULL para casi todos los
+leads por un tiempo —sólo se llena cuando alguien lo marca en el portal—, así
+que hay que mostrar las dos cosas y no reemplazar una por la otra de golpe: el
+dato real cuando está, y la inferencia vieja marcada como tal cuando no.
+
+
+Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
+otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
 
 ## El segundo candado de `leads`
 
