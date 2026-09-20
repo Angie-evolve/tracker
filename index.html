@@ -35374,6 +35374,75 @@ function _invBoton(c, i, email, invitadoAt){
     +'style="border:1px solid var(--border2);background:var(--bg3);color:var(--text3);'
     +'border-radius:999px;cursor:pointer;font-size:10px;padding:2px 8px;font-family:inherit">ya invitado</button>';
 }
+// Igual que _invMarcar pero en su propio campo: lo de GHL y lo del portal son
+// dos invitaciones distintas y una persona puede tener una y no la otra.
+function _portalMarcar(c, i, email){
+  var cuando=new Date().toISOString();
+  if(i<0){ c.portalInvite=c.portalInvite||{}; c.portalInvite[email]=cuando; return; }
+  var p=c.equipo[i];
+  if(typeof p!=='object'){ p={nombre:String(p||''), email:email}; c.equipo[i]=p; }
+  p.portalInvitadoAt=cuando;
+}
+function _portalBoton(c, i, email, invitadoAt){
+  if(!email) return '';
+  if(invitadoAt) return '<span style="font-size:10px;color:var(--accent)" '
+    +'title="Tiene cuenta del portal desde el '
+    +esc(new Date(invitadoAt).toLocaleDateString('es-AR'))+'">portal</span>';
+  return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+    +'onclick="portalInvitar('+c.id+','+i+')" '
+    +'title="Le crea la cuenta del portal y te da la clave para pasarsela">'
+    +'Invitar al portal</button>';
+}
+// La clave se muestra una sola vez: del otro lado queda hasheada y no hay
+// forma de volver a verla. Por eso el modal en vez de un toast, que se va solo
+// mientras uno busca donde anotarla.
+function _portalClaveModal(email, clave){
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:460px">'
+    +'<div class="modal-title">Cuenta creada</div>'
+    +'<div class="modal-sub">Esta clave se muestra <b>una sola vez</b>. Copiala y '
+    +'pasasela a ' + esc(email) + ' antes de cerrar.</div>'
+    +'<div style="margin-top:14px;padding:12px 14px;border-radius:var(--radius);'
+      +'background:var(--bg3);border:1px solid var(--border2);font-family:var(--mono,monospace);'
+      +'font-size:16px;letter-spacing:.04em;color:var(--strong);word-break:break-all;'
+      +'user-select:all">'+esc(clave)+'</div>'
+    +'<div class="modal-footer">'
+      +'<button class="btn" onclick="closeModal()">Cerrar</button>'
+      +'<button class="btn btn-primary" onclick="_copiar(\''
+        +esc(String(clave).replace(/'/g,"\\'"))+'\')">Copiar la clave</button>'
+    +'</div></div></div>';
+}
+async function portalInvitar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var quien = (i<0)
+    ? {nombre:c.contacto||'', email:c.email||''}
+    : {nombre:_eqNombre(c.equipo[i]), email:_eqMail(c.equipo[i])};
+  if(!quien.email){ toast('Ese contacto no tiene mail'); return; }
+  toast('Creando la cuenta de '+quien.email+'...');
+  var d=null;
+  try{
+    // Sin apikey a proposito: con el carnet del usuario alcanza, y la
+    // publishable key no tiene por que viajar en esta llamada.
+    var r=await fetch(SB_URL+'/functions/v1/invitar-portal',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify({email:quien.email, cliente_id:String(c.id),
+                           nombre:quien.nombre})
+    });
+    d=await r.json().catch(function(){ return null; });
+    if(!r.ok || !d || !d.ok) throw new Error((d&&(d.error||d.message))||('HTTP '+r.status));
+  }catch(e){
+    toast('No se pudo: '+(e&&e.message||'error'),'red');
+    return;
+  }
+  _portalMarcar(c, i, quien.email);
+  save();
+  _portalClaveModal(quien.email, d.clave);
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
 function _fichaHtml(c){
   var filas=[];
   // Ahora se dibuja aunque este vacio: sin la fila no habia forma de cargarlo.
@@ -35391,6 +35460,7 @@ function _fichaHtml(c){
         :((campo==='phone'&&v)?('<span style="font-size:10.5px;color:var(--amberx)" '
           +'title="Agregale el codigo de pais y se activa el boton de WhatsApp">falta el codigo de pais</span>'):''))
       +((campo==='email'&&v)?_invBoton(c, -1, v, (c.ghlInvite||{})[v]):'')
+      +((campo==='email'&&v)?_portalBoton(c, -1, v, (c.portalInvite||{})[v]):'')
       +((copiable&&v)?('<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
         +'onclick="_copiar(\''+esc(String(v).replace(/'/g,"\\'"))+'\')">Copiar</button>'):'')
       +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
@@ -35516,6 +35586,7 @@ function _fichaHtml(c){
              +'title="Falta el codigo de pais">sin pais</span>'):''))
          +'<span style="flex:1"></span>'
          +_invBoton(c, i, m, (p&&typeof p==='object')?p.ghlInvitadoAt:'')
+         +_portalBoton(c, i, m, (p&&typeof p==='object')?p.portalInvitadoAt:'')
          // Mismos botones chicos que el resto de la ficha, no pastillas de color.
          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px'
            +(rol?'':';color:var(--amberx)')+'" onclick="eqRolEditar('+c.id+','+i+')">'
