@@ -14,14 +14,18 @@ Un solo `index.html`, JS de navegador, sin build ni framework.
 ## Base de datos
 - Leer: `sbq`, libre.
 - Escribir: `sbw` / `sbsql`, **solo avisándome antes**.
-- Las 12 tablas tienen RLS prendida y `anon` sin GRANT. **Ese estado no se
+- Las 13 tablas tienen RLS prendida y `anon` sin GRANT. **Ese estado no se
   toca**, y no se "desactiva un momento" para destrabar nada. Si algo falla
   por permisos, avisame: el problema es otro.
 - `fathom_keys` y `gcal_cuentas` tienen RLS y cero policies **a propósito**:
   guardan credenciales. No les agregues policies.
-- Estoy armando un portal para clientes. **No se crea ningún usuario con rol
-  cliente** hasta que las policies de `clientes`, `config` y `llamadas_fathom`
-  exijan rol de agencia.
+- Las policies de `clientes`, `config` y `llamadas_fathom` exigen **rol
+  agencia**. Toda cuenta nueva nace como `cliente` sin acceso: para darle
+  acceso a alguien hay que agregarle el perfil.
+- `perfiles` tiene **dos candados**: sin grant de escritura para
+  `authenticated`, y sin policy de escritura. Así nadie puede ascenderse a
+  `agencia` desde la app. El día que exista la pantalla de Personas hay que
+  agregar **los dos**, en el mismo commit que la pantalla.
 
 ## Verificar antes de decir que está hecho
 1. Extraer el `<script>` y `node --check`.
