@@ -199,8 +199,10 @@
         <input id="i-nueva" type="password" autocomplete="new-password" required
                aria-describedby="a-clave">
         <!-- Visible desde el arranque, no despues de fallar: los requisitos
-             que aparecen recien cuando ya te equivocaste llegan tarde. -->
-        <div class="pista" id="a-clave">Al menos 8 caracteres, con una mayúscula,
+             que aparecen recien cuando ya te equivocaste llegan tarde.
+             El texto lo reescribe el script desde CLAVE_REGLAS; esto es lo
+             que se ve si algo falla antes de llegar ahi. -->
+        <div class="pista" id="a-clave">Al menos 12 caracteres, con una mayúscula,
           una minúscula, un número y un símbolo.</div>
       </div>
       <div class="campo">
@@ -377,7 +379,7 @@ function _delMail(){
    esta lista, la que usa Supabase. Un caracter de afuera (una ñ, un
    acento, un espacio) no cuenta como símbolo para el servidor, y si acá
    lo contáramos volveríamos a tener el error que esto viene a evitar. */
-const CLAVE_LARGO   = 8;
+const CLAVE_LARGO   = 12;
 const CLAVE_SIMBOLOS = '!@#$%^&*()_+-=[]{};\'\\:"|<>?,./`~';
 
 const CLAVE_REGLAS = [
@@ -390,14 +392,22 @@ const CLAVE_REGLAS = [
     texto:'un símbolo' },
 ];
 
+const _lista = xs => xs.length < 2 ? (xs[0] || '')
+  : xs.slice(0,-1).join(', ') + ' y ' + xs[xs.length-1];
+
+/* La pista de abajo del campo se arma con LAS MISMAS reglas que validan.
+   Escrita a mano se separaban: eso fue exactamente el bug: el texto decía
+   8 y el servidor pedía 12. */
+const CLAVE_PISTA = (t => t[0].toUpperCase() + t.slice(1))(CLAVE_REGLAS[0].texto)
+  + ', con ' + _lista(CLAVE_REGLAS.slice(1).map(r => r.texto)) + '.';
+
 /* Devuelve el mensaje de lo que falta, o '' si está bien. Se nombra todo
    lo que falta junto: decirlo de a uno obliga a probar cinco veces. */
 function revisarClave(p){
   const faltan = CLAVE_REGLAS.filter(r => !r.ok(p)).map(r => r.texto);
   if(!faltan.length) return '';
   if(faltan.length === 1) return 'A la contraseña le falta ' + faltan[0] + '.';
-  return 'A la contraseña le falta: ' + faltan.slice(0,-1).join(', ')
-       + ' y ' + faltan[faltan.length-1] + '.';
+  return 'A la contraseña le falta: ' + _lista(faltan) + '.';
 }
 
 /* Guarda la contraseña nueva usando el token del mail y deja la sesión
@@ -424,9 +434,7 @@ async function guardarClave(delMail, clave){
     // de que hay que revisar CLAVE_LARGO y CLAVE_REGLAS contra el panel.
     if(d.error_code === 'weak_password' || d.weak_password
        || /password/i.test(crudo)){
-      throw new Error('Esa contraseña no la acepta el sistema. Necesita al menos '
-        + CLAVE_LARGO + ' caracteres, con una mayúscula, una minúscula, '
-        + 'un número y un símbolo.');
+      throw new Error('Esa contraseña no la acepta el sistema. ' + CLAVE_PISTA);
     }
     throw new Error(crudo);
   }
@@ -887,6 +895,9 @@ document.addEventListener('click', ev => {
    contraseña nueva, eso es lo que vino a hacer, aunque el teléfono todavía
    tenga una sesión vieja abierta. */
 const DEL_MAIL = _delMail();
+
+// Una sola fuente: si cambian las reglas, cambia la pista.
+$('a-clave').textContent = CLAVE_PISTA;
 
 cargarSesion();
 if(DEL_MAIL && DEL_MAIL.token){
