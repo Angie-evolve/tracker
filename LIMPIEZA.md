@@ -55,6 +55,26 @@ puede tocar es la etiqueta de al lado, que es clickeable.
 Si algún día molesta, se cambia para todos a la vez. Uno solo con caja y el
 resto sin ella hace que la app parezca parchada.
 
+## Las reglas de la contraseña están escritas dos veces
+
+`CLAVE_LARGO`, `CLAVE_SIMBOLOS` y `CLAVE_REGLAS` viven en `index.html` y otra
+vez en `portal/index.html`. Son dos archivos sueltos, sin nada compartido, así
+que no hay forma de tenerlas en un solo lugar sin inventar un build.
+
+**Si cambian en Supabase, se tocan los dos.** El panel está en
+Authentication → Providers → Email: "Minimum password length" y "Password
+Requirements". Hoy: 12 y los cuatro grupos.
+
+Dentro de cada archivo sí hay una sola fuente: la pista que se ve debajo del
+campo se genera desde `CLAVE_REGLAS`, no está escrita a mano. Esa parte ya
+falló una vez —el texto decía 8 y el servidor pedía 12— y por eso se generó.
+
+No hay forma de leer las reglas desde el navegador para chequear que no se
+separaron: la API valida el carnet antes que la contraseña, así que nunca
+contesta cuáles son. El aviso de que se separaron es que aparezca el mensaje
+"Esa contraseña no la acepta el sistema", que sólo puede salir si el servidor
+rechazó algo que acá pasó.
+
 # Mejoras futuras
 
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie

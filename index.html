@@ -62479,6 +62479,61 @@ function _lpDelMail(){
            expira:parseInt(p.expires_in||'3600',10), tipo:p.type };
 }
 
+/* ── Las reglas de la contrasena ──────────────────────────────────────
+   Tienen que ser LAS MISMAS que las del proyecto en Supabase. Si aca
+   pedimos menos, la persona pasa este chequeo y la frena el servidor con
+   un mensaje en ingles; si pedimos mas, la frenamos nosotros sin motivo.
+   Ya paso: esto pedia 8 y el proyecto pide 12.
+
+   ⚠️  Estos dos valores son la copia de lo que dice
+       Supabase -> Authentication -> Providers -> Email:
+         · "Minimum password length"        (hoy 12)
+         · "Password Requirements"          (hoy los cuatro grupos)
+       Si alla se cambian, aca tambien. No hay forma de leerlos desde el
+       navegador: la API valida el carnet ANTES que la contrasena, asi que
+       nunca contesta cuales son sus reglas.
+
+   El conjunto de simbolos NO es "todo lo que no sea letra ni numero": es
+   esta lista, la que usa Supabase. Una ñ, un acento o un espacio no
+   cuentan como simbolo para el servidor, y contarlos aca seria volver a
+   tener el error que esto viene a evitar.
+
+   El portal tiene una copia de esto en portal/index.html. Son dos archivos
+   sueltos a proposito, sin nada compartido: si cambian las reglas, se
+   tocan los dos. */
+var CLAVE_LARGO=12;
+var CLAVE_SIMBOLOS='!@#$%^&*()_+-=[]{};\'\\:"|<>?,./`~';
+
+var CLAVE_REGLAS=[
+  { ok:function(p){ return p.length>=CLAVE_LARGO; },
+    texto:'al menos '+CLAVE_LARGO+' caracteres' },
+  { ok:function(p){ return /[A-Z]/.test(p); }, texto:'una mayúscula' },
+  { ok:function(p){ return /[a-z]/.test(p); }, texto:'una minúscula' },
+  { ok:function(p){ return /[0-9]/.test(p); }, texto:'un número' },
+  { ok:function(p){ return p.split('').some(function(c){
+      return CLAVE_SIMBOLOS.indexOf(c)>=0; }); }, texto:'un símbolo' }
+];
+
+function _claveLista(xs){
+  return xs.length<2 ? (xs[0]||'')
+    : xs.slice(0,-1).join(', ')+' y '+xs[xs.length-1];
+}
+
+// La pista se arma con LAS MISMAS reglas que validan. Escrita a mano son dos
+// copias que se separan, que es exactamente como se llego al bug de los 8.
+var CLAVE_PISTA=(function(t){ return t.charAt(0).toUpperCase()+t.slice(1); })(CLAVE_REGLAS[0].texto)
+  +', con '+_claveLista(CLAVE_REGLAS.slice(1).map(function(r){ return r.texto; }))+'.';
+
+// Devuelve que le falta, o '' si esta bien. Nombra todo junto: decirlo de a
+// uno obliga a probar cinco veces.
+function revisarClave(p){
+  var faltan=CLAVE_REGLAS.filter(function(r){ return !r.ok(p); })
+                         .map(function(r){ return r.texto; });
+  if(!faltan.length) return '';
+  if(faltan.length===1) return 'A la contraseña le falta '+faltan[0]+'.';
+  return 'A la contraseña le falta: '+_claveLista(faltan)+'.';
+}
+
 function pantallaClave(s){
   var d=document.createElement('div');
   d.id='sb-login';
@@ -62491,7 +62546,12 @@ function pantallaClave(s){
       +(s.tipo==='invite' ? 'Te invitaron al tracker. Elegí una contraseña y entrás.'
                           : 'Elegí una contraseña nueva.')+'</div>'
     +'<input id="sb-pass" type="password" placeholder="Contraseña nueva" '
-      +'autocomplete="new-password" style="width:100%;margin-bottom:9px">'
+      +'autocomplete="new-password" aria-describedby="sb-pista" '
+      +'style="width:100%;margin-bottom:7px">'
+    // Visible desde el arranque, no despues de fallar: los requisitos que
+    // aparecen recien cuando ya te equivocaste llegan tarde.
+    +'<div id="sb-pista" style="font-size:11px;color:var(--text3);line-height:1.5;'
+      +'margin-bottom:11px">'+esc(CLAVE_PISTA)+'</div>'
     +'<input id="sb-pass2" type="password" placeholder="Repetila" '
       +'autocomplete="new-password" style="width:100%;margin-bottom:14px">'
     +'<button id="sb-btn" class="btn btn-primary" style="width:100%">Guardar y entrar</button>'
@@ -62505,12 +62565,12 @@ function pantallaClave(s){
     var p1=document.getElementById('sb-pass').value||'';
     var p2=document.getElementById('sb-pass2').value||'';
     if(p1!==p2){ m.textContent='Las dos no coinciden.'; return; }
-    if(p1.length<8){ m.textContent='Poné al menos 8 caracteres.'; return; }
+    var falta=revisarClave(p1);
+    if(falta){ m.textContent=falta; return; }
     b.disabled=true; b.textContent='Guardando...'; m.textContent='';
     try{
-      // El largo de arriba es solo para atajar un error de tipeo sin ir y
-      // volver. Las reglas de verdad las pone el proyecto, y si el servidor
-      // rechaza la contrasena se muestra SU mensaje, que dice que le falta.
+      // Lo de arriba ya aplico las mismas reglas que el proyecto, asi que si
+      // el servidor igual la rechaza es que se separaron: ver CLAVE_REGLAS.
       var r=await fetch(SB_URL+'/auth/v1/user',{
         method:'PUT',
         headers:{'apikey':SB_KEY,'Authorization':'Bearer '+s.token,
@@ -62526,6 +62586,11 @@ function pantallaClave(s){
         if(/jwt|token|expired|invalid/i.test(crudo) && !/password|contrase/i.test(crudo)){
           throw new Error('Este link ya venció o no es válido. Pedí que te vuelvan '
             +'a invitar y usá el link nuevo.');
+        }
+        // El mensaje crudo viene en ingles y enumera los alfabetos permitidos.
+        // Llegar aca es un aviso de que CLAVE_REGLAS quedo mas laxa que el panel.
+        if(u.error_code==='weak_password' || u.weak_password || /password/i.test(crudo)){
+          throw new Error('Esa contraseña no la acepta el sistema. '+CLAVE_PISTA);
         }
         throw new Error(crudo);
       }
