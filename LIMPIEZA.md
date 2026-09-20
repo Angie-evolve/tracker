@@ -54,3 +54,28 @@ puede tocar es la etiqueta de al lado, que es clickeable.
 
 Si algún día molesta, se cambia para todos a la vez. Uno solo con caja y el
 resto sin ella hace que la app parezca parchada.
+
+# Mejoras futuras
+
+Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
+otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
+
+## El segundo candado de `leads`
+
+`perfiles` tiene dos candados —sin grant de escritura para `authenticated` y
+sin policy de escritura— y eso ahí es gratis: nadie escribe esa tabla desde el
+navegador.
+
+En `leads` hay **uno solo**: el grant queda y quien separa es la policy. No es
+un descuido. La agencia sincroniza los leads que baja de GHL **desde el
+navegador**, así que sacarle el grant a `authenticated` deja esa sincronización
+sin forma de escribir.
+
+El día que esa sincronización pase a una **edge function con `service_role`**,
+el revoke pasa a ser gratis y ahí sí conviene agregarlo:
+
+```sql
+revoke insert, update, delete on public.leads from authenticated;
+```
+
+Está avisado también dentro de `005_portal_leads.sql`, al lado del grant.

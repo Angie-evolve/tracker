@@ -49,14 +49,18 @@ create index if not exists leads_cliente_creado_idx
 
 alter table public.leads enable row level security;
 revoke all on public.leads from anon;
--- La agencia escribe directo -la spec dice "agencia: todo"- asi que el grant
--- queda para `authenticated` y quien separa es la policy: la de agencia
--- permite todo, y el cliente no tiene ninguna de escritura.
+
+-- ###########################################################################
+-- #  `authenticated` conserva el grant de escritura A PROPOSITO, porque la  #
+-- #  agencia sincroniza leads desde el navegador. Quien separa es la        #
+-- #  policy. NO copiar aca el revoke de `perfiles`: rompe la               #
+-- #  sincronizacion.                                                        #
+-- ###########################################################################
 --
--- Es un candado y no dos, a diferencia de `perfiles`. Ahi el segundo candado
--- existe porque escribirse el rol es catastrofico; aca la agencia necesita
--- insertar los leads que baja de GHL desde el navegador, y sacarle el grant
--- deja esa sincronizacion sin forma de escribir.
+-- En `perfiles` el segundo candado -sin grant Y sin policy- es gratis: nadie
+-- escribe esa tabla desde el navegador. Aca no lo es. El dia que la
+-- sincronizacion de GHL pase a una edge function con service_role, el revoke
+-- pasa a ser gratis y ahi si conviene agregarlo. Esta anotado en LIMPIEZA.md.
 grant select, insert, update, delete on public.leads to authenticated;
 grant select, insert, update on public.leads to service_role;
 
