@@ -7,7 +7,7 @@ const SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -29,12 +29,28 @@ async function admin(path: string, init: RequestInit = {}) {
   });
 }
 
-// Sin eñes ni caracteres que se confundan al dictarla por WhatsApp.
+// Supabase exige mayuscula, numero y simbolo. Se garantiza uno de cada uno.
+// Sin I, O, l, 1, 0 ni comillas: la clave se dicta por WhatsApp.
 function generarClave() {
-  const abc = 'abcdefghijkmnpqrstuvwxyz23456789';
-  const n = new Uint8Array(14);
-  crypto.getRandomValues(n);
-  return Array.from(n, b => abc[b % abc.length]).join('');
+  const min = 'abcdefghijkmnpqrstuvwxyz';
+  const may = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const num = '23456789';
+  const sim = '!@#$%*_-+=';
+  const todo = min + may + num + sim;
+  const pick = (s: string) => {
+    const b = new Uint8Array(1);
+    crypto.getRandomValues(b);
+    return s[b[0] % s.length];
+  };
+  const out = [pick(min), pick(may), pick(num), pick(sim)];
+  for (let i = 0; i < 12; i++) out.push(pick(todo));
+  for (let i = out.length - 1; i > 0; i--) {
+    const b = new Uint8Array(1);
+    crypto.getRandomValues(b);
+    const j = b[0] % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out.join('');
 }
 
 Deno.serve(async (req) => {
