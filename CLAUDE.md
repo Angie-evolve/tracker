@@ -7,6 +7,15 @@ cualquiera entra a un archivo versionado. Ninguna credencial, nunca.
 Los tokens no pasan por el chat. Las claves viven en secretos de Supabase o
 en el Llavero de macOS. Si necesitás una, pedime que la cargue yo.
 
+**Los datos de los clientes viven en la base, nunca en git.** Ni nombres, ni
+teléfonos, ni mails, ni un export "para probar". Si hace falta un SQL que los
+toque, corrélo y no lo versiones: va en el scratchpad, no en el repo. El
+`.gitignore` de la raíz bloquea los formatos en los que salen (csv, xlsx,
+dumps), pero el cerco no te salva de pegarlos adentro de un `.sql` o un `.md`.
+
+Y acordate de que **el historial no se olvida**: borrar el archivo después no
+lo saca de los commits viejos. Se arregla antes de commitear, no después.
+
 ## La app
 Un solo `index.html`, JS de navegador, sin build ni framework.
 **Nunca lo reescribas entero: solo el bloque que te pida.**
