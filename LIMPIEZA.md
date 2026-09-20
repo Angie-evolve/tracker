@@ -24,3 +24,23 @@ nadie. Las tres cuentas reales son `mdlangierh@`, `ashn10291@` y
 `melany@theflowingcode.com`.
 
 O el mail está mal escrito, o sobra.
+
+---
+
+# Sabido y aceptado
+
+No está muerto ni hay que arreglarlo. Está acá para que dentro de seis meses
+nadie lo "descubra" y lo toque creyendo que es un descuido.
+
+## `lp_eventos` acepta INSERT anónimo
+
+La policy es `check=true` para `anon`, así que cualquiera con la publishable
+key —que está en el `index.html` de un repo público— puede escribirle filas de
+más. No puede leer: solo insertar.
+
+Es el precio de medir desde el navegador: el snippet que se pega en las
+landings de GHL corre sin sesión, y para escribir el evento necesita ese
+permiso.
+
+Si algún día molesta, se acota con un check de forma sobre las columnas, o se
+mueve a una edge function que valide antes de insertar. **Hoy no se toca.**

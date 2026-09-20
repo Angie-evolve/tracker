@@ -14,9 +14,10 @@ Un solo `index.html`, JS de navegador, sin build ni framework.
 ## Base de datos
 - Leer: `sbq`, libre.
 - Escribir: `sbw` / `sbsql`, **solo avisándome antes**.
-- Las 13 tablas tienen RLS prendida y `anon` sin GRANT. **Ese estado no se
-  toca**, y no se "desactiva un momento" para destrabar nada. Si algo falla
-  por permisos, avisame: el problema es otro.
+- Las 13 tablas tienen RLS prendida. `anon` no puede leer ninguna; lo único
+  que puede es INSERT en `lp_eventos`, que es el tracking de las landings.
+  **Ese estado no se toca**, y no se "desactiva un momento" para destrabar
+  nada. Si algo falla por permisos, avisame: el problema es otro.
 - `fathom_keys` y `gcal_cuentas` tienen RLS y cero policies **a propósito**:
   guardan credenciales. No les agregues policies.
 - Las policies de `clientes`, `config` y `llamadas_fathom` exigen **rol
