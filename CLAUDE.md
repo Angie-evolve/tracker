@@ -45,3 +45,68 @@ commit**. Un CLAUDE.md desactualizado miente, y se le cree.
 - **Caché.** GitHub Pages cachea 10 min. Para probar en vivo, URL con `?v=`.
 - Los comentarios del código explican **por qué**, no qué hace la línea.
   En español, como el resto del archivo.
+
+## Las tres zonas
+
+Cada archivo de este repo pertenece a una zona. **La zona se deduce de la ruta,
+no del criterio.**
+
+| Ruta | Zona |
+|---|---|
+| `index.html`, `editor-ia/` | **LIBRE** |
+| `portal/` | **CLIENTE** |
+| `supabase/`, y cualquier SQL | **COMPARTIDA** |
+
+Reglas que valen para las tres:
+
+- **Al empezar cualquier tarea, decime en qué zona vas a trabajar, antes de
+  tocar nada.** Una línea alcanza.
+- **Si no podés ubicar un archivo, tratalo como COMPARTIDA y preguntame.**
+- **Un cambio no puede tocar dos zonas en el mismo commit.** Si la tarea
+  necesita las dos, son dos commits, y el de la zona COMPARTIDA va primero.
+
+### Zona LIBRE — el tracker de la agencia
+
+`index.html`, `editor-ia/`. Lo usamos Martín y Angie. Si se rompe, nos rompe a
+nosotros y lo arreglamos mañana.
+
+- Editá directo. Mostrame el diff como siempre, pero no hace falta que pidas
+  permiso antes de cada cambio.
+- Igual vale la regla de siempre: nunca reescribas `index.html` entero.
+
+### Zona CLIENTE — la pantalla del portal
+
+`portal/`. La ven clientes. Si se rompe, lo ve gente de afuera de la agencia.
+
+- Antes de editar: decime en una línea **qué va a ver distinto el cliente**.
+- Después de editar: probalo y contame **cómo** lo comprobaste.
+- Nunca publiques sin que yo te lo diga.
+- **Ninguna clave ni token acá, de ningún tipo.** El portal no habla con
+  Anthropic, ni con Meta, ni con GHL. Solo lee y escribe filas de Supabase.
+- Todo lo que agregues tiene que funcionar en un teléfono.
+
+### Zona COMPARTIDA — base de datos y funciones
+
+`supabase/`, y cualquier SQL en cualquier lado. Afecta al tracker y al portal a
+la vez, y el cliente se entera antes que yo.
+
+- **Solo cambios que suman:** agregar tabla, columna, policy o función.
+  **Nada de `drop`, `rename`, ni cambiar el tipo de una columna que ya existe.**
+  Si te parece que hay que borrar algo, proponémelo y esperá; no lo hagas.
+- Cada cambio va en un archivo numerado en `supabase/migraciones/`, aunque lo
+  corras a mano. En el mismo archivo, escribí **cómo se vuelve atrás**.
+- Después de aplicar: comprobá que **el tracker Y el portal** siguen andando, y
+  decime cómo lo comprobaste.
+
+### Estructura
+
+```
+/
+├── CLAUDE.md
+├── index.html              ← LIBRE      el tracker
+├── editor-ia/              ← LIBRE
+├── portal/                 ← CLIENTE    (todavía no existe, se crea ahora)
+└── supabase/
+    ├── migraciones/        ← COMPARTIDA el SQL, numerado
+    └── functions/          ← COMPARTIDA
+```
