@@ -101,6 +101,32 @@ legítima que se llame `presupuesto`, y eso no se nota nunca.
 
 # Mejoras futuras
 
+## El tracker todavía deduce la presentación de la etapa
+
+En [index.html:5419] el recorrido del lead arma el paso "Presentacion de
+oferta" mirando `rules.presentaciones`, o sea la **etapa** de GHL. El propio
+código lo marca como `approx:true` y lo explica: *"Como se infiere: Stage
+actual de presentacion"*.
+
+Eso quedó viejo. Desde el 017 hay un dato de verdad: `leads.presento_en`, que
+dice en qué reunión se presentó la oferta (1, 2, 3…). El portal ya lo escribe.
+
+**Qué falta:** que el tracker lea esa columna en vez de deducirla, y que el
+paso deje de ser `approx`. Donde hoy dice "se infiere del stage" debería decir
+"lo marcó el cliente el día tal, en la 1ª reunión".
+
+**Por qué importa más de lo que parece:** deducirlo de la etapa da por sentado
+que la oferta se presenta después de la segunda reunión, porque ése es el
+orden del embudo. Quien presentó en la primera y quien presentó en la segunda
+caen en la misma etapa y no se distinguen. Es justamente el número que hace
+falta para saber si conviene ofertar antes.
+
+**Cuidado al hacerlo:** `presento_en` va a estar en NULL para casi todos los
+leads por un tiempo —sólo se llena cuando alguien lo marca en el portal—, así
+que hay que mostrar las dos cosas y no reemplazar una por la otra de golpe: el
+dato real cuando está, y la inferencia vieja marcada como tal cuando no.
+
+
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
 otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
 
