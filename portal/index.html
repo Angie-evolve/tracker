@@ -64,6 +64,10 @@
   .btn:disabled{opacity:.5;cursor:default}
   .err{font-size:13px;color:var(--rojo);margin-top:12px;line-height:1.45;text-align:center}
   .ayuda{font-size:12.5px;color:var(--text3);text-align:center;margin-top:18px;line-height:1.55}
+  .ayuda a{color:var(--text2);text-decoration:underline;text-underline-offset:2px}
+  /* El mismo cartel sirve para el error y para el aviso de "te mandamos el
+     mail", que no es un error. Sin esto, una buena noticia se lee en rojo. */
+  .err.ok{color:var(--text2)}
 
   /* ── cabecera ────────────────────────────────────────── */
   header{display:flex;align-items:center;gap:12px;padding:18px 18px 14px;border-bottom:1px solid var(--line)}
@@ -180,7 +184,26 @@
       <button class="btn" type="submit" id="b-entrar">Entrar</button>
       <div class="err" id="e-entrar" hidden></div>
     </form>
-    <p class="ayuda">Si no te anda la contraseña, escribinos y te mandamos una nueva.</p>
+    <p class="ayuda"><a href="#" id="b-olvide">Olvidé mi contraseña</a></p>
+  </section>
+
+  <!-- ── elegir contraseña ───────────────────────────────
+       Sólo se ve cuando la persona llega desde el link del mail. -->
+  <section class="entrar" id="p-clave" hidden>
+    <div class="marca">Portal de leads</div>
+    <h1>Elegí tu contraseña</h1>
+    <form id="f-clave">
+      <div class="campo">
+        <label for="i-nueva">Contraseña nueva</label>
+        <input id="i-nueva" type="password" autocomplete="new-password" required>
+      </div>
+      <div class="campo">
+        <label for="i-nueva2">Repetila</label>
+        <input id="i-nueva2" type="password" autocomplete="new-password" required>
+      </div>
+      <button class="btn" type="submit" id="b-clave">Guardar y entrar</button>
+      <div class="err" id="e-clave" hidden></div>
+    </form>
   </section>
 
   <!-- ── el portal ───────────────────────────────────── -->
@@ -268,6 +291,91 @@ async function refrescar(){
   if(!r.ok){ guardarSesion(null); return false; }
   guardarSesion(await r.json());
   return true;
+}
+
+/* Pedir el mail para cambiar la contraseña.
+
+   ⚠️  SIEMPRE contesta lo mismo, exista o no la cuenta, y por eso ni mira la
+       respuesta. Si dijera "ese mail no tiene cuenta", cualquiera podría
+       averiguar quiénes son nuestros clientes probando direcciones de a una.
+       El error de red tampoco se muestra: distinguirlo también sería una
+       pista. Si algo falla de verdad, la persona no recibe el mail y vuelve
+       a pedirlo.
+
+   ⚠️  `redirect_to` es lo que hace que el link del mail vuelva ACÁ. Sin esto
+       Supabase usa el Site URL del proyecto, que hoy apunta al tracker, y el
+       cliente termina en la app interna de la agencia. No es un redirect
+       abierto: Supabase sólo acepta destinos que estén en su lista de
+       Redirect URLs. */
+async function recuperar(mail){
+  const destino = encodeURIComponent(location.origin + location.pathname);
+  try{
+    await fetch(SB_URL + '/auth/v1/recover?redirect_to=' + destino, {
+      method:'POST',
+      headers:{ apikey:SB_KEY, 'content-type':'application/json' },
+      body: JSON.stringify({ email:mail, gotrue_meta_security:{} })
+    });
+  }catch(_){ /* a propósito: la respuesta no cambia lo que mostramos */ }
+}
+
+/* Lo que vuelve en el link del mail viaja en el fragmento de la URL
+   (#access_token=...&type=recovery), que no se manda al servidor.
+
+   Devuelve {token, refresh, expira} si el link es bueno, {error} si venció,
+   o null si esta carga no viene de ningún mail. */
+function _delMail(){
+  const h = String(location.hash || '').replace(/^#/, '');
+  if(!h) return null;
+  const p = {};
+  for(const par of h.split('&')){
+    const i = par.indexOf('=');
+    if(i > 0){
+      try { p[decodeURIComponent(par.slice(0,i))] = decodeURIComponent(par.slice(i+1)); }
+      catch(_){ /* fragmento mal armado */ }
+    }
+  }
+  // Leído, el token no tiene por qué quedar en la barra ni en el historial.
+  const limpiar = () => {
+    try { history.replaceState(null, '', location.pathname + location.search); }
+    catch(_){}
+  };
+  // Un link vencido no vuelve con token: vuelve con un error acá adentro.
+  // Sin esto la persona cae en el formulario de entrar sin entender por qué.
+  if(p.error || p.error_code){
+    limpiar();
+    return { error: /expired/i.test(p.error_code || p.error_description || '')
+      ? 'Ese link ya venció. Pedí uno nuevo desde "Olvidé mi contraseña".'
+      : 'Ese link no sirve. Pedí uno nuevo desde "Olvidé mi contraseña".' };
+  }
+  if(!p.access_token) return null;
+  if(p.type !== 'recovery' && p.type !== 'invite') return null;
+  limpiar();
+  return { token:p.access_token, refresh:p.refresh_token || '',
+           expira:parseInt(p.expires_in || '3600', 10) };
+}
+
+/* Guarda la contraseña nueva usando el token del mail y deja la sesión
+   armada, para que la persona entre sin tener que loguearse otra vez. */
+async function guardarClave(delMail, clave){
+  const r = await fetch(SB_URL + '/auth/v1/user', {
+    method:'PUT',
+    headers:{ apikey:SB_KEY, authorization:'Bearer ' + delMail.token,
+              'content-type':'application/json' },
+    body: JSON.stringify({ password: clave })
+  });
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok){
+    const crudo = d.msg || d.message || d.error_description || ('Error ' + r.status);
+    // El mensaje de Supabase para un token vencido habla de firmas y segmentos,
+    // que no le dice nada a nadie y encima apunta al lado equivocado: no hay
+    // nada que corregir en la contraseña.
+    if(/jwt|token|expired|invalid/i.test(crudo) && !/password|contrase/i.test(crudo)){
+      throw new Error('Ese link ya venció. Pedí uno nuevo desde "Olvidé mi contraseña".');
+    }
+    throw new Error(crudo);
+  }
+  guardarSesion({ access_token:delMail.token, refresh_token:delMail.refresh,
+                  expires_in:delMail.expira, token_type:'bearer', user:d });
 }
 
 /* Un solo lugar por donde pasan todos los pedidos. Si el token venció,
@@ -632,7 +740,9 @@ async function mostrarPortal(){
 $('f-entrar').addEventListener('submit', async ev => {
   ev.preventDefault();
   const b = $('b-entrar'), e = $('e-entrar');
-  b.disabled = true; b.textContent = 'Entrando…'; e.hidden = true;
+  // El mismo cartel puede venir de "te mandamos el mail", que se pinta gris.
+  // Si ahora es un error, tiene que volver a rojo.
+  b.disabled = true; b.textContent = 'Entrando…'; e.hidden = true; e.classList.remove('ok');
   try{
     await entrar($('i-mail').value.trim(), $('i-clave').value);
     await mostrarPortal();
@@ -643,6 +753,43 @@ $('f-entrar').addEventListener('submit', async ev => {
     e.hidden = false;
   }finally{
     b.disabled = false; b.textContent = 'Entrar';
+  }
+});
+
+$('b-olvide').addEventListener('click', async ev => {
+  ev.preventDefault();
+  const e = $('e-entrar');
+  // Si ya escribió el correo arriba, no se lo pedimos de nuevo.
+  let mail = $('i-mail').value.trim();
+  if(!mail) mail = String(window.prompt('¿Cuál es tu correo?') || '').trim();
+  if(!mail) return;
+  await recuperar(mail);
+  // El mismo texto siempre. Ver el comentario de `recuperar`.
+  e.textContent = 'Si esa dirección tiene una cuenta, te mandamos un mail con '
+                + 'un link para elegir una contraseña nueva.';
+  e.classList.add('ok');
+  e.hidden = false;
+});
+
+$('f-clave').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const b = $('b-clave'), e = $('e-clave');
+  const p1 = $('i-nueva').value, p2 = $('i-nueva2').value;
+  e.hidden = true;
+  if(p1 !== p2){ e.textContent = 'Las dos no coinciden.'; e.hidden = false; return; }
+  // Este largo es sólo para atajar un tipeo sin ir y volver. Las reglas de
+  // verdad las pone el proyecto, y si el servidor la rechaza se muestra SU
+  // mensaje, que dice qué le falta.
+  if(p1.length < 8){ e.textContent = 'Poné al menos 8 caracteres.'; e.hidden = false; return; }
+  b.disabled = true; b.textContent = 'Guardando…';
+  try{
+    await guardarClave(DEL_MAIL, p1);
+    $('p-clave').hidden = true;
+    await mostrarPortal();
+  }catch(err){
+    e.textContent = err.message;
+    e.hidden = false;
+    b.disabled = false; b.textContent = 'Guardar y entrar';
   }
 });
 
@@ -682,7 +829,22 @@ document.addEventListener('click', ev => {
   }
 });
 
+/* El link del mail se mira ANTES que la sesión guardada: si alguien pidió una
+   contraseña nueva, eso es lo que vino a hacer, aunque el teléfono todavía
+   tenga una sesión vieja abierta. */
+const DEL_MAIL = _delMail();
+
 cargarSesion();
-if(sesion && sesion.access_token) mostrarPortal();
+if(DEL_MAIL && DEL_MAIL.token){
+  $('p-entrar').hidden = true;
+  $('p-clave').hidden = false;
+  $('i-nueva').focus();
+}else if(DEL_MAIL && DEL_MAIL.error){
+  const e = $('e-entrar');
+  e.textContent = DEL_MAIL.error;
+  e.hidden = false;
+}else if(sesion && sesion.access_token){
+  mostrarPortal();
+}
 </script>
 </html>
