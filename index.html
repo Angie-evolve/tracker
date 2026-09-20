@@ -26557,7 +26557,14 @@ function openNewClientModal(){
               <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" oninput="_ncNavPuntos()" autofocus></div>
               <div class="form-2col">
                 <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona" oninput="_ncNavPuntos()"></div>
-                <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com" oninput="_ncNavPuntos()"></div>
+                <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com" oninput="_ncNavPuntos();_ncPortalSync()"></div>
+                <div class="form-row" id="nc-portal-wrap" style="opacity:.45">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--text2)">
+                    <input type="checkbox" id="nc-portal" disabled style="margin:0;cursor:pointer">
+                    <span>Invitar al portal al crear</span>
+                  </label>
+                  <div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">Le crea la cuenta y te muestra la clave una sola vez. Si falla, el cliente queda creado igual y se reintenta desde la ficha.</div>
+                </div>
               </div>
                 <div class="form-2col">
                   <div class="form-row"><label class="form-label">Telefono</label>
@@ -26661,6 +26668,18 @@ function openNewClientModal(){
   _ncEquipoRender();
 }
 
+// Sin mail no hay a quien invitar, asi que el tilde no puede quedar prendido:
+// si se escribe un mail, se tilda, y despues se borra el mail, quedaria pidiendo
+// una invitacion sin destinatario.
+function _ncPortalSync(){
+  var m=document.getElementById('nc-email'), ck=document.getElementById('nc-portal');
+  if(!ck) return;
+  var hay=!!(((m&&m.value)||'').trim());
+  ck.disabled=!hay;
+  if(!hay) ck.checked=false;
+  var w=document.getElementById('nc-portal-wrap');
+  if(w) w.style.opacity = hay ? '1' : '.45';
+}
 async function createClient(){
   const esEmpresa=((document.getElementById('nc-tipo')||{}).value||'empresa')!=='persona';
   const empresa=((document.getElementById('nc-name')||{}).value||'').trim();
@@ -26692,6 +26711,9 @@ async function createClient(){
     return;
   }
   if(_mail) _mail.style.borderColor='';
+  // Se lee aca y no al final: closeModal() borra el formulario del DOM y para
+  // entonces el checkbox ya no existe.
+  var _quierePortal=!!(email && (document.getElementById('nc-portal')||{}).checked);
   // Por si quedo texto escrito sin haber apretado Enter ni Agregar.
   var _pend=document.getElementById('nc-equipo-input');
   if(_pend&&_pend.value.trim()) _ncEquipoAdd();
@@ -26766,10 +26788,11 @@ async function createClient(){
     }
   }
   const ci=DB.clients.length%COLORS.length;
+  const nuevoId=Date.now();
   DB.clients.push({
     // Fecha de alta explicita: hasta ahora se deducia del id, que funciona pero
     // se rompe si algun dia cambia como se generan.
-    id:Date.now(), altaAt:new Date().toISOString(), name,industry,
+    id:nuevoId, altaAt:new Date().toISOString(), name,industry,
     // `contacto` queda vacio si el cliente es la persona: el dato ya esta en
     // `name` y duplicarlo hace que despues no se sepa cual es el bueno.
     esEmpresa, producto, productoId, productoVersion, contacto:(esEmpresa?contacto:''), email, equipo,
@@ -26794,6 +26817,10 @@ async function createClient(){
   save();
   closeModal();renderSidebar();showOverview();
   toast((ghlLoc&&ghlLoc.id) ? 'Cliente y subcuenta creados OK' : 'Cliente creado OK');
+  // Recien aca, con el cliente ya guardado. Si la invitacion falla, portalInvitar
+  // muestra su toast rojo y listo: el cliente queda creado igual y se reintenta
+  // desde la ficha, que es donde vive el mismo boton.
+  if(_quierePortal) await portalInvitar(nuevoId, -1);
 }
 
 function openNewLineModal(clientId){
@@ -35416,8 +35443,11 @@ function _portalClaveModal(email, clave){
 async function portalInvitar(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
+  // Cae en c.name porque un cliente que es persona guarda `contacto` vacio a
+  // proposito: el nombre vive en `name`. Sin esto el perfil quedaba con el mail
+  // como nombre. Si `contacto` tiene algo, se usa igual que antes.
   var quien = (i<0)
-    ? {nombre:c.contacto||'', email:c.email||''}
+    ? {nombre:c.contacto||c.name||'', email:c.email||''}
     : {nombre:_eqNombre(c.equipo[i]), email:_eqMail(c.equipo[i])};
   if(!quien.email){ toast('Ese contacto no tiene mail'); return; }
   toast('Creando la cuenta de '+quien.email+'...');
