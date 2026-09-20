@@ -35497,6 +35497,9 @@ async function portalInvitar(clientId, i){
     return;
   }
   _portalMarcar(c, i, quien.email);
+  // La proxima vez que se abra el panel Cliente tiene que volver a preguntar:
+  // si no, sigue diciendo "sin cuenta" sobre una cuenta que acaba de crearse.
+  delete PORTAL_CUENTAS[clientId];
   save();
   _portalClaveModal(quien.email, d.clave);
   if(typeof renderClient==='function') renderClient();
@@ -52325,6 +52328,65 @@ function _genteBoton(clientId){
       +'<circle cx="12" cy="7" r="4"/></svg>'
     +'<span>Cliente</span></button>';
 }
+/* ── La cuenta del portal, en el panel Cliente ────────────────────────────
+   Si el cliente tiene cuenta, con que mail entra y si ya entro alguna vez.
+
+   El ultimo acceso vive en `auth.users`, que no se puede leer desde el
+   navegador ni deberia: ahi estan los hashes de las contrasenas y los mails
+   de todos. Viene de `portal_cuentas()` (016), que devuelve cuatro columnas
+   y solo las del cliente que se le pide.
+
+   Cero filas significa "este cliente no tiene cuenta". Que no tengamos
+   permiso NO da cero filas: la funcion corta con excepcion, asi que ese caso
+   cae en `error` y se ve distinto. */
+var PORTAL_CUENTAS = {};
+
+function _pcDe(clientId){
+  return PORTAL_CUENTAS[clientId] || (PORTAL_CUENTAS[clientId] =
+    { cargando:false, listo:false, filas:[], error:'' });
+}
+
+async function portalCuentasCargar(clientId){
+  var P=_pcDe(clientId);
+  if(P.cargando || P.listo) return P;
+  if(!SB.listo || !SB.token){ P.listo=true; P.error='sin sesion'; return P; }
+  P.cargando=true;
+  try{
+    P.filas = await sbFetch('rpc/portal_cuentas',
+      { method:'POST', body:JSON.stringify({ p_cliente:String(clientId) }) }) || [];
+  }catch(e){ P.error=(e&&e.message)||'no se pudo consultar'; }
+  P.cargando=false; P.listo=true;
+  return P;
+}
+
+// El renglon de abajo del titulo "Portal". Devuelve tambien que hacer al
+// tocarlo, porque cambia segun el estado.
+function _portalCuentaTxt(c, P){
+  if(!P.listo) return { txt:'<span style="color:var(--text3)">consultando&hellip;</span>',
+                        accion:'' };
+  if(P.error==='sin sesion') return {
+    txt:'<span style="color:var(--text3)">sin sincronizar</span>', accion:'' };
+  if(P.error) return {
+    txt:'<span style="color:var(--redx)">'+esc(P.error)+'</span>', accion:'' };
+
+  if(!P.filas.length){
+    // Sin cuenta. El boton invita, pero solo si hay a donde mandar el mail.
+    return c.email
+      ? { txt:'<span style="color:var(--amberx)">sin cuenta &middot; tocá para invitar</span>',
+          accion:'portalInvitar('+c.id+',-1)' }
+      : { txt:'<span style="color:var(--amberx)">sin cuenta &middot; cargá el email primero</span>',
+          accion:'fichaEditar('+c.id+',\'email\')' };
+  }
+
+  // Con cuenta. Se listan todas: un cliente puede tener mas de una persona.
+  return { accion:'', txt:P.filas.map(function(f){
+    var cuando = f.ultimo_acceso
+      ? ('entró ' + esc(_vtHaceTxt(_horasDesde(f.ultimo_acceso))))
+      : '<span style="color:var(--amberx)">nunca entró</span>';
+    return esc(f.email) + ' &middot; ' + cuando;
+  }).join('<br>') };
+}
+
 function genteAbrir(clientId, btn){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -52386,7 +52448,24 @@ function genteAbrir(clientId, btn){
         (c.equipo||[]).length
           ? ((c.equipo||[]).map(function(q){ return esc(_eqNombre(q)); }).join(', '))
           : '<span style="color:var(--amberx)">sin cargar</span>');
+
+  // El portal. Se dibuja con lo que haya y se completa cuando llega la
+  // respuesta: el menu no puede esperar a la red para abrirse.
+  var _pc=_pcDe(c.id);
+  var _pcv=_portalCuentaTxt(c, _pc);
+  h+='<div id="gente-portal">'
+    + op(_pcv.accion || 'void 0', 'Portal', _pcv.txt)
+    + '</div>';
+
   e.innerHTML=h;
+  if(!_pc.listo && !_pc.cargando){
+    portalCuentasCargar(c.id).then(function(P){
+      var caja=document.getElementById('gente-portal');
+      if(!caja) return;                       // se cerro el menu mientras tanto
+      var v=_portalCuentaTxt(c, P);
+      caja.innerHTML=op(v.accion || 'void 0', 'Portal', v.txt);
+    });
+  }
   e.style.display='block';
   document.querySelectorAll('.hdr-ico.on').forEach(function(b){ b.classList.remove('on'); });
   if(btn&&btn.classList) btn.classList.add('on');
