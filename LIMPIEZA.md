@@ -44,3 +44,13 @@ permiso.
 
 Si algún día molesta, se acota con un check de forma sobre las columnas, o se
 mueve a una edge function que valide antes de insertar. **Hoy no se toca.**
+
+## Los checkbox no muestran caja hasta tildarse
+
+Es una regla global (`input[type=checkbox]` en el `<style>` de la app):
+`border:0`, fondo transparente, y solo se dibuja el tilde al marcarse, con
+una insinuación al pasar el mouse. **No es un error.** La señal de que ahí se
+puede tocar es la etiqueta de al lado, que es clickeable.
+
+Si algún día molesta, se cambia para todos a la vez. Uno solo con caja y el
+resto sin ella hace que la app parezca parchada.
