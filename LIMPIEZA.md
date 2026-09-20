@@ -75,6 +75,30 @@ contesta cuáles son. El aviso de que se separaron es que aparezca el mensaje
 "Esa contraseña no la acepta el sistema", que sólo puede salir si el servidor
 rechazó algo que acá pasó.
 
+## La lista de claves de metadata del formulario se mantiene a mano
+
+El portal muestra las respuestas del formulario tal como vengan, porque las
+preguntas cambian por cliente y no hay ninguna escrita en el código. Para eso
+tiene que descartar lo que **no** es una pregunta, y GHL mezcla las tres cosas
+en el mismo objeto:
+
+- el id interno del campo, que repite la pregunta anterior (20 caracteres
+  alfanuméricos sin espacios) — se descarta por su forma, no hace falta lista
+- `utm_*` — se descarta por el prefijo
+- todo lo demás: hoy `link_origen`, que es una URL de 469 caracteres
+
+Esa última clase **no tiene ninguna forma que la distinga de una pregunta**.
+Está escrita a mano en `META_FORM`, en `portal/index.html`. Si GHL o una
+landing nueva suman otra, hay que agregarla ahí.
+
+**La señal de que pasó:** en el bloque "formulario" de una tarjeta aparece una
+"pregunta" que no es una pregunta — una URL, un código, un nombre en
+minúsculas con guiones bajos. Si ves eso, la clave nueva va a `META_FORM`.
+
+No se automatiza porque el remedio sería peor: una regla del tipo "descartar
+todo lo que esté en minúsculas y sin espacios" se llevaría puesta una pregunta
+legítima que se llame `presupuesto`, y eso no se nota nunca.
+
 # Mejoras futuras
 
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
