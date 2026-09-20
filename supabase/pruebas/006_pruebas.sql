@@ -5,6 +5,17 @@
 -- y termina en `rollback`: no deja ni un dato, ni un cambio.
 --
 -- Son 6 pruebas. Las 4 primeras tienen que dar bien antes de tocar el portal.
+--
+-- ----------------------------------------------------------------------------
+-- ANTES DE EMPEZAR: el editor SQL de Supabase corre como `postgres` y SIN
+-- token, asi que `mi_rol()` da NULL y `es_agencia()` da false. Eso esta bien
+-- -es el arreglo funcionando- pero las pruebas 2 y 5 llaman a funciones que
+-- exigen ser agencia, y si no te hacés pasar por una cuenta de agencia te van
+-- a contestar "Solo la agencia puede...".
+--
+-- Por eso las dos arrancan seteando el token de una cuenta real. El uuid sale
+-- de:   select id, email from auth.users;
+-- ----------------------------------------------------------------------------
 -- ============================================================================
 
 
@@ -46,6 +57,11 @@ from (values
 
 begin;
 
+  -- Sin esto, etapas_reordenar contesta "Solo la agencia puede reordenar
+  -- etapas": el editor corre sin token y es_agencia() da false.
+  select set_config('request.jwt.claims',
+    '{"sub":"156437c8-e467-40b9-899f-4ba5ec9b6ef5","role":"authenticated"}', true);
+
   select public.etapas_reordenar(null, array(
     select slug from public.etapas where cliente_id is null order by orden desc
   ));
@@ -85,54 +101,77 @@ begin;
 create temp table _r(paso text, resultado text);
 
 do $$
-declare v_lead uuid;
+declare
+  v_lead   uuid;
+  -- Los resultados se juntan en variables y se escriben al final, DESPUES de
+  -- volver a postgres. La tabla temporal la crea postgres; si escribieramos
+  -- mientras somos `authenticated` la primera insercion muere por permisos y
+  -- no se ve ni un resultado.
+  v_rol    text;
+  v_esag   text;
+  v_crear  text;
+  v_borrar text;
+  v_reord  text;
+  v_lead_r text;
 begin
+  -- El lead se busca ANTES de cambiar de rol: como postgres se ve la tabla
+  -- entera, asi que la prueba usa un lead que de verdad existe.
+  select id into v_lead from public.leads limit 1;
+
   -- Un usuario logueado que NO tiene fila en `perfiles`.
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims',
     '{"sub":"00000000-0000-0000-0000-000000000000","role":"authenticated"}', true);
 
-  insert into _r values
-    ('mi_rol()',     coalesce(public.mi_rol(), '(NULL)  ← el rol es desconocido')),
-    ('es_agencia()', public.es_agencia()::text || '   ← tiene que decir false, NUNCA null');
+  v_rol  := coalesce(public.mi_rol(), '(NULL)  ← el rol es desconocido');
+  v_esag := public.es_agencia()::text || '   ← tiene que decir false, NUNCA null';
 
   -- 3.a — crear una etapa
   begin
     perform public.etapa_crear(null, 'hackeada', 'Hackeada', 'open');
-    insert into _r values ('etapa_crear',      '❌ FALLA: dejo pasar a un usuario sin perfil');
+    v_crear := '❌ FALLA: dejo pasar a un usuario sin perfil';
   exception when others then
-    insert into _r values ('etapa_crear',      '✅ freno -> ' || sqlerrm);
+    v_crear := '✅ freno -> ' || sqlerrm;
   end;
 
   -- 3.b — borrar una etapa
   begin
     perform public.etapa_borrar(null, 'reunion2', 'reunion1');
-    insert into _r values ('etapa_borrar',     '❌ FALLA: dejo pasar a un usuario sin perfil');
+    v_borrar := '❌ FALLA: dejo pasar a un usuario sin perfil';
   exception when others then
-    insert into _r values ('etapa_borrar',     '✅ freno -> ' || sqlerrm);
+    v_borrar := '✅ freno -> ' || sqlerrm;
   end;
 
   -- 3.c — reordenar
   begin
     perform public.etapas_reordenar(null, array['compro','nuevo']);
-    insert into _r values ('etapas_reordenar', '❌ FALLA: dejo pasar a un usuario sin perfil');
+    v_reord := '❌ FALLA: dejo pasar a un usuario sin perfil';
   exception when others then
-    insert into _r values ('etapas_reordenar', '✅ freno -> ' || sqlerrm);
+    v_reord := '✅ freno -> ' || sqlerrm;
   end;
 
   -- 3.d — mover un lead ajeno. Es la peor: sin el arreglo, un usuario sin
   --       perfil movia CUALQUIER lead de CUALQUIER cliente.
-  select id into v_lead from public.leads limit 1;
   if v_lead is null then
-    insert into _r values ('lead_etapa', '⚠️  sin leads en la tabla, no se pudo probar (volver a correr cuando haya)');
+    v_lead_r := '⚠️  sin leads en la tabla, no se pudo probar (volver a correr cuando haya)';
   else
     begin
       perform public.lead_etapa(v_lead, 'compro');
-      insert into _r values ('lead_etapa',     '❌ FALLA: movio un lead ajeno');
+      v_lead_r := '❌ FALLA: movio un lead ajeno';
     exception when others then
-      insert into _r values ('lead_etapa',     '✅ freno -> ' || sqlerrm);
+      v_lead_r := '✅ freno -> ' || sqlerrm;
     end;
   end if;
+
+  -- Vuelta a postgres, y recien ahora se escribe.
+  perform set_config('role', 'postgres', true);
+  insert into _r values
+    ('mi_rol()',         v_rol),
+    ('es_agencia()',     v_esag),
+    ('etapa_crear',      v_crear),
+    ('etapa_borrar',     v_borrar),
+    ('etapas_reordenar', v_reord),
+    ('lead_etapa',       v_lead_r);
 end $$;
 
 select * from _r;
@@ -155,7 +194,7 @@ create temp table _c as
   select id::text as cli from public.clientes order by id limit 2;
 
 do $$
-declare v_yo text; v_otro text; n_yo int; n_otro int;
+declare v_yo text; v_otro text; n_yo int; n_otro int; v_uid uuid;
 begin
   select cli into v_yo   from _c limit 1;
   select cli into v_otro from _c offset 1 limit 1;
@@ -166,17 +205,28 @@ begin
   end if;
 
   -- Le damos etapas propias a cada uno, para que se noten distintas.
+  -- etapa_crear exige ser agencia, asi que primero nos hacemos pasar por una.
+  perform set_config('request.jwt.claims',
+    '{"sub":"156437c8-e467-40b9-899f-4ba5ec9b6ef5","role":"authenticated"}', true);
   perform public.etapa_crear(v_yo,   'mia',  'Etapa mia',  'open');
   perform public.etapa_crear(v_otro, 'suya', 'Etapa suya', 'open');
 
   -- Ahora nos hacemos pasar por el cliente v_yo.
-  insert into public.perfiles (user_id, rol, cliente_id, nombre)
-  values ('00000000-0000-0000-0000-000000000001', 'cliente', v_yo, 'test')
-  on conflict (user_id) do update set rol='cliente', cliente_id=excluded.cliente_id;
+  --
+  -- El uuid tiene que ser de una cuenta REAL: perfiles.user_id apunta a
+  -- auth.users, asi que uno inventado rebota por clave foranea. Se le cambia
+  -- el rol a una cuenta que ya existe y el rollback se lo devuelve.
+  select id into v_uid from auth.users order by created_at limit 1;
+  if v_uid is null then
+    raise notice 'No hay ninguna cuenta en auth.users para esta prueba';
+    return;
+  end if;
+
+  update public.perfiles set rol='cliente', cliente_id=v_yo where user_id=v_uid;
 
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims',
-    '{"sub":"00000000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+    json_build_object('sub', v_uid::text, 'role', 'authenticated')::text, true);
 
   select count(*) into n_yo   from public.etapas_de(v_yo);
   select count(*) into n_otro from public.etapas_de(v_otro);   -- pide las ajenas
@@ -205,6 +255,10 @@ begin;
   insert into public.leads (cliente_id, ghl_id, nombre, etapa_portal)
   values ('TEST_006', 'test-006-1', 'Prueba borrar', 'reunion2')
   on conflict do nothing;
+
+  -- Igual que en la 2: etapa_borrar exige ser agencia.
+  select set_config('request.jwt.claims',
+    '{"sub":"156437c8-e467-40b9-899f-4ba5ec9b6ef5","role":"authenticated"}', true);
 
   select public.etapa_borrar(null, 'reunion2', 'reunion1') as leads_mudados;
 

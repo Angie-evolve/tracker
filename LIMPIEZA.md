@@ -60,6 +60,18 @@ resto sin ella hace que la app parezca parchada.
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
 otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
 
+## La prueba 3.d quedó sin correr
+
+`006_pruebas.sql`, prueba **3.d**: verifica que un usuario **sin perfil** no
+pueda mover un lead de cualquier cliente con `lead_etapa()`. Es la más
+importante de la prueba 3 — las otras tres frenan una etapa mal creada, esta
+frena tocar los datos de un cliente.
+
+Hoy devuelve *"sin leads en la tabla, no se pudo probar"*, porque `leads`
+está vacía. **Hay que volver a correrla apenas haya datos**, aunque sea uno.
+
+Las otras tres de la prueba 3 sí corrieron y dieron ✅.
+
 ## El segundo candado de `leads`
 
 `perfiles` tiene dos candados —sin grant de escritura para `authenticated` y
