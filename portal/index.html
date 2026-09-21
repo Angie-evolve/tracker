@@ -137,6 +137,10 @@
   .mini.alta{color:var(--verde);border-color:rgba(122,224,168,.45)}
   .mini.media{color:#e8b56a;border-color:rgba(232,181,106,.45)}
   .mini.no_califica{color:var(--text3);border-color:var(--line2);text-decoration:line-through}
+  /* La oferta tiene tres estados y los tres se ven: Pendiente no es "vacío",
+     es una respuesta que todavía no se dio. */
+  .mini.oferta.si{color:var(--verde);border-color:rgba(122,224,168,.45)}
+  .mini.oferta.no{color:#e07a9a;border-color:rgba(224,122,154,.45)}
   .nota{font-size:13px;color:var(--text2);line-height:1.5;background:var(--bg3);
         border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
 
@@ -307,7 +311,7 @@
     .c-nom .mini.compacto{padding:2px 7px;font-size:11px;line-height:1.5;flex:0 0 auto}
     /* La celda de origen se puede encoger: si no, una campaña larga estira
        la tabla entera y empuja WhatsApp fuera de la pantalla. */
-    .c-org{max-width:165px;color:var(--text2)}
+    .c-org{max-width:148px;color:var(--text2)}
     .c-org .camp{margin-top:2px}
 
     /* La nota se lee en la celda y se corta si es larga; el texto entero
@@ -317,7 +321,7 @@
        primera reunión"— así que la columna se lleva el ancho que haga falta y
        se lo sacamos a las dos que sí se pueden cortar: origen y nota. */
     .c-etapa{white-space:nowrap}
-    .c-nota{max-width:165px}
+    .c-nota{max-width:148px}
     .notacel{width:100%;text-align:left;background:none;border:0;padding:0;
              color:var(--text3);font-size:12.5px;line-height:1.4;
              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -874,18 +878,24 @@ const formAbierto = new Set();
 const ANCHA = matchMedia('(min-width:860px)');
 ANCHA.addEventListener('change', () => pintar());
 
-/* ── Dónde se presentó la oferta ──────────────────────────────────────
-   Un número de reunión, no una etapa. Antes esto se deducía del embudo
-   —reunion1 → reunion2 → presentacion— y eso da por sentado que la oferta
-   se presenta después de la segunda. Si se presentó en la primera, el
-   embudo no lo puede decir: los dos casos caen en la misma etapa.
+/* ── Si se presentó la oferta ─────────────────────────────────────────
+   Tres estados, como en el tracker de ventas: Pendiente, Sí y No.
 
-   Por eso NO depende de la etapa, ni para mostrarse ni para guardarse:
-   volver a atarlas sería deshacer el arreglo. */
-const REUNIONES = [1, 2, 3];
-const reunionTxt = n => n === 1 ? '1ª reunión'
-                      : n === 2 ? '2ª reunión'
-                      : n + 'ª reunión';
+   ⚠️ En qué reunión pasó NO se guarda acá. Sale de cruzar esto con la
+      etapa del lead: la etapa dice en qué llamada está, esto dice si hubo
+      oferta. Guardar el número acá dejaba sin forma de decir "NO se
+      presentó", que es el estado que más se usa para descartar.
+
+   `null` es Pendiente a propósito: un lead recién entrado no tiene que
+   aparecer como si ya hubiéramos decidido que no. */
+const OFERTA = [
+  { v:'si',   t:'Sí',        color:'#7ae0a8' },
+  { v:'no',   t:'No',        color:'#e07a9a' },
+  { v:null,   t:'Pendiente', color:'#6b6b6b' }
+];
+const ofertaTxt = l => l.oferta_presentada === true  ? 'Sí'
+                     : l.oferta_presentada === false ? 'No'
+                     : 'Pendiente';
 
 const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
 const COLOR_CALIF = { alta:'#7ae0a8', media:'#e8b56a', no_califica:'#6b6b6b' };
@@ -989,15 +999,12 @@ const _ctl = {
       + '" data-a="calif"' + (compacto ? ' title="Calificar el lead"' : '') + '>'
       + txt + '</button>';
   },
-  // No mira la etapa: presentar es un hecho aparte del embudo.
-  presento(l, compacto){
-    // En la tabla la columna ya dice "Ofertó", así que repetirlo en cada fila
-    // es ruido. Es el MISMO botón con la misma acción: sólo cambia el texto.
-    const txt = l.presento_en
-      ? (compacto ? l.presento_en + 'ª' : 'Ofertó en la ' + l.presento_en + 'ª')
-      : (compacto ? '⊕' : '⊕ ofertó');
-    return '<button class="mini' + (l.presento_en ? ' hay' : '') + '" data-a="presento"'
-      + (compacto ? ' title="¿En qué reunión le ofertaste?"' : '') + '>' + txt + '</button>';
+  // No mira la etapa: que haya oferta es un hecho aparte del embudo.
+  presento(l){
+    const est = l.oferta_presentada;
+    const clase = est === true ? ' si' : est === false ? ' no' : '';
+    return '<button class="mini oferta' + clase + '" data-a="presento"'
+      + ' title="¿Le presentaste la oferta?">' + ofertaTxt(l) + '</button>';
   },
   form(l, compacto){
     const n = preguntasDe(l).length;
@@ -1083,7 +1090,7 @@ function _filaHtml(l){
     + '<td class="c-org">' + esc(origenDe(l) || '—') + _campHtml(l, 'camp') + '</td>'
     + '<td class="c-etapa">' + _ctl.etapa(l) + '</td>'
     + '<td>' + (_ctl.calif(l, true) || '<span class="nada">—</span>') + '</td>'
-    + '<td>' + _ctl.presento(l, true) + '</td>'
+    + '<td>' + _ctl.presento(l) + '</td>'
     + '<td>' + _ctl.monto(l) + '</td>'
     // La nota se lee en la celda y se corta si es larga. Se edita tocándola:
     // es el mismo `data-a="nota"` que el botón de la tarjeta.
@@ -1296,41 +1303,39 @@ function abrirHojaPresento(lead){
   abierto = lead;
   hojaModo = 'presento';
   $('hoja-nom').textContent = nombreDe(lead);
-  $('hoja-sub').textContent = '¿En qué reunión le presentaste la oferta?';
-  $('hoja-ops').innerHTML = REUNIONES.map(n =>
-      '<button class="op" data-v="' + n + '" aria-current="'
-      + (Number(lead.presento_en) === n) + '">'
-      + '<span class="pt" style="background:#6aa9e8"></span>'
-      + esc(reunionTxt(n)) + '</button>').join('')
-    + (lead.presento_en
-        ? '<div class="grupo">o</div>'
-          + '<button class="op" data-v="__quitar">'
-          + '<span class="pt" style="background:transparent;border:1px solid var(--line2)"></span>'
-          + 'Todavía no le presenté</button>'
-        : '');
+  $('hoja-sub').textContent = '¿Le presentaste la oferta?';
+  const actual = lead.oferta_presentada;
+  $('hoja-ops').innerHTML = OFERTA.map(o =>
+      '<button class="op" data-v="' + (o.v === null ? '__pendiente' : o.v) + '" aria-current="'
+      + ((o.v === 'si' && actual === true) || (o.v === 'no' && actual === false)
+         || (o.v === null && actual == null)) + '">'
+      + '<span class="pt" style="background:' + o.color + '"></span>'
+      + esc(o.t) + '</button>').join('');
   _hojaAbrir();
 }
 
 async function marcarPresento(lead, valor){
-  const quitar = valor === '__quitar';
-  const n = quitar ? null : Number(valor);
-  if(!quitar && Number(lead.presento_en) === n) return;
+  const pendiente = valor === '__pendiente';
+  const nuevo = pendiente ? null : (valor === 'si');
+  if(lead.oferta_presentada === nuevo) return;
 
-  const antes = lead.presento_en;
-  lead.presento_en = n;
+  const antes = lead.oferta_presentada;
+  lead.oferta_presentada = nuevo;
   pintar();
 
   const tarjeta = document.querySelector('.lead[data-id="' + CSS.escape(String(lead.id)) + '"]');
   if(tarjeta) tarjeta.classList.add('guardando');
 
   try{
-    await api('/rest/v1/rpc/lead_presento', {
+    await api('/rest/v1/rpc/lead_oferta', {
       method:'POST',
-      body: JSON.stringify({ p_lead_id: lead.id, p_reunion: n, p_borrar: quitar })
+      body: JSON.stringify({ p_lead_id: lead.id,
+                             p_oferta: pendiente ? null : nuevo,
+                             p_borrar: pendiente })
     });
-    avisar(quitar ? 'Sacamos la presentación' : 'Guardado: ofertó en la ' + n + 'ª');
+    avisar(pendiente ? 'Oferta: pendiente' : 'Oferta: ' + (nuevo ? 'sí' : 'no'));
   }catch(err){
-    lead.presento_en = antes;
+    lead.oferta_presentada = antes;
     avisar('No se guardó: ' + err.message, true);
   }finally{
     pintar();
