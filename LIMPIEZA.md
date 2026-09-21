@@ -115,25 +115,68 @@ actualizá la fecha en el mismo commit.
 | prueba | qué asegura | última corrida |
 |---|---|---|
 | 1 — traducción de GHL | que un stage de GHL caiga en la etapa correcta | **2026-09-20** ✅ |
-| 2 — reordenar no rompe | que mover una etapa de lugar no cambie a dónde van los leads | sin fecha anotada |
-| 3 — usuario sin perfil | que quien no tiene perfil no pueda nada (ver abajo) | **2026-09-20** ✅ |
-| 4 — etapas de otro cliente | que un cliente no lea las etapas de otro | sin fecha anotada |
-| 5 — borrar una etapa | que los leads se muden en vez de quedar huérfanos | sin fecha anotada |
-| 6 — estructura y permisos | que `anon` no ejecute ninguna función | parcial, ver abajo |
+| 2 — reordenar no rompe | que mover una etapa de lugar no cambie a dónde van los leads | **2026-09-20** ✅ |
+| 3 — usuario sin perfil | que quien no tiene perfil no pueda nada | **2026-09-20** ✅ |
+| 4 — etapas de otro cliente | que un cliente no lea las etapas de otro | **2026-09-20** ✅ |
+| 5 — borrar una etapa | que los leads se muden en vez de quedar huérfanos | **2026-09-20** ✅ |
+| 6 — estructura y permisos | que `anon` no ejecute ninguna función | **2026-09-20** ⚠️ |
 
-**Sobre la 1:** el 2026-09-20, al aplicar el `011`, se corrieron las 14 de la
-prueba 1 más 3 del `007` —"Asistió a llamada", "Oferta presentada" y "No
-asisitó a llamada" con el typo—. Los 17 en ✅, cero regresiones.
+**La 1** se corrió al aplicar el `011`: las 14 de siempre más 3 del `007`
+—"Asistió a llamada", "Oferta presentada" y "No asisitó a llamada" con el
+typo—. Los 17 en ✅.
 
-**Sobre la 6:** no se corrió entera. Sí se verificó, función por función y a
-medida que se crearon, que `anon` no pueda ejecutar `lead_calificar`,
-`lead_presento`, `portal_cuentas` ni `mi_cliente_nombre`. Falta la corrida
-completa, que además lista las 45 variantes de stage y las que no se traducen.
+**La 2** es la que importaba después del `011`, porque ese cambio agregó
+`asistio1` y reordenó todo. Dio vuelta el orden visual entero y las 8
+traducciones siguieron dando igual. `orden` y `prioridad` siguen sin pisarse.
 
-**Las que dicen "sin fecha anotada"** corrieron alguna vez y dieron bien, pero
-no quedó registro de cuándo. Vale la pena correrlas una vez y anotarlas: son
-rápidas y las tres tocan cosas que ya cambiaron desde entonces (el `011` sumó
-una etapa, el `013` sumó una columna a `etapas`).
+**La 5** movió **10** leads, no 1. El archivo esperaba 1 porque se escribió con
+`leads` vacía; hoy se mudan todos los que estén en `reunion2` —9 reales más el
+de prueba— y eso es exactamente lo que la función tiene que hacer. Lo que se
+mira es la etapa del lead de prueba, que quedó en `reunion1`. La expectativa
+vieja ya está corregida en el archivo.
+
+**La 6 quedó con ⚠️ y conviene leer por qué.** Sus tres partes:
+
+- **6.a** — la plantilla tiene 12 etapas, todas activas. `asistio1` es la única
+  sin patrones de GHL, a propósito (ver el `011`).
+- **6.c** — 54 variantes de stage sobre 2089 oportunidades, **0 sin traducir**.
+  Antes del `007` eran 124 sin traducir sobre 1822.
+- **6.b** — acá está el ⚠️. Se corrió mirando **todas** las funciones de
+  `public`, no la lista escrita a mano del archivo, y aparecieron dos que
+  `anon` podía ejecutar: `mi_rol()` y `mi_cliente()`. Ninguna era explotable
+  —devuelven NULL sin sesión— pero rompían la regla. **Se cerraron en el
+  `018`.**
+
+### Lo que quedó abierto de la 6.b
+
+Después del `018`, `anon` todavía puede ejecutar estas siete:
+
+| función | devuelve | ¿se puede llamar? |
+|---|---|---|
+| `es_del_equipo` | boolean | **sí** |
+| `rls_auto_enable` | event_trigger | no |
+| `avisar_a_github` | trigger | no |
+| `estaticos_tope` | trigger | no |
+| `ia_jobs_limpiar` | trigger | no |
+| `perfil_nuevo` | trigger | no |
+| `tocar_actualizado` | trigger | no |
+
+Las seis de trigger no se pueden invocar directo: Postgres no lo permite. Es el
+mismo caso que tenía `etapa_sin_leads` antes del `007`, que se cerró igual por
+la regla.
+
+**La única llamable de verdad es `es_del_equipo`.** No está revisada todavía:
+hay que ver qué devuelve sin sesión antes de decidir si se cierra.
+
+La consulta que las encuentra mira todas las funciones de `public`, así que si
+mañana aparece otra abierta, la detecta sola:
+
+```sql
+select p.proname
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prokind = 'f'
+   and has_function_privilege('anon', p.oid, 'execute');
+```
 
 ## La prueba 3.d — corrida y pasada el 2026-09-20
 
