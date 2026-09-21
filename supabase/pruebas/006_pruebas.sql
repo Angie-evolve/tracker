@@ -271,8 +271,14 @@ begin;
 
 rollback;
 
--- ⚠️  `leads_mudados` = 1, la etapa del lead = 'reunion1', y la borrada = 0.
+-- ⚠️  La etapa del lead de prueba = 'reunion1', y la borrada = 0.
 --     El rollback deja todo como estaba: el lead de prueba NO queda.
+--
+--     `leads_mudados` NO es 1. Ese numero se escribio cuando `leads` estaba
+--     vacia y el unico que se mudaba era el de prueba. Hoy se mudan TODOS los
+--     que esten en `reunion2`, que es justamente lo que la funcion tiene que
+--     hacer. El 2026-09-20 dio 10: 9 leads reales mas el de prueba.
+--     Lo que se mira es la etapa del lead de prueba, no el total.
 --
 --     NOTA: si `leads` tiene columnas NOT NULL que este insert no llena,
 --     ajustalo. El insert es lo de menos; lo que se prueba es la mudanza.
@@ -282,7 +288,8 @@ rollback;
 -- PRUEBA 6 — Estructura y permisos
 -- ════════════════════════════════════════════════════════════════════════════
 
--- 6.a — La plantilla quedo completa: 11 filas.
+-- 6.a — La plantilla quedo completa: 12 filas.
+--       (eran 11 hasta el 011, que sumo `asistio1`.)
 select slug, nombre, grupo, equivale, orden, prioridad, pide_monto, activa,
        array_length(ghl_patrones, 1) as n_patrones
   from public.etapas
