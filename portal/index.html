@@ -175,8 +175,27 @@
       font-size:12px;background:none;border:0;padding:0}
   .nt svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.4}
   .nt.has{color:var(--text)}
+  /* La nota es un botón que ocupa todo el ancho: lo que se toca para
+     editarla es el bloque entero, no un ícono de 14px. */
   .nota{font-size:13px;color:var(--text2);line-height:1.5;background:var(--bg3);
-        border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
+        border-radius:9px;padding:10px 12px;white-space:pre-wrap;word-break:break-word;
+        width:100%;text-align:left;border:1px solid transparent;cursor:pointer;
+        font-family:inherit;display:block}
+  .nota:focus-visible{outline:none;border-color:var(--line2)}
+  /* Un link adentro de la nota. Va subrayado y en verde: tiene que verse
+     que ESO se abre y el resto del bloque se edita. */
+  /* Sin `word-break` propio: la etiqueta ya es corta —"fathom.video/…"— y
+     partirla al medio ("docs.google.co / m/…") la hacía ilegible. Si alguna
+     vez cae una URL sin host reconocible y se muestra entera, la corta el
+     `word-break:break-word` de `.nota`, que es el padre. */
+  .lk{color:var(--verde);text-decoration:underline;text-underline-offset:2px}
+  /* ⚠️  EL HOVER VA ADENTRO DE `@media (hover:hover)`, por lo mismo que el
+     de `.v`: en iOS Safari lo emula con el primer toque y el toque se
+     pierde. Ver el comentario largo más arriba. */
+  @media (hover:hover){
+    .nota:hover{border-color:var(--line2)}
+    .lk:hover{color:var(--text)}
+  }
 
   /* La campaña, en su propio renglón. `min-width:0` lo hereda del padre:
      acá lo que importa es que se corte sola en vez de estirar la tarjeta. */
@@ -1082,6 +1101,48 @@ function diaCorto(iso){
   return d.getDate() + ' ' + MESES[d.getMonth()];
 }
 
+/* ── Los links de adentro de una nota ─────────────────────────────────
+   Las notas vienen con links pegados —"R1: https://fathom.video/share/..."—
+   y hasta ahora eran texto muerto: ocupaban dos renglones enteros del
+   teléfono y había que copiarlos a mano para abrirlos.
+
+   ⚠️  SE ESCAPA POR PEDAZOS, no todo junto y después se buscan links. Si se
+       escapara primero, un `&` de la query quedaría `&amp;` y el `href` se
+       armaría con eso adentro. Acá cada pedazo de texto se escapa por su
+       lado y el link se escapa una sola vez, para el atributo y para lo que
+       se muestra.
+
+   Se muestra el host y no la URL entera: en la tarjeta del teléfono una
+   URL de Fathom se come dos renglones y no dice nada más que "fathom". La
+   URL completa queda en el `title` y en el `href`. */
+const RE_URL = /\bhttps?:\/\/[^\s<>"']+/g;
+
+function _urlCorta(u){
+  try{
+    const x = new URL(u);
+    const host = x.hostname.replace(/^www\./, '');
+    return host + ((x.pathname && x.pathname !== '/') || x.search ? '/…' : '');
+  }catch(_){ return u; }
+}
+
+function notaHtml(texto){
+  const s = String(texto || '');
+  let out = '', i = 0, m;
+  RE_URL.lastIndex = 0;
+  while((m = RE_URL.exec(s)) !== null){
+    out += esc(s.slice(i, m.index));
+    let u = m[0], cola = '';
+    // Un punto o un paréntesis pegados al final son de la oración, no de la
+    // dirección: "mirá https://x.com/a." abría un link con el punto adentro.
+    const fin = u.match(/[.,;:!?)\]}]+$/);
+    if(fin){ cola = fin[0]; u = u.slice(0, -cola.length); }
+    out += '<a class="lk" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer"'
+         + ' title="' + esc(u) + '">' + esc(_urlCorta(u)) + '</a>' + esc(cola);
+    i = m.index + m[0].length;
+  }
+  return out + esc(s.slice(i));
+}
+
 /* La nota deja de ser texto en la fila y pasa a ser un ícono con la cuenta.
    El texto entero queda en el título: una nota larga ensanchaba la columna y
    empujaba el resto, y acá lo que importa es si HAY nota, no qué dice. */
@@ -1139,10 +1200,12 @@ const _ctl = {
   presento(l){
     return _valor(ofertaTxt(l), 'presento', !l.oferta_estado, '¿Cómo viene la oferta?');
   },
+  /* Sin nota dice "+ Nota" con todas las letras. El ícono solo, en gris y
+     sin número, no se leía como "acá se agrega": se leía como un adorno. */
   nota(l){
     return '<button class="nt' + (l.nota ? ' has' : '') + '" data-a="nota"'
       + (l.nota ? ' title="' + esc(l.nota) + '"' : ' title="Escribir una nota"') + '>'
-      + ICONO_NOTA + (l.nota ? '<span>1</span>' : '') + '</button>';
+      + ICONO_NOTA + '<span>' + (l.nota ? '1' : '+ Nota') + '</span></button>';
   },
   form(l, compacto){
     const n = preguntasDe(l).length;
@@ -1233,7 +1296,11 @@ function _tarjetaHtml(l){
     +   '<span class="mail">' + esc(l.email || '—') + '</span>'
     +   _ctl.nota(l)
     + '</div>'
-    + (l.nota ? '<div class="nota">' + esc(l.nota) + '</div>' : '')
+    // La nota entera es el botón de editar. Antes había que apuntarle al
+    // ícono de 14px del pie. Los links de adentro siguen abriéndose: el
+    // click global deja pasar cualquier `<a>` antes de mirar el `data-a`.
+    + (l.nota ? '<div class="nota" data-a="nota" role="button" tabindex="0"'
+              + ' title="Tocá para editarla">' + notaHtml(l.nota) + '</div>' : '')
     + _ctl.preguntas(l)
     + '</div>';
 }
@@ -1860,13 +1927,35 @@ $('b-cancelar-hoja').addEventListener('click', cerrarHoja);
 _hojaArrastre();
 document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && abierto) cerrarHoja(); });
 
+/* La nota es un `<div role="button">` y no un `<button>` porque adentro
+   lleva links, y un `<a>` adentro de un `<button>` es HTML inválido: el
+   navegador decide solo cuál de los dos responde y no siempre es el link.
+   El precio de esa decisión es que el teclado no dispara `click` solo, así
+   que se ata a mano. Sin esto, con Tab se llega a la nota y Enter no hace
+   nada. */
+document.addEventListener('keydown', ev => {
+  if(ev.key !== 'Enter' && ev.key !== ' ') return;
+  const n = ev.target && ev.target.closest && ev.target.closest('.nota[data-a]');
+  if(!n) return;
+  ev.preventDefault();
+  n.click();
+});
+
 document.addEventListener('click', ev => {
   const chip = ev.target.closest('.chip');
   if(chip){ filtro = chip.dataset.f; pintar(); return; }
 
+  /* ⚠️  UN `<a>` SE ABRE Y NO HACE NADA MÁS. La nota entera lleva
+     `data-a="nota"` para poder tocarla y editarla, así que un link de
+     adentro también cae bajo ese `data-a`: sin esta línea, tocar el link
+     de Fathom abría el `prompt` de editar en vez de abrir la grabación.
+     También es lo que deja andar al botón de WhatsApp, que es un `<a>`
+     suelto sin `data-a`. */
+  if(ev.target.closest('a')) return;
+
   /* Se busca por `[data-a]` y no por `.mini`. La clase es decoración y
-     cambia entre la tarjeta y la tabla —la nota en la tabla es `.notacel`—;
-     el `data-a` es lo que dice QUÉ hace el botón.
+     cambia entre la tarjeta y la tabla; el `data-a` es lo que dice QUÉ
+     hace el botón.
      Buscar por la clase ya rompió la nota de la tabla una vez: se veía, se
      podía tocar, y no guardaba nada. */
   const mini = ev.target.closest('[data-a]');
