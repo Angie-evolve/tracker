@@ -55036,10 +55036,35 @@ function mergeGhlOpps(prevOps, freshOps, truncated){
     keep(o, old, 'source', 'utmSource');
     keep(o, old, 'source', 'landingUrl');
     keep(o, old, 'geo', 'location');
+    /* ⚠️  `formAnswers` TAMBIEN SE CONSERVA, y no conservarlo costo caro.
+       La busqueda de oportunidades de GHL devuelve un contacto liviano SIN
+       las respuestas del formulario: las trae despues, una por una, el paso
+       de enriquecido. Este merge conservaba `landingUrl` y las UTM pero no
+       `formAnswers`, asi que cada sincronizacion las borraba.
+       Y como `_enrichOk` SI sobrevivia, esas oportunidades quedaban
+       marcadas como "ya pedidas" y sin nada adentro: no se volvian a pedir
+       nunca. Medido en Ojapo el 2026-09-22: 41 de 67 asi, y los que tenian
+       origen bajaron de 36 a 25 despues de un sync.
+       Se fusiona clave por clave y no se reemplaza el objeto: lo que venga
+       fresco gana, y lo que solo estaba en lo viejo se conserva. */
+    if(old.formAnswers && typeof old.formAnswers==='object'){
+      o.formAnswers=o.formAnswers||{};
+      Object.keys(old.formAnswers).forEach(function(fk){
+        if(o.formAnswers[fk]===undefined || String(o.formAnswers[fk]||'').trim()==='')
+          o.formAnswers[fk]=old.formAnswers[fk];
+      });
+    }
     if((!o.tags || !o.tags.length) && old.tags && old.tags.length) o.tags=old.tags;
     if(old._sql) o._sql=true;              // calificacion manual: no se pierde nunca
-    if(old._enrichOk) o._enrichOk=true;    // ya lo enriquecimos: no volver a pedirlo
-    if(old._enrichTry) o._enrichTry=old._enrichTry;
+    /* ⚠️  EL FLAG SOLO SOBREVIVE SI SOBREVIVIO LO QUE PRODUJO. Un
+       `_enrichOk` sin datos es lo peor de los dos mundos: dice "ya esta" y
+       no hay nada. Si despues del merge no quedo ni el formulario ni la
+       URL de origen, se deja sin marcar para que se vuelva a pedir. Esto
+       ademas REPARA SOLO las que ya quedaron asi. */
+    var _tieneAlgo=!!((o.formAnswers && Object.keys(o.formAnswers).length)
+                      || (o.source && o.source.landingUrl));
+    if(old._enrichOk && _tieneAlgo) o._enrichOk=true;
+    if(old._enrichTry && _tieneAlgo) o._enrichTry=old._enrichTry;
     delete prev[String(o.id)];
     return o;
   });
@@ -58881,6 +58906,24 @@ function mensualMatrizHtml(ops, rules, money, c){
 
   // Se calcula despues de col porque necesita la facturacion de cada mes.
   var inv=_mmInversion(c, meses);
+  /* ⚠️  ESTA TABLA MEZCLA DOS MONEDAS Y POR ESO LA CONVERSION VA ACA, EN EL
+         ORIGEN, Y NO EN EL FORMATO.
+         La facturacion, el pipeline y el ticket salen de GHL y estan en la
+         moneda del contrato —la de Ojapo son 1000, o sea dolares—. La
+         inversion sale de Meta y esta en la moneda de la CUENTA
+         PUBLICITARIA, que en Ojapo son pesos.
+         El ROAS es facturacion dividido inversion: con una en dolares y la
+         otra en pesos estaba 1540 veces mal, y nada en pantalla lo decia.
+         Un cliente rentable podia verse como un desastre.
+         Convirtiendo `inv` antes de calcular, el ROAS, el CAC y los cuatro
+         costos por paso salen bien solos: todos cuelgan de este numero. */
+  var _fxB=(c && typeof fxActiva==='function' && fxActiva(c))?Number(getFx(c).rate):0;
+  if(_fxB){
+    inv=inv.map(function(v){
+      var n=Number(v);
+      return (v==null||!isFinite(n))?v:(n/_fxB);
+    });
+  }
   col.forEach(function(cc,i){
     cc.inversion=inv[i];
     // Sin inversion no hay ROAS: dividir por cero da infinito y un mes sin
@@ -58982,6 +59025,12 @@ function mensualMatrizHtml(ops, rules, money, c){
     // sigue a los leads del mes, que es lo que permite comparar meses entre si.
     +'El ROAS divide lo que terminaron facturando los leads que entraron ese mes por lo que se '
     +'gasto ese mes, asi que no da igual que el de Meta: un lead que entro en mayo y cerro en '
+    +(_fxB?('<b>La inversion y todo lo que sale de ella</b> —ROAS, CAC y los costos por '
+            +'paso— estan convertidos a USD a '+_fxB.toLocaleString('es-AR')+' '
+            +esc(c.metaCurrency||'')+' por dolar'
+            +(getFx(c).label?(' ('+esc(getFx(c).label)+')'):'')
+            +'. La facturacion, el pipeline y el ticket vienen de GHL en la moneda del '
+            +'contrato y no se tocan. '):'')
     +'julio suma en mayo. La inversion sale de las semanas de Meta, repartidas por dia cuando '
     +'la semana cae en dos meses. El <b>CAC</b> es esa misma inversion dividida por los cierres '
     +'del mes: lo que costo traer cada cliente. Los <b>costos por etapa</b> son esa misma '
