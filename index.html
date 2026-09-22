@@ -6253,10 +6253,13 @@ function buildMetricRows(c, opts){
         return '<div style="display:inline-flex;align-items:center;gap:8px;margin:0 14px 4px 0"><span style="font-size:11px;font-weight:500;color:var(--text2)">Landing '+letter.toUpperCase()+'</span><span style="font-size:11px;color:var(--text)">'+pct+'</span><span style="font-size:11px">'+linkHtml+'</span></div>';
       }).join('');
     }},
-    {label:'Ad Spent',get:l=>fmtVal((l.metrics||{}).adSpent,'$')},
+    // ⚠️  `aUsd` no hace nada si el cliente no tiene tasa cargada, asi que
+    //     esto es seguro para todos. Las filas de cantidades —Page Views,
+    //     Registros, Agendas— no pasan por aca: son personas, no plata.
+    {label:'Ad Spent',get:l=>fmtVal(aUsd(c,(l.metrics||{}).adSpent),'$')},
     {label:'Page Views',get:l=>fmtVal((l.metrics||{}).pageViews)},
-    {label:'CPM',get:l=>fmtVal((l.metrics||{}).cpm,'$')},
-    {label:'CPC',get:l=>fmtVal((l.metrics||{}).cpc,'$')},
+    {label:'CPM',get:l=>fmtVal(aUsd(c,(l.metrics||{}).cpm),'$')},
+    {label:'CPC',get:l=>fmtVal(aUsd(c,(l.metrics||{}).cpc),'$')},
     // v: el opt-in sale del tracker propio de la landing. Antes se calculaba con
     // registros de GHL sobre vistas de Meta: dos universos distintos, y quedaba
     // inflado. Si el cliente no tiene el script puesto, se muestra vacio en vez
@@ -6269,7 +6272,7 @@ function buildMetricRows(c, opts){
       if(c.lpStats&&c.lpStats.optin7&&c.lpStats.optin7.tasa!=null) return c.lpStats.optin7.tasa.toFixed(2)+'%';
       return '<span style="color:var(--text3)" title="Falta el tracker de la landing: Integraciones &rarr; Tracker de landing">-</span>';
     }},
-    {label:'Costo por Lead',get:l=>fmtVal((l.metrics||{}).cpl,'$')},
+    {label:'Costo por Lead',get:l=>fmtVal(aUsd(c,(l.metrics||{}).cpl),'$')},
     {label:'Registros',get:l=>{const f=F(l);return f?'<span title="Contactos creados en GHL dentro del rango">'+f.registros+'</span>':fmtVal((l.metrics||{}).registros);}},
     {label:'Landings de origen',soloSiHay:l=>!!landingsRowHtml(c,l),get:l=>landingsRowHtml(c,l)||dash},
     {label:'Llamada calificada en vivo',get:l=>{const f=F(l);return (f&&f.sql!=null)?String(f.sql):fmtVal((l.metrics||{}).sql);}},
@@ -6277,23 +6280,23 @@ function buildMetricRows(c, opts){
       const f=F(l);const m=l.metrics||{};
       const spent=Number(m.adSpent)||0;
       const q=(f&&f.sql!=null)?f.sql:(Number(m.sql)||0);
-      return (q>0&&spent)?'USD '+(spent/q).toFixed(2):dash;
+      return (q>0&&spent)?'USD '+(aUsd(c,spent)/q).toFixed(2):dash;
     }},
     // Compara contra la linea de conversion anterior: en un bloque semanal no existe.
     {label:'Dias pausada antes de este bloque',soloSiHay:l=>!l.live,get:l=>{const s=computeLineStats(c,l);return s.diasPausadaAntes?s.diasPausadaAntes+' dias':dash;}},
     {label:'Agendas totales',get:l=>{const f=F(l);return (f&&f.agendas!=null)?String(f.agendas):'<span style="color:var(--text3)" title="Configura los stages de agenda en Conversion de ventas > Reglas">-</span>';}},
-    {label:'Costo por agenda',get:l=>{const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(spent/f.agendas).toFixed(2):dash;}},
+    {label:'Costo por agenda',get:l=>{const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;return (f&&f.agendas>0&&spent)?'USD '+(aUsd(c,spent)/f.agendas).toFixed(2):dash;}},
     {label:'Llamadas en vivo',get:l=>{const f=F(l);if(f&&f.enVivo!=null)return String(f.enVivo);const s=computeLineStats(c,l);return String(s.llamadasEnVivo);}},
     {label:'Costo por llamada en vivo',get:l=>{
       const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;
-      if(f&&f.enVivo!=null) return (f.enVivo>0&&spent)?'USD '+(spent/f.enVivo).toFixed(2):dash;
+      if(f&&f.enVivo!=null) return (f.enVivo>0&&spent)?'USD '+(aUsd(c,spent)/f.enVivo).toFixed(2):dash;
       const s=computeLineStats(c,l);
       return s.costoPorLlamada!==null?'USD '+s.costoPorLlamada.toFixed(2):dash;
     }},
     {label:'Llamadas calificadas en vivo',get:l=>{const f=F(l);if(f&&f.calif!=null)return String(f.calif);const s=computeLineStats(c,l);return String(s.llamadasCalificadas);}},
     {label:'Costo por llamada calificada en vivo',get:l=>{
       const f=F(l);const spent=Number((l.metrics||{}).adSpent)||0;
-      if(f&&f.calif!=null) return (f.calif>0&&spent)?'USD '+(spent/f.calif).toFixed(2):dash;
+      if(f&&f.calif!=null) return (f.calif>0&&spent)?'USD '+(aUsd(c,spent)/f.calif).toFixed(2):dash;
       const s=computeLineStats(c,l);
       return s.costoPorLlamadaCalificada!==null?'USD '+s.costoPorLlamadaCalificada.toFixed(2):dash;
     }},
@@ -22487,6 +22490,30 @@ function computeAlarmMetrics(c){
   if(c.contract&&c.contract.endDate){
     out.contratoDias=Math.ceil((new Date(c.contract.endDate)-Date.now())/86400000);
   }
+
+  /* ⚠️  LAS REGLAS ESTAN ESCRITAS EN DOLARES Y LOS NUMEROS DE META NO.
+         "CPC supera $1" es un benchmark de la agencia, el mismo para todos
+         los clientes. Pero `cpc` viene de Meta en la moneda de la CUENTA
+         PUBLICITARIA: en Ojapo, pesos. Comparar 150,11 pesos contra un
+         limite de 1 dolar da alarma SIEMPRE, y lo mismo el CPM contra $8.
+         Asi estaban las dos alarmas que se veian en pantalla.
+         Eso es peor que un numero mal formateado: una alarma que suena
+         siempre es una alarma que se deja de mirar, y estas ademas salen
+         por mail todos los dias y cuentan en "clientes con alarmas" del
+         Mirador.
+         Se convierte al final y en un solo lugar, asi las reglas siguen
+         escribiendose en dolares, que es como se comparan entre clientes.
+         ⚠️  `vtaRevenue` y `vtaPipeline` NO ESTAN EN LA LISTA a proposito:
+             salen de GHL, en la moneda del contrato, y ya son dolares. */
+  if(typeof fxActiva==='function' && fxActiva(c)){
+    var _t=Number(getFx(c).rate);
+    ['adSpent','cpm','cpc','cpl','costoRegistro','costoAgenda','costoSql',
+     'histSpent','histCostoReg','histCostoSql','vtaCAC'].forEach(function(k){
+      var n=Number(out[k]);
+      if(out[k]!=null && isFinite(n)) out[k]=n/_t;
+    });
+  }
+
   return Object.keys(out).length?out:null;
 }
 // ================= REGLAS POR DEFECTO DE LA AGENCIA =================
@@ -56080,10 +56107,16 @@ function lpFilasLandings(c, dias){
      que aparece cuando no pasa nada deja de leerse. */
   var st=c.lpStats||{};
   var recorte=!!(st.tope && st.masViejo && new Date(st.masViejo).getTime() > desde);
+  /* Todavia faltan contactos por traer: el reparto por pagina esta corto y
+     va a ir subiendo solo. Mientras tanto NO se muestra el numero.
+     ⚠️  Un numero corto es peor que ningun numero: "24 registros, 4,46%"
+         se lee como un dato cuando en realidad eran 66 y 12,3%, y nadie
+         mira el aviso de abajo si arriba hay una cifra que parece firme. */
+  var trayendo=!!(g && g.opsTotal && g.enriquecidas < g.opsTotal);
   return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7,
            fuente:g?'ghl':'propia', enOtraPagina:enOtraPagina,
            total:g?g.total:null, enriquecidas:g?g.enriquecidas:0,
-           opsTotal:g?g.opsTotal:0,
+           opsTotal:g?g.opsTotal:0, trayendo:trayendo,
            recorte:recorte, desdeCuando:st.masViejo||'' };
 }
 
@@ -56197,7 +56230,8 @@ function lpTablaLandingsHtml(c, dias){
   var cabecera=function(nombre, fs){
     var u=0, o=0;
     fs.forEach(function(f){ u+=f.unicas; o+=f.optins; });
-    var t=u?(o/u*100):null;
+    // Mismo criterio que las filas: mientras falte traer origen, no hay tasa.
+    var t=(r.trayendo||!u)?null:(o/u*100);
     var solo=(nombres.length===1&&nombre!=='(sin embudo)');
     if(solo) return '';
     return '<tr><td colspan="4" style="padding:14px 0 4px;border-top:1px solid var(--border)">'
@@ -56214,8 +56248,13 @@ function lpTablaLandingsHtml(c, dias){
               +td('<span class="mono" style="font-size:12px">'+esc(f.ruta)+'</span>')
               +td(String(f.vistas),'right','color:var(--text3)')
               +td(String(f.unicas),'right','color:var(--text2)')
-              +td(String(f.optins),'right','color:var(--text2)')
-              +td(f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-','right','font-weight:600;color:'+(f.tasa?'var(--accent)':'var(--text3)'))
+              +td(r.trayendo
+                    ? '<span style="color:var(--text3)">cargando…</span>'
+                    : String(f.optins),'right','color:var(--text2)')
+              +td(r.trayendo
+                    ? '<span style="color:var(--text3)">—</span>'
+                    : (f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-'),
+                  'right','font-weight:600;color:'+((!r.trayendo&&f.tasa)?'var(--accent)':'var(--text3)'))
               +'</tr>';
           }).join('');
       }).join('')
