@@ -28848,6 +28848,50 @@ function _factCamposHtml(c){
 // esta vista y deje el boton: leia, guardaba, y no mostraba nada. El dato
 // alimenta el aviso de la tarjeta, pero ese aviso solo aparece cuando no hay
 // monto cargado, asi que en un cliente ya cargado el analisis era invisible.
+/* La fila del contrato: subirlo, ver cual esta puesto, o sacarlo.
+   Va SIEMPRE, con llamadas o sin ellas. El caso de "cerramos por mail y no
+   hay ninguna llamada de venta" es justo el que mas necesita esto. */
+function _factContratoHtml(c, lls){
+  var t=(typeof _contrato==='function')?_contrato(c):null;
+  var inp='<input type="file" id="fact-contrato-file" style="display:none" '
+    +'accept=".pdf,.docx,.txt,.md,.html,text/*" '
+    +'onchange="factContratoArchivo(this,'+c.id+')">';
+  if(!t){
+    return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
+        +'margin:-6px 0 14px">'
+      +'<span style="flex:1;min-width:200px;font-size:11.5px;color:var(--text3);'
+        +'line-height:1.55">'
+        +(lls
+          ? 'Si ademas hay contrato firmado, subilo: cuando dice algo distinto de las llamadas, manda el contrato.'
+          : 'No hay ninguna llamada con transcripcion. Si tenes el contrato, subilo y lo leo de ahi.')
+      +'</span>'
+      +inp
+      +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:3px 9px" '
+        +'onclick="document.getElementById(\'fact-contrato-file\').click()">'
+        +'Subir el contrato</button>'
+    +'</div>';
+  }
+  var cuando=t.at?new Date(t.at).toLocaleDateString('es-AR'):'';
+  return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
+      +'margin:-6px 0 14px;padding:8px 10px;background:var(--bg3);'
+      +'border:1px solid var(--border);border-radius:var(--radius)">'
+    +'<span style="flex:1;min-width:200px;font-size:11.5px;color:var(--text2);'
+      +'line-height:1.55">Contrato: <b style="font-weight:500">'+esc(t.nombre||'sin nombre')+'</b>'
+      +'<span style="display:block;font-size:10.5px;color:var(--text3)">'
+        +(cuando?('subido el '+esc(cuando)+' \u00b7 '):'')
+        // En miles solo cuando son miles: un contrato corto decia "0 mil".
+        +((t.chars||0)>=2000 ? (Math.round(t.chars/1000)+' mil caracteres')
+                             : ((t.chars||0)+' caracteres'))
+        +(t.recortado?' \u00b7 recortado a lo que entra en el pedido':'')
+      +'</span></span>'
+    +inp
+    +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:3px 9px" '
+      +'onclick="document.getElementById(\'fact-contrato-file\').click()">Cambiar</button>'
+    +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:3px 9px;'
+      +'color:var(--redx)" onclick="factContratoQuitar('+c.id+')">Quitar</button>'
+  +'</div>';
+}
+
 function _acordadoResumenHtml(c){
   var a=(typeof _acordado==='function')?_acordado(c):null;
   if(!a) return '';
@@ -28905,7 +28949,7 @@ function _acordadoResumenHtml(c){
     +((a.cifras||[]).length
       ? ('<details style="margin-top:7px"><summary style="font-size:10.5px;'
           +'color:var(--text3);cursor:pointer">Encontro '+a.cifras.length+' cifra'
-          +(a.cifras.length===1?'':'s')+' en la llamada</summary>'
+          +(a.cifras.length===1?'':'s')+'</summary>'
         +'<div style="margin-top:4px">'
         +a.cifras.map(function(x){
           return '<div style="display:flex;gap:8px;font-size:11px;color:var(--text3);'
@@ -28940,24 +28984,43 @@ function factModal(clientId){
       +(function(){
         var a=(typeof _acordado==='function')?_acordado(c):null;
         var lls=(c.fathomCalls||[]).filter(function(x){ return x.transcript||x.summary; }).length;
-        if(!lls) return '';
+        var ct=(typeof _contrato==='function')?_contrato(c):null;
+        // Antes esto desaparecia entero cuando no habia llamadas con
+        // transcripcion, y con el se iba la unica puerta para subir el
+        // contrato: quien cerro por mail no tenia de donde agarrarse.
+        if(!lls && !ct && !a) return _factContratoHtml(c, lls);
+        var partes=[];
+        // "las 1 llamada" no lo dice nadie. Con una, va en singular y sin numero.
+        if(lls) partes.push(lls===1 ? 'la llamada' : ('las '+lls+' llamadas'));
+        if(ct)  partes.push('el contrato');
+        var fuentes=partes.join(' y ');
+        // "de" + "el contrato" da "de el contrato". Se arma la contraccion en
+        // vez de pegar las dos palabras y que quede escrito como no se dice.
+        var deFuentes=partes.map(function(x){
+          return x.indexOf('el ')===0 ? ('d'+x) : ('de '+x); }).join(' y ');
         return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
             +'margin:-6px 0 14px">'
           +'<span style="flex:1;min-width:200px;font-size:11.5px;color:var(--text3);'
             +'line-height:1.55">'
-            +(a?('Lo que se hablo salio de las llamadas'
+            // Lo leido antes de que existiera el contrato no tiene `fuentes`:
+            // en ese caso salio de las llamadas, que era lo unico que habia.
+            +(a?('Lo que se hablo salio '+(a.fuentes||'de las llamadas')
                  +(a.at?(' el '+new Date(a.at).toLocaleDateString('es-AR')
                          +' a las '+new Date(a.at).toLocaleTimeString('es-AR',
                              {hour:'2-digit',minute:'2-digit',hour12:false})):'')
-                 +'. Esto es lo que se firmo: si no coincide, manda el contrato.')
-               :('Saca de las '+lls+' llamada'+(lls===1?'':'s')+' el precio, la forma de pago '
-                 +'y el plazo que se hablaron, para cargarlos aca sin volver a escucharlas.'))
+                 +'. '+(ct
+                    ? 'Donde el contrato y las llamadas no coinciden, vale el contrato.'
+                    : 'Esto es lo que se hablo: si firmaron otra cosa, suma el contrato.'))
+               :('Saca '+(deFuentes||'de lo que cargues')+' el precio, la forma de pago '
+                 +'y el plazo, para cargarlos aca '
+                 +(lls?'sin volver a escucharlas.':'sin leerlo entero.')))
           +'</span>'
           +'<button id="acu-btn" class="btn btn-sm'+(a?'':' btn-primary')
             +'" style="flex:none;font-size:10.5px;padding:3px 9px" '
             +'onclick="acordadoLeer('+c.id+')">'
-            +(a?'Volver a leer':'Leer las llamadas')+'</button>'
+            +(a?'Volver a leer':('Leer '+(fuentes||'las llamadas')))+'</button>'
         +'</div>'
+        +_factContratoHtml(c, lls)
         +'<div id="acu-estado" style="font-size:11.5px;color:var(--text3);line-height:1.5;'
           +'margin:-8px 0 12px"></div>'
         +_acordadoResumenHtml(c);
@@ -36717,6 +36780,83 @@ function iaPuenteCancelar(){
 // abrir la grabacion y buscarlo. Esto lo lee una vez y lo deja arriba del
 // formulario, con el minuto para ir a chequear si algo no cierra.
 function _acordado(c){ return (c.acordado&&typeof c.acordado==='object')?c.acordado:null; }
+
+/* ── El contrato ──────────────────────────────────────────────────────────
+   Las llamadas dicen lo que se HABLO; el contrato dice lo que se FIRMO. Son
+   dos fuentes distintas y no siempre coinciden: el precio se renegocia por
+   WhatsApp, la cuota se parte en dos, el plazo se estira. Por eso el contrato
+   entra como una fuente mas y, cuando se contradicen, gana el.
+
+   Se guarda el TEXTO, no el archivo. Lo que hace falta despues es volver a
+   leerlo, no descargarlo, y un PDF en base64 adentro del blob del cliente
+   pesa tres veces mas y viaja en cada sincronizacion.
+
+   ⚠️  EL TEXTO VIAJA A SUPABASE adentro de `clientes.datos`, como todo lo
+       demas del cliente. Lo ve cualquier cuenta con rol agencia. Es el mismo
+       lugar donde ya viven los tokens de GHL, asi que no abre una puerta
+       nueva, pero conviene saberlo antes de subir algo que no deberia estar
+       ahi. En git no entra: los datos de los clientes viven en la base. */
+var CONTRATO_TOPE=120000;   // caracteres. Un contrato largo son ~40.000.
+
+function _contrato(c){
+  var t=(c&&c.contrato&&typeof c.contrato==='object')?c.contrato:null;
+  return (t && String(t.texto||'').trim()) ? t : null;
+}
+
+async function factContratoArchivo(inp, clientId){
+  var f=inp&&inp.files&&inp.files[0];
+  if(inp) inp.value='';
+  if(!f) return;
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var n=String(f.name||'').toLowerCase();
+  if(f.size>20*1048576){ toast('El archivo pesa demasiado.','amber'); return; }
+  if(/\.(doc|pages|key|rtf)$/.test(n)){
+    toast('Ese formato no lo puedo abrir. Guardalo como PDF, .docx o texto.','amber');
+    return;
+  }
+  var leer;
+  if(/\.pdf$/.test(n))       leer=_edLeerPdf(f);
+  else if(/\.docx$/.test(n)) leer=_edLeerDocx(f);
+  else leer=f.text().then(function(t){
+    // Un .html -un Google Doc exportado- entra por "text/*" con las etiquetas
+    // adentro. Sin limpiarlo, el marcado se lleva la mitad del presupuesto de
+    // texto y encima confunde la lectura.
+    var raros=(String(t||'').slice(0,3000).match(/[\x00-\x08\x0e-\x1f]/g)||[]).length;
+    if(raros>20) throw new Error('eso no parece texto. Guardalo como PDF o .docx');
+    return _edDesmarcar(String(t||''));
+  });
+  toast('Leyendo el contrato...');
+  try{
+    var t=String(await leer||'').trim();
+    if(!t){
+      toast('No encontre texto adentro. Si es un PDF escaneado, es una imagen '
+        +'y no tiene texto que leer.','amber');
+      return;
+    }
+    // Un contrato de cien paginas no entra en el pedido junto con las
+    // llamadas. Se corta y se dice, en vez de mandarlo entero y que la
+    // respuesta vuelva cortada sin que se entienda por que.
+    var recortado=t.length>CONTRATO_TOPE;
+    if(recortado) t=t.slice(0, CONTRATO_TOPE);
+    c.contrato={ nombre:String(f.name||''), texto:t, chars:t.length,
+                 recortado:recortado, at:new Date().toISOString() };
+    save();
+    _factRepintarSiAbierto(clientId);
+    toast('Contrato cargado'+(recortado?', recortado a lo que entra':'')+'.');
+  }catch(err){
+    toast('No pude leerlo: '+((err&&err.message)||''),'red');
+  }
+}
+
+function factContratoQuitar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  delete c.contrato;
+  save();
+  _factRepintarSiAbierto(clientId);
+  toast('Contrato sacado.');
+}
 // Quien grabo cada llamada llega en el webhook y se guarda: es lo unico que
 // dice a que Fathom hay que ir a buscar la transcripcion que falta.
 function _sinTranscripcionTexto(c){
@@ -36750,10 +36890,23 @@ async function acordadoLeer(clientId){
   // como si fueran el acuerdo.
   var mat=_llamadasParaIA(c, {sinComerciales:true, ventaPrimero:true,
     maxCall:140000, maxTotal:320000, guardarElFinal:true, soloVenta:true});
-  if(!mat.items.length){ decir('No hay llamadas con transcripcion.','var(--amberx)'); return; }
+  // El contrato va PRIMERO y marcado. Es lo que se firmo; las llamadas son lo
+  // que se hablo, y cuando no coinciden gana el papel. Ponerlo al final lo
+  // dejaba leyendose como una fuente mas entre otras.
+  var ct=_contrato(c);
+  var fuentes=[];
+  if(ct) fuentes.push({ titulo:'[CONTRATO FIRMADO] '+(ct.nombre||'contrato'),
+                        texto:String(ct.texto||'') });
+  fuentes=fuentes.concat(mat.items||[]);
+  if(!fuentes.length){
+    decir('No hay llamadas con transcripcion ni contrato cargado. Subi el contrato '
+      +'y lo leo de ahi.','var(--amberx)');
+    return;
+  }
   if(b){ b.disabled=true; b.textContent='Leyendo...'; }
   decir('<span style="display:inline-flex;align-items:center;gap:8px">'
-    +'<span class="carga-spin"></span><span>Leyendo '+mat.items.length+' fuentes...</span></span>');
+    +'<span class="carga-spin"></span><span>Leyendo '+fuentes.length+' fuentes'
+    +(ct?', el contrato incluido':'')+'...</span></span>');
   // Cuatro datos y nada mas. La version anterior pedia tambien el alcance y lo
   // prometido, y cuando los numeros no estaban devolvia veinte lineas de otra
   // cosa: parecia que habia encontrado algo cuando no habia encontrado nada.
@@ -36761,6 +36914,17 @@ async function acordadoLeer(clientId){
     +'Sacá SOLO cuatro datos: cuanto se cobra, como se paga, por cuanto tiempo, y si se renueva.\n'
     +'Nada mas. No me cuentes el alcance, ni los entregables, ni lo que se prometio: eso ya lo '
     +'tengo en otro lado y aca estorba.\n\n'
+    +(ct
+      ? ('EL CONTRATO MANDA. Arriba de todo hay un bloque [CONTRATO FIRMADO]: eso es lo '
+        +'que se firmo, y las llamadas son lo que se hablo antes de firmar. Buscá cada dato '
+        +'PRIMERO en el contrato. Si el contrato y una llamada dicen cosas distintas, poné '
+        +'lo del contrato en "valor" y contá la diferencia en "detalle", corto y concreto '
+        +'("en la llamada se hablo de 9.600 en 3 pagos"). Si un dato no esta en el contrato, '
+        +'ahi si servite de las llamadas.\n'
+        +'Para lo que salga del contrato, "f" va con "ll":"Contrato" y en "m" la clausula, '
+        +'el punto o el titulo de la seccion donde lo encontraste, corto ("clausula 4", '
+        +'"Precio y forma de pago"). Nada de minutos: el contrato no tiene.\n\n')
+      : '')
     +'REGLAS:\n'
     +'- Solo lo que se dijo con esas palabras. Si un dato no aparece, dejalo en "". Vacio es una '
     +'respuesta correcta y util: significa que se cerro por fuera de estas llamadas.\n'
@@ -36818,12 +36982,19 @@ async function acordadoLeer(clientId){
     +'"pago":{"valor":"","detalle":"","cerca":"","f":{"ll":"","m":""}},'
     +'"plazo":{"valor":"","detalle":"","cerca":"","f":{"ll":"","m":""}},'
     +'"renovacion":{"valor":"","detalle":"","cerca":"","f":{"ll":"","m":""}}}\n\n'
-    +'MATERIAL:\n'+mat.items.map(function(x){ return '--- '+x.titulo+' ---\n'+x.texto; }).join('\n\n');
+    +'MATERIAL:\n'+fuentes.map(function(x){ return '--- '+x.titulo+' ---\n'+x.texto; }).join('\n\n');
   var guardar=function(o){
     o.at=new Date().toISOString();
     // Sin esto no habia forma de saber si una corrida nueva leyo algo distinto,
     // ni cual de las reuniones le dio cada dato.
-    o.leidas=(mat.items||[]).map(function(x){ return x.titulo; });
+    o.leidas=fuentes.map(function(x){ return x.titulo; });
+    // Para que el encabezado pueda decir de donde salio sin volver a mirar
+    // que hay cargado ahora: si despues se saca el contrato, lo que se leyo
+    // se leyo igual con el.
+    // Se guarda la frase ya contraida —"del contrato"— y no las piezas
+    // sueltas: pegarle un "de " adelante al mostrarla daba "de el contrato".
+    o.fuentes=[ct?'del contrato':'', (mat.items||[]).length?'de las llamadas':'']
+      .filter(Boolean).join(' y ') || 'de lo que habia';
     c.acordado=o;
     save();
     _factRepintarSiAbierto(clientId);
@@ -36838,7 +37009,14 @@ async function acordadoLeer(clientId){
     console.error('Lo acordado:', err);
     decir('No pude leerlo: '+esc(err.message)
       +iaManualBoton('Lo acordado', pedido, guardar),'var(--redx)');
-    if(b){ b.disabled=false; b.textContent='Leer las llamadas'; }
+    // Volvia siempre como "Leer las llamadas", aunque lo que hubiera cargado
+    // fuera un contrato y ninguna llamada.
+    if(b){
+      b.disabled=false;
+      b.textContent='Leer '+([(mat.items||[]).length?'las llamadas':'',
+                              ct?'el contrato':''].filter(Boolean).join(' y ')
+                             || 'las llamadas');
+    }
   }
 }
 
