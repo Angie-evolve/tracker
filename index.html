@@ -60188,18 +60188,27 @@ function _waCruce(c, ops){
   var w=_wa(c);
   if(!w||w.error||w.sinGhl) return null;
   var wa=Array.isArray(w.contactosWa)?w.contactosWa:null;
-  if(!wa) return {conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0, viejo:true};
+  if(!wa) return {conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0,
+                  sinLlegar:0, viejo:true};
   var resp={}; (w.contactosResp||[]).forEach(function(id){ resp[id]=1; });
   var tieneWa={}; wa.forEach(function(id){ tieneWa[id]=1; });
-  var vistos={}, n=0, r=0;
+  /* ⚠️  AL QUE NUNCA LE LLEGO EL MENSAJE NO SE LE PUEDE PEDIR QUE CONTESTE.
+     Si le cargaron mal el telefono, el envio figura como `failed` y el lead
+     nunca tuvo la oportunidad. Contarlo como "no respondio" infla el
+     denominador y hace parecer peor la gestion de lo que fue. Se saca de la
+     cuenta y se muestra aparte, que es como los conto ella a mano. */
+  var noLlego={}; (w.contactosNoLlego||[]).forEach(function(id){ noLlego[id]=1; });
+  var vistos={}, n=0, r=0, sinLlegar=0;
   (ops||[]).forEach(function(o){
     var id=o&&(o.contactId||o.contact_id);
     if(!id||vistos[id]) return;
     vistos[id]=1;
     if(!tieneWa[id]) return;
+    if(noLlego[id]){ sinLlegar++; return; }
     n++; if(resp[id]) r++;
   });
-  return {conWhatsapp:n, respondieron:r, tasa:n?(r/n):null, viejo:false};
+  return {conWhatsapp:n, respondieron:r, sinLlegar:sinLlegar,
+          tasa:n?(r/n):null, viejo:false};
 }
 
 // Las celdas de las dos filas del embudo.
@@ -60239,17 +60248,21 @@ function _waCelda(c, cual, ops){
     return esPct?guion:'<span class="zero" title="No hay conversaciones de WhatsApp en esa subcuenta">sin WhatsApp</span>';
   }
 
-  var x=_waCruce(c, ops)||{conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0, viejo:true};
-  if(!x.conWhatsapp){
+  var x=_waCruce(c, ops)||{conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0,
+                           sinLlegar:0, viejo:true};
+  if(!x.conWhatsapp && !x.sinLlegar){
     return esPct?guion:'<span class="zero" style="cursor:pointer" onclick="waLeer('+c.id+')" '
       +'title="Ninguno de los leads de este corte tiene conversacion de WhatsApp. '
       +'Clic para volver a medir">sin WhatsApp</span>';
   }
   var viejo_=_waVencido(w);
-  var aviso='title="'+x.respondieron+' de '+x.conWhatsapp+' leads de este corte tienen un '
-    +'mensaje suyo por WhatsApp. OJO: no dice quien escribio primero, asi que en campanas de '
+  var aviso='title="'+x.respondieron+' contestaron y '+(x.conWhatsapp-x.respondieron)
+    +' recibieron el mensaje sin contestar'
+    +(x.sinLlegar?(', y a '+x.sinLlegar+' nunca les llego -numero mal cargado-, asi que quedan '
+                   +'fuera de la cuenta: no se les puede pedir que contesten'):'')
+    +'. OJO: no dice quien escribio primero, asi que en campanas de '
     +'clic-a-WhatsApp el lead arranca la charla y el numero sube solo.'
-    +(x.viejo?' \u00b7 MEDICION VIEJA: es de toda la subcuenta, no de este corte. Volve a medir.':'')
+    +(x.viejo?' \u00b7 MEDICION VIEJA: es de toda la subcuenta y sin estado de entrega. Volve a medir.':'')
     +(w.at?(' \u00b7 medido el '+esc(new Date(w.at).toLocaleDateString('es-AR'))):'')
     +(esPct?'':' \u00b7 clic para volver a medir')+'"';
   var estilo='style="'+((viejo_||x.viejo)?'opacity:.6;':'')+(esPct?'':'cursor:pointer')+'"';
@@ -60259,9 +60272,14 @@ function _waCelda(c, cual, ops){
     return '<span '+estilo+' '+aviso+'>'+pct+'%</span>';
   }
   // El denominador al lado, con la misma forma que usa "Opt-in landing".
+  // Los que no recibieron el mensaje van aparte y en ambar: es un problema de
+  // como se carga el telefono, no de la gestion, y se arregla en otro lado.
   return '<span '+estilo+' '+aviso+' onclick="waLeer('+c.id+')">'
     +x.respondieron
-    +' <span style="font-size:10px;color:var(--text3)">de '+x.conWhatsapp+'</span></span>';
+    +' <span style="font-size:10px;color:var(--text3)">de '+x.conWhatsapp+'</span>'
+    +(x.sinLlegar?('<span style="font-size:10px;color:var(--amberx)"> \u00b7 '
+       +x.sinLlegar+' sin llegar</span>'):'')
+    +'</span>';
 }
 
 function renderVentasTab(c, el){
