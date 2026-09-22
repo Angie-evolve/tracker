@@ -38142,58 +38142,83 @@ function _xmlEsc(t){
        \n suelto adentro del texto no se ve. Por eso se parte por lineas y
        cada una va en su propio parrafo, y las vacias tambien -si no, el
        contrato sale todo pegado. */
-// Clasifica cada linea del borrador. La estructura ya esta en el texto -el
-// modelo la trae-, solo hay que reconocerla para poder darle formato.
-function _ctrTipoLinea(t, i){
+/* Clasifica cada linea del borrador.
+   La estructura ya esta en el texto -el modelo la trae-, solo hay que
+   reconocerla. `n` es el numero de linea CON CONTENIDO, no la posicion en el
+   array: entre parrafo y parrafo hay vacias, asi que contar posiciones dejaba
+   el subtitulo sin detectar. */
+function _ctrTipoLinea(t, n){
   if(!t) return 'vacio';
-  if(i===0) return 'titulo';                       // "ACUERDO DE COLABORACION COMERCIAL"
-  if(/^\s*\d+\.\s+\S/.test(t)) return 'clausula';   // "1. Objeto del Acuerdo"
-  if(t===t.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(t) && t.length<70) return 'seccion'; // "REVISAR ANTES DE MANDAR"
-  if(/^\s*[-–—]\s+/.test(t)) return 'punto';          // los items de la lista final
+  if(/^\s*\d+\.\s+\S/.test(t)) return 'clausula';          // "1. Objeto del Acuerdo"
+  if(t===t.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(t) && t.length<70)
+    return n===0 ? 'titulo' : 'seccion';                      // "ACUERDO..." / "REVISAR..."
+  if(n===0) return 'titulo';
+  if(n===1) return 'subtitulo';                               // "Servicios de estrategia..."
+  if(/^\s*[-–—•●]\s+/.test(t)) return 'punto';
   return 'parrafo';
 }
+// Las vinetas se escriben como vinetas de verdad, asi que el guion de adelante
+// sobra: quedaria "● - texto".
+function _ctrSinGuion(t){ return String(t).replace(/^\s*[-–—•●]\s+/, ''); }
+
 function _xmlEsc(t){
   return String(t==null?'':t)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
 /* Un .docx es un zip con XML adentro, y JSZip ya lo carga la app.
+ *
+ * ⚠️  EL FORMATO NO SE INVENTA: SALE DEL MODELO. Se leyo el .docx de Meritium y
+ *     se copiaron sus medidas exactas -hoja Carta, margenes de una pulgada,
+ *     cuerpo 11, titulos de clausula 13, titulo 17, color 1a1a1a, subtitulo en
+ *     itálica gris, vinetas ● con sangria de 720- en vez de elegirlas a ojo.
+ *
+ * ⚠️  NO SE FIJA TIPOGRAFIA, Y ES A PROPOSITO. El modelo tampoco la fija: por
+ *     eso PandaDoc lo muestra con serif y Word con la suya. Poniendo una
+ *     dejaria de verse como el modelo en la herramienta donde ella lo mira.
+ *
+ * ⚠️  LOS SALTOS DE LINEA NO SON \n. Cada parrafo es un <w:p>; un \n suelto
+ *     adentro del texto no se ve.
+ */
+var DOCX_NS='xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
 
-   ⚠️  SIN `styles.xml` NI `sectPr` EL DOCUMENTO NO TIENE DISEÑO. Word y Google
-       Docs le aplican SU default -Times New Roman 10, margenes de fabrica- y
-       el contrato sale apretado y feo. La primera version no los traia y por
-       eso "perdia diseño" al abrirlo. Ahora van los dos: cuerpo en 11, A4 con
-       margenes de 2,5 cm, interlineado 1,15 y aire entre parrafos.
-
-   ⚠️  LOS SALTOS DE LINEA NO SON \n. Cada parrafo es un <w:p>; un \n suelto
-       adentro del texto no se ve. */
-function _docxDe(texto){
+function _docxDe(texto, nombreCliente){
   var lineas=String(texto||'').split(/\r?\n/);
-  var par=function(t, tipo){
-    if(tipo==='vacio') return '';   // el aire lo da el espaciado, no lineas vacias
-    var pPr='', rPr='';
-    if(tipo==='titulo'){
-      pPr='<w:jc w:val="center"/><w:spacing w:before="0" w:after="360"/>';
-      rPr='<w:b/><w:sz w:val="32"/><w:szCs w:val="32"/>';
-    }else if(tipo==='clausula'||tipo==='seccion'){
-      pPr='<w:spacing w:before="360" w:after="140"/><w:keepNext/>';
-      rPr='<w:b/><w:sz w:val="24"/><w:szCs w:val="24"/>';
-    }else if(tipo==='punto'){
-      pPr='<w:spacing w:after="80"/><w:ind w:left="360" w:hanging="360"/>';
-    }else{
-      pPr='<w:spacing w:after="160"/><w:jc w:val="both"/>';
-    }
-    return '<w:p>'+(pPr?'<w:pPr>'+pPr+'</w:pPr>':'')
-      +'<w:r>'+(rPr?'<w:rPr>'+rPr+'</w:rPr>':'')
-      +'<w:t xml:space="preserve">'+_xmlEsc(t)+'</w:t></w:r></w:p>';
-  };
-  var cuerpo=lineas.map(function(l, i){
+  var n=-1;
+  var cuerpo=lineas.map(function(l){
     var t=l.replace(/\s+$/,'');
-    return par(t, _ctrTipoLinea(t, i));
+    if(!t) return '';                    // el aire lo da el espaciado
+    n++;
+    var tipo=_ctrTipoLinea(t, n);
+    var pPr='', rPr='<w:color w:val="1a1a1a"/><w:sz w:val="22"/><w:szCs w:val="22"/>';
+    if(tipo==='titulo'){
+      pPr='<w:spacing w:after="60"/><w:jc w:val="center"/>';
+      rPr='<w:b/><w:bCs/><w:color w:val="1a1a1a"/><w:sz w:val="34"/><w:szCs w:val="34"/>';
+    }else if(tipo==='subtitulo'){
+      pPr='<w:spacing w:after="400"/><w:jc w:val="center"/>';
+      rPr='<w:i/><w:iCs/><w:color w:val="555555"/><w:sz w:val="22"/><w:szCs w:val="22"/>';
+    }else if(tipo==='clausula'||tipo==='seccion'){
+      pPr='<w:pStyle w:val="Heading1"/><w:spacing w:after="160" w:before="320"/><w:keepNext/>';
+      rPr='<w:b/><w:bCs/><w:color w:val="1a1a1a"/><w:sz w:val="26"/><w:szCs w:val="26"/>';
+    }else if(tipo==='punto'){
+      pPr='<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/>'
+         +'<w:numId w:val="1"/></w:numPr><w:spacing w:after="90" w:line="280"/>';
+      t=_ctrSinGuion(t);
+    }else{
+      pPr='<w:spacing w:after="160" w:line="280"/><w:jc w:val="both"/>';
+    }
+    return '<w:p><w:pPr>'+pPr+'</w:pPr><w:r><w:rPr>'+rPr+'</w:rPr>'
+      +'<w:t xml:space="preserve">'+_xmlEsc(t)+'</w:t></w:r></w:p>';
   }).join('');
-  // A4 con margenes de 2,5 cm. Las medidas van en twips: 1 cm = 567.
-  var sect='<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
-    +'<w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" '
+
+  // Hoja Carta y margenes de una pulgada, como el modelo. 1440 twips = 1".
+  var sect='<w:sectPr><w:headerReference w:type="default" r:id="rId3"/>'
+    +'<w:pgSz w:w="12240" w:h="15840" w:orient="portrait"/>'
+    +'<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
     +'w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>';
+
+  var cab='Acuerdo de Colaboración — '+String(nombreCliente||'');
+
   return {
     '[Content_Types].xml':
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -38202,6 +38227,8 @@ function _docxDe(texto){
       +'<Default Extension="xml" ContentType="application/xml"/>'
       +'<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
       +'<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+      +'<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'
+      +'<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
       +'</Types>',
     '_rels/.rels':
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -38212,23 +38239,49 @@ function _docxDe(texto){
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       +'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       +'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+      +'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>'
+      +'<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'
       +'</Relationships>',
     'word/styles.xml':
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-      +'<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+      +'<w:styles '+DOCX_NS+'>'
+      // Sin rFonts: la tipografia la elige quien abre el archivo, igual que
+      // en el modelo.
       +'<w:docDefaults><w:rPrDefault><w:rPr>'
-        +'<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>'
-        +'<w:sz w:val="22"/><w:szCs w:val="22"/>'   // 11 pt
-      +'</w:rPr></w:rPrDefault>'
+        +'<w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
       +'<w:pPrDefault><w:pPr>'
-        +'<w:spacing w:after="160" w:line="276" w:lineRule="auto"/>'  // 1,15
+        +'<w:spacing w:after="160" w:line="280" w:lineRule="auto"/>'
       +'</w:pPr></w:pPrDefault></w:docDefaults>'
       +'<w:style w:type="paragraph" w:default="1" w:styleId="Normal">'
         +'<w:name w:val="Normal"/></w:style>'
+      +'<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/>'
+        +'<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/></w:style>'
+      +'<w:style w:type="paragraph" w:styleId="ListParagraph">'
+        +'<w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:qFormat/>'
+        +'<w:pPr><w:ind w:left="720"/></w:pPr></w:style>'
       +'</w:styles>',
+    // La vineta ●, con la misma sangria que el modelo.
+    'word/numbering.xml':
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      +'<w:numbering '+DOCX_NS+'>'
+      +'<w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>'
+      +'<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'
+      +'<w:lvlText w:val="●"/><w:lvlJc w:val="left"/>'
+      +'<w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl>'
+      +'</w:abstractNum>'
+      +'<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>'
+      +'</w:numbering>',
+    // El encabezado que se repite en cada hoja, como el del modelo.
+    'word/header1.xml':
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      +'<w:hdr '+DOCX_NS+'><w:p><w:pPr><w:jc w:val="right"/></w:pPr>'
+      +'<w:r><w:rPr><w:i/><w:iCs/><w:color w:val="555555"/>'
+      +'<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+      +'<w:t xml:space="preserve">'+_xmlEsc(cab)+'</w:t></w:r></w:p></w:hdr>',
     'word/document.xml':
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-      +'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+      +'<w:document '+DOCX_NS
+      +' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
       +'<w:body>'+cuerpo+sect+'</w:body></w:document>'
   };
 }
@@ -38242,10 +38295,16 @@ function contratoBorradorPdf(clientId){
   if(!c) return;
   var t=_ctrBorradorTexto();
   if(!t) return;
-  var cuerpo=String(t).split(/\r?\n/).map(function(l, i){
-    var x=l.replace(/\s+$/,''); var tipo=_ctrTipoLinea(x, i);
-    if(tipo==='vacio') return '';
-    var cls={titulo:'t', clausula:'h', seccion:'h', punto:'li'}[tipo]||'p';
+  // Mismo criterio que el .docx: las lineas vacias no cuentan, el aire lo da
+  // el espaciado. Si se contaran, el subtitulo no se detectaria.
+  var n=-1;
+  var cuerpo=String(t).split(/\r?\n/).map(function(l){
+    var x=l.replace(/\s+$/,'');
+    if(!x) return '';
+    n++;
+    var tipo=_ctrTipoLinea(x, n);
+    var cls={titulo:'t', subtitulo:'st', clausula:'h', seccion:'h', punto:'li'}[tipo]||'p';
+    if(tipo==='punto') x=_ctrSinGuion(x);
     return '<p class="'+cls+'">'+_xmlEsc(x)+'</p>';
   }).join('');
   var ifr=document.createElement('iframe');
@@ -38256,16 +38315,24 @@ function contratoBorradorPdf(clientId){
   d.open();
   d.write('<!doctype html><html lang="es"><head><meta charset="utf-8">'
     +'<title>'+_xmlEsc(_nombreArchivo(c,'').replace(/\.$/,''))+'</title><style>'
-    +'@page{size:A4;margin:25mm}'
-    // El PDF se imprime: el fondo va blanco y el texto negro siempre, no
-    // importa que el tracker este en oscuro.
-    +'body{background:#fff;color:#000;font-family:Calibri,Carlito,"Helvetica Neue",Arial,sans-serif;'
-      +'font-size:11pt;line-height:1.5;margin:0}'
-    +'p{margin:0 0 9pt}'
-    +'.t{text-align:center;font-weight:700;font-size:16pt;margin-bottom:18pt}'
-    +'.h{font-weight:700;font-size:12pt;margin:18pt 0 7pt;page-break-after:avoid}'
+    // Las mismas medidas que el .docx, que a su vez salieron del modelo: hoja
+    // Carta, margenes de una pulgada, cuerpo 11, clausulas 13, titulo 17.
+    +'@page{size:letter;margin:1in}'
+    // Serif porque asi se ve el modelo en PandaDoc, que es donde ella lo mira.
+    // El .docx no fija tipografia -el modelo tampoco- pero un PDF tiene que
+    // elegir una si o si.
+    +'body{background:#fff;color:#1a1a1a;font-family:Georgia,"Times New Roman",serif;'
+      +'font-size:11pt;line-height:1.4;margin:0}'
+    +'p{margin:0 0 8pt}'
+    +'.t{text-align:center;font-weight:700;font-size:17pt;margin:0 0 3pt}'
+    +'.st{text-align:center;font-style:italic;color:#555;margin:0 0 20pt}'
+    +'.h{font-weight:700;font-size:13pt;margin:16pt 0 8pt;page-break-after:avoid}'
     +'.p{text-align:justify}'
-    +'.li{margin:0 0 4pt 18pt;text-indent:-18pt}'
+    // La vineta se dibuja con ::before para que la sangria quede igual que en
+    // el .docx (720 twips = media pulgada) sin depender de como el navegador
+    // maquete un <ul>.
+    +'.li{margin:0 0 5pt 0.5in;text-indent:-0.25in;text-align:justify}'
+    +'.li::before{content:"\\25CF  ";font-size:8pt;vertical-align:1pt}'
     +'</style></head><body>'+cuerpo+'</body></html>');
   d.close();
   var listo=function(){
@@ -38290,7 +38357,7 @@ async function contratoBorradorBajar(clientId, comoTexto){
   try{
     var JSZipL=await _cargarJSZip();
     var zip=new JSZipL();
-    var partes=_docxDe(t);
+    var partes=_docxDe(t, c.name);
     Object.keys(partes).forEach(function(k){ zip.file(k, partes[k]); });
     var blob=await zip.generateAsync({type:'blob',
       mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
