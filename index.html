@@ -29310,6 +29310,10 @@ function _factCamposHtml(c){
    hay ninguna llamada de venta" es justo el que mas necesita esto. */
 function _factContratoHtml(c, lls){
   var t=(typeof _contrato==='function')?_contrato(c):null;
+  // El borrador se redacta desde aca tambien: las condiciones se cargan en
+  // esta pantalla, y mandarla al modal de Herramientas para apretar un boton
+  // con los mismos datos no tenia sentido.
+  var redac=(typeof _contratoRedactarHtml==='function')?_contratoRedactarHtml(c):'';
   var inp='<input type="file" id="fact-contrato-file" style="display:none" '
     +'accept=".pdf,.docx,.txt,.md,.html,text/*" '
     +'onchange="factContratoArchivo(this,'+c.id+')">';
@@ -29326,7 +29330,7 @@ function _factContratoHtml(c, lls){
       +'<button class="btn btn-sm" style="flex:none;font-size:10.5px;padding:3px 9px" '
         +'onclick="document.getElementById(\'fact-contrato-file\').click()">'
         +'Subir el contrato</button>'
-    +'</div>';
+    +'</div>'+redac;
   }
   var cuando=t.at?new Date(t.at).toLocaleDateString('es-AR'):'';
   return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
@@ -37314,32 +37318,65 @@ function contratoModeloQuitar(){
 // cada dato: el modelo tiene que poder distinguir un precio confirmado de una
 // aproximacion, y sin la marca los trata igual.
 function _acordadoParaContrato(c){
-  var a=_acordado(c);
-  if(!a) return '';
+  /* \u26a0\ufe0f  LAS CONDICIONES VIVEN EN DOS LADOS, y hay que mirar los dos.
+     `c.acordado`  lo escribe `acordadoLeer`  (boton "Leer lo acordado")
+     `c.contract`  lo escribe `contratoDeLlamada` (boton "Sacarlo de la llamada
+                   de venta", en Facturacion) y tambien `extractContractWithAI`
+     No se pisan y ninguno es "el bueno": un cliente puede tener uno, el otro,
+     o los dos. Leyendo solo `acordado`, Baricode -que tiene las condiciones
+     completas en `contract`, con cita y minuto- daba "no hay nada acordado" y
+     el boton de redactar quedaba bloqueado. */
   var L=[];
-  var campo=function(clave, etiqueta){
-    var x=a[clave];
-    if(!x||typeof x!=='object') return;
-    var v=String(x.valor||'').trim();
-    var cerca=String(x.cerca||'').trim();
-    var det=String(x.detalle||'').trim();
-    if(v)          L.push(etiqueta+': '+v+(det?('  (nota: '+det+')'):''));
-    else if(cerca) L.push(etiqueta+': SIN CERRAR. Lo mas parecido que se dijo fue "'+cerca+'"');
-    else           L.push(etiqueta+': no se hablo');
-  };
-  campo('precio','Precio');
-  campo('pago','Forma de pago');
-  campo('plazo','Plazo');
-  campo('renovacion','Renovacion');
-  var lista=function(clave, etiqueta){
-    var v=a[clave];
-    if(Array.isArray(v)&&v.length) L.push(etiqueta+': '+v.map(function(x){
-      return String((x&&x.texto)||(x&&x.valor)||x||'').trim(); }).filter(Boolean).join(' | '));
-  };
-  lista('incluye','Incluye');
-  lista('noIncluye','No incluye');
-  lista('promesas','Prometido en las llamadas');
-  lista('sinDefinir','Quedo sin definir');
+  var a=_acordado(c);
+  if(a){
+    var campo=function(clave, etiqueta){
+      var x=a[clave];
+      if(!x||typeof x!=='object') return;
+      var v=String(x.valor||'').trim();
+      var cerca=String(x.cerca||'').trim();
+      var det=String(x.detalle||'').trim();
+      if(v)          L.push(etiqueta+': '+v+(det?('  (nota: '+det+')'):''));
+      else if(cerca) L.push(etiqueta+': SIN CERRAR. Lo mas parecido que se dijo fue "'+cerca+'"');
+    };
+    campo('precio','Precio');
+    campo('pago','Forma de pago');
+    campo('plazo','Plazo');
+    campo('renovacion','Renovacion');
+    var lista=function(clave, etiqueta){
+      var v=a[clave];
+      if(Array.isArray(v)&&v.length) L.push(etiqueta+': '+v.map(function(x){
+        return String((x&&x.texto)||(x&&x.valor)||x||'').trim(); }).filter(Boolean).join(' | '));
+    };
+    lista('incluye','Incluye');
+    lista('noIncluye','No incluye');
+    lista('promesas','Prometido en las llamadas');
+    lista('sinDefinir','Quedo sin definir');
+  }
+  var ct=(c&&c.contract&&typeof c.contract==='object')?c.contract:null;
+  if(ct){
+    var poner=function(v, etiqueta, sufijo){
+      if(v===null||v===undefined||v===''||v===0) return;
+      L.push(etiqueta+': '+String(v)+(sufijo||''));
+    };
+    poner(c.serviceType||ct.serviceType, 'Tipo de servicio');
+    poner(c.contractValue||ct.contractValue, 'Valor del contrato', ' USD');
+    poner(c.monthlyFee||ct.monthlyFee, 'Fee mensual', ' USD');
+    poner(ct.comoSePaga, 'Como se paga');
+    poner(ct.enPesos, 'Parte en pesos');
+    poner(ct.minDailyBudget, 'Pauta diaria minima', ' USD');
+    poner(ct.minOCsMonth, 'Ordenes de compra minimas por mes');
+    poner(ct.durationDays, 'Duracion', ' dias');
+    poner(ct.startDate, 'Inicio');
+    poner(ct.endDate, 'Fin');
+    poner(ct.signDate, 'Firma');
+    // `falta` ya es la lista de lo que NO se hablo, hecha al leer las llamadas.
+    // Pasarla evita que el modelo tenga que adivinar que marcar como hueco.
+    if(Array.isArray(ct.falta)&&ct.falta.length){
+      L.push('');
+      L.push('NO SE HABLO DE ESTO (marcalo como hueco, no lo inventes):');
+      ct.falta.forEach(function(x){ L.push('  - '+String(x||'').trim()); });
+    }
+  }
   return L.join('\n');
 }
 
@@ -37357,8 +37394,8 @@ async function redactarContrato(clientId){
   // Sin lo acordado el borrador saldria con un hueco en cada numero. Mejor
   // decirlo antes y no gastar una llamada a la API.
   if(!acor){
-    decir('Primero lei lo acordado: sin eso el borrador sale sin precio ni plazo. '
-      +'El boton esta en el panel de lo acordado.','var(--amberx)');
+    decir('Primero hay que sacar las condiciones de las llamadas: sin eso el borrador '
+      +'sale sin precio ni plazo. En Facturacion, "Leer las llamadas".','var(--amberx)');
     return;
   }
   var b=document.getElementById('ctr-redac-btn');
