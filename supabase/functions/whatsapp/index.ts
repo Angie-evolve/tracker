@@ -125,11 +125,20 @@ function medir(cs: any[]) {
   //     —cientos de llamadas por cliente—, asi que no se hace aca.
   const respondieron = conWhatsapp.filter((c) => !!c.lastInboundWhatsappMessageDate);
   const sinLeer = conWhatsapp.filter((c) => Number(c.unreadCount || 0) > 0);
+  // ⚠️  SE DEVUELVEN LOS contactId, NO SOLO LOS TOTALES. Sin esto el numero es
+  //     el de TODA la subcuenta, y el embudo esta mirando otra cosa: los leads
+  //     de este cliente, en este periodo y con este segmento. En Ojapo la
+  //     diferencia era 21 de 76 contra 15 de 67, y el 15 es el que coincide
+  //     con el conteo a mano. Cruzando en el navegador el numero sigue los
+  //     mismos filtros que el resto de la columna.
+  const id = (c: any) => String(c.contactId || "");
   return {
     conversaciones: cs.length,
     conWhatsapp: conWhatsapp.length,
     respondieron: respondieron.length,
     sinLeer: sinLeer.length,
+    contactosWa: conWhatsapp.map(id).filter(Boolean),
+    contactosResp: respondieron.map(id).filter(Boolean),
     // Null y no 0 cuando no hay a quien escribirle: "0%" se lee como "nadie
     // contesto", y "todavia no le escribimos a nadie" es otra cosa.
     tasa: conWhatsapp.length ? respondieron.length / conWhatsapp.length : null,
