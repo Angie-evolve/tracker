@@ -19448,14 +19448,55 @@ function _ghlLandingDe(o){
   }
 }
 
-function ghlRegistros(c, dias){
+/* ── La ventana de tiempo de la tabla de landings ────────────────────────
+   Hasta ahora era fija de 7 dias y el selector de arriba no la tocaba: con
+   "Todo el historico" elegido, Albet mostraba 9 registros aca y 24 en
+   Bottom of Funnel. Los dos bien, midiendo cosas distintas, y nada que lo
+   dijera.
+
+   Ahora sigue al selector. `metaDays` de la linea activa viene en tres
+   formas y hay que entender las tres:
+     un numero  -> ultimos N dias
+     'max'      -> todo el historico
+     'custom'   -> un rango con principio Y FIN, que puede terminar en el
+                   pasado. Por eso esto devuelve `desde` y `hasta` y no una
+                   cantidad de dias: "1 al 30 de junio" no se puede escribir
+                   como "hace N dias".
+
+   `S._lpRango` permite fijarla a mano desde la propia tabla: la tasa de la
+   ultima semana es un numero que se mira seguido y con todo el historico
+   se diluye. */
+function lpVentana(c){
+  var fijo=S._lpRango;
+  if(fijo===7||fijo===30) return {desde:Date.now()-fijo*86400000, hasta:Infinity,
+                                  etiqueta:'ultimos '+fijo+' dias', propio:true};
+  var al=null;
+  try{ al=getActiveLine((c&&c.liveLines)||[])||getActiveLine((c&&c.conversionLines)||[]); }catch(e){}
+  var d=al&&al.metaDays;
+  if(d==='max') return {desde:0, hasta:Infinity, etiqueta:'todo el historico'};
+  if(d==='custom'){
+    var a=Date.parse(al.metaSince||''), b=Date.parse(al.metaUntil||'');
+    if(isFinite(a)&&isFinite(b)) return {desde:a, hasta:b+86400000, etiqueta:'el rango elegido'};
+  }
+  var n=Number(d)||30;
+  return {desde:Date.now()-n*86400000, hasta:Infinity, etiqueta:'ultimos '+n+' dias'};
+}
+// Acepta la ventana nueva o, para quien todavia pase un numero, los
+// ultimos N dias de siempre.
+function _lpV(v){
+  if(v && typeof v==='object') return v;
+  var n=Number(v)||7;
+  return {desde:Date.now()-n*86400000, hasta:Infinity, etiqueta:'ultimos '+n+' dias'};
+}
+
+function ghlRegistros(c, v){
   var ops=(c&&c.ghl&&c.ghl.opportunities)||[];
   if(!ops.length) return null;
-  var desde=Date.now()-((dias||7)*86400000);
+  var _v=_lpV(v), desde=_v.desde, hasta=_v.hasta;
   var porPagina={}, total=0, sinOrigen=0;
   ops.forEach(function(o){
     var t=new Date(o&&o.createdAt).getTime();
-    if(!isFinite(t)||t<desde) return;
+    if(!isFinite(t)||t<desde||t>hasta) return;
     total++;
     var pag=_ghlLandingDe(o);
     if(!pag){ sinOrigen++; return; }
@@ -19468,7 +19509,7 @@ function ghlRegistros(c, dias){
   var enriquecidas=0;
   ops.forEach(function(o){ if(o&&o._enrichOk) enriquecidas++; });
   return { porPagina:porPagina, total:total, sinOrigen:sinOrigen,
-           enriquecidas:enriquecidas, opsTotal:ops.length, dias:dias||7 };
+           enriquecidas:enriquecidas, opsTotal:ops.length, etiqueta:_v.etiqueta };
 }
 
 // Opt-in con la definicion de GHL: registros sobre visitantes unicos de las
@@ -56161,10 +56202,10 @@ function abCfg(c){
 // para saber a que landing corresponde se busca la ultima pagina de registro
 // que vio ESE visitante antes de convertir. Si el A/B tiene gracias separadas
 // da igual; si comparten una sola, esto es lo que salva la atribucion.
-function lpFilasLandings(c, dias){
+function lpFilasLandings(c, v){
   var raw=(S._lpRaw||{})[String(c.id)];
   if(!raw) return null;
-  var desde=Date.now()-((dias||7)*86400000);
+  var _v=_lpV(v), desde=_v.desde, hasta=_v.hasta;
   var sel=lpPaginasDe(c);
   var esReg=function(p){ return !sel.length || sel.indexOf(p||'(sin ruta)')>=0; };
 
@@ -56178,13 +56219,13 @@ function lpFilasLandings(c, dias){
       if(!esReg(f.pagina)) return;
       var r=f.pagina||'(sin ruta)';
       ultimaDe[f.visitante]=r;                 // se recuerda aunque quede fuera de la ventana
-      if(t<desde) return;
+      if(t<desde||t>hasta) return;
       m[r]=m[r]||{ruta:r,vistas:0,_u:{},optins:0,embudo:f.embudo||''};
       if(!m[r].embudo && f.embudo) m[r].embudo=f.embudo;
       m[r].vistas++; m[r]._u[f.visitante]=1;
       return;
     }
-    if(f.tipo!=='optin'||t<desde) return;
+    if(f.tipo!=='optin'||t<desde||t>hasta) return;
     var r2=ultimaDe[f.visitante];
     if(!r2){ sinAtribuir++; return; }
     m[r2]=m[r2]||{ruta:r2,vistas:0,_u:{},optins:0};
@@ -56197,7 +56238,7 @@ function lpFilasLandings(c, dias){
      Los que no caen en ninguna fila visible se cuentan aparte en vez de
      desaparecer: pueden ser de una pagina que quedo fuera de "Elegir
      paginas", de una de gracias, o de un lead cargado a mano. */
-  var g=ghlRegistros(c, dias), enOtraPagina=0;
+  var g=ghlRegistros(c, _v), enOtraPagina=0;
   if(g){
     Object.keys(m).forEach(function(k){ m[k].optins=0; });
     sinAtribuir=g.sinOrigen;
@@ -56225,7 +56266,7 @@ function lpFilasLandings(c, dias){
          se lee como un dato cuando en realidad eran 66 y 12,3%, y nadie
          mira el aviso de abajo si arriba hay una cifra que parece firme. */
   var trayendo=!!(g && g.opsTotal && g.enriquecidas < g.opsTotal);
-  return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7,
+  return { filas:filas, sinAtribuir:sinAtribuir, etiqueta:_v.etiqueta, propio:!!_v.propio,
            fuente:g?'ghl':'propia', enOtraPagina:enOtraPagina,
            total:g?g.total:null, enriquecidas:g?g.enriquecidas:0,
            opsTotal:g?g.opsTotal:0, trayendo:trayendo,
@@ -56296,8 +56337,26 @@ function lpAvisoEmbudoHtml(c){
     +'Hasta entonces esos eventos no se pueden separar de los otros embudos del cliente.</span></div>';
 }
 
-function lpTablaLandingsHtml(c, dias){
-  var r=lpFilasLandings(c, dias);
+/* Los tres botoncitos del encabezado. "Rango de arriba" es el default y es
+   lo que pidio Angie: que la tabla deje de ir por su cuenta. Los de 7 y 30
+   quedan porque la tasa de la ultima semana es un numero que se mira
+   seguido y con todo el historico se diluye. */
+function lpRangoBotones(r){
+  var b=function(v,l,act){
+    return '<a href="javascript:void(0)" onclick="lpRango('+(v===null?'null':v)+')" '
+      +'style="text-decoration:none;color:'+(act?'var(--accent)':'var(--text3)')+'">'+l+'</a>';
+  };
+  var f=S._lpRango;
+  return b(null,'rango de arriba',!f)+' &middot; '+b(7,'7 d',f===7)+' &middot; '+b(30,'30 d',f===30);
+}
+function lpRango(v){
+  S._lpRango=(v===7||v===30)?v:null;
+  if(typeof dibujarMiddle==='function' && S._hojaCliente) dibujarMiddle(S._hojaCliente);
+  else if(typeof renderTab==='function') renderTab();
+}
+
+function lpTablaLandingsHtml(c, v){
+  var r=lpFilasLandings(c, v||lpVentana(c));
   // Sin datos: si hubo un error al leer, se dice cual. Callarse hace que parezca
   // que el tracker no esta instalado cuando en realidad fallo la consulta.
   if(!r){
@@ -56384,15 +56443,13 @@ function lpTablaLandingsHtml(c, dias){
       +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Landings de conversion</span>'
       // El rotulo dice de donde sale cada mitad: las vistas siempre son de la
       // medicion propia, los registros dependen de si GHL esta conectado.
-      // ⚠️  DICE QUE NO SIGUE EL SELECTOR DE ARRIBA. Esta tabla tiene ventana
-      //     fija de 7 dias; el resto de la pantalla obedece al rango que
-      //     elegis. Con "Todo el historico" arriba, Albet mostraba 9 registros
-      //     aca y 24 en Bottom of Funnel: los dos bien, midiendo cosas
-      //     distintas, y nada que lo dijera.
-      +'<span style="font-size:11px;color:var(--text3)">ultimos '+r.dias+' dias'
-        +' &middot; <span title="El rango de fechas de arriba no cambia esta tabla">'
-        +'ventana fija</span> &middot; '
-        +(r.fuente==='ghl'?'vistas propias, registros de GHL':'medicion propia')+'</span>'
+      // El encabezado dice QUE periodo esta mirando. Antes decia "ultimos 7
+      // dias" siempre, aunque arriba dijera otra cosa.
+      +'<span style="font-size:11px;color:var(--text3)">'
+        +esc(r.etiqueta||'')
+        +' &middot; '+lpRangoBotones(r)
+        +' &middot; '+(r.fuente==='ghl'?'vistas propias, registros de GHL':'medicion propia')
+      +'</span>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
       +(r.fuente==='ghl'
@@ -56412,8 +56469,9 @@ function lpTablaLandingsHtml(c, dias){
               +new Date(r.desdeCuando).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}); }
         catch(e){}
         notas.push('<span style="color:var(--redx)">Las vistas de esta tabla estan CORTAS. '
-          +'Este cliente hizo mas de '+LP_TOPE.toLocaleString('es-AR')+' eventos en menos de '
-          +r.dias+' dias, que es lo maximo que trae la consulta: solo entro lo posterior a '
+          +'Este cliente hizo mas de '+LP_TOPE.toLocaleString('es-AR')+' eventos dentro de '
+          +esc(r.etiqueta||'este periodo')+', que es mas de lo que trae la consulta: '
+          +'solo entro lo posterior a '
           +esc(d)+'. Las vistas y los unicos de arriba son menos que los reales.</span>');
       }
       if(r.fuente==='ghl'){
@@ -56464,7 +56522,7 @@ function dibujarMiddle(c){
     }).catch(function(){ S._lpPidiendo=false; });
   }
   var a=abCfg(c);
-  var tabla=lpTablaLandingsHtml(c);
+  var tabla=lpTablaLandingsHtml(c, lpVentana(c));
   // Guardado: queda la tabla de landings, que es lo que se mira todos los
   // dias. El resto se prende en Configuracion de agencia.
   if(!abTestPrendido()){ body.innerHTML=tabla; return; }
@@ -56477,7 +56535,7 @@ function dibujarMiddle(c){
   cargarAB(c).then(function(html){
     S._middleCargado=c.id; S._middleHtml=html;
     var b=document.getElementById('hoja-middle-body');
-    if(b) b.innerHTML=lpTablaLandingsHtml(c)+html;
+    if(b) b.innerHTML=lpTablaLandingsHtml(c, lpVentana(c))+html;
   }).catch(function(e){
     var b=document.getElementById('hoja-middle-body');
     if(b) b.innerHTML='<div style="padding:16px 0;font-size:12px;color:var(--redx)">No se pudo leer: '+esc(e.message)+'</div>'
