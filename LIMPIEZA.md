@@ -4,6 +4,30 @@ Lo que encontramos que ya no lo usa nadie, anotado para no volver a
 descubrirlo de cero. **Nada de acá se borra sin decidirlo aparte**: la zona
 COMPARTIDA solo suma, y un `drop` no tiene vuelta atrás.
 
+## `presento_en` y `oferta_presentada` — columnas, candidatas a borrar
+
+Las dos guardaban lo mismo que hoy guarda `oferta_estado`, y las dos se
+quedaron cortas. Es el mismo dato intentado tres veces en dos días, y lo
+anoto con esa crudeza para que se vea por qué:
+
+| columna | migración | qué guardaba | por qué no alcanzó |
+|---|---|---|---|
+| `presento_en` | 017 | número de reunión (1, 2, 3…) | un número no puede decir **No**, que es el estado que más se usa |
+| `oferta_presentada` | 019 | boolean nulable | tres estados, y hacen falta cuatro: faltaba **Programada** |
+| `oferta_estado` | 021 | texto con check | los cuatro. El quinto es un check más, no una columna más |
+
+Cuánto hay adentro, medido el 2026-09-21: `presento_en` **vacía en los 287
+leads**; `oferta_presentada` con **2 filas**, las dos en `false`, y las dos
+copiadas a `oferta_estado` por el 021.
+
+Mientras `oferta_presentada` exista, **las dos funciones escriben las dos
+columnas** —`lead_oferta` y `lead_oferta_estado`— así que no se pueden
+contradecir. Se comprobó: 0 contradicciones en 287 leads.
+
+**Para borrarlas hacen falta dos cosas:** tu permiso, y comprobar antes que
+nadie las lea. Hoy no las lee nadie: `git grep` no las encuentra fuera de
+`supabase/` y del portal, que ya usa la nueva.
+
 ## `latido` — tabla, candidata a borrar
 
 Dos columnas (`id`, `visto`) y una sola fila, del **4/8/2026**.
@@ -227,8 +251,12 @@ oferta" mirando `rules.presentaciones`, o sea la **etapa** de GHL. El propio
 código lo marca como `approx:true` y lo explica: *"Como se infiere: Stage
 actual de presentacion"*.
 
-Eso quedó viejo. Desde el 017 hay un dato de verdad: `leads.presento_en`, que
-dice en qué reunión se presentó la oferta (1, 2, 3…). El portal ya lo escribe.
+Eso quedó viejo. Desde el 021 hay un dato de verdad: `leads.oferta_estado`,
+con cuatro valores —pendiente, programada, sí, no— que el cliente marca en el
+portal. En qué reunión pasó sale de cruzarlo con la etapa del lead.
+
+*(Esta entrada decía `presento_en` y después `oferta_presentada`. Las dos se
+quedaron cortas; ver "Cosas muertas".)*
 
 **Qué falta:** que el tracker lea esa columna en vez de deducirla, y que el
 paso deje de ser `approx`. Donde hoy dice "se infiere del stage" debería decir
@@ -240,7 +268,7 @@ orden del embudo. Quien presentó en la primera y quien presentó en la segunda
 caen en la misma etapa y no se distinguen. Es justamente el número que hace
 falta para saber si conviene ofertar antes.
 
-**Cuidado al hacerlo:** `presento_en` va a estar en NULL para casi todos los
+**Cuidado al hacerlo:** `oferta_estado` va a estar en NULL para casi todos los
 leads por un tiempo —sólo se llena cuando alguien lo marca en el portal—, así
 que hay que mostrar las dos cosas y no reemplazar una por la otra de golpe: el
 dato real cuando está, y la inferencia vieja marcada como tal cuando no.
@@ -248,6 +276,35 @@ dato real cuando está, y la inferencia vieja marcada como tal cuando no.
 
 Cosas que hoy están bien resueltas y que van a poder mejorarse cuando cambie
 otra cosa. **No son pendientes**: hacerlas ahora rompería algo.
+
+## "Presentación programada" de GHL cae en la etapa equivocada
+
+El 021 archivó la etapa `presentacion`, porque lo que decía —que la oferta
+está agendada— ahora lo dice la columna "Oferta". `etapa_desde_ghl` sólo mira
+etapas activas, así que sus patrones —`presentaci`, `propuesta`, `presentad`,
+`oferta`— dejaron de existir.
+
+El problema es dónde cae ahora. Medido el 2026-09-21:
+
+| lo que manda GHL | a dónde va |
+|---|---|
+| `Propuesta enviada` | NULL, sin traducir |
+| `Presentación programada` | **`reunion1`** |
+
+`reunion1` tiene el patrón `programad`, y "Presentación programada" termina en
+"programada". Así que un lead con la oferta agendada quedaría marcado como
+"Primera reunión programada": **dos pasos más atrás de donde está**.
+
+**Hoy no mueve nada.** No hay ninguna sincronización que llame a esa función:
+sin `pg_cron`, sin triggers en `leads`, sin workflow en `.github`, y el último
+lead entró a mano el 19/09. Es una trampa para el día que se escriba, no un
+error en curso.
+
+**Qué habría que hacer ese día:** que la sincronización lea la etapa de GHL y
+escriba `oferta_estado = 'programada'`, en vez de buscarle una etapa. Y si
+además se quiere arreglar la traducción, sacarle `programad` a `reunion1` es
+su propia migración, con la prueba 1 del 006 al lado: hoy ese patrón atrapa
+leads que caen bien.
 
 ## El segundo candado de `leads`
 
