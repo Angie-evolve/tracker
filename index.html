@@ -10392,6 +10392,25 @@ function configAgenciaHtml(){
             +'este configurado en cada cliente se conserva.</span>'
         +'</span>'
       +'</label>'
+
+      +'<div style="margin-top:22px;max-width:640px">'
+        +'<div style="font-size:13px;color:var(--text)">Contrato modelo</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin:3px 0 9px">'
+          +'El contrato que la agencia ya usa. Con esto cargado, cada cliente puede sacar un '
+          +'borrador con esta misma forma y lo que se le vendio a el, desde su seccion Contrato. '
+          +'Tiene que ser el archivo: un link de Drive no se puede leer.</div>'
+        +(contratoModelo()
+          ? ('<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'
+             +'<span style="font-size:12px;color:var(--accent)">'+esc(contratoModelo().nombre||'')+'</span>'
+             +'<span style="font-size:11px;color:var(--text3)">'+contratoModelo().chars.toLocaleString('es-AR')+' caracteres'
+             +(contratoModelo().recortado?' \u00b7 recortado':'')+'</span>'
+             +'<button class="btn btn-sm" onclick="document.getElementById(\'ag-modelo\').click()">Reemplazar</button>'
+             +'<button class="btn btn-sm" onclick="contratoModeloQuitar()">Quitar</button>'
+             +'</div>')
+          : '<button class="btn btn-sm" onclick="document.getElementById(\'ag-modelo\').click()">Subir el modelo</button>')
+        +'<input id="ag-modelo" type="file" accept=".pdf,.docx,.txt,.md,.html" style="display:none" '
+          +'onchange="contratoModeloArchivo(this)">'
+      +'</div>'
     +'</div>'
   +'</div>';
 }
@@ -36598,6 +36617,7 @@ function _materialCuerpoHtml(c){
           ${guionesClienteHtml(c)}
           <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
           <div id="sh-contrato" style="font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;scroll-margin-top:14px">Contrato</div>
+        ${_contratoRedactarHtml(c)}
         ${contract.driveUrl||contract.fileName?`
         <div class="st-contract">
           <span style="font-size:18px;color:var(--accent)"></span>
@@ -37236,6 +37256,271 @@ function _acordado(c){ return (c.acordado&&typeof c.acordado==='object')?c.acord
        ahi. En git no entra: los datos de los clientes viven en la base. */
 var CONTRATO_TOPE=120000;   // caracteres. Un contrato largo son ~40.000.
 
+
+// ============================ REDACTAR EL CONTRATO ==========================
+// Al reves de `extractContractWithAI`, que LEE un contrato firmado y saca los
+// campos. Esto ESCRIBE un borrador: toma un contrato modelo -el que la agencia
+// ya usa- y lo rellena con lo que se le vendio a ESTE cliente.
+//
+// De donde sale cada cosa:
+//   - la forma, las clausulas y el tono -> el contrato modelo de la agencia
+//   - el precio, el plazo, el pago y la renovacion -> `c.acordado`, que ya lo
+//     saca de las llamadas la funcion `acordadoLeer`
+//   - el alcance y lo prometido -> tambien de `acordado` cuando esta
+//
+// NO INVENTA. Lo que no este en ninguna de esas fuentes queda marcado como
+// [FALTA: ...] adentro del borrador. Un contrato con un hueco visible se
+// arregla en dos minutos; uno con una fecha inventada se firma y se descubre
+// tarde.
+var MODELO_TOPE=120000;
+
+function contratoModelo(){
+  var m=cfgAg().contratoModelo;
+  return (m && typeof m==='object' && String(m.texto||'').trim()) ? m : null;
+}
+
+async function contratoModeloArchivo(inp){
+  var f=inp&&inp.files&&inp.files[0];
+  if(inp) inp.value='';
+  if(!f) return;
+  var n=String(f.name||'').toLowerCase();
+  if(f.size>20*1048576){ toast('El archivo pesa demasiado.','amber'); return; }
+  if(/\.(doc|pages|key|rtf)$/.test(n)){
+    toast('Ese formato no lo puedo abrir. Guardalo como PDF, .docx o texto.','amber'); return;
+  }
+  toast('Leyendo el modelo...');
+  try{
+    var t=String(await _leerArchivoTexto(f, n)||'').trim();
+    if(!t){ toast('No encontre texto adentro. Si es un PDF escaneado, es una imagen.','amber'); return; }
+    var recortado=t.length>MODELO_TOPE;
+    if(recortado) t=t.slice(0, MODELO_TOPE);
+    cfgAg().contratoModelo={ nombre:String(f.name||''), texto:t, chars:t.length,
+                             recortado:recortado, at:new Date().toISOString() };
+    save();
+    if(S.view==='cfgAgencia') abrirConfigAgencia();
+    toast('Modelo guardado'+(recortado?', recortado a lo que entra':'')+'.');
+  }catch(err){ toast('No pude leerlo: '+((err&&err.message)||''),'red'); }
+}
+
+function contratoModeloQuitar(){
+  if(!contratoModelo()) return;
+  delete cfgAg().contratoModelo;
+  save();
+  if(S.view==='cfgAgencia') abrirConfigAgencia();
+  toast('Modelo sacado.');
+}
+
+// Lo acordado, en texto, para meterlo en el pedido. Se marca de donde salio
+// cada dato: el modelo tiene que poder distinguir un precio confirmado de una
+// aproximacion, y sin la marca los trata igual.
+function _acordadoParaContrato(c){
+  var a=_acordado(c);
+  if(!a) return '';
+  var L=[];
+  var campo=function(clave, etiqueta){
+    var x=a[clave];
+    if(!x||typeof x!=='object') return;
+    var v=String(x.valor||'').trim();
+    var cerca=String(x.cerca||'').trim();
+    var det=String(x.detalle||'').trim();
+    if(v)          L.push(etiqueta+': '+v+(det?('  (nota: '+det+')'):''));
+    else if(cerca) L.push(etiqueta+': SIN CERRAR. Lo mas parecido que se dijo fue "'+cerca+'"');
+    else           L.push(etiqueta+': no se hablo');
+  };
+  campo('precio','Precio');
+  campo('pago','Forma de pago');
+  campo('plazo','Plazo');
+  campo('renovacion','Renovacion');
+  var lista=function(clave, etiqueta){
+    var v=a[clave];
+    if(Array.isArray(v)&&v.length) L.push(etiqueta+': '+v.map(function(x){
+      return String((x&&x.texto)||(x&&x.valor)||x||'').trim(); }).filter(Boolean).join(' | '));
+  };
+  lista('incluye','Incluye');
+  lista('noIncluye','No incluye');
+  lista('promesas','Prometido en las llamadas');
+  lista('sinDefinir','Quedo sin definir');
+  return L.join('\n');
+}
+
+async function redactarContrato(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var e=document.getElementById('ctr-redac-est');
+  var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
+  var mod=contratoModelo();
+  if(!mod){ decir('Falta el contrato modelo. Cargalo una vez en Configuracion de agencia.','var(--amberx)'); return; }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ openAnthropicKeyModal(); return; }
+
+  var acor=_acordadoParaContrato(c);
+  // Sin lo acordado el borrador saldria con un hueco en cada numero. Mejor
+  // decirlo antes y no gastar una llamada a la API.
+  if(!acor){
+    decir('Primero lei lo acordado: sin eso el borrador sale sin precio ni plazo. '
+      +'El boton esta en el panel de lo acordado.','var(--amberx)');
+    return;
+  }
+  var b=document.getElementById('ctr-redac-btn');
+  if(b){ b.disabled=true; b.textContent='Redactando...'; }
+  decir('<span style="display:inline-flex;align-items:center;gap:8px">'
+    +'<span class="carga-spin"></span><span>Redactando el borrador...</span></span>');
+
+  var pedido='Sos quien redacta los contratos de una agencia de performance.\n\n'
+    +'Abajo hay dos cosas: un CONTRATO MODELO, que es el que la agencia ya usa y firma, '
+    +'y LO ACORDADO con un cliente nuevo, sacado de las llamadas de venta.\n\n'
+    +'Escribi el contrato para el cliente nuevo: la misma estructura, las mismas clausulas '
+    +'y el mismo tono del modelo, con los datos de lo acordado.\n\n'
+    +'REGLAS:\n'
+    +'- NO INVENTES NADA. Ni un monto, ni una fecha, ni un plazo, ni un entregable. Si un dato '
+    +'no esta en lo acordado, escribi en su lugar [FALTA: que dato es] y segui. Un hueco '
+    +'marcado se completa a mano; un dato inventado se firma sin que nadie lo note.\n'
+    +'- Lo que figure como "SIN CERRAR" no es un acuerdo: eso va como [FALTA: ...] tambien, '
+    +'aunque haya una frase parecida. La frase parecida podes dejarla como comentario entre '
+    +'corchetes al lado.\n'
+    +'- Las clausulas del modelo que no dependen del cliente -jurisdiccion, confidencialidad, '
+    +'rescision, propiedad del material- van tal cual, sin reescribirlas.\n'
+    +'- Cambia los datos de la otra parte por los del cliente nuevo. Si no tenes su razon '
+    +'social, su CUIT o su domicilio, ponelos como [FALTA: razon social], etc. El nombre '
+    +'comercial del cliente es: '+(c.name||'')+'.\n'
+    +'- Los montos con la moneda tal cual se acordo. No conviertas.\n'
+    +'- Si lo prometido en las llamadas agrega algo que el modelo no contempla, sumalo como '
+    +'una clausula nueva en el lugar que corresponda, redactada con el mismo tono.\n'
+    +'- Al final de todo, agrega una seccion "REVISAR ANTES DE MANDAR" con la lista de los '
+    +'[FALTA: ...] que dejaste y de cualquier diferencia que hayas notado entre el modelo y '
+    +'lo acordado.\n'
+    +'- Castellano rioplatense, igual que el modelo. Texto plano, sin markdown.\n\n'
+    +'=== CONTRATO MODELO ===\n'+String(mod.texto||'')+'\n\n'
+    +'=== LO ACORDADO CON '+String(c.name||'').toUpperCase()+' ===\n'+acor+'\n';
+
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+               'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-opus-5', max_tokens:8000,
+                           messages:[{role:'user',content:pedido}]})
+    });
+    if(!r.ok){
+      var err=await r.json().catch(function(){ return {}; });
+      throw new Error('API '+r.status+': '+((err&&err.error&&err.error.message)||r.statusText));
+    }
+    var d=await r.json();
+    var txt=(d.content||[]).filter(function(x){return x.type==='text';})
+      .map(function(x){return x.text;}).join('').trim();
+    if(!txt) throw new Error('vino vacio');
+    c.contratoBorrador={ texto:txt, at:new Date().toISOString(),
+                         modelo:String(mod.nombre||''), chars:txt.length };
+    save();
+    decir('');
+    contratoBorradorModal(clientId);
+  }catch(err){
+    decir('No pude redactarlo: '+esc((err&&err.message)||''),'var(--redx)');
+  }finally{
+    if(b){ b.disabled=false; b.textContent='Redactar borrador'; }
+  }
+}
+
+function contratoBorradorModal(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.contratoBorrador) return;
+  var bo=c.contratoBorrador;
+  var faltan=(String(bo.texto||'').match(/\[FALTA:/g)||[]).length;
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:860px;width:94%">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--strong)">Borrador de contrato &middot; '+esc(c.name||'')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin:4px 0 14px">'
+      +'Hecho con el modelo <b>'+esc(bo.modelo||'')+'</b> y lo acordado en las llamadas. '
+      +'<b style="color:var(--amberx)">Es un borrador: leelo entero antes de mandarlo.</b>'
+      +(faltan?(' Quedaron <b style="color:var(--amberx)">'+faltan+' huecos marcados [FALTA: ...]</b> para completar a mano.')
+              :' No quedaron huecos marcados, pero igual revisalo.')
+    +'</div>'
+    +'<textarea id="ctr-borrador-txt" spellcheck="false" style="width:100%;height:52vh;padding:12px;'
+      +'font-size:12.5px;line-height:1.65;border:1px solid var(--border2);border-radius:var(--radius);'
+      +'background:var(--bg3);color:var(--text);font-family:ui-monospace,Menlo,monospace;outline:none;resize:vertical">'
+      +esc(bo.texto||'')+'</textarea>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+      +'<button class="btn btn-sm" onclick="contratoBorradorGuardar('+c.id+')">Guardar cambios</button>'
+      +'<button class="btn btn-sm" onclick="contratoBorradorCopiar()">Copiar</button>'
+      +'<button class="btn btn-sm" onclick="contratoBorradorBajar('+c.id+')">Descargar</button>'
+      +'<button class="btn btn-primary btn-sm" onclick="closeModal()">Listo</button>'
+    +'</div>'
+    +'</div></div>';
+}
+function _ctrBorradorTexto(){
+  var t=document.getElementById('ctr-borrador-txt');
+  return t?String(t.value||''):'';
+}
+// Se guarda lo editado a mano: completar los [FALTA: ...] adentro del modal y
+// que se pierdan al cerrar seria peor que no poder editarlos.
+function contratoBorradorGuardar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c||!c.contratoBorrador) return;
+  c.contratoBorrador.texto=_ctrBorradorTexto();
+  c.contratoBorrador.chars=c.contratoBorrador.texto.length;
+  save();
+  toast('Borrador guardado.');
+}
+function contratoBorradorCopiar(){
+  var t=_ctrBorradorTexto();
+  if(!t) return;
+  navigator.clipboard.writeText(t).then(function(){ toast('Copiado.'); },
+    function(){ toast('No pude copiar.','amber'); });
+}
+function contratoBorradorBajar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return;
+  var t=_ctrBorradorTexto();
+  if(!t) return;
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([t],{type:'text/plain;charset=utf-8'}));
+  a.download='Contrato - '+String(c.name||'cliente').replace(/[^\w\s-]/g,'')+'.txt';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+}
+
+// El bloque que se dibuja en la seccion Contrato del modal de material.
+function _contratoRedactarHtml(c){
+  var mod=contratoModelo();
+  var bo=c.contratoBorrador;
+  var yaHay=bo&&String(bo.texto||'').trim();
+  return '<div style="margin-bottom:16px;padding:11px 12px;background:var(--bg3);'
+      +'border:0.5px solid var(--border);border-radius:var(--radius)">'
+    +'<div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">'
+      +'<span style="flex:1;min-width:210px;font-size:11px;color:var(--text3);line-height:1.55">'
+        +(mod
+          ? ('Escribe un borrador con la forma del modelo <b>'+esc(mod.nombre||'')
+             +'</b> y lo que se acordo en las llamadas de este cliente. '
+             +'Lo que no se haya hablado queda marcado como hueco, no inventado.')
+          : 'Para redactar un contrato hace falta cargar una vez el contrato modelo de la agencia, '
+            +'en Configuracion de agencia. La app no puede leer un link de Drive: tiene que ser el archivo.')
+      +'</span>'
+      +(mod?('<button id="ctr-redac-btn" class="btn btn-sm" onclick="redactarContrato('+c.id+')">Redactar borrador</button>'):'')
+      +(yaHay?('<button class="btn btn-sm" onclick="contratoBorradorModal('+c.id+')">Ver el borrador</button>'):'')
+    +'</div>'
+    +'<div id="ctr-redac-est" style="font-size:11px;color:var(--text3);min-height:15px;margin-top:6px"></div>'
+  +'</div>';
+}
+
+// La lectura de un archivo a texto plano, compartida por el contrato firmado
+// del cliente y por el contrato modelo de la agencia. Estaba adentro de
+// `factContratoArchivo`; se saco aca para no tener dos copias que se separen.
+function _leerArchivoTexto(f, n){
+  n=String(n||f.name||'').toLowerCase();
+  if(/\.pdf$/.test(n))  return _edLeerPdf(f);
+  if(/\.docx$/.test(n)) return _edLeerDocx(f);
+  return f.text().then(function(t){
+    // Un .html -un Google Doc exportado- entra por "text/*" con las etiquetas
+    // adentro. Sin limpiarlo, el marcado se lleva la mitad del presupuesto de
+    // texto y encima confunde la lectura.
+    var raros=(String(t||'').slice(0,3000).match(/[\x00-\x08\x0e-\x1f]/g)||[]).length;
+    if(raros>20) throw new Error('eso no parece texto. Guardalo como PDF o .docx');
+    return _edDesmarcar(String(t||''));
+  });
+}
+
 function _contrato(c){
   var t=(c&&c.contrato&&typeof c.contrato==='object')?c.contrato:null;
   return (t && String(t.texto||'').trim()) ? t : null;
@@ -37253,17 +37538,7 @@ async function factContratoArchivo(inp, clientId){
     toast('Ese formato no lo puedo abrir. Guardalo como PDF, .docx o texto.','amber');
     return;
   }
-  var leer;
-  if(/\.pdf$/.test(n))       leer=_edLeerPdf(f);
-  else if(/\.docx$/.test(n)) leer=_edLeerDocx(f);
-  else leer=f.text().then(function(t){
-    // Un .html -un Google Doc exportado- entra por "text/*" con las etiquetas
-    // adentro. Sin limpiarlo, el marcado se lleva la mitad del presupuesto de
-    // texto y encima confunde la lectura.
-    var raros=(String(t||'').slice(0,3000).match(/[\x00-\x08\x0e-\x1f]/g)||[]).length;
-    if(raros>20) throw new Error('eso no parece texto. Guardalo como PDF o .docx');
-    return _edDesmarcar(String(t||''));
-  });
+  var leer=_leerArchivoTexto(f, n);
   toast('Leyendo el contrato...');
   try{
     var t=String(await leer||'').trim();
