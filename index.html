@@ -58585,7 +58585,13 @@ async function fetchMetaMensual(clientId){
   return _mmCache[clientId];
 }
 
-function mmTopHtml(cache){
+/* ⚠️  RECIBE EL CLIENTE PARA PODER CONVERTIR A USD. Sin el, esta tabla
+       mostraba la inversion y todos los costos en la moneda de la cuenta de
+       Meta aunque el cliente tuviera la tasa cargada, mientras la tabla de
+       campañas de arriba —`metaRowMetrics`— si convertia. Dos tablas en la
+       misma pantalla, una en pesos y otra en dolares, sin nada que dijera
+       cual era cual: la inversion en pesos al lado de un CPC en dolares. */
+function mmTopHtml(cache, c){
   const datos=cache.meses||{};
   const claves=Object.keys(datos);
   if(!claves.length) return '<div class="mm"><div class="mm-title">Mes a mes</div>'
@@ -58632,7 +58638,15 @@ function mmTopHtml(cache){
   const money=function(n){ return '$'+(Math.round((n||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); };
   const fNum=function(v){ return v==null?null:Math.round(v).toLocaleString('es-AR'); };
   const fPct=function(v){ return v==null?null:(Math.round(v*100)/100).toFixed(2).replace('.',',')+'%'; };
-  const fMon=function(v){ return v==null?null:money(v); };
+  // Solo las filas de plata se convierten. Impresiones, clics y alcance son
+  // cantidades: dividirlas por la tasa seria un disparate.
+  const _fx=(c && typeof fxActiva==='function' && fxActiva(c))?Number(getFx(c).rate):0;
+  const fMon=function(v){
+    if(v==null) return null;
+    var n=Number(v);
+    if(_fx && isFinite(n)) n=n/_fx;
+    return money(n);
+  };
   const fFrec=function(v){ return v==null?null:(Math.round(v*100)/100).toFixed(2).replace('.',','); };
   var FILAS=[
     {k:'spend',l:'Inversion',f:fMon},
@@ -58691,7 +58705,12 @@ function mmTopHtml(cache){
     +'la frecuencia que ves es un piso: la real es esa o mayor. '
     +'Desglose mensual pedido a Meta aparte de la sincronizacion, que trae un rango unico. '
     +'Suma solo las campanas tildadas arriba y el mes en curso va sombreado porque todavia esta gastando. '
-    +'Lo marcado en verde es la <b>mejor marca</b> de la fila entre los meses a la vista. Se marca solo donde mejor no es discutible -tasas y costos-, no en los volumenes: el mes con mas leads suele ser el mes que mas se gasto. El mes en curso no compite, que va por la mitad. '+'</div>'
+    +'Lo marcado en verde es la <b>mejor marca</b> de la fila entre los meses a la vista. Se marca solo donde mejor no es discutible -tasas y costos-, no en los volumenes: el mes con mas leads suele ser el mes que mas se gasto. El mes en curso no compite, que va por la mitad. '
+    // Que la plata este convertida no se puede adivinar mirando el numero.
+    +(_fx?('<b>Los importes estan en USD</b>, convertidos a '+_fx.toLocaleString('es-AR')
+           +' '+esc(c.metaCurrency||'')+' por dolar'
+           +(getFx(c).label?(' ('+esc(getFx(c).label)+')'):'')+'. '):'')
+    +'</div>'
     +'</div>';
 }
 
@@ -58710,12 +58729,12 @@ function dibujarMmTop(c){
     host.innerHTML='<div class="mm"><div class="mm-title">Mes a mes</div>'
       +'<div class="mm-foot" style="margin-top:10px">Pidiendo el desglose mensual a Meta...</div></div>';
   }else{
-    host.innerHTML=embudoTofHtml(cache, c)+mmTopHtml(cache);
+    host.innerHTML=embudoTofHtml(cache, c)+mmTopHtml(cache, c);
   }
   fetchMetaMensual(c.id).then(function(res){
     var h2=document.getElementById('mm-top-host');
     if(!h2||S._hoja!=='top') return;
-    h2.innerHTML=res?(embudoTofHtml(res, c)+mmTopHtml(res)):'';
+    h2.innerHTML=res?(embudoTofHtml(res, c)+mmTopHtml(res, c)):'';
   }).catch(function(e){
     console.warn('mm top:',e);
     var h2=document.getElementById('mm-top-host');
