@@ -325,3 +325,22 @@ revoke insert, update, delete on public.leads from authenticated;
 ```
 
 Está avisado también dentro de `005_portal_leads.sql`, al lado del grant.
+
+## "No pude sincronizar con GHL: Tardó demasiado" en Albet
+
+Apareció el 22/09/2026 mirando Albet desde el celular. **Sin diagnosticar
+todavía**: acá queda anotado para no perderlo.
+
+El cartel sale de `syncGhl`, que escribe el motivo en `c.ghl._syncError`. El
+texto "Tardó demasiado" es nuestro, no de GHL: lo pone el proxy cuando la
+consulta se pasa del tiempo que se le da.
+
+Lo que **no** se sabe y hay que medir antes de tocar nada:
+
+- si es siempre en Albet o fue una vez,
+- si tarda la consulta a GHL o el Apps Script, que además tiene cuota diaria,
+- cuántas oportunidades tiene esa subcuenta: la traída va paginada y una
+  cuenta grande puede pasarse del tiempo sin que haya nada roto.
+
+Es distinto de los 401 de Razor Tech, que son token vencido. Este es tiempo,
+no permiso.
