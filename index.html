@@ -60067,6 +60067,34 @@ async function waLeer(clientId, silencioso){
   }finally{ c._waPidiendo=false; }
 }
 
+/* Cruza lo que devolvio GHL con los leads que el embudo esta contando.
+
+   ⚠️  SIN ESTO EL NUMERO ES DE OTRA POBLACION. La funcion trae todas las
+       conversaciones de la subcuenta; el embudo mira los leads de este
+       cliente, en este periodo y con este segmento. En Ojapo eso daba 21 de
+       76 contra 15 de 67, y el 15 es el que coincide con el conteo a mano.
+       Las 12 conversaciones de diferencia no son leads del embudo.
+
+   Si lo guardado es de antes de dab606f no trae los contactId: en ese caso se
+   cae a los totales viejos y se avisa en el globito, en vez de mostrar cero. */
+function _waCruce(c, ops){
+  var w=_wa(c);
+  if(!w||w.error||w.sinGhl) return null;
+  var wa=Array.isArray(w.contactosWa)?w.contactosWa:null;
+  if(!wa) return {conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0, viejo:true};
+  var resp={}; (w.contactosResp||[]).forEach(function(id){ resp[id]=1; });
+  var tieneWa={}; wa.forEach(function(id){ tieneWa[id]=1; });
+  var vistos={}, n=0, r=0;
+  (ops||[]).forEach(function(o){
+    var id=o&&(o.contactId||o.contact_id);
+    if(!id||vistos[id]) return;
+    vistos[id]=1;
+    if(!tieneWa[id]) return;
+    n++; if(resp[id]) r++;
+  });
+  return {conWhatsapp:n, respondieron:r, tasa:n?(r/n):null, viejo:false};
+}
+
 // Las celdas de las dos filas del embudo.
 //
 // Van separadas para seguir el patron del resto de la columna: primero el
@@ -60077,7 +60105,7 @@ async function waLeer(clientId, silencioso){
 // `cual` es 'n' (cuantos respondieron) o 'pct' (que porcentaje es).
 // Los estados -medir, cargando, error- viven en la fila del NUMERO, que es la
 // que se toca; la del porcentaje se queda en guion, como las de al lado.
-function _waCelda(c, cual){
+function _waCelda(c, cual, ops){
   var w=_wa(c);
   var esPct=(cual==='pct');
   var guion='<span class="zero">-</span>';
@@ -60104,22 +60132,29 @@ function _waCelda(c, cual){
     return esPct?guion:'<span class="zero" title="No hay conversaciones de WhatsApp en esa subcuenta">sin WhatsApp</span>';
   }
 
+  var x=_waCruce(c, ops)||{conWhatsapp:w.conWhatsapp||0, respondieron:w.respondieron||0, viejo:true};
+  if(!x.conWhatsapp){
+    return esPct?guion:'<span class="zero" style="cursor:pointer" onclick="waLeer('+c.id+')" '
+      +'title="Ninguno de los leads de este corte tiene conversacion de WhatsApp. '
+      +'Clic para volver a medir">sin WhatsApp</span>';
+  }
   var viejo_=_waVencido(w);
-  var aviso='title="'+w.respondieron+' de '+w.conWhatsapp+' conversaciones de WhatsApp tienen un '
-    +'mensaje del lead. OJO: no dice quien escribio primero, asi que en campanas de '
+  var aviso='title="'+x.respondieron+' de '+x.conWhatsapp+' leads de este corte tienen un '
+    +'mensaje suyo por WhatsApp. OJO: no dice quien escribio primero, asi que en campanas de '
     +'clic-a-WhatsApp el lead arranca la charla y el numero sube solo.'
+    +(x.viejo?' \u00b7 MEDICION VIEJA: es de toda la subcuenta, no de este corte. Volve a medir.':'')
     +(w.at?(' \u00b7 medido el '+esc(new Date(w.at).toLocaleDateString('es-AR'))):'')
     +(esPct?'':' \u00b7 clic para volver a medir')+'"';
-  var estilo='style="'+(viejo_?'opacity:.6;':'')+(esPct?'':'cursor:pointer')+'"';
+  var estilo='style="'+((viejo_||x.viejo)?'opacity:.6;':'')+(esPct?'':'cursor:pointer')+'"';
 
   if(esPct){
-    var pct=Math.round((w.tasa||0)*1000)/10;
+    var pct=Math.round((x.conWhatsapp?(x.respondieron/x.conWhatsapp):0)*1000)/10;
     return '<span '+estilo+' '+aviso+'>'+pct+'%</span>';
   }
   // El denominador al lado, con la misma forma que usa "Opt-in landing".
   return '<span '+estilo+' '+aviso+' onclick="waLeer('+c.id+')">'
-    +w.respondieron
-    +' <span style="font-size:10px;color:var(--text3)">de '+w.conWhatsapp+'</span></span>';
+    +x.respondieron
+    +' <span style="font-size:10px;color:var(--text3)">de '+x.conWhatsapp+'</span></span>';
 }
 
 function renderVentasTab(c, el){
@@ -60526,8 +60561,10 @@ function renderVentasTab(c, el){
       // Entre el registro y la agenda no habia ningun numero, y ahi es donde
       // se cae la mayoria. El WhatsApp de la subcuenta es lo unico que hay
       // para mirar ese tramo.
-      vhRow('Responden WhatsApp', _waCelda(c,'n')),
-      vhRow('Responden (%)', _waCelda(c,'pct')),
+      // `opsSeg` es lo mismo que cuenta "Registros": asi el numero sigue el
+      // periodo y el segmento, en vez de ser el de toda la subcuenta.
+      vhRow('Responden WhatsApp', _waCelda(c,'n',opsSeg)),
+      vhRow('Responden (%)', _waCelda(c,'pct',opsSeg)),
       vhRow('Agendas totales',filaStage(m_agendas,_rules.agendas)),
       // De los registros, cuantos llegan a agendar: el filtro que separa
       // volumen de calidad. Con la misma definicion que el mes a mes.
