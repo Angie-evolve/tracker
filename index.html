@@ -95,6 +95,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .cli-filtro-btn.activo{color:var(--accent)}
 #cli-filtro-panel,#tk-filtro-panel,#tk-periodo-panel,#act-filtro-panel{position:fixed;z-index:9998;background:var(--sb-bg);border:1px solid var(--sb-border);
   border-radius:10px;padding:8px;width:196px;box-shadow:0 14px 40px rgba(0,0,0,0.55);
+  /* Con responsables, productos, etapas y estados este panel pasa de veinte
+     opciones y se salia de la pantalla por abajo: las ultimas no se podian
+     tocar. Scrollea adentro en vez de crecer. */
+  max-height:min(72vh,560px);overflow-y:auto;overscroll-behavior:contain;
   opacity:0;transform:translateY(-4px);pointer-events:none;
   transition:opacity .14s ease,transform .16s cubic-bezier(.2,.8,.2,1)}
 #cli-filtro-panel.on,#tk-filtro-panel.on,#tk-periodo-panel.on,#act-filtro-panel.on{opacity:1;transform:none;pointer-events:auto}
@@ -2304,9 +2308,30 @@ var CFG_EQUIPO=[
 // El setter original, antes de envolverlo. Se usa para escribir sin disparar
 // otra subida cuando lo que se esta haciendo es justamente bajar.
 var _lsSet=localStorage.setItem.bind(localStorage);
+/* ⚠️  ESTO VIVIA EN `DB.equipo` Y SE PISABA CON LA LISTA DEL EQUIPO.
+       `DB.equipo` es la lista de mails del equipo, un ARRAY: la leen
+       `equipo()`, la pantalla de Personas y el filtro de clientes. Esta
+       funcion la usaba como OBJETO para guardar la configuracion compartida
+       (URL del proxy, secreto, etc.), y las dos se destruian entre si:
+
+         - Al configurar un proxy, el envoltorio de `localStorage.setItem`
+           escribia aca y `DB.equipo` pasaba a ser `{...}`. `equipo()` hace
+           un `.forEach` y explotaba, y con el se caia el panel de filtros
+           de clientes entero: se abria y no dibujaba nada.
+         - Al reves, cualquiera de las tres pantallas que hacen
+           `DB.equipo = Array.isArray(DB.equipo) ? DB.equipo : []` borraba
+           la configuracion compartida de todo el equipo sin avisar.
+
+       Ahora la configuracion vive en `DB.equipoCfg`, que es suya. Lo que
+       haya quedado en `DB.equipo` con forma de objeto se muda la primera
+       vez que se pasa por aca, y `DB.equipo` vuelve a ser una lista. */
 function _cfgEquipo(){
-  if(!DB.equipo||typeof DB.equipo!=='object') DB.equipo={};
-  return DB.equipo;
+  if(DB.equipo && typeof DB.equipo==='object' && !Array.isArray(DB.equipo)){
+    DB.equipoCfg=Object.assign({}, DB.equipoCfg||{}, DB.equipo);
+    DB.equipo=[];
+  }
+  if(!DB.equipoCfg||typeof DB.equipoCfg!=='object'||Array.isArray(DB.equipoCfg)) DB.equipoCfg={};
+  return DB.equipoCfg;
 }
 // Se envuelve setItem en vez de tocar los sesenta lugares que guardan estas
 // claves: cualquier pantalla que configure un proxy queda sincronizada sin
@@ -4015,7 +4040,7 @@ function clienteAgencia(crear){
 function cliFiltro(){
   if(!S._cliFiltro){
     var g={estado:'todos',archivados:false,prospectos:false,alarmas:false,duenio:'todos',
-           producto:'todos'};
+           producto:'todos',etapa:'todos'};
     try{ var raw=localStorage.getItem('evold-cli-filtro'); if(raw) g=Object.assign(g, JSON.parse(raw)); }catch(e){}
     S._cliFiltro=g;
   }
@@ -4684,7 +4709,10 @@ function personasGuardarForm(){
 function equipo(){
   var set={};
   if(SB.email) set[SB.email.toLowerCase()]=SB.email;
-  (DB.equipo||[]).forEach(function(e){ if(e) set[String(e).toLowerCase()]=e; });
+  // Cinturon: si algo vuelve a dejar un objeto aca, esta funcion la llaman
+  // el filtro de clientes y media pantalla de Personas. Que devuelva una
+  // lista vacia es feo; que tire una excepcion se lleva puesta la pantalla.
+  (Array.isArray(DB.equipo)?DB.equipo:[]).forEach(function(e){ if(e) set[String(e).toLowerCase()]=e; });
   // Los responsables ya asignados tambien cuentan, por si alguien quedo cargado
   // antes de que existiera la lista.
   DB.clients.forEach(function(c){ if(c.owner) set[c.owner.toLowerCase()]=c.owner; });
@@ -4752,6 +4780,15 @@ function sidebarClients(){
       catch(e){ quien=String(c.owner||'').toLowerCase(); }
       if(quien!==f.duenio) return false;
     }
+    // Por etapa de la ruta. Se lee con `_p360Etapa`, la MISMA que pinta las
+    // columnas del Panel 360: si se calculara aparte, el dia que cambie la
+    // regla el filtro y el tablero dirian cosas distintas del mismo cliente.
+    if(f.etapa && f.etapa!=='todos'){
+      var _e=null;
+      try{ _e=_p360Etapa(c); }catch(e){}
+      var _el=_e&&_e.l?String(_e.l):'';
+      if(f.etapa==='__sin' ? !!_el : (_el!==f.etapa)) return false;
+    }
     if(f.estado!=='todos'){
       var live=false;
       try{ live=!!adsDot(c).live; }catch(e){}
@@ -4767,7 +4804,8 @@ function sidebarClients(){
 function setCliFiltro(campo, valor){
   var f=cliFiltro();
   // estado y duenio son excluyentes entre si; alarmas y archivados son interruptores
-  f[campo]=(campo==='estado'||campo==='duenio'||campo==='producto')?valor:!f[campo];
+  f[campo]=(campo==='estado'||campo==='duenio'||campo==='producto'||campo==='etapa')
+           ?valor:!f[campo];
   try{ localStorage.setItem('evold-cli-filtro', JSON.stringify(f)); }catch(e){}
   renderSidebar();
   _cliFiltroPintar();
@@ -4824,6 +4862,20 @@ function _cliFiltroPintar(){
                         f.producto===String(x.nombre||''));
             }).join('')
           +op('producto','__sin','Sin producto',f.producto==='__sin')
+          +'<div class="sep"></div>';
+      })()
+    +(function(){
+        // Las etapas salen de `rutaDef()`, que es la ruta editable: si manana
+        // se agrega una, aparece sola en el filtro. No hay lista escrita aca.
+        var rs=[];
+        try{ rs=(rutaDef()||[]).filter(function(x){ return x && x.l; }); }catch(e){}
+        if(!rs.length) return '';
+        return '<div class="ttl">Etapa</div>'
+          +op('etapa','todos','Todas',(f.etapa||'todos')==='todos')
+          +rs.map(function(x){
+              return op('etapa', String(x.l), esc(x.l), f.etapa===String(x.l));
+            }).join('')
+          +op('etapa','__sin','Sin etapa',f.etapa==='__sin')
           +'<div class="sep"></div>';
       })()
     +'<div class="ttl">Estado</div>'
