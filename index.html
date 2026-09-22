@@ -37663,7 +37663,10 @@ function contratoBorradorModal(clientId){
     +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
       +'<button class="btn btn-sm" onclick="contratoBorradorGuardar('+c.id+')">Guardar cambios</button>'
       +'<button class="btn btn-sm" onclick="contratoBorradorCopiar()">Copiar</button>'
-      +'<button class="btn btn-sm" onclick="contratoBorradorBajar('+c.id+')">Descargar</button>'
+      +'<button class="btn btn-sm" onclick="contratoBorradorBajar('+c.id+')" '
+        +'title="Baja un .docx: lo abre Word y tambien Google Docs">Descargar Word</button>'
+      +'<button class="btn btn-sm" onclick="contratoBorradorBajar('+c.id+',true)" '
+        +'title="Texto plano, sin formato">.txt</button>'
       +'<button class="btn btn-primary btn-sm" onclick="closeModal()">Listo</button>'
     +'</div>'
     +'</div></div>';
@@ -37688,16 +37691,82 @@ function contratoBorradorCopiar(){
   navigator.clipboard.writeText(t).then(function(){ toast('Copiado.'); },
     function(){ toast('No pude copiar.','amber'); });
 }
-function contratoBorradorBajar(clientId){
+function _bajarBlob(blob, nombre){
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=nombre;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+}
+function _nombreArchivo(c, ext){
+  return 'Contrato - '+String((c&&c.name)||'cliente').replace(/[^\w\s-]/g,'')+'.'+ext;
+}
+function _xmlEsc(t){
+  return String(t==null?'':t)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+/* Un .docx es un zip con XML adentro, y JSZip ya lo carga la app para leer los
+   kits del quiz. Se arma el minimo que Word y Google Docs abren sin chistar:
+   el content type, la relacion al documento, y el documento.
+
+   ⚠️  LOS SALTOS DE LINEA NO SON \n. En un docx cada parrafo es un <w:p>; un
+       \n suelto adentro del texto no se ve. Por eso se parte por lineas y
+       cada una va en su propio parrafo, y las vacias tambien -si no, el
+       contrato sale todo pegado. */
+function _docxDe(texto){
+  var lineas=String(texto||'').split(/\r?\n/);
+  var cuerpo=lineas.map(function(l){
+    var t=l.replace(/\s+$/,'');
+    // El titulo del contrato y los titulos de clausula ("1. Objeto...") en
+    // negrita: es lo unico que hace falta para que se lea como un contrato y
+    // no como un mail largo.
+    var titulo=/^\s*\d+\.\s+\S/.test(t) || (t.length>0 && t===t.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(t));
+    if(!t) return '<w:p/>';
+    return '<w:p><w:r>'+(titulo?'<w:rPr><w:b/></w:rPr>':'')
+      +'<w:t xml:space="preserve">'+_xmlEsc(t)+'</w:t></w:r></w:p>';
+  }).join('');
+  return {
+    '[Content_Types].xml':
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      +'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      +'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      +'<Default Extension="xml" ContentType="application/xml"/>'
+      +'<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+      +'</Types>',
+    '_rels/.rels':
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      +'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      +'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+      +'</Relationships>',
+    'word/document.xml':
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      +'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+      +'<w:body>'+cuerpo+'</w:body></w:document>'
+  };
+}
+async function contratoBorradorBajar(clientId, comoTexto){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var t=_ctrBorradorTexto();
   if(!t) return;
-  var a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([t],{type:'text/plain;charset=utf-8'}));
-  a.download='Contrato - '+String(c.name||'cliente').replace(/[^\w\s-]/g,'')+'.txt';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  if(comoTexto){
+    _bajarBlob(new Blob([t],{type:'text/plain;charset=utf-8'}), _nombreArchivo(c,'txt'));
+    return;
+  }
+  try{
+    var JSZipL=await _cargarJSZip();
+    var zip=new JSZipL();
+    var partes=_docxDe(t);
+    Object.keys(partes).forEach(function(k){ zip.file(k, partes[k]); });
+    var blob=await zip.generateAsync({type:'blob',
+      mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+    _bajarBlob(blob, _nombreArchivo(c,'docx'));
+  }catch(e){
+    // Si no se pudo bajar JSZip -sin internet, o el CDN caido- se baja el
+    // texto igual: es preferible a que el boton no haga nada.
+    toast('No pude armar el Word: '+((e&&e.message)||'')+'. Te lo bajo como texto.','amber');
+    _bajarBlob(new Blob([t],{type:'text/plain;charset=utf-8'}), _nombreArchivo(c,'txt'));
+  }
 }
 
 // El bloque que se dibuja en la seccion Contrato del modal de material.
