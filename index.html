@@ -32569,6 +32569,9 @@ function p360Agendar(clientId, elegir){
           +'</select></div>')
         // Sin selector la etapa va escrita: es la columna donde estaba la tarjeta.
         : ('<input type="hidden" id="cita-etapa" value="'+esc(et)+'">'))
+      +_citaCalSelect(et, c.id, (elegir
+          ? "{fecha:'cita-fecha',hora:'cita-hora',etapa:'cita-etapa',caja:'cita-huecos'}"
+          : "{fecha:'cita-fecha',hora:'cita-hora',et:'"+esc(et).replace(/'/g,"\\'")+"',caja:'cita-huecos'}"))
       +'<input type="hidden" id="cita-con" value="'+esc(c.contacto||c.name||'')+'">'
       +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">'
         +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
@@ -32587,7 +32590,10 @@ function p360Agendar(clientId, elegir){
         +'<button class="btn" onclick="closeModal()">Cancelar</button>'
         +'<button class="btn" onclick="p360AgendarHacer('+c.id+',\'mano\')" '
           +'title="Solo la anota en el tracker. El cliente no se entera.">Solo anotar</button>'
-        +(cal&&mail
+        // Antes pedia que la ETAPA tuviera calendario. Ahora alcanza con que
+        // haya alguno para elegir: una etapa sin calendario fijo igual se
+        // puede agendar eligiendo el de la persona que la va a tomar.
+        +((cal||(DB.ghlCalendariosAgencia||[]).length)&&mail
           ?('<button class="btn btn-primary" onclick="p360AgendarHacer('+c.id+',\'ghl\')" '
             +'title="La crea en GHL: el cliente recibe invitacion y recordatorios.">'
             +'Agendar en GHL</button>'):'')
@@ -32644,6 +32650,46 @@ function _citaAreaDe(etapa){
   if(i<0) return 'delivery';               // una etapa que ya no existe no es venta
   return (i<iOnb) ? 'venta' : 'delivery';
 }
+/* Con QUIEN se agenda la reunion.
+   Por defecto el calendario de la etapa, que es el que publica la agencia.
+   Pero una reunion la puede tomar otra persona del equipo, y en GHL cada uno
+   tiene el suyo -"Martin Marquez - Onboarding", "Auditoria Gratuita <> Joela
+   Colman"-. Eligiendo ese calendario, el cliente se conecta con esa persona.
+
+   ⚠️  SE CAMBIA EL CALENDARIO, NO EL "ASIGNADO". Mandar un assignedUserId
+       sobre el calendario de la agencia agendaria en huecos que estan libres
+       para nosotros y quizas ocupados para esa persona, y el cliente se
+       encontraria solo. Eligiendo SU calendario, los horarios que se ofrecen
+       ya son los suyos: GHL los saca de su disponibilidad. */
+function _citaCal(et){
+  var sel=document.getElementById('cita-cal');
+  if(sel && sel.value) return String(sel.value);
+  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
+  return String((def&&def.cal)||'');
+}
+// El desplegable. Arranca en el calendario de la etapa: cambiarlo es la
+// excepcion, no lo habitual.
+function _citaCalSelect(et, clientId, ids){
+  var cals=(DB.ghlCalendariosAgencia||[]);
+  if(!cals.length) return '';
+  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
+  var cal=String((def&&def.cal)||'');
+  var est=_citaEst();
+  return '<div style="margin-top:12px">'
+    +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">'
+      +'Con quien</label>'
+    +'<select id="cita-cal" style="'+est+';width:100%" onchange="citasHuecos('+clientId+','+ids+')">'
+    +(cal?'':'<option value="">Elegi un calendario</option>')
+    +cals.map(function(x){
+        return '<option value="'+esc(x.id)+'"'+(String(x.id)===cal?' selected':'')+'>'
+          +esc(x.nombre||x.id)+'</option>'; }).join('')
+    +'</select>'
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">'
+      +'Los horarios libres son los de ese calendario. Para que la tome otra persona, '
+      +'elegi el de ella.</div>'
+  +'</div>';
+}
+
 async function citasHuecos(clientId, ids){
   // Los mismos horarios sirven en dos lugares: el formulario de arriba y la
   // cita abierta abajo. Se parametrizan los campos en vez de duplicar todo.
@@ -32653,11 +32699,10 @@ async function citasHuecos(clientId, ids){
   var f=(document.getElementById(ids.fecha)||{}).value||'';
   var et=ids.et || (document.getElementById(ids.etapa)||{}).value||'';
   if(!f||!et){ caja.innerHTML=''; return; }
-  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
-  var cal=String((def&&def.cal)||'');
+  var cal=_citaCal(et);
   if(!cal){
     caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">"'+esc(et)
-      +'" no tiene calendario de GHL: no puedo mostrar los horarios.</span>';
+      +'" no tiene calendario de GHL: elegi uno en "Con quien".</span>';
     return;
   }
   caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando horarios\u2026</span>';
@@ -32886,11 +32931,10 @@ async function citasAgendarGhl(clientId){
     _citasDecir(clientId,'Este cliente no tiene mail en la ficha, y es con eso que se '
       +'busca el contacto en GHL.','var(--amberx)'); return;
   }
-  var def=rutaDef().filter(function(e){ return e.l===et; })[0];
-  var cal=String((def&&def.cal)||'');
+  var cal=_citaCal(et);
   if(!cal){
-    _citasDecir(clientId,'"'+et+'" no tiene calendario de GHL. Elegiselo en el editor '
-      +'de etapas.','var(--amberx)'); return;
+    _citasDecir(clientId,'Falta el calendario: elegilo en "Con quien", o dejaselo fijo a '
+      +'"'+et+'" en el editor de etapas.','var(--amberx)'); return;
   }
   var d=new Date(f+'T'+(h||'09:00')+':00');
   if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
