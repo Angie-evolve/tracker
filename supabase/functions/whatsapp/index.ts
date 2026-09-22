@@ -107,6 +107,60 @@ async function conversaciones(token: string, location: string, tope = 2000) {
   return { lista: todas, total };
 }
 
+// Corre `fn` sobre la lista con un tope de tareas a la vez. Sin tope, una
+// subcuenta de 300 hilos dispara 300 pedidos juntos y GHL corta.
+async function enTandas<T, R>(lista: T[], tope: number, fn: (x: T) => Promise<R>) {
+  const salida: R[] = [];
+  for (let i = 0; i < lista.length; i += tope) {
+    salida.push(...await Promise.all(lista.slice(i, i + tope).map(fn)));
+  }
+  return salida;
+}
+
+/* Separa "no respondió" de "no le llegó".
+ *
+ * El estado de entrega NO viene en la lista de conversaciones: hay que abrir
+ * el hilo. Por eso se abren SOLO los que podrian cambiar de respuesta —los
+ * que tienen WhatsApp y ninguna entrada del lead—, no todos. En Ojapo son 55
+ * de 79, y con 8 en paralelo tarda 3 segundos.
+ *
+ * Un saliente de WhatsApp viene con `status`: delivered, read, sent o failed.
+ * Si TODOS los intentos fallaron, el mensaje nunca llego —el numero estaba mal
+ * cargado— y ese lead no deberia contar como "no respondio": nunca tuvo la
+ * oportunidad de hacerlo.
+ */
+const TOPE_HILOS = 600;
+
+async function entrega(token: string, mudas: any[]) {
+  const recortado = mudas.length > TOPE_HILOS;
+  const lote = recortado ? mudas.slice(0, TOPE_HILOS) : mudas;
+  const noLlego: string[] = [];
+  const sinEnviar: string[] = [];
+
+  await enTandas(lote, 8, async (c: any) => {
+    let ms: any[] = [];
+    try {
+      const d = await ghl(token, `/conversations/${c.id}/messages?limit=100`);
+      ms = (d.messages && d.messages.messages) || d.messages || [];
+    } catch {
+      return; // un hilo que no se pudo leer no se clasifica, no se inventa
+    }
+    const salientes = ms.filter((m: any) =>
+      m && m.direction === "outbound" &&
+      (m.messageType === "TYPE_WHATSAPP" || m.type === TIPO_WHATSAPP)
+    );
+    const id = String(c.contactId || "");
+    if (!id) return;
+    if (!salientes.length) { sinEnviar.push(id); return; }
+    const llego = salientes.some((m: any) =>
+      m.status === "delivered" || m.status === "read" || m.status === "sent"
+    );
+    if (!llego) noLlego.push(id);
+  });
+
+  return { noLlego, sinEnviar, recortado };
+}
+
 function medir(cs: any[]) {
   const conWhatsapp = cs.filter((c) =>
     Array.isArray(c.messageTypes) && c.messageTypes.includes(TIPO_WHATSAPP)
@@ -132,7 +186,11 @@ function medir(cs: any[]) {
   //     con el conteo a mano. Cruzando en el navegador el numero sigue los
   //     mismos filtros que el resto de la columna.
   const id = (c: any) => String(c.contactId || "");
+  // Las que hay que abrir en el segundo paso: tienen WhatsApp y el lead nunca
+  // escribio, asi que son las unicas donde el estado de entrega cambia algo.
+  const mudas = conWhatsapp.filter((c) => !c.lastInboundWhatsappMessageDate);
   return {
+    _mudas: mudas,
     conversaciones: cs.length,
     conWhatsapp: conWhatsapp.length,
     respondieron: respondieron.length,
@@ -182,12 +240,23 @@ Deno.serve(async (req: Request) => {
       }
       try {
         const { lista, total } = await conversaciones(token, location);
+        const m: any = medir(lista);
+        const mudas = m._mudas || [];
+        delete m._mudas;
+        const det = await entrega(token, mudas);
         salida.push({
           id: c.id,
           nombre: c.nombre,
           total,
           leidas: lista.length,
-          ...medir(lista),
+          ...m,
+          // Los que nunca recibieron el mensaje. No son "no respondio": el
+          // numero estaba mal cargado y nunca tuvieron la oportunidad.
+          contactosNoLlego: det.noLlego,
+          contactosSinEnviar: det.sinEnviar,
+          noLlego: det.noLlego.length,
+          sinEnviar: det.sinEnviar.length,
+          detalleRecortado: det.recortado,
           at: new Date().toISOString(),
         });
       } catch (e) {
