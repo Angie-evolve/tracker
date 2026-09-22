@@ -60579,6 +60579,25 @@ function _cfgBoton(ci, asi){
     +'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>'
     +'</span>';
 }
+// El presupuesto viene en la moneda de la CUENTA PUBLICITARIA, no en dolares.
+// La cuenta de Ojapo factura en ARS, asi que "$15127" se leia como si fueran
+// dolares cuando son pesos. Peor todavia: la tabla de al lado SI convierte a
+// USD (`money:true` en META_METRIC_COLS), asi que el mismo presupuesto salia
+// con dos numeros distintos y el mismo signo $. Aca se dice la moneda siempre,
+// y se agrega el equivalente en USD cuando hay tasa cargada.
+function _cfgPlata(c, monto, tipo){
+  var n=Number(monto);
+  if(!isFinite(n)||n<=0) return '';
+  var m=(c&&c.metaCurrency)||'';
+  // Sin moneda detectada no se pone '$': seria afirmar algo que no sabemos.
+  var t=m?(esc(m)+'\u00a0'+n.toLocaleString('es-AR')):(n.toLocaleString('es-AR')+' <span style="color:var(--amberx)">moneda sin identificar</span>');
+  if(m && typeof fxActiva==='function' && fxActiva(c))
+    t+=' <span style="color:var(--text3)">\u00b7 USD\u00a0'+aUsd(c,n).toFixed(2)+'</span>';
+  // Diario y total son magnitudes muy distintas. Si no lo sabemos (datos de un
+  // sync viejo, que no guardaba cual era) no se inventa ninguno de los dos.
+  if(tipo) t+=' <span style="color:var(--text3)">\u00b7 '+esc(tipo)+'</span>';
+  return t;
+}
 function _cfgDato(l, v){
   if(!v) return '';
   return '<div style="margin-bottom:10px">'
@@ -60610,13 +60629,14 @@ function cfgPanelHtml(activeLine){
     h+=_cfgDato('Ubicaciones', _cfgUbicaciones(as));
     h+=_cfgDato('Segmentacion', esc(_cfgSegTexto(as.seg)||as.edad||''));
     h+=_cfgDato('Automatizaciones', (as.advantage&&as.advantage.length)?esc(as.advantage.join(' \u00b7 ')):'');
-    h+=_cfgDato('Presupuesto', as.budget?('$'+as.budget):'');
+    h+=_cfgDato('Presupuesto', _cfgPlata(S._cfgCliente, as.budget, as.budgetTipo));
     h+=_cfgDato('Aprendizaje', esc(as.learning||''));
   }else{
     // El presupuesto suele vivir en los conjuntos: mostrar "$0" hace pensar que
     // no hay plata asignada cuando en realidad esta un nivel mas abajo.
     var pc=Number(camp.budget||0);
-    h+=_cfgDato('Presupuesto', pc>0?('$'+camp.budget):'<span style="color:var(--text3)">definido en los conjuntos</span>');
+    h+=_cfgDato('Presupuesto', pc>0?_cfgPlata(S._cfgCliente, camp.budget, camp.budgetTipo)
+      :'<span style="color:var(--text3)">definido en los conjuntos</span>');
     // Desde la campana se ve la config de cada conjunto: geo, optimizacion y
     // evento viven ahi, y es lo que uno viene a buscar al abrir la campana.
     var ads=camp.adsets||[];
@@ -60721,7 +60741,14 @@ function toggleMetaAdset(ci, asi){
 
 var META_METRIC_COLS=[
   {key:'spend',     l:'Importe gastado',      w:100, fmt:function(v){return '$'+Number(v||0).toFixed(2);}, color:true, money:true},
-  {key:'budget',    l:'Presupuesto',          w:90,  fmt:function(v){return v>0?'$'+Number(v).toFixed(2)+'/dia':'-';}, money:true},
+  // El sufijo sale del dato, no fijo: un presupuesto total mostrado como '/dia'
+  // hace parecer que se gasta treinta veces mas de lo que se gasta.
+  {key:'budget',    l:'Presupuesto',          w:90,
+   fmt:function(v,obj){
+     if(!(v>0)) return '-';
+     var t=obj&&obj.budgetTipo;
+     return '$'+Number(v).toFixed(2)+(t==='diario'?'/dia':(t==='total'?' total':''));
+   }, money:true},
   {key:'reach',     l:'Alcance',              w:90,  fmt:function(v){return (v||0).toLocaleString();}},
   {key:'impressions',l:'Impresiones',         w:100, fmt:function(v){return (v||0).toLocaleString();}},
   {key:'cpm',       l:'CPM',                  w:80,  fmt:function(v){return '$'+Number(v).toFixed(2);}, money:true},
@@ -62443,6 +62470,7 @@ async function syncMetaAds(clientId){
             edad:(as.targeting&&(as.targeting.age_min||as.targeting.age_max))
               ?((as.targeting.age_min||18)+'-'+(as.targeting.age_max||65)):'',
             advantage:_cfgAdvantage(as, campaigns[ci]),
+            budgetTipo:(as.daily_budget?'diario':(as.lifetime_budget?'total':'')),
             optGoal:as.optimization_goal||'', bidStrategy:as.bid_strategy||'',
             objResultado:_obj,
             endTime:as.end_time||null,
@@ -62654,6 +62682,7 @@ async function syncMetaAds(clientId){
         objective:camp.objective||'',
         objetivo:_cfgEs(_OBJ_ES, camp.objective),   // traducido, para la columna
         spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
+        budgetTipo:(camp.daily_budget?'diario':(camp.lifetime_budget?'total':'')),
         impressions:m.impressions,reach:m.reach,frequency:m.frequency,
         clicks:m.clicks,ctr:m.ctr,cpc:m.cpc,cpm:m.cpm,
         leads:m.leads,cpl:m.cpl,
