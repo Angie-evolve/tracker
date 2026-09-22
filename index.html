@@ -2305,6 +2305,103 @@ var CFG_EQUIPO=[
   // tiene sentido que a uno le salte el modal y a otro le cobre la API.
   'evold-ia-manual','evold-ia-puente'
 ];
+/* ══════════════════════════════════════════════════════════════════════
+   CUANTO DEL LIMITE DE META LLEVAMOS USADO
+
+   Meta lo dice en cada respuesta, en tres cabeceras, y hasta ahora se
+   tiraban. No es una estimacion nuestra: es el numero de Meta.
+
+     X-Business-Use-Case-Usage  por cuenta publicitaria. Trae call_count,
+                                total_cputime y total_time como PORCENTAJE
+                                del limite, y —si ya te frenaron—
+                                estimated_time_to_regain_access en minutos.
+     X-Ad-Account-Usage         acc_id_util_pct, el uso de la cuenta.
+     X-App-Usage                lo mismo pero de la app entera.
+
+   ⚠️  SE ENVUELVE `fetch` EN VEZ DE TOCAR LOS ONCE LUGARES QUE LLAMAN A
+       META. Es el mismo criterio que ya usa este archivo con
+       `localStorage.setItem` unas lineas mas abajo: cualquier pantalla que
+       le pregunte algo a Meta queda contada sin modificarla, y no hay forma
+       de agregar una llamada nueva y olvidarse.
+       Leer cabeceras NO consume el cuerpo de la respuesta, asi que quien
+       llamo recibe exactamente lo mismo que antes.
+
+   Vive en memoria a proposito: es el estado de AHORA. Guardarlo en el
+   cliente lo subiria a Supabase en cada sync para un dato que a los diez
+   minutos ya no vale.
+   ══════════════════════════════════════════════════════════════════════ */
+var META_USO={};        // por cuenta publicitaria
+var _metaUsoAvisado={};  // para no repetir el aviso a cada llamada
+
+function _metaUsoDeCabeceras(h){
+  var pct=0, bloqueo=0, llamadas=null;
+  var mirar=function(o){
+    if(!o||typeof o!=='object') return;
+    ['call_count','total_cputime','total_time','acc_id_util_pct'].forEach(function(k){
+      var v=Number(o[k]); if(isFinite(v) && v>pct) pct=v;
+    });
+    var b=Number(o.estimated_time_to_regain_access);
+    if(isFinite(b) && b>bloqueo) bloqueo=b;
+  };
+  var leer=function(nombre){
+    var raw=null;
+    try{ raw=h.get(nombre); }catch(e){}
+    if(!raw) return;
+    var d=null; try{ d=JSON.parse(raw); }catch(e){ return; }
+    if(Array.isArray(d)) d.forEach(mirar);
+    else if(d && typeof d==='object'){
+      // X-Business-Use-Case-Usage viene como {"<id>":[{...}]}
+      Object.keys(d).forEach(function(k){
+        var v=d[k];
+        if(Array.isArray(v)) v.forEach(mirar); else mirar(v);
+      });
+      mirar(d);
+    }
+  };
+  leer('x-business-use-case-usage');
+  leer('x-ad-account-usage');
+  leer('x-app-usage');
+  return {pct:pct, bloqueo:bloqueo, llamadas:llamadas};
+}
+
+function _metaUsoAnotar(url, headers){
+  var u=_metaUsoDeCabeceras(headers);
+  // Sin cabeceras utiles no se anota nada: mejor "no se" que un 0 inventado.
+  if(!u.pct && !u.bloqueo) return;
+  var m=String(url||'').match(/act_(\d+)/);
+  var cuenta=m?('act_'+m[1]):'(cuenta)';
+  var prev=META_USO[cuenta]||{};
+  META_USO[cuenta]={ pct:u.pct, bloqueo:u.bloqueo, at:Date.now(),
+                     pico:Math.max(prev.pico||0, u.pct), n:(prev.n||0)+1 };
+  // Aviso una sola vez por cuenta y por tramo: al 75% queda margen para
+  // terminar lo que estes haciendo; al 90% conviene frenar.
+  var tramo=u.bloqueo?'bloqueo':(u.pct>=90?'90':(u.pct>=75?'75':''));
+  if(tramo && _metaUsoAvisado[cuenta]!==tramo){
+    _metaUsoAvisado[cuenta]=tramo;
+    try{
+      if(u.bloqueo) toast('Meta frenó los pedidos de esta cuenta. Vuelve en '
+        +Math.ceil(u.bloqueo)+' min.','red');
+      else toast('Meta: llevas '+Math.round(u.pct)+'% del limite de pedidos de esta cuenta.',
+        u.pct>=90?'red':'amber');
+    }catch(e){}
+  }
+}
+
+(function(){
+  if(!window.fetch || window.__metaUsoPuesto) return;
+  window.__metaUsoPuesto=true;
+  var orig=window.fetch.bind(window);
+  window.fetch=function(u, o){
+    var url=(typeof u==='string')?u:((u&&u.url)||'');
+    var p=orig(u, o);
+    if(String(url).indexOf('graph.facebook.com')<0) return p;
+    return p.then(function(r){
+      try{ if(r&&r.headers) _metaUsoAnotar(url, r.headers); }catch(e){}
+      return r;      // el mismo objeto, intacto
+    });
+  };
+})();
+
 // El setter original, antes de envolverlo. Se usa para escribir sin disparar
 // otra subida cuando lo que se esta haciendo es justamente bajar.
 var _lsSet=localStorage.setItem.bind(localStorage);
@@ -26416,7 +26513,22 @@ function renderTab(){
         action2Label:'Cambiar token'}),
       card({name:'Meta Ads',st:metaOk?'ok':'no',
         desc:'Campanas, adsets, anuncios e inversion en tiempo real (por periodo, campana y pais). Requiere token de sistema y Account ID.',
-        detail:metaOk?('act_'+esc(c.metaAccountId)+(campN?' &middot; '+campN+' campanas sincronizadas':'')):'',
+        detail:metaOk?('act_'+esc(c.metaAccountId)+(campN?' &middot; '+campN+' campanas sincronizadas':'')
+          // Cuanto del limite de Meta llevamos usado. Es el numero de Meta,
+          // no una cuenta nuestra: ver META_USO. Solo aparece despues de la
+          // primera llamada de esta sesion, porque antes no hay dato.
+          +(function(){
+             var u=META_USO['act_'+c.metaAccountId];
+             if(!u) return '';
+             if(u.bloqueo) return '<div style="margin-top:4px;color:var(--redx)">'
+               +'Meta freno los pedidos de esta cuenta &middot; vuelve en '
+               +Math.ceil(u.bloqueo)+' min</div>';
+             var col=u.pct>=90?'var(--redx)':(u.pct>=75?'var(--amberx)':'var(--text3)');
+             return '<div style="margin-top:4px;color:'+col+'">Limite de pedidos de Meta: '
+               +Math.round(u.pct)+'% usado'
+               +(u.pico>u.pct?(' &middot; pico '+Math.round(u.pico)+'%'):'')
+               +' &middot; '+u.n+' llamada'+(u.n===1?'':'s')+' en esta sesion</div>';
+           })()):'',
         action:'openMetaConfig('+c.id+')',actionLabel:metaOk?'Editar token':'Conectar'}),
       (function(){
         var st=c.lpStats;
