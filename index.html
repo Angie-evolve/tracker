@@ -59884,6 +59884,88 @@ const campaignOf=function(o){
           campaignOf:campaignOf, campNames:_campNames};
 }
 
+
+// ===================== TASA DE RESPUESTA DE WHATSAPP =====================
+// El numero sale de la edge function `whatsapp`, no del navegador: la API de
+// GHL no se puede llamar desde el browser (CORS) y ademas el token del cliente
+// no tiene por que bajar hasta aca.
+//
+// Se guarda en el cliente (`c.wa`) y NO se pide en cada pintada: recorrer las
+// conversaciones de una subcuenta grande son varias llamadas a GHL -Red
+// Zeppelin tiene 1.822- y eso no puede pasar cada vez que se abre una pantalla.
+// Se refresca cuando ella lo pide, o si lo guardado tiene mas de un dia.
+var WA_VIEJO=24*60*60*1000;
+
+function _wa(c){ return (c&&c.wa&&typeof c.wa==='object')?c.wa:null; }
+function _waVencido(w){
+  if(!w||!w.at) return true;
+  var t=new Date(w.at).getTime();
+  return !t || (Date.now()-t)>WA_VIEJO;
+}
+
+async function waLeer(clientId, silencioso){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c) return null;
+  if(c._waPidiendo) return null;         // dos pintadas seguidas no piden dos veces
+  if(!SB || !SB.token){
+    if(!silencioso) toast('Para esto hay que estar con la sesion iniciada.','amber');
+    return null;
+  }
+  c._waPidiendo=true;
+  try{
+    var r=await fetch(SB_URL+'/functions/v1/whatsapp',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+      body:JSON.stringify({cliente:String(c.id)})
+    });
+    var d=await r.json().catch(function(){ return null; });
+    if(!r.ok || !d || !d.ok) throw new Error((d&&(d.error||d.message))||('HTTP '+r.status));
+    var fila=(d.clientes||[])[0]||null;
+    if(!fila) throw new Error('no vino nada de ese cliente');
+    if(fila.error) throw new Error(fila.error);
+    c.wa=fila;
+    save();
+    if(typeof renderTab==='function') renderTab();
+    return fila;
+  }catch(e){
+    // El error se guarda para poder mostrarlo en la fila en vez de dejar un
+    // guion que no explica nada.
+    c.wa={ error:String((e&&e.message)||'no pude leerlo'), at:new Date().toISOString() };
+    save();
+    if(!silencioso) toast('WhatsApp: '+c.wa.error,'red');
+    if(typeof renderTab==='function') renderTab();
+    return null;
+  }finally{ c._waPidiendo=false; }
+}
+
+// La celda de la fila del embudo. Tres estados: sin datos, cargando, y el dato.
+function _waCelda(c){
+  var w=_wa(c);
+  if(c._waPidiendo){
+    return '<span style="color:var(--text3)"><span class="carga-spin" '
+      +'style="width:9px;height:9px;display:inline-block;vertical-align:-1px"></span> cargando</span>';
+  }
+  if(!w){
+    return '<span class="zero" style="cursor:pointer;border-bottom:1px dotted var(--text3)" '
+      +'onclick="waLeer('+c.id+')" title="Lee las conversaciones de WhatsApp de la subcuenta de GHL">medir</span>';
+  }
+  if(w.error){
+    return '<span style="color:var(--amberx);cursor:pointer" onclick="waLeer('+c.id+')" '
+      +'title="'+esc(w.error)+' \u00b7 clic para reintentar">error</span>';
+  }
+  if(w.sinGhl) return '<span class="zero" title="Este cliente no tiene GHL conectado">-</span>';
+  if(!w.conWhatsapp) return '<span class="zero" title="No hay conversaciones de WhatsApp en esa subcuenta">sin WhatsApp</span>';
+  var pct=Math.round((w.tasa||0)*1000)/10;
+  var viejo=_waVencido(w);
+  return '<span style="cursor:pointer'+(viejo?';opacity:.6':'')+'" onclick="waLeer('+c.id+')" '
+    +'title="'+w.respondieron+' de '+w.conWhatsapp+' conversaciones de WhatsApp tienen un mensaje '
+    +'del lead. OJO: no dice quien escribio primero, asi que en campanas de clic-a-WhatsApp '
+    +'el lead arranca la charla y el numero sube solo.'
+    +(w.at?(' \u00b7 medido el '+esc(new Date(w.at).toLocaleDateString('es-AR'))):'')
+    +' \u00b7 clic para volver a medir">'
+    +pct+'% <span style="font-size:10px;color:var(--text3)">('+w.respondieron+'/'+w.conWhatsapp+')</span></span>';
+}
+
 function renderVentasTab(c, el){
   const esc=function(s){return String(s===null||s===undefined?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
   const proxy=getGhlProxy();
@@ -60262,6 +60344,10 @@ function renderVentasTab(c, el){
         if(!vv||!den) return '<span class="zero">-</span>';
         return (Math.round(den/vv*1000)/10)+'% <span style="font-size:10px;color:var(--text3)">('+den+'/'+vv.toLocaleString('en-US')+')</span>';
       })()),
+      // Entre el registro y la agenda no habia ningun numero, y ahi es donde
+      // se cae la mayoria. El WhatsApp de la subcuenta es lo unico que hay
+      // para mirar ese tramo.
+      vhRow('Responden WhatsApp', _waCelda(c)),
       vhRow('Agendas totales',m_agendas),
       // De los registros, cuantos llegan a agendar: el filtro que separa
       // volumen de calidad. Con la misma definicion que el mes a mes.
