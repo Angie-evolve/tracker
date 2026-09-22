@@ -938,24 +938,34 @@ const formAbierto = new Set();
 const ANCHA = matchMedia('(min-width:860px)');
 ANCHA.addEventListener('change', () => pintar());
 
-/* ── Si se presentó la oferta ─────────────────────────────────────────
-   Tres estados, como en el tracker de ventas: Pendiente, Sí y No.
+/* ── Cómo viene la oferta ─────────────────────────────────────────────
+   Cuatro estados: Pendiente, Programada, Sí y No.
+
+   "Programada" entró en la migración 021 y se comió una etapa. Antes
+   existía "Presentación programada" en la lista de etapas, y decía esto
+   mismo: que la oferta está agendada. Eso no es dónde está el lead en el
+   embudo, es qué pasó con la oferta, así que vive acá. La etapa quedó
+   archivada.
 
    ⚠️ En qué reunión pasó NO se guarda acá. Sale de cruzar esto con la
-      etapa del lead: la etapa dice en qué llamada está, esto dice si hubo
-      oferta. Guardar el número acá dejaba sin forma de decir "NO se
-      presentó", que es el estado que más se usa para descartar.
+      etapa del lead: la etapa dice en qué llamada está, esto dice cómo
+      viene la oferta. Guardar el número acá dejaba sin forma de decir "NO
+      se presentó", que es el estado que más se usa para descartar.
 
    `null` es Pendiente a propósito: un lead recién entrado no tiene que
-   aparecer como si ya hubiéramos decidido que no. */
+   aparecer como si ya hubiéramos decidido que no.
+
+   ⚠️ Se lee `oferta_estado`, NO `oferta_presentada`. La segunda es un
+      boolean y tiene tres estados: los cuatro no entran. Sigue existiendo
+      y la base la mantiene al día sola, pero acá no se mira. */
 const OFERTA = [
-  { v:'si',   t:'Sí' },
-  { v:'no',   t:'No' },
-  { v:null,   t:'Pendiente' }
+  { v:'programada', t:'Programada' },
+  { v:'si',         t:'Sí' },
+  { v:'no',         t:'No' },
+  { v:null,         t:'Pendiente' }
 ];
-const ofertaTxt = l => l.oferta_presentada === true  ? 'Sí'
-                     : l.oferta_presentada === false ? 'No'
-                     : 'Pendiente';
+const OFERTA_TXT = { programada:'Programada', si:'Sí', no:'No' };
+const ofertaTxt = l => OFERTA_TXT[l.oferta_estado] || 'Pendiente';
 
 const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
 
@@ -1127,8 +1137,7 @@ const _ctl = {
   },
   // No mira la etapa: que haya oferta es un hecho aparte del embudo.
   presento(l){
-    const contestado = l.oferta_presentada === true || l.oferta_presentada === false;
-    return _valor(ofertaTxt(l), 'presento', !contestado, '¿Le presentaste la oferta?');
+    return _valor(ofertaTxt(l), 'presento', !l.oferta_estado, '¿Cómo viene la oferta?');
   },
   nota(l){
     return '<button class="nt' + (l.nota ? ' has' : '') + '" data-a="nota"'
@@ -1465,12 +1474,11 @@ function abrirHojaPresento(lead){
   abierto = lead;
   hojaModo = 'presento';
   $('hoja-nom').textContent = nombreDe(lead);
-  $('hoja-sub').textContent = '¿Le presentaste la oferta?';
-  const actual = lead.oferta_presentada;
+  $('hoja-sub').textContent = '¿Cómo viene la oferta?';
+  const actual = lead.oferta_estado || null;
   $('hoja-ops').innerHTML = OFERTA.map(o =>
       '<button class="op" data-v="' + (o.v === null ? '__pendiente' : o.v) + '" aria-current="'
-      + ((o.v === 'si' && actual === true) || (o.v === 'no' && actual === false)
-         || (o.v === null && actual == null)) + '">'
+      + (o.v === actual) + '">'
       + '<span class="pt"></span>'
       + esc(o.t) + '</button>').join('');
   _hojaAbrir();
@@ -1513,28 +1521,33 @@ async function marcarEstado(lead, valor){
   }
 }
 
+/* ⚠️ Llama a `lead_oferta_estado`, no a `lead_oferta`. Las dos existen y
+      las dos escriben las mismas dos columnas, pero la vieja sólo sabe
+      decir sí y no: por ahí "Programada" no entra. Se distinguen por el
+      nombre del parámetro —`p_estado` contra `p_oferta`—, que es lo que
+      PostgREST mira para elegir cuál ejecutar. */
 async function marcarPresento(lead, valor){
   const pendiente = valor === '__pendiente';
-  const nuevo = pendiente ? null : (valor === 'si');
-  if(lead.oferta_presentada === nuevo) return;
+  const nuevo = pendiente ? null : valor;
+  if((lead.oferta_estado || null) === nuevo) return;
 
-  const antes = lead.oferta_presentada;
-  lead.oferta_presentada = nuevo;
+  const antes = lead.oferta_estado;
+  lead.oferta_estado = nuevo;
   pintar();
 
   const tarjeta = document.querySelector('.lead[data-id="' + CSS.escape(String(lead.id)) + '"]');
   if(tarjeta) tarjeta.classList.add('guardando');
 
   try{
-    await api('/rest/v1/rpc/lead_oferta', {
+    await api('/rest/v1/rpc/lead_oferta_estado', {
       method:'POST',
       body: JSON.stringify({ p_lead_id: lead.id,
-                             p_oferta: pendiente ? null : nuevo,
+                             p_estado: pendiente ? null : nuevo,
                              p_borrar: pendiente })
     });
-    avisar(pendiente ? 'Oferta: pendiente' : 'Oferta: ' + (nuevo ? 'sí' : 'no'));
+    avisar('Oferta: ' + (pendiente ? 'pendiente' : OFERTA_TXT[nuevo].toLowerCase()));
   }catch(err){
-    lead.oferta_presentada = antes;
+    lead.oferta_estado = antes;
     avisar('No se guardó: ' + err.message, true);
   }finally{
     pintar();
