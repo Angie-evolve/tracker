@@ -19102,8 +19102,17 @@ async function lpVerificar(clientId, silencioso){
   if(!SB.token){ pintar('Hay que iniciar sesion para leer los eventos.','var(--amberx)'); return null; }
   if(!silencioso) pintar('Consultando...');
   var base=SB_URL+'/rest/v1/lp_eventos?cliente=eq.'+encodeURIComponent(String(c.id));
+  /* ⚠️  ESTA CONSULTA TIENE TECHO, Y HAY QUE PODER SABER CUANDO SE TOCA.
+     Trae los N eventos MAS RECIENTES del cliente. Si un cliente hace mas de
+     N en menos de lo que dura la ventana que se mira, la parte vieja de esa
+     ventana queda afuera y los numeros bajan sin que nada lo diga.
+     Medido el 2026-09-22, el dia mas cargado de la agencia fueron 145
+     eventos (Centercheques): a ese ritmo, 7 dias son 1015. Con 5000 hay
+     margen de sobra, pero el margen no es el arreglo: el arreglo es
+     `st.tope`, que dice si se toco el techo, y `st.masViejo`, que dice
+     hasta donde llego. Con esos dos la tabla puede avisar en vez de mentir. */
   var pedir=function(campos){
-    return fetch(base+'&select='+campos+'&order=creado_en.desc&limit=2000',
+    return fetch(base+'&select='+campos+'&order=creado_en.desc&limit='+LP_TOPE,
       { headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token} });
   };
   try{
@@ -19153,6 +19162,10 @@ async function lpVerificar(clientId, silencioso){
       .sort(function(a,b){ return b.vistas-a.vistas; });
     var st={ vistas:vistas.length, unicas:Object.keys(unicos).length, optins:optins.length,
              ultimo:filas.length?filas[0].creado_en:'', at:new Date().toISOString(),
+             // Vienen de nuevo a viejo: el ultimo de la lista es el mas viejo
+             // que entro. Si se toco el techo, antes de esa fecha hay mas.
+             tope:(filas.length>=LP_TOPE),
+             masViejo:(filas.length?filas[filas.length-1].creado_en:''),
              paginas:lpPorPagina(filas),
              embudos:Object.keys(embudos), embudosDetalle:embudosDetalle, sinEmbudo:sinEmbudo };
     c.lpStats=st;
@@ -19203,6 +19216,7 @@ function lpPaginasDe(c){
     .filter(function(p){ return !/gracias|thank|thanks|success/i.test(p.ruta); })
     .map(function(p){ return p.ruta; });
 }
+var LP_TOPE=5000;      // cuantos eventos trae como mucho: ver `pedir` en lpVerificar
 function lpAuto(c){ return !(Array.isArray(c.lpPaginas)&&c.lpPaginas.length); }
 
 /* ── De donde salen los registros ─────────────────────────────────────────
@@ -55943,10 +55957,18 @@ function lpFilasLandings(c, dias){
     return { ruta:k, embudo:m[k].embudo||'', vistas:m[k].vistas, unicas:u, optins:m[k].optins,
              tasa:u?(m[k].optins/u*100):null };
   }).sort(function(a,b){ return b.unicas-a.unicas; });
+  /* Se toco el techo de la consulta Y lo mas viejo que llego es mas nuevo
+     que el principio de la ventana: entonces falta el pedazo del medio y
+     las vistas de esta tabla estan CORTAS. Si se toco el techo pero lo mas
+     viejo es anterior a la ventana, no falta nada y no se avisa: un cartel
+     que aparece cuando no pasa nada deja de leerse. */
+  var st=c.lpStats||{};
+  var recorte=!!(st.tope && st.masViejo && new Date(st.masViejo).getTime() > desde);
   return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7,
            fuente:g?'ghl':'propia', enOtraPagina:enOtraPagina,
            total:g?g.total:null, enriquecidas:g?g.enriquecidas:0,
-           opsTotal:g?g.opsTotal:0 };
+           opsTotal:g?g.opsTotal:0,
+           recorte:recorte, desdeCuando:st.masViejo||'' };
 }
 
 // Aviso cuando llegan eventos sin embudo: hasta que se etiqueten, no se puede
@@ -56091,6 +56113,16 @@ function lpTablaLandingsHtml(c, dias){
     +'</tr>'+cuerpo+'</table>'
     +(function(){
       var notas=[];
+      if(r.recorte){
+        var d='';
+        try{ d=new Date(r.desdeCuando).toLocaleDateString('es-AR')+' '
+              +new Date(r.desdeCuando).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}); }
+        catch(e){}
+        notas.push('<span style="color:var(--redx)">Las vistas de esta tabla estan CORTAS. '
+          +'Este cliente hizo mas de '+LP_TOPE.toLocaleString('es-AR')+' eventos en menos de '
+          +r.dias+' dias, que es lo maximo que trae la consulta: solo entro lo posterior a '
+          +esc(d)+'. Las vistas y los unicos de arriba son menos que los reales.</span>');
+      }
       if(r.fuente==='ghl'){
         // ⚠️  EL ORIGEN LLEGA CON EL PASO DE ENRIQUECIDO, que va de a tres y
         //     desde el navegador. Hasta que termina, lo repartido por pagina
