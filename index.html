@@ -60219,7 +60219,16 @@ function renderVentasTab(c, el){
       : (_needByPais
         ? ((_msCache&&_msCache.byCountry&&_msCache.byCountry[segPais]!=null)?_msCache.byCountry[segPais]:null)
         : ((_msCache&&_msCache.spend!=null)?_msCache.spend:null))));
-  const accSpentAll=spendSource==='live'?accSpentLive:accSpentLineas;
+  // La inversion viene en la moneda de la CUENTA de Meta, no en dolares: la de
+  // Ojapo factura en ARS y el embudo mostraba "$99.453,11" como si fueran
+  // dolares. Se convierte ACA, en el origen, y no en la linea que lo pinta:
+  // de este numero cuelgan el CAC y todos los costos por paso, y convertir
+  // solo el de arriba dejaba el resto de la columna en pesos.
+  const _fxVta=(c && typeof fxActiva==='function' && fxActiva(c))?Number(getFx(c).rate):0;
+  const _aUsdVta=function(n){
+    return (_fxVta && n!=null && isFinite(n)) ? n/_fxVta : n;
+  };
+  const accSpentAll=_aUsdVta(spendSource==='live'?accSpentLive:accSpentLineas);
   if(spendSource==='live'&&metaConfigured&&(!_msCache||(Date.now()-_msCache.at)>=10*60*1000||(_needByCamp&&!_msCache.byCampaign)||(_needByPais&&!_msCache.byCountry)||(_needCross&&!_msCache.byCampCountry)||(_needByAd&&!_msCache.byAd))){
     fetchMetaSpendPeriod(c.id,period).then(function(){
       if((S.tab==='ventas'||S.tab==='embudo')&&S.clientId===c.id) renderTab();
@@ -60419,6 +60428,9 @@ function renderVentasTab(c, el){
             +(_msCache&&_msCache.spend!=null?' &middot; actualizado '+new Date(_msCache.at).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}):(_msCache&&_msCache.error?' &middot; <span style="color:var(--redx)">Meta: '+esc(_msCache.error)+'</span>':' &middot; actualizando...')))
         :' &middot; segun lineas del periodo')
       +((seg&&!_segSpendOk)?' &middot; la inversion no se segmenta':'')
+      // Si se convirtio, hay que decirlo: un numero sin moneda al lado de otro
+      // sin moneda se lee como si fueran la misma, y no lo son.
+      +(_fxVta?(' &middot; en USD a '+_fxVta.toLocaleString('es-AR')+' '+esc(c.metaCurrency||'')+' por dolar'):'')
       +'</div>'
     +'</div>';
   // Capturar records de eficiencia (solo cuando NO hay segmento activo: el record es del cliente completo)
@@ -60437,6 +60449,21 @@ function renderVentasTab(c, el){
     if(_asistN>=3&&m_revenue>0) _vals.revShow=m_revenue/_asistN;
     if(cWon>=2&&m_revenue>0) _vals.ticket=m_revenue/cWon;
     if(typeof avgTimeToClose==='number'&&avgTimeToClose>0) _vals.ttc=avgTimeToClose;
+    /* \u26a0\ufe0f  UN RECORD EN PESOS NO SE COMPARA CON UNO EN DOLARES. Los
+       records de costo guardados antes de esta conversion estan en la moneda
+       de la cuenta. Al pasar a USD, cualquier valor nuevo es ~1540 veces mas
+       chico y bate el record historico en cada pintada, con destello de
+       "nuevo record" incluido, para siempre. Por eso se guarda con que tasa
+       se capturaron y, si cambio, se arrancan de cero los de dinero. Los de
+       tasa y tiempo no se tocan: no dependen de la moneda. */
+    var _fxSello=_fxVta||0;
+    c.records=c.records||{};
+    if(Number(c.records._fx||0)!==_fxSello){
+      ['cac','reg','sql','agenda','asist','viva','pres'].forEach(function(k){
+        delete c.records[k];
+      });
+      c.records._fx=_fxSello;
+    }
     captureRecords(c,_vals);
   }
   // Las barras se miden contra el costo mas alto, que es siempre el ultimo con
