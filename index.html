@@ -58419,6 +58419,49 @@ function tofReconfigurar(){
   save(); dibujarMmTop(c);
 }
 
+/* Como se llama en castellano cada evento de Meta. Lo que no este aca se
+   muestra con el nombre crudo que manda la API: es feo, pero es verdad, y
+   es mil veces mejor que no mostrarlo. */
+var TOF_NOMBRES={
+  'lead':'Cliente potencial', 'onsite_web_lead':'Cliente potencial (en el sitio)',
+  'offsite_conversion.fb_pixel_lead':'Cliente potencial (pixel)',
+  'onsite_conversion.lead_grouped':'Cliente potencial (agrupado)',
+  'complete_registration':'Registro completado',
+  'offsite_conversion.fb_pixel_complete_registration':'Registro completado (pixel)',
+  'schedule':'Programacion', 'offsite_conversion.fb_pixel_schedule':'Programacion (pixel)',
+  'submit_application':'Solicitud enviada',
+  'offsite_conversion.fb_pixel_submit_application':'Solicitud enviada (pixel)',
+  'purchase':'Compra', 'offsite_conversion.fb_pixel_purchase':'Compra (pixel)',
+  'landing_page_view':'Vista de la landing', 'link_click':'Clic en el enlace',
+  'post_engagement':'Interaccion', 'page_engagement':'Interaccion con la pagina',
+  'video_view':'Reproduccion', 'onsite_conversion.messaging_conversation_started_7d':'Conversacion iniciada'
+};
+function tofNombreEvento(t){
+  if(TOF_NOMBRES[t]) return TOF_NOMBRES[t];
+  // Una conversion personalizada llega como `offsite_conversion.custom.<id>`.
+  // El id no le dice nada a nadie, pero decir que es personalizada, si.
+  if(/custom/i.test(t)) return 'Conversion personalizada';
+  return t;
+}
+
+/* Todos los eventos que Meta reporto de verdad, ordenados de mayor a menor,
+   sacando los que no son pasos del embudo —clics, impresiones, interacciones—
+   que solo agregan ruido. */
+function tofEventosReales(cache, campana){
+  var filas=(cache&&cache.porCampana)||{};
+  var acc={};
+  Object.keys(filas).forEach(function(id){
+    if(campana && String(id)!==String(campana)) return;
+    var ev=(filas[id]||{}).eventos||{};
+    Object.keys(ev).forEach(function(t){ acc[t]=(acc[t]||0)+ev[t]; });
+  });
+  var RUIDO=/^(link_click|post_engagement|page_engagement|video_view|post_reaction|comment|onsite_conversion\.post_save|landing_page_view)$/;
+  return Object.keys(acc)
+    .filter(function(t){ return acc[t]>0 && !RUIDO.test(t); })
+    .map(function(t){ return {tipo:t, n:acc[t], nombre:tofNombreEvento(t)}; })
+    .sort(function(a,b){ return b.n-a.n; });
+}
+
 function _tofTotales(cache, campana){
   // Se suma sobre el periodo entero que ya esta en memoria. Si hay una campana
   // elegida se mira solo esa; "todas" es la cuenta completa menos las que estan
@@ -58464,10 +58507,45 @@ function embudoTofHtml(cache, c){
 
   var emb=TOF_EMBUDOS[cfg.tipo]||TOF_EMBUDOS.agendas;
   var t=_tofTotales(cache, cfg.campana);
-  var primero=t[emb.pasos[0].k]||0;
-  var filas=emb.pasos.map(function(pso, i){
+  var reales=tofEventosReales(cache, cfg.campana);
+
+  /* ⚠️  UN PASO QUE NO EXISTE EN LA CUENTA NO SE DIBUJA. Antes se mostraban
+     los cinco siempre, y una cuenta que mide con una conversion
+     personalizada veia el embudo entero en cero: parecia el pixel roto
+     cuando en realidad el evento estaba, solo que con otro nombre.
+     Ahora se esconde el escalon cuyo evento Meta no reporto NUNCA, y mas
+     abajo se listan los que si reporto. Si no queda ningun escalon, se
+     muestran todos igual: un embudo vacio con una explicacion es mejor que
+     una tabla sin filas. */
+  var _hayAlgunEvento=function(k){
+    var alias={ lead:_MM_ALIAS_LEAD,
+                apply:['submit_application','offsite_conversion.fb_pixel_submit_application',
+                       'onsite_conversion.submit_application'],
+                schedule:['schedule','onsite_conversion.schedule','onsite_web_schedule',
+                          'offsite_conversion.fb_pixel_schedule'],
+                reg:['complete_registration','offsite_conversion.fb_pixel_complete_registration',
+                     'onsite_conversion.complete_registration'],
+                compra:['purchase','offsite_conversion.fb_pixel_purchase','onsite_web_purchase'] }[k]||[];
+    return reales.some(function(e){
+      return alias.indexOf(e.tipo)>=0
+          || (k==='schedule' && /schedule/i.test(e.tipo))
+          || (k==='apply'    && /submit_application/i.test(e.tipo));
+    });
+  };
+  var pasosVisibles=emb.pasos.filter(function(pso){ return (t[pso.k]||0)>0 || _hayAlgunEvento(pso.k); });
+  if(!pasosVisibles.length) pasosVisibles=emb.pasos;
+
+  // Lo que Meta reporto y no entra en ningun escalon del embudo elegido.
+  var yaContados={};
+  pasosVisibles.forEach(function(pso){
+    reales.forEach(function(e){ if(_hayAlgunEvento(pso.k) && e.n===(t[pso.k]||0)) yaContados[e.tipo]=1; });
+  });
+  var sueltos=reales.filter(function(e){ return !yaContados[e.tipo]; });
+
+  var primero=t[pasosVisibles[0].k]||0;
+  var filas=pasosVisibles.map(function(pso, i){
     var v=t[pso.k]||0;
-    var previo=i?(t[emb.pasos[i-1].k]||0):0;
+    var previo=i?(t[pasosVisibles[i-1].k]||0):0;
     // Contra el paso anterior, que es donde se ve el escalon que se rompe.
     // Contra el primero, que es la conversion de punta a punta.
     var vsPrev=i&&previo? (v/previo*100) : null;
@@ -58493,8 +58571,8 @@ function embudoTofHtml(cache, c){
         +(i&&vsTop!=null?vsTop.toFixed(1)+'%':'—')+'</td>'
     +'</tr>';
   }).join('');
-  var hayImposible=emb.pasos.some(function(pso,i){
-    var prev=i?(t[emb.pasos[i-1].k]||0):0;
+  var hayImposible=pasosVisibles.some(function(pso,i){
+    var prev=i?(t[pasosVisibles[i-1].k]||0):0;
     return i && prev && (t[pso.k]||0) > prev*1.05;
   });
 
@@ -58511,9 +58589,36 @@ function embudoTofHtml(cache, c){
     +'<thead><tr>'+th('Paso')+th('Evento en Meta')+th('Cantidad','right')
       +th('Costo','right')+th('vs. paso anterior','right')+th('vs. paso 1','right')
     +'</tr></thead><tbody>'+filas+'</tbody></table></div>'
+    /* Lo que Meta SI reporto y no es ninguno de los escalones. Es la
+       respuesta a "¿por que el embudo esta en cero si arriba dice 31?":
+       los 31 estan aca, con el nombre con el que llegan. */
+    +(sueltos.length
+      ? ('<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+        +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.55">'
+          +'Otros eventos que Meta si esta reportando en este periodo. Si el resultado que '
+          +'te importa esta aca y no arriba, es que la cuenta mide con un evento que no es '
+          +'ninguno de los pasos de este embudo.</div>'
+        +'<table style="width:100%;border-collapse:collapse">'
+        +sueltos.map(function(e){
+            var costo=e.n?(t.spend/e.n):null;
+            return '<tr>'
+              +'<td style="padding:5px 10px 5px 0;font-size:12px;color:var(--text2)">'
+                +esc(e.nombre)+'</td>'
+              +'<td class="mono" style="padding:5px 10px;font-size:10px;color:var(--text3)">'
+                +esc(e.tipo)+'</td>'
+              +'<td style="padding:5px 10px;text-align:right;font-variant-numeric:tabular-nums;'
+                +'font-size:12.5px">'+e.n.toLocaleString('es-AR')+'</td>'
+              +'<td style="padding:5px 0 5px 10px;text-align:right;font-variant-numeric:tabular-nums;'
+                +'font-size:12px;color:var(--text3)">'+(costo!=null?money(costo):'—')+'</td>'
+            +'</tr>';
+          }).join('')
+        +'</table></div>')
+      : '')
     +'<div class="mm-foot" style="margin-top:10px">Inversión del período: '+money(t.spend)
       +(cfg.campana?(' · solo '+esc((camps[cfg.campana]||{}).nombre||cfg.campana)):' · todas las campañas')
-      +'. Un paso en cero suele ser el pixel: si ese evento no está configurado en Meta, acá no llega.'
+      +(sueltos.length
+         ? '. Los pasos que esta cuenta no mide no se muestran; lo que si mide esta en la lista de arriba.'
+         : '. Un paso en cero suele ser el pixel: si ese evento no está configurado en Meta, acá no llega.')
       +(hayImposible?(' <span style="color:var(--redx)">Hay un paso con más gente que el anterior: '
         +'o este no es el embudo de esta cuenta, o ese evento se dispara también desde otro lado.</span>'):'')
       +'</div>'
@@ -58637,11 +58742,27 @@ async function fetchMetaMensual(clientId){
       m.leads+=a.leads; m.landing+=a.landing; m.results+=a.results;
       const cid=String(row.campaign_id||'');
       const pc=porCampana[cid]||(porCampana[cid]={nombre:row.campaign_name||cid,
-        spend:0, lead:0, apply:0, schedule:0, reg:0, compra:0});
+        spend:0, lead:0, apply:0, schedule:0, reg:0, compra:0, eventos:{}});
       if(row.campaign_name) pc.nombre=row.campaign_name;
       pc.spend+=parseFloat(row.spend||0)||0;
       pc.lead+=a.leads; pc.apply+=a.apply; pc.schedule+=a.schedule;
       pc.reg+=a.reg; pc.compra+=a.compra;
+      /* ⚠️  LOS EVENTOS CRUDOS SE GUARDAN, no se tiran. Hasta ahora esta
+         funcion calculaba los cinco escalones conocidos y descartaba el
+         resto, asi que una cuenta que mide con una CONVERSION PERSONALIZADA
+         —que en Ads Manager aparece con el nombre que le puso el cliente—
+         mostraba el embudo entero en cero y no habia forma de saber por que
+         sin abrir la consola del navegador.
+         Medido el 2026-09-22: Albet tiene 31 resultados y `leads` en 0, o
+         sea que sus 31 no son ninguno de los cinco.
+         Con el mapa crudo, el embudo puede mostrar una fila por evento que
+         EXISTA, con su nombre, en vez de cinco casilleros fijos. */
+      pc.eventos=pc.eventos||{};
+      (row.actions||[]).forEach(function(ac){
+        var t=String(ac.action_type||''); if(!t) return;
+        var v=parseInt(ac.value||0)||0; if(!v) return;
+        pc.eventos[t]=(pc.eventos[t]||0)+v;
+      });
     });
     url=(data.paging&&data.paging.next)||null;
   }
@@ -60367,7 +60488,13 @@ var META_METRIC_COLS=[
   {key:'ret100',    l:'Ret. 100%',            w:90,  fmt:function(v){return v?v+'%':'-';}},
   {key:'landingViews',l:'Visitas pag. destino',w:130,fmt:function(v){return v||'-';}},
   {key:'costPerLanding',l:'Costo/visita',     w:110, fmt:function(v){return v?'$'+Number(v).toFixed(2):'-';}, money:true, color:true},
-  {key:'results',   l:'Resultados',           w:90,  fmt:function(v){return v||'-';}, bold:true},
+  // `obj` es la fila entera: asi la celda puede decir de que evento habla.
+  {key:'results',   l:'Resultados',           w:90,  bold:true,
+   fmt:function(v,obj){
+     if(!v) return '-';
+     var e=obj&&obj.resultsEvento;
+     return e?('<span title="Meta los reporta como: '+esc(e)+'">'+v+'</span>'):String(v);
+   }},
   {key:'costPerResult',l:'Costo/resultado',   w:110, fmt:function(v){return v?'$'+Number(v).toFixed(2):'-';}, money:true, color:true, bold:true},
   {key:'igFollows', l:'Seg. Instagram',       w:110, fmt:function(v){return v||'-';}},
   {key:'igProfileVisits',l:'Visitas perfil IG',w:120,fmt:function(v){return v||'-';}},
@@ -61201,7 +61328,9 @@ function metaRowMetrics(obj, isWinner){
       var n=Number(v);
       if(isFinite(n) && n!==0) v=n/Number(getFx(_c).rate);
     }
-    var disp=col.fmt(v);
+    // Se le pasa la fila entera: la columna de Resultados la necesita para
+    // poder decir de que evento de Meta esta hablando.
+    var disp=col.fmt(v, obj);
     var style='flex-shrink:0;width:'+col.w+'px;height:52px;display:flex;align-items:center;padding:0 10px;border-left:0.5px solid var(--border);border-bottom:0.5px solid var(--border);font-size:12px';
     if(isWinner) style+=';background:rgba(29,158,117,0.06)';
     if(col.color&&disp!=='-') style+=';color:var(--accent)';
@@ -62149,6 +62278,19 @@ async function syncMetaAds(clientId){
       // Sirve para ver con que nombre viene el evento que Ads Manager llama "Resultados".
       try{ if(actions.length) console.log('[META action_types]', actions.map(function(a){return a.action_type+'='+a.value;}).join(' | ')); }catch(e){}
       var results=_purch||_sched||_reg||_custom||leads||_msgConv||0;
+      /* ⚠️  SE GUARDA CUAL DE LOS SEIS GANO. El orden de arriba es fijo y el
+         primero que no sea cero se lleva el numero, asi que "Resultados: 31"
+         puede ser una compra, un agendamiento o una conversion
+         personalizada, y mirando el numero no hay forma de saberlo. Sin
+         esto, Ojapo mostraba 11 resultados con 48 leads y Albet 31 con 0
+         leads, y para averiguar de que evento hablaban habia que abrir la
+         consola del navegador. */
+      var resultsEvento=_purch?'Compras'
+                       :_sched?'Programaciones'
+                       :_reg?'Registros completados'
+                       :_custom?'Conversion personalizada'
+                       :leads?'Clientes potenciales'
+                       :_msgConv?'Conversaciones iniciadas':'';
       // Costo por resultado. Si no hubo resultados queda vacio: el fallback anterior
       // agarraba el primer cost_per_action_type (costo por clic, por vista de landing...)
       // y mostraba cosas como "Resultados: - / Costo/resultado: $0.05", que no significan nada.
@@ -62156,6 +62298,7 @@ async function syncMetaAds(clientId){
       if(results>0) cpr=(spend/results).toFixed(2);
       return {
         spend:spend,
+        resultsEvento:resultsEvento,
         impressions:parseInt(ins.impressions||0),
         reach:parseInt(ins.reach||0),
         frequency:parseFloat(ins.frequency||0).toFixed(2),
