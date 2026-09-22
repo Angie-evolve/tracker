@@ -182,6 +182,35 @@ Deno.serve(async (req: Request) => {
       return responder({ ok: true, location: GHL_LOCATION, calendarios: cals });
     }
 
+    /* Quienes pueden tomar una reunion de ese calendario.
+     * Sale de `teamMembers` del calendario, cruzado con los usuarios de la
+     * subcuenta para poder mostrar el nombre y no un id.
+     */
+    if (accion === "personas") {
+      const calendarId = String(body.calendarId || "").trim();
+      if (!calendarId) return responder({ error: "Falta el calendario." }, 400);
+      const rc = await ghl("/calendars/" + encodeURIComponent(calendarId));
+      if (!rc.ok) return responder({ error: "GHL " + rc.status + ": " + rc.crudo }, 502);
+      const cal = (rc.datos && (rc.datos.calendar || rc.datos)) || {};
+      const miembros: string[] = ((cal.teamMembers || []) as any[])
+        .map((m) => String((m && (m.userId || m.id)) || "")).filter(Boolean);
+      // Los nombres son un lujo: si la lista de usuarios falla, se devuelven
+      // los ids igual en vez de no devolver nada.
+      const nombres: Record<string, string> = {};
+      const ru = await ghl("/users/?locationId=" + encodeURIComponent(GHL_LOCATION));
+      if (ru.ok) {
+        ((ru.datos && ru.datos.users) || []).forEach((u: any) => {
+          if (u && u.id) {
+            nombres[String(u.id)] = String(u.name || u.firstName || u.email || u.id);
+          }
+        });
+      }
+      return responder({
+        ok: true, calendarId, tipo: String(cal.calendarType || ""),
+        personas: miembros.map((id) => ({ id, nombre: nombres[id] || id })),
+      });
+    }
+
     // Los horarios libres de un calendario para un dia. Los calcula GHL con la
     // disponibilidad configurada -horario de atencion, duracion del turno, lo
     // ya ocupado-, asi que es la misma verdad que ve el cliente en el widget.
@@ -217,9 +246,21 @@ Deno.serve(async (req: Request) => {
       if (isNaN(base)) return responder({ error: "El dia no se entiende: " + dia }, 400);
       const desde = base - 24 * 3600 * 1000;
       const hasta = base + 48 * 3600 * 1000;
+      /* Los huecos de UNA PERSONA, no los del calendario entero.
+       *
+       * ⚠️  ESTE FILTRO ES LO QUE HACE QUE TODO ESTO SIRVA. Un calendario de
+       *     equipo devuelve los huecos donde hay ALGUIEN libre. Agendar ahi a
+       *     nombre de una persona concreta puede caer en un horario donde la
+       *     libre era otra, y el cliente se conecta solo. Con `userId`, GHL
+       *     mira la disponibilidad de ESA persona -incluido su Google
+       *     conectado-, que es justo lo que no se puede ver creando un
+       *     calendario nuevo a mano.
+       */
+      const userId = String(body.userId || "").trim();
+      const qs = "?startDate=" + desde + "&endDate=" + hasta;
       const r = await ghl(
-        "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" +
-        "?startDate=" + desde + "&endDate=" + hasta,
+        "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" + qs +
+        (userId ? "&userId=" + encodeURIComponent(userId) : ""),
       );
       if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
       // GHL devuelve un objeto con una clave por dia y los turnos adentro. La
@@ -232,9 +273,37 @@ Deno.serve(async (req: Request) => {
         if (typeof v === "object") Object.keys(v).forEach((k) => juntar(v[k]));
       };
       juntar(r.datos);
+
+      /* ⚠️  NO SE DA POR HECHO QUE GHL FILTRO. Si `userId` no es de ese
+       *     calendario, o la version de la API lo ignora, devuelve los mismos
+       *     huecos que sin filtrar y nosotros creeriamos estar viendo la
+       *     agenda de una persona cuando vemos la del equipo. Se pide una
+       *     segunda vez sin el filtro y se comparan: si dan igual, se avisa y
+       *     que decida quien mira, en vez de prometer algo que no se cumplio.
+       */
+      let filtroAndando: boolean | null = null;
+      if (userId) {
+        const r2 = await ghl(
+          "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" + qs,
+        );
+        if (r2.ok) {
+          const todos: string[] = [];
+          const juntar2 = (v: any) => {
+            if (!v) return;
+            if (Array.isArray(v)) { v.forEach((x) => typeof x === "string" && todos.push(x)); return; }
+            if (typeof v === "object") Object.keys(v).forEach((k) => juntar2(v[k]));
+          };
+          juntar2(r2.datos);
+          filtroAndando = !(todos.length === slots.length &&
+            todos.every((x, i) => x === slots[i]));
+        }
+      }
       // Se devuelve de que calendario salieron: quien pregunta necesita saberlo
       // para mover la cita en ESE y no en otro.
-      return responder({ ok: true, slots: slots.slice(0, 400), calendarId, citaCalendarId });
+      return responder({
+        ok: true, slots: slots.slice(0, 400), calendarId, citaCalendarId,
+        userId: userId || null, filtroAndando,
+      });
     }
 
     // Mover una cita que ya existe. Va por el mismo camino que crearla porque
@@ -344,10 +413,14 @@ Deno.serve(async (req: Request) => {
     // calendario. Mandar una propia hace que GHL rechace con "Selected slot
     // duration is not a valid duration option for this calendar", y ademas
     // crearia reuniones de un largo que el cliente no espera.
+    // A nombre de quien queda. Sin esto, en un calendario de equipo GHL
+    // reparte solo y no hay forma de decidirlo desde el tracker.
+    const asignado = String(body.userId || "").trim();
     const nueva: Record<string, unknown> = {
       calendarId,
       locationId: GHL_LOCATION,
       contactId: c.id,
+      ...(asignado ? { assignedUserId: asignado } : {}),
       // El horario va TAL CUAL lo mando la app, que a su vez es tal cual lo
       // devolvio free-slots. Aca se pasaba por new Date().toISOString(), que lo
       // reescribe en UTC: "2026-09-23T12:00:00-03:00" salia como
