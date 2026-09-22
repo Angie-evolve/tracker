@@ -4860,7 +4860,7 @@ function sidebarClients(){
     // Los prospectos nacen archivados. Si ya llegaron a alta, ese flag no los
     // puede seguir escondiendo o volverian a quedar fuera por otra puerta.
     if(c.archived && !f.archivados && !(esProspecto(c)&&(alta||f.prospectos))) return false;
-    if(soloCartera() && !esMiCliente(c)) return false;
+    if(soloCartera() && !esDeMiCartera(c)) return false;
     if(f.duenio==='mios' && !soyYo(c.owner)) return false;
     if(f.duenio==='otros' && (soyYo(c.owner)||!c.owner)) return false;
     if(f.duenio==='sin' && c.owner) return false;
@@ -10368,6 +10368,7 @@ function rolesAgHtml(){
                     :'<button class="btn btn-sm" style="color:var(--redx);font-size:10.5px;padding:2px 8px;margin-left:auto" '
                       +'onclick="rolBorrar(\''+esc(r.id)+'\')">Borrar</button>')
           +'</div>'
+          +_rolCarteraHtml(r)
           +'<div style="display:flex;gap:7px 16px;flex-wrap:wrap">'
           +ROL_PERMISOS.map(function(pm){
               var on=!!(r.permisos||{})[pm.k];
@@ -10382,6 +10383,60 @@ function rolesAgHtml(){
       }).join('')
     +'<button class="btn btn-sm" onclick="rolNuevo()">Crear un rol</button>'
   +'</div>';
+}
+// Solo se pregunta si el rol NO ve todos los clientes: con el permiso puesto,
+// la cartera no acota nada y el control seria ruido.
+function _rolCarteraHtml(r){
+  if((r.permisos||{}).clientes) return '';
+  var k=(r.cartera&&r.cartera.modo==='producto')?'producto':'responsable';
+  var elegidos=(r.cartera&&Array.isArray(r.cartera.productos))?r.cartera.productos:[];
+  // `productos()` es el catalogo real; los de baja no se ofrecen, pero si uno
+  // ya estaba tildado se deja igual para no sacarle clientes a alguien en
+  // silencio el dia que se da de baja un producto.
+  var cat=(typeof productos==='function')?productos():[];
+  var nombres=cat.filter(function(x){ return x&&(x.activo!==false); })
+                 .map(function(x){ return x.nombre||''; }).filter(Boolean);
+  elegidos.forEach(function(n){ if(nombres.indexOf(n)<0) nombres.push(n); });
+  return '<div style="margin:-2px 0 9px;padding:8px 10px;background:var(--bg2);'
+      +'border-radius:var(--radius)">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      +'<span style="font-size:10.5px;color:var(--text3)">Ve los clientes</span>'
+      +'<select onchange="rolCarteraModo(\''+esc(r.id)+'\',this.value)" '
+        +'style="font-size:11px;background:var(--bg3);color:var(--text);border:1px solid var(--border2);'
+        +'border-radius:var(--radius);padding:2px 6px;font-family:var(--font);outline:none">'
+        +'<option value="responsable"'+(k==='responsable'?' selected':'')+'>donde es responsable</option>'
+        +'<option value="producto"'+(k==='producto'?' selected':'')+'>de ciertos productos</option>'
+      +'</select>'
+    +'</div>'
+    +(k==='producto'
+      ? ('<div style="display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:7px">'
+         +(nombres.length
+           ? nombres.map(function(n){
+               var on=elegidos.indexOf(n)>=0;
+               return '<label style="display:flex;align-items:center;gap:5px;font-size:11px;'
+                 +'cursor:pointer;color:'+(on?'var(--accent)':'var(--text3)')+'">'
+                 +'<input type="checkbox" class="sw"'+(on?' checked':'')
+                 +' onchange="rolCarteraProducto(\''+esc(r.id)+'\',\''+esc(n)+'\',this.checked)">'
+                 +esc(n)+'</label>';
+             }).join('')
+           : '<span style="font-size:11px;color:var(--amberx)">Todavia no hay productos cargados.</span>')
+         +(elegidos.length?'':'<span style="font-size:10.5px;color:var(--amberx)">Sin ninguno tildado no ve ningun cliente.</span>')
+         +'</div>')
+      : '<div style="font-size:10.5px;color:var(--text3);margin-top:5px">'
+        +'Cada persona con este rol ve los suyos. El responsable se pone en la ficha de cada cliente.</div>')
+  +'</div>';
+}
+function rolCarteraModo(id, modo){
+  var r=rolPorId(id); if(!r) return;
+  r.cartera=Object.assign({productos:[]}, r.cartera||{}, {modo:modo});
+  save(); _rolesRepintar();
+}
+function rolCarteraProducto(id, nombre, on){
+  var r=rolPorId(id); if(!r) return;
+  var k=r.cartera=Object.assign({modo:'producto',productos:[]}, r.cartera||{});
+  k.productos=(k.productos||[]).filter(function(x){ return x!==nombre; });
+  if(on) k.productos.push(nombre);
+  save(); _rolesRepintar();
 }
 function _rolesRepintar(){ if(S.view==='cfgAgencia') abrirConfigAgencia(); }
 
@@ -15753,6 +15808,39 @@ function esMiCliente(c){
   var o=(c||{}).owner;
   if(!o) return false;
   try{ return soyYo(_respMail(o)); }catch(e){ return soyYo(o); }
+}
+/* Que entra en la cartera de alguien. Hasta ahora habia una sola respuesta
+   -los clientes donde figura como responsable- y no alcanzaba: un rol puede
+   ser "la que lleva The Flowing Code", y eso no se expresa cliente por
+   cliente.
+
+   Dos criterios, elegidos en el rol:
+     responsable -> los clientes donde ESTA persona figura como responsable.
+                    Cada uno ve los suyos aunque compartan el rol.
+     producto    -> los clientes de ciertos productos. Todos los que tengan
+                    ese rol ven los mismos.
+
+   ⚠️  UN CLIENTE SIN RESPONSABLE NO ES DE NADIE, y se sigue cumpliendo: con
+       criterio "responsable" no entra, porque `esMiCliente` pide que el campo
+       exista. Hoy hay 3 asi. */
+function carteraDelRol(){
+  var r=rolDePersona(SB.email);
+  var k=(r&&r.cartera)||{};
+  return {modo:(k.modo==='producto')?'producto':'responsable',
+          productos:Array.isArray(k.productos)?k.productos:[]};
+}
+function esDeMiCartera(c){
+  var k=carteraDelRol();
+  if(k.modo==='producto'){
+    // La misma lectura que el Panel 360 y el filtro de clientes: resuelve por
+    // id y cae al nombre guardado. Dos formas de leer el producto se
+    // contradicen el dia que alguien lo cambia desde un solo lado.
+    var _p=(typeof _p360Prod==='function')?_p360Prod(c):((c&&c.producto)||'');
+    // Sin productos elegidos no se muestra todo: seria lo contrario de acotar.
+    if(!k.productos.length) return false;
+    return k.productos.indexOf(_p)>=0;
+  }
+  return esMiCliente(c);
 }
 
 function irTorre(k){
@@ -33991,7 +34079,7 @@ function p360Html(){
   // Los prospectos entran aca y en ningun otro lado: el tablero es
   // justamente donde tienen que verse avanzar.
   var cls=(DB.clients||[]).filter(function(c){
-    if(soloCartera() && !esMiCliente(c)) return false;
+    if(soloCartera() && !esDeMiCartera(c)) return false;
     return !c.archived || esProspecto(c);
   });
   if(!cls.length) return _torreVacio('Panel 360', soloCartera()
