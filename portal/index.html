@@ -950,6 +950,27 @@ const ofertaTxt = l => l.oferta_presentada === true  ? 'Sí'
                      : 'Pendiente';
 
 const CALIF = { alta:'Alta', media:'Media', no_califica:'No califica' };
+
+/* ── El estado del lead ───────────────────────────────────────────────
+   Es una columna PROPIA de `leads`, no algo que se deduzca de la etapa.
+   Las dos vienen de GHL —`status` y `pipelineStage`— y no siempre
+   coinciden: hoy hay 26 leads en "No calificado" cuyo estado dice
+   `open`, y 24 en etapas activas cuyo estado dice `abandoned`.
+
+   Antes esta columna mostraba una etiqueta sacada del grupo de la etapa,
+   así que decía "En seguimiento" sobre leads guardados como abandonados.
+   Ahora muestra lo que hay guardado, y se puede cambiar.
+
+   Los cuatro valores son los que acepta la base; las etiquetas son
+   literales a propósito, para que lo que se ve y lo que se guarda no se
+   puedan separar. */
+const ESTADOS = [
+  { v:'open',      t:'Abierto' },
+  { v:'won',       t:'Ganado' },
+  { v:'lost',      t:'Perdido' },
+  { v:'abandoned', t:'Abandonado' }
+];
+const estadoTxt = l => (ESTADOS.find(e => e.v === l.estado) || {}).t || 'Sin estado';
 const COLOR_CALIF = { alta:'#7ae0a8', media:'#e8b56a', no_califica:'#6b6b6b' };
 const puedeCalificar = l => {
   const e = etapaDe(l.etapa_portal);
@@ -1073,9 +1094,9 @@ const _ctl = {
     return _valor(e ? e.nombre : l.etapa_portal, 'etapa', false, '¿En qué etapa está?');
   },
 
-  /* Asistió y Estado NO se guardan: se leen de la etapa. Son la misma
-     verdad mirada de dos maneras, así que no hay dos fuentes que se
-     puedan contradecir. Por eso no se pueden tocar. */
+  /* Asistió NO se guarda: se lee de la etapa. Es la misma verdad mirada de
+     otra manera, así que no hay dos fuentes que se puedan contradecir. Por
+     eso no se puede tocar. El estado SÍ es una columna propia: ver ESTADOS. */
   asistio(l){
     const e = etapaDe(l.etapa_portal);
     if(!e) return '<span class="v ph solo">—</span>';
@@ -1085,11 +1106,7 @@ const _ctl = {
     return '<span class="v ph">Sin reunión</span>';
   },
   estado(l){
-    const e = etapaDe(l.etapa_portal);
-    const g = e ? e.grupo : 'nuevo';
-    const txt = { nuevo:'Nuevo', avanzando:'En seguimiento',
-                  frenado:'Sin avance', cerrado:'Cerrado' }[g] || 'Nuevo';
-    return '<span class="v' + (g === 'nuevo' ? ' ph' : '') + '">' + esc(txt) + '</span>';
+    return _valor(estadoTxt(l), 'estado', !l.estado, '¿En qué estado está?');
   },
 
   monto(l){
@@ -1453,6 +1470,43 @@ function abrirHojaPresento(lead){
   _hojaAbrir();
 }
 
+function abrirHojaEstado(lead){
+  abierto = lead;
+  hojaModo = 'estado';
+  $('hoja-nom').textContent = nombreDe(lead);
+  $('hoja-sub').textContent = '¿En qué estado está?';
+  $('hoja-ops').innerHTML = ESTADOS.map(e =>
+      '<button class="op" data-v="' + e.v + '" aria-current="'
+      + (lead.estado === e.v) + '">'
+      + '<span class="pt"></span>' + esc(e.t) + '</button>').join('');
+  _hojaAbrir();
+}
+
+async function marcarEstado(lead, valor){
+  if(lead.estado === valor) return;
+  const antes = lead.estado;
+  lead.estado = valor;
+  pintar();
+
+  const tarjeta = document.querySelector('.lead[data-id="' + CSS.escape(String(lead.id)) + '"]');
+  if(tarjeta) tarjeta.classList.add('guardando');
+
+  try{
+    // `lead_marcar` también acepta valor y nota; se mandan en null a
+    // propósito y la función los deja como estaban (hace `coalesce`).
+    await api('/rest/v1/rpc/lead_marcar', {
+      method:'POST',
+      body: JSON.stringify({ p_lead: lead.id, p_estado: valor })
+    });
+    avisar('Estado: ' + estadoTxt(lead));
+  }catch(err){
+    lead.estado = antes;
+    avisar('No se guardó: ' + err.message, true);
+  }finally{
+    pintar();
+  }
+}
+
 async function marcarPresento(lead, valor){
   const pendiente = valor === '__pendiente';
   const nuevo = pendiente ? null : (valor === 'si');
@@ -1809,6 +1863,7 @@ document.addEventListener('click', ev => {
     // nada.
     if(mini.dataset.a === 'etapa'){ abrirHoja(lead); return; }
     if(mini.dataset.a === 'calif'){ abrirHojaCalif(lead); return; }
+    if(mini.dataset.a === 'estado'){ abrirHojaEstado(lead); return; }
     if(mini.dataset.a === 'presento'){ abrirHojaPresento(lead); return; }
     if(mini.dataset.a === 'form'){
       // En la tabla no hay lugar para desplegarlo sin deformar las columnas,
@@ -1837,6 +1892,7 @@ document.addEventListener('click', ev => {
     cerrarHoja();                       // ojo: esto deja `hojaModo` en 'etapa'
     if(modo === 'calif')         calificar(lead, v);
     else if(modo === 'presento') marcarPresento(lead, v);
+    else if(modo === 'estado')   marcarEstado(lead, v);
     else                         cambiarEtapa(lead, v);
   }
 });
