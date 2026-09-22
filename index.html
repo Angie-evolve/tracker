@@ -24007,6 +24007,69 @@ function _cfgEvento(as){
   return {evento:'', pixel:po.pixel_id||'', custom:false};
 }
 
+// ---- Cual es "el resultado" de una campana ----
+// Ads Manager NO muestra "el evento de conversion mas fuerte": muestra el evento
+// POR EL QUE EL CONJUNTO ESTA OPTIMIZADO. Son dos cosas distintas, y esa
+// diferencia es la que hacia que el tracker mostrara 11 donde Meta mostraba 48:
+// la campana de Ojapo optimiza por Lead (48 leads), pero el orden fijo de
+// `extractIns` agarraba primero otra conversion de 11 y se quedaba con esa.
+//
+// La meta de optimizacion ya la pedimos a la API (`optimization_goal` y
+// `promoted_object` del conjunto), asi que esto no agrega ni una llamada.
+//
+// Devuelve {clave, nombre} o null. null = no sabemos cual es el objetivo, y
+// entonces se usa el orden de siempre: es preferible un numero aproximado a un
+// cero inventado.
+var _META_EV_BALDE={
+  LEAD:'leads', PURCHASE:'compras', COMPLETE_REGISTRATION:'registros',
+  SCHEDULE:'agendas', CONTACT:'contactos', SUBMIT_APPLICATION:'solicitudes'
+};
+var _META_OPT_BALDE={
+  LEAD_GENERATION:{clave:'leads',      nombre:'Clientes potenciales'},
+  QUALITY_LEAD:   {clave:'leads',      nombre:'Clientes potenciales de calidad'},
+  CONVERSATIONS:  {clave:'mensajes',   nombre:'Conversaciones iniciadas'},
+  LINK_CLICKS:    {clave:'clics',      nombre:'Clics en el enlace'},
+  LANDING_PAGE_VIEWS:{clave:'landing', nombre:'Visitas a la pagina de destino'},
+  THRUPLAY:       {clave:'thruplays',  nombre:'ThruPlays'},
+  IMPRESSIONS:    {clave:'impresiones',nombre:'Impresiones'},
+  REACH:          {clave:'alcance',    nombre:'Alcance'}
+};
+function _metaObjetivoResultado(as){
+  if(!as) return null;
+  var og=String(as.optimization_goal||'').toUpperCase();
+  var po=as.promoted_object||null;
+  // Conversiones fuera del sitio (y VALUE, que es lo mismo optimizando por importe):
+  // la meta sola no alcanza, el evento concreto vive en promoted_object.
+  if(og==='OFFSITE_CONVERSIONS'||og==='VALUE'){
+    if(po&&po.custom_conversion_id)
+      return {clave:'custom:'+po.custom_conversion_id, nombre:'Conversion personalizada'};
+    if(po&&po.custom_event_type){
+      var ev=String(po.custom_event_type).toUpperCase();
+      // Evento que no sabemos leer: devolvemos null a proposito. Inventar un
+      // balde vacio mostraria 0 y eso es peor que el numero aproximado de antes.
+      return _META_EV_BALDE[ev]?{clave:_META_EV_BALDE[ev], nombre:_cfgEs(_EV_ES,ev)}:null;
+    }
+    // Sin evento pero con pagina: es un formulario nativo de Meta.
+    if(po&&po.page_id) return {clave:'leads', nombre:'Clientes potenciales'};
+    return null;
+  }
+  return _META_OPT_BALDE[og]||null;
+}
+// El objetivo de la CAMPANA sale de sus conjuntos. Si todos optimizan por lo
+// mismo, ese es el resultado de la campana. Si no coinciden, Meta tampoco puede
+// mostrar una sola columna limpia, asi que devolvemos null y cae al orden viejo.
+function _metaObjCampana(camp){
+  var ads=(camp&&camp.adsets)||[];
+  var uno=null;
+  for(var i=0;i<ads.length;i++){
+    var o=_metaObjetivoResultado(ads[i]);
+    if(!o) return null;
+    if(!uno) uno=o;
+    else if(uno.clave!==o.clave) return null;
+  }
+  return uno;
+}
+
 
 
 // ---- Metricas verificables del anuncio ----
@@ -60670,7 +60733,14 @@ var META_METRIC_COLS=[
    fmt:function(v,obj){
      if(!v) return '-';
      var e=obj&&obj.resultsEvento;
-     return e?('<span title="Meta los reporta como: '+esc(e)+'">'+v+'</span>'):String(v);
+     if(!e) return String(v);
+     // Punteado = estimado: no supimos cual es la meta de optimizacion del
+     // conjunto y el numero sale del orden de prioridad, asi que puede no
+     // coincidir con Ads Manager. Sin punteado = es el evento optimizado.
+     var est=(obj.resultsFuente==='estimado');
+     var t=est?('Aproximado: mostramos '+e+', el evento mas fuerte. No pudimos leer por que evento optimiza el conjunto, asi que puede no coincidir con Meta.')
+              :(e+' \u2014 es el evento por el que optimiza el conjunto, igual que la columna Resultados de Meta.');
+     return '<span title="'+esc(t)+'"'+(est?' style="border-bottom:1px dotted #777"':'')+'>'+v+'</span>';
    }},
   {key:'costPerResult',l:'Costo/resultado',   w:110, fmt:function(v){return v?'$'+Number(v).toFixed(2):'-';}, money:true, color:true, bold:true},
   {key:'igFollows', l:'Seg. Instagram',       w:110, fmt:function(v){return v||'-';}},
@@ -62303,7 +62373,7 @@ async function syncMetaAds(clientId){
             var adsData=await adsResp.json();
             var adsList=(adsData.data||[]).map(function(ad){
               var ins=ad.insights&&ad.insights.data&&ad.insights.data[0];
-              var m=extractIns(ins);
+              var m=extractIns(ins, 0, _metaObjetivoResultado(adsets[ai]));
               return {
                 id:ad.id,name:ad.name,status:ad.status,previewUrl:'',
                 createdTime:ad.created_time||null,updatedTime:ad.updated_time||null,
@@ -62319,6 +62389,7 @@ async function syncMetaAds(clientId){
                 thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
                 hookRate:m.hookRate,holdRate:m.holdRate,rQual:m.rQual,rEng:m.rEng,rConv:m.rConv,
                 results:m.results,costPerResult:m.costPerResult,
+                 resultsEvento:m.resultsEvento,resultsFuente:m.resultsFuente,
                 igFollows:m.igFollows,igProfileVisits:m.igProfileVisits
               };
             });
@@ -62341,7 +62412,7 @@ async function syncMetaAds(clientId){
         console.log('adsets before map:', JSON.stringify(adsets.map(function(a){return {id:a.id,name:a.name,adsLen:a.ads&&a.ads.length};})));
         campaigns[ci].adsets=adsets.map(function(as){
           var ins=as.insights&&as.insights.data&&as.insights.data[0];
-          var m=extractIns(ins);
+          var m=extractIns(ins, 0, _metaObjetivoResultado(as));
           var bud=as.daily_budget||as.lifetime_budget||0;
           return {
             id:as.id,name:as.name,status:as.status,
@@ -62370,6 +62441,7 @@ async function syncMetaAds(clientId){
             thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
                 hookRate:m.hookRate,holdRate:m.holdRate,rQual:m.rQual,rEng:m.rEng,rConv:m.rConv,
             results:m.results,costPerResult:m.costPerResult,
+             resultsEvento:m.resultsEvento,resultsFuente:m.resultsFuente,
             igFollows:m.igFollows,igProfileVisits:m.igProfileVisits,
             ads:(as.ads||[])
           };
@@ -62379,7 +62451,7 @@ async function syncMetaAds(clientId){
     }
 
     // Helper to extract metrics from insights
-    function extractIns(ins, budget){
+    function extractIns(ins, budget, obj){
       if(!ins) return {spend:0,impressions:0,reach:0,frequency:0,clicks:0,ctr:'0',cpc:'0',cpm:'0',leads:0,cpl:'',landingViews:0,thruPlays:0,costPerThruPlay:'',videoPlays:0,avgWatch:'',ret25:'',ret50:'',ret75:'',ret100:'',results:0,costPerResult:'',hookRate:'',holdRate:'',rQual:'',rEng:'',rConv:'',igFollows:0,igProfileVisits:0};
       var actions=ins.actions||[];
       function getAction(type){ var a=actions.find(function(x){return x.action_type===type;}); return a?parseInt(a.value||0):0; }
@@ -62454,20 +62526,62 @@ async function syncMetaAds(clientId){
       // DIAGNOSTICO: lista los action_type crudos que devuelve Meta para esta fila.
       // Sirve para ver con que nombre viene el evento que Ads Manager llama "Resultados".
       try{ if(actions.length) console.log('[META action_types]', actions.map(function(a){return a.action_type+'='+a.value;}).join(' | ')); }catch(e){}
-      var results=_purch||_sched||_reg||_custom||leads||_msgConv||0;
-      /* ⚠️  SE GUARDA CUAL DE LOS SEIS GANO. El orden de arriba es fijo y el
-         primero que no sea cero se lleva el numero, asi que "Resultados: 31"
-         puede ser una compra, un agendamiento o una conversion
-         personalizada, y mirando el numero no hay forma de saberlo. Sin
-         esto, Ojapo mostraba 11 resultados con 48 leads y Albet 31 con 0
-         leads, y para averiguar de que evento hablaban habia que abrir la
-         consola del navegador. */
-      var resultsEvento=_purch?'Compras'
-                       :_sched?'Programaciones'
-                       :_reg?'Registros completados'
-                       :_custom?'Conversion personalizada'
-                       :leads?'Clientes potenciales'
-                       :_msgConv?'Conversaciones iniciadas':'';
+      // Lee el balde que pide la meta de optimizacion del conjunto.
+      // Devuelve null si la clave no la sabemos leer, para poder distinguir
+      // "el evento dio cero" de "no supimos buscarlo".
+      function _balde(clave){
+        if(!clave) return null;
+        // Conversion personalizada: Meta la reporta como
+        // 'offsite_conversion.custom.<id>'. Se busca ESA, no cualquier custom:
+        // una cuenta puede tener varias y la de al lado no es el resultado.
+        if(clave.indexOf('custom:')===0){
+          var id=clave.slice(7), exacto=0, generico=0;
+          actions.forEach(function(a){
+            var t=String(a.action_type||''), n=parseInt(a.value||0)||0;
+            if(t.indexOf(id)>=0){ if(n>exacto) exacto=n; }
+            else if(/custom/i.test(t) && n>generico) generico=n;
+          });
+          // Si la id no aparece (Meta a veces la reporta sin el sufijo), se cae
+          // al barrido generico antes que devolver cero.
+          return exacto||generico;
+        }
+        switch(clave){
+          case 'leads':       return leads;
+          case 'compras':     return _purch;
+          case 'registros':   return _reg;
+          case 'agendas':     return _sched;
+          case 'mensajes':    return _msgConv;
+          case 'contactos':   return maxAction('contact','offsite_conversion.fb_pixel_contact','onsite_conversion.contact');
+          case 'solicitudes': return maxAction('submit_application','offsite_conversion.fb_pixel_submit_application');
+          case 'clics':       return parseInt(ins.clicks||0)||0;
+          case 'landing':     return landingViews;
+          case 'thruplays':   return thruPlays;
+          case 'impresiones': return parseInt(ins.impressions||0)||0;
+          case 'alcance':     return parseInt(ins.reach||0)||0;
+        }
+        return null;
+      }
+      var _delObjetivo = obj ? _balde(obj.clave) : null;
+      var results, resultsEvento, resultsFuente;
+      if(_delObjetivo!==null){
+        // Igual que Ads Manager: el numero es el del evento optimizado, aunque
+        // de cero. Un cero aca es un dato real ("optimiza por Agendamiento y no
+        // hubo ninguno"), no un error.
+        results=_delObjetivo; resultsEvento=obj.nombre; resultsFuente='objetivo';
+      }else{
+        /* ⚠️  SIN META DE OPTIMIZACION CONOCIDA se vuelve al orden fijo de
+           antes: el primero que no sea cero se lleva el numero. Es aproximado y
+           puede no coincidir con Meta, por eso se marca como 'estimado' y la
+           celda lo aclara al pasar el mouse. */
+        results=_purch||_sched||_reg||_custom||leads||_msgConv||0;
+        resultsEvento=_purch?'Compras'
+                     :_sched?'Programaciones'
+                     :_reg?'Registros completados'
+                     :_custom?'Conversion personalizada'
+                     :leads?'Clientes potenciales'
+                     :_msgConv?'Conversaciones iniciadas':'';
+        resultsFuente=resultsEvento?'estimado':'';
+      }
       // Costo por resultado. Si no hubo resultados queda vacio: el fallback anterior
       // agarraba el primer cost_per_action_type (costo por clic, por vista de landing...)
       // y mostraba cosas como "Resultados: - / Costo/resultado: $0.05", que no significan nada.
@@ -62476,6 +62590,7 @@ async function syncMetaAds(clientId){
       return {
         spend:spend,
         resultsEvento:resultsEvento,
+        resultsFuente:resultsFuente||'',
         impressions:parseInt(ins.impressions||0),
         reach:parseInt(ins.reach||0),
         frequency:parseFloat(ins.frequency||0).toFixed(2),
@@ -62518,7 +62633,7 @@ async function syncMetaAds(clientId){
     console.log('Saving campaigns:', campaigns.map(function(c){return {id:c.id,adsets:c.adsets&&c.adsets.length,ads:c.adsets&&c.adsets[0]&&c.adsets[0].ads&&c.adsets[0].ads.length};}));
     activeLine.metaCampaigns=campaigns.map(function(camp){
       var ins=camp.insights&&camp.insights.data&&camp.insights.data[0];
-      var m=extractIns(ins);
+      var m=extractIns(ins, 0, _metaObjCampana(camp));
       var bud=camp.daily_budget||camp.lifetime_budget||0;
       return {
         id:camp.id,name:camp.name,status:camp.status,
@@ -62533,6 +62648,7 @@ async function syncMetaAds(clientId){
         thruPlays:m.thruPlays,costPerThruPlay:m.costPerThruPlay,videoPlays:m.videoPlays,avgWatch:m.avgWatch,ret25:m.ret25,ret50:m.ret50,ret75:m.ret75,ret100:m.ret100,
                 hookRate:m.hookRate,holdRate:m.holdRate,rQual:m.rQual,rEng:m.rEng,rConv:m.rConv,
         results:m.results,costPerResult:m.costPerResult,
+         resultsEvento:m.resultsEvento,resultsFuente:m.resultsFuente,
         igFollows:m.igFollows,igProfileVisits:m.igProfileVisits,
         adsets:(camp.adsets||[])
       };
