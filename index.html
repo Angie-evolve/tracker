@@ -32572,6 +32572,7 @@ function p360Agendar(clientId, elegir){
       +_citaCalSelect(et, c.id, (elegir
           ? "{fecha:'cita-fecha',hora:'cita-hora',etapa:'cita-etapa',caja:'cita-huecos'}"
           : "{fecha:'cita-fecha',hora:'cita-hora',et:'"+esc(et).replace(/'/g,"\\'")+"',caja:'cita-huecos'}"))
+      +'<div id="cita-quien-caja" style="margin-top:12px"></div>'
       +'<input type="hidden" id="cita-con" value="'+esc(c.contacto||c.name||'')+'">'
       +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">'
         +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
@@ -32599,9 +32600,10 @@ function p360Agendar(clientId, elegir){
             +'Agendar en GHL</button>'):'')
       +'</div>'
     +'</div></div>';
-  if(cal) citasHuecos(c.id, elegir
+  var _ids=elegir
     ? {fecha:'cita-fecha', hora:'cita-hora', etapa:'cita-etapa', caja:'cita-huecos'}
-    : {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'});
+    : {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'};
+  if(cal){ citasHuecos(c.id, _ids); citasQuienCargar(c.id, _ids); }
 }
 // Se cierra sola cuando la cita quedo: mirar si aparecio es mas confiable que
 // confiar en que la funcion de abajo no fallo en el medio.
@@ -32678,7 +32680,8 @@ function _citaCalSelect(et, clientId, ids){
   return '<div style="margin-top:12px">'
     +'<label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">'
       +'Con quien</label>'
-    +'<select id="cita-cal" style="'+est+';width:100%" onchange="citasHuecos('+clientId+','+ids+')">'
+    +'<select id="cita-cal" style="'+est+';width:100%" '
+      +'onchange="citasQuienCargar('+clientId+','+ids+');citasHuecos('+clientId+','+ids+')">'
     +(cal?'':'<option value="">Elegi un calendario</option>')
     +cals.map(function(x){
         return '<option value="'+esc(x.id)+'"'+(String(x.id)===cal?' selected':'')+'>'
@@ -32688,6 +32691,48 @@ function _citaCalSelect(et, clientId, ids){
       +'Los horarios libres son los de ese calendario. Para que la tome otra persona, '
       +'elegi el de ella.</div>'
   +'</div>';
+}
+
+/* Quien del equipo toma la reunion.
+   Un calendario de GHL puede tener varias personas. Elegir una hace dos cosas:
+   los horarios pasan a ser los de ella -su disponibilidad, su Google
+   conectado- y la cita queda a su nombre. Vacio = como antes, GHL reparte.
+
+   ⚠️  CREAR UN CALENDARIO NUEVO PARA LA OTRA PERSONA NO SIRVE: un calendario
+       recien hecho no conoce su agenda real, muestra horarios genericos. Por
+       eso se filtra dentro del calendario que ya esta bien configurado, en
+       vez de armar uno por persona. */
+function _citaQuien(){
+  var sel=document.getElementById('cita-quien');
+  return sel ? String(sel.value||'') : '';
+}
+// Las personas del calendario elegido. Se piden a GHL cada vez que cambia el
+// calendario: quienes lo atienden es parte de como esta armado alla, no algo
+// que el tracker pueda guardar sin quedar viejo.
+async function citasQuienCargar(clientId, ids){
+  var caja=document.getElementById('cita-quien-caja');
+  if(!caja) return;
+  var et=ids.et || (document.getElementById('cita-etapa')||{}).value||'';
+  var cal=_citaCal(et);
+  if(!cal){ caja.innerHTML=''; return; }
+  caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando al equipo\u2026</span>';
+  try{
+    var r=await agLlamar({accion:'personas', calendarId:cal});
+    var ps=(r&&r.personas)||[];
+    // Con una sola persona no hay nada que elegir: el desplegable seria ruido.
+    if(ps.length<2){ caja.innerHTML=''; return; }
+    var est=_citaEst();
+    caja.innerHTML='<label style="font-size:11px;color:var(--text3);display:block;'
+      +'margin-bottom:4px">Quien la toma</label>'
+      +'<select id="cita-quien" style="'+est+';width:100%" onchange="citasHuecos('
+        +clientId+','+JSON.stringify(ids)+')">'
+      +'<option value="">Como venga \u2014 la reparte GHL</option>'
+      +ps.map(function(x){ return '<option value="'+esc(x.id)+'">'+esc(x.nombre)+'</option>'; }).join('')
+      +'</select>';
+  }catch(e){
+    caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">No pude traer el '
+      +'equipo de ese calendario: '+esc((e&&e.message)||'')+'</span>';
+  }
 }
 
 async function citasHuecos(clientId, ids){
@@ -32715,10 +32760,16 @@ async function citasHuecos(clientId, ids){
     var _ya=_c0 ? _deEtapa(_c0.citas, et) : null;
     var _ev=(_ya && _ya.id && String(_ya.id).indexOf('mano-')!==0
              && String(_ya.estado||'')!=='cancelled') ? String(_ya.id) : '';
-    var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f, eventId:_ev});
+    var _q=_citaQuien();
+    var r=await agLlamar({accion:'huecos', calendarId:cal, dia:f, eventId:_ev, userId:_q});
     // Donde vive la cita vieja, para decidir despues si se mueve o se rehace.
     S._huecosCitaCal=S._huecosCitaCal||{};
     S._huecosCitaCal[ids.caja]=String(r.citaCalendarId||'');
+    /* ⚠️  SI EL FILTRO NO TUVO EFECTO HAY QUE DECIRLO. La funcion compara los
+       huecos con y sin persona; si dan igual, estos son los del equipo y no
+       los de ella, y agendarle uno puede caer en un horario donde estaba
+       ocupada. Mejor que lo sepa quien mira. */
+    S._huecosSinFiltrar=!!(_q && r.filtroAndando===false);
     // Reprogramar mueve la reunion sin sacarla de su calendario, asi que ahi los
     // horarios son los de ese. Agendar, en cambio, la crea donde va.
     var calUsar=(ids.mover && r.citaCalendarId) ? String(r.citaCalendarId) : String(cal||'');
@@ -32936,6 +32987,8 @@ async function citasAgendarGhl(clientId){
     _citasDecir(clientId,'Falta el calendario: elegilo en "Con quien", o dejaselo fijo a '
       +'"'+et+'" en el editor de etapas.','var(--amberx)'); return;
   }
+  if(S._huecosSinFiltrar && !confirm('GHL devolvio los mismos horarios con y sin persona, '
+      +'asi que estos pueden ser los del equipo y no los de ella. ¿Agendo igual?')) return;
   var d=new Date(f+'T'+(h||'09:00')+':00');
   if(isNaN(d.getTime())){ _citasDecir(clientId,'Esa fecha no se entiende.','var(--amberx)'); return; }
   var aviso=_citasHoraLibre('cita-huecos', f, h||'09:00');
@@ -32973,8 +33026,10 @@ async function citasAgendarGhl(clientId){
       ? await agLlamar({accion:'reprogramar', eventId:idViejo,
                         calendarId:((S._huecosCal||{})['cita-huecos']||cal),
                         inicio:_envio})
+      // `userId` vacio = como antes: la cita entra al calendario y GHL decide
+      // quien la toma. Con persona elegida, queda a su nombre.
       : await agLlamar({accion:'agendar', email:mail, calendarId:cal,
-                        inicio:_envio,
+                        inicio:_envio, userId:_citaQuien(),
                         titulo:(c.name||'')+' - '+et});
     // Se anota como puesta a mano: la decidiste vos, no la adivino nadie, y la
     // proxima sincronizacion no tiene que volver a clasificarla.
