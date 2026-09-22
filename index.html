@@ -10429,14 +10429,14 @@ function _rolCarteraHtml(r){
 function rolCarteraModo(id, modo){
   var r=rolPorId(id); if(!r) return;
   r.cartera=Object.assign({productos:[]}, r.cartera||{}, {modo:modo});
-  save(); _rolesRepintar();
+  save(); _rolesRepintar(); rolSincronizar(id);
 }
 function rolCarteraProducto(id, nombre, on){
   var r=rolPorId(id); if(!r) return;
   var k=r.cartera=Object.assign({modo:'producto',productos:[]}, r.cartera||{});
   k.productos=(k.productos||[]).filter(function(x){ return x!==nombre; });
   if(on) k.productos.push(nombre);
-  save(); _rolesRepintar();
+  save(); _rolesRepintar(); rolSincronizar(id);
 }
 function _rolesRepintar(){ if(S.view==='cfgAgencia') abrirConfigAgencia(); }
 
@@ -10472,6 +10472,7 @@ function rolPermiso(id, clave, on){
   r.permisos=r.permisos||{};
   if(on) r.permisos[clave]=1; else delete r.permisos[clave];
   save(); _rolesRepintar();
+  if(clave==='clientes') rolSincronizar(id);   // es el unico que la base entiende
 }
 function rolBorrar(id){
   var r=rolPorId(id);
@@ -10486,6 +10487,53 @@ function rolBorrar(id){
   a.roles=rolesAg().filter(function(x){ return x.id!==id; });
   save(); _rolesRepintar();
 }
+/* Escribe el rol EN LA BASE, no solo en el navegador.
+   `perfiles` no tiene grant ni policy de escritura -los dos candados del
+   CLAUDE.md- asi que la unica puerta es `perfil_asignar`, que es security
+   definer y chequea que quien llama sea admin.
+   Los permisos finos (tickets, finanzas...) NO viajan: la base solo sabe de
+   "ve todo" contra "ve su cartera", que es el unico corte que puede hacer una
+   policy. El resto sigue siendo del navegador, y la pantalla de Roles lo
+   aclara. */
+async function _rolABase(mail, rol){
+  if(!rol) return {ok:false, error:'sin rol'};
+  var k=(rol.cartera&&rol.cartera.modo==='producto')?'producto':'responsable';
+  try{
+    await sbFetch('rpc/perfil_asignar',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        p_mail: String(mail||''),
+        p_agencia: true,
+        // El unico permiso que la base entiende.
+        p_acotado: !(rol.permisos&&rol.permisos.clientes),
+        p_modo: k,
+        p_productos: (k==='producto' && rol.cartera && Array.isArray(rol.cartera.productos))
+          ? rol.cartera.productos : []
+      })
+    });
+    return {ok:true};
+  }catch(e){
+    return {ok:false, error:(e&&e.message)||'no pude escribirlo en la base'};
+  }
+}
+// Vuelve a mandar a la base a todos los que tengan ESE rol. Hace falta porque
+// cambiarle un permiso al rol no toca a nadie por si solo, y la pantalla
+// quedaria diciendo una cosa y la base haciendo otra.
+async function rolSincronizar(id){
+  var rol=rolPorId(id); if(!rol) return;
+  var gente=(DB.personas||[]).filter(function(x){
+    var r=rolDePersona(x&&x.email); return r&&r.id===id; });
+  if(!gente.length) return;
+  var fallas=[];
+  for(var i=0;i<gente.length;i++){
+    var r=await _rolABase(gente[i].email, rol);
+    if(!r.ok) fallas.push(gente[i].email.split('@')[0]+': '+r.error);
+  }
+  if(fallas.length) toast('En la base quedo pendiente \u2014 '+fallas.join(' \u00b7 '),'amber');
+  else toast('Rol aplicado a '+gente.length+(gente.length===1?' persona':' personas')+'.');
+}
+
 // Asignar un rol a una persona.
 function setRolPersona(mail, id){
   var k=String(mail).toLowerCase();
@@ -10506,6 +10554,12 @@ function setRolPersona(mail, id){
     return y;
   });
   save(); personasModal();
+  // El navegador ya quedo guardado; la base va detras y avisa si no pudo.
+  // Si la cuenta todavia no existe, `perfil_asignar` lo dice con todas las
+  // letras y hay que invitarla primero desde esta misma pantalla.
+  _rolABase(mail, rolPorId(id)).then(function(r){
+    if(!r.ok) toast('En pantalla si, en la base no: '+r.error,'amber');
+  });
 }
 
 function configAgenciaHtml(){
