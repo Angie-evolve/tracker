@@ -4402,12 +4402,12 @@ function avisarEsperandoAprobacion(c, t){
    de todos. Tapa lo accidental, no lo intencional. Para que sea real hay que
    sacar el fee del JSON del cliente y ponerle una politica en Supabase. */
 function verPlata(){
-  // El rol acotado manda sobre el switch: si quedo prendido de antes, seguiria
-  // viendo abonos y LTV de clientes que no son suyos.
-  if(soloCartera()) return false;
+  // El rol manda. `DB.rentAcceso` era la lista suelta de antes: sigue valiendo
+  // como candado extra para quien no tenga rol propio, pero un rol sin `plata`
+  // no la ve aunque figure en la lista.
+  if(!puede('plata')) return false;
+  if(rolDePersona(SB.email)) return true;
   var lista=Array.isArray(DB.rentAcceso)?DB.rentAcceso:null;
-  // Sin lista todavia: la ve quien esta usando la app. Al guardar Personas por
-  // primera vez queda fijada y deja de ser automatico.
   if(!lista) return true;
   var mio=(SB.email||'').toLowerCase();
   return lista.some(function(m){ return String(m).toLowerCase()===mio; });
@@ -4527,7 +4527,7 @@ function personasDatalist(id, campo){
 // Alta y edicion de personas. Es el unico lugar donde se cargan mail y numero:
 // el resto de la app los ofrece desde aca.
 function personasModal(){
-  if(csmFuera('la administración de personas')) return;
+  if(csmFuera('la administración de personas','personas')) return;
   var lista=personas();
   var inp='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit';
   var filas=lista.length
@@ -4609,16 +4609,19 @@ function personasModal(){
                 +'plata</label>';
             })()
           +(function(){
-              var csm=(_rolDe(p.email)==='csm');
-              // No se ofrece para uno mismo: acotarse seria encerrarse fuera de
-              // esta misma pantalla, sin forma de volver.
-              if(soyYo(p.email)) return '';
-              return '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:'
-                +(csm?'var(--amberx)':'var(--text3)')+';cursor:pointer;white-space:nowrap" '
-                +'title="Solo ve Panel 360, y ahi solo los clientes donde figura como responsable">'
-                +'<input type="checkbox" class="sw"'+(csm?' checked':'')
-                +' onchange="setRolCsm(\''+esc(p.email)+'\',this.checked)">'
-                +'solo su cartera</label>';
+              // El rol reemplaza al interruptor suelto de antes: los permisos
+              // se arman una vez en Configuracion y aca solo se elige cual.
+              var r=rolDePersona(p.email);
+              return '<select onchange="setRolPersona(\''+esc(p.email)+'\',this.value)" '
+                +'title="El rol decide que ve. Se configuran en Configuracion de agencia." '
+                +'style="font-size:10.5px;background:var(--bg3);color:'
+                +((r&&r.id==='admin')?'var(--text3)':'var(--amberx)')
+                +';border:1px solid var(--border2);border-radius:var(--radius);padding:2px 6px;'
+                +'font-family:var(--font);outline:none">'
+                +rolesAg().map(function(x){
+                    return '<option value="'+esc(x.id)+'"'+((r&&r.id===x.id)?' selected':'')+'>'
+                      +esc(x.nombre)+'</option>'; }).join('')
+                +'</select>';
             })()
           // Invitar vive aca y no solo en "Quien tiene acceso": Personas es donde
           // se administra a la gente, y tener a alguien cargado sin cuenta -o
@@ -6930,7 +6933,7 @@ function ticketDrop(ev,i){
 }
 
 function resetTicketsHistory(){
-  if(csmFuera('el historial de tickets')) return;
+  if(csmFuera('el historial de tickets','tickets')) return;
   if(!confirm('Reiniciar el historial de tickets?\n\nEl tablero va a contar solo los tickets delegados desde hoy en adelante. Las tareas viejas siguen en la pestana Tareas de cada cliente, pero dejan de aparecer aca y de contar en las metricas.')) return;
   localStorage.setItem('evold-tickets-since',String(Date.now()));
   if(typeof toast==='function') toast('Historial reiniciado - contando desde hoy');
@@ -6944,7 +6947,7 @@ function showFullTicketsHistory(){
 // Diagnostico previo a la idea de leer tareas por WhatsApp. Valida el camino
 // completo: proxy -> GHL -> app, sin depender todavia de WhatsApp.
 function openConvTestModal(){
-  if(csmFuera('las conversaciones')) return;
+  if(csmFuera('las conversaciones','tickets')) return;
   const clientes=DB.clients.filter(function(c){return c.ghl&&c.ghl.token&&c.ghl.locationId;});
   const inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
   const savedTok=localStorage.getItem('evold-conv-token')||'';
@@ -10294,7 +10297,7 @@ function cfgAg(){
 }
 
 function abrirConfigAgencia(){
-  if(csmFuera('la configuración de agencia')) return;
+  if(csmFuera('la configuración de agencia','config')) return;
   S.view='cfgAgencia';
   S.clientId=null;
   renderSidebar();
@@ -10333,6 +10336,121 @@ function setAbTest(on){
     ? 'Test A/B de promesas visible en Middle of Funnel'
     : 'Test A/B de promesas guardado');
   if(typeof renderTab==='function') renderTab();
+}
+
+
+// ---- La pantalla de roles, en Configuracion de agencia -------------------
+function rolesAgHtml(){
+  var L=rolesAg();
+  var cuenta={};
+  (DB.personas||[]).forEach(function(x){
+    var r=rolDePersona(x&&x.email); if(r) cuenta[r.id]=(cuenta[r.id]||0)+1;
+  });
+  return '<div style="margin-top:22px;max-width:760px">'
+    +'<div style="font-size:13px;color:var(--text)">Roles</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin:3px 0 12px">'
+      +'Cada rol es un nombre y lo que puede ver. Se asigna a cada persona desde Personas. '
+      +'<b style="color:var(--amberx)">Ojo:</b> esto se aplica en el navegador, asi que tapa lo '
+      +'accidental, no lo intencional. El corte de verdad se hace en la base y todavia no esta puesto.'
+    +'</div>'
+    +L.map(function(r){
+        var n=cuenta[r.id]||0;
+        return '<div style="background:var(--bg3);border:0.5px solid var(--border);'
+            +'border-radius:var(--radius);padding:11px 13px;margin-bottom:8px">'
+          +'<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:9px">'
+            +(r.fijo
+              ? '<span style="font-size:12.5px;color:var(--strong)">'+esc(r.nombre)+'</span>'
+              : '<input value="'+esc(r.nombre)+'" onchange="rolNombre(\''+esc(r.id)+'\',this.value)" '
+                +'style="font-size:12.5px;background:var(--bg2);color:var(--strong);border:1px solid var(--border2);'
+                +'border-radius:var(--radius);padding:4px 8px;font-family:var(--font);outline:none;max-width:200px">')
+            +'<span style="font-size:10.5px;color:var(--text3)">'+n+(n===1?' persona':' personas')+'</span>'
+            +(r.fijo?'<span style="font-size:10.5px;color:var(--text3)">&middot; no se borra</span>'
+                    :'<button class="btn btn-sm" style="color:var(--redx);font-size:10.5px;padding:2px 8px;margin-left:auto" '
+                      +'onclick="rolBorrar(\''+esc(r.id)+'\')">Borrar</button>')
+          +'</div>'
+          +'<div style="display:flex;gap:7px 16px;flex-wrap:wrap">'
+          +ROL_PERMISOS.map(function(pm){
+              var on=!!(r.permisos||{})[pm.k];
+              return '<label title="'+esc(pm.d)+'" style="display:flex;align-items:center;gap:5px;'
+                +'font-size:11px;cursor:pointer;color:'+(on?'var(--accent)':'var(--text3)')+'">'
+                +'<input type="checkbox" class="sw"'+(on?' checked':'')
+                +' onchange="rolPermiso(\''+esc(r.id)+'\',\''+pm.k+'\',this.checked)">'
+                +esc(pm.l)+'</label>';
+            }).join('')
+          +'</div>'
+        +'</div>';
+      }).join('')
+    +'<button class="btn btn-sm" onclick="rolNuevo()">Crear un rol</button>'
+  +'</div>';
+}
+function _rolesRepintar(){ if(S.view==='cfgAgencia') abrirConfigAgencia(); }
+
+function rolNuevo(){
+  var L=rolesAg();
+  // Arranca sin nada prendido: es mas facil dar permisos de a uno que acordarse
+  // de sacar el que no correspondia.
+  L.push({id:'r'+Date.now(), nombre:'Rol nuevo', permisos:{}});
+  save(); _rolesRepintar();
+}
+function rolNombre(id, v){
+  var r=rolPorId(id); if(!r) return;
+  r.nombre=String(v||'').trim()||'Rol sin nombre';
+  save(); _rolesRepintar();
+}
+function rolPermiso(id, clave, on){
+  var r=rolPorId(id); if(!r) return;
+  /* ⚠️  NUNCA DEJAR LA CASA SIN LLAVES. Si este es el ultimo rol que puede
+     entrar a Configuracion, sacarle ese permiso cierra esta pantalla para
+     todos y no hay forma de volver a abrirla desde la app. Mismo candado que
+     `cartera_marcar` en la migracion 022. */
+  if(!on && (clave==='config'||clave==='personas')){
+    var quedan=rolesAg().filter(function(x){
+      return x.id!==id && x.permisos && x.permisos[clave];
+    });
+    var suyas=(DB.personas||[]).filter(function(x){
+      var rr=rolDePersona(x&&x.email); return rr&&rr.id===id; }).length;
+    if(!quedan.length && suyas>0){
+      toast('Es el único rol que puede entrar ahí. Dale el permiso a otro rol primero.','amber');
+      _rolesRepintar(); return;
+    }
+  }
+  r.permisos=r.permisos||{};
+  if(on) r.permisos[clave]=1; else delete r.permisos[clave];
+  save(); _rolesRepintar();
+}
+function rolBorrar(id){
+  var r=rolPorId(id);
+  if(!r||r.fijo) return;
+  var usan=(DB.personas||[]).filter(function(x){
+    var rr=rolDePersona(x&&x.email); return rr&&rr.id===id; });
+  if(usan.length){
+    toast('Lo tienen '+usan.length+' persona'+(usan.length===1?'':'s')+'. Cambiales el rol antes.','amber');
+    return;
+  }
+  var a=cfgAg();
+  a.roles=rolesAg().filter(function(x){ return x.id!==id; });
+  save(); _rolesRepintar();
+}
+// Asignar un rol a una persona.
+function setRolPersona(mail, id){
+  var k=String(mail).toLowerCase();
+  /* Nadie se saca a si mismo el permiso de Personas: quedaria sin la pantalla
+     desde la cual volver atras. Es el mismo caso que ya cubria `setRolCsm`. */
+  if(soyYo(mail)){
+    var r=rolPorId(id);
+    if(!r||!r.permisos||!r.permisos.personas){
+      toast('No podés sacarte a vos misma el acceso a Personas.','amber');
+      personasModal(); return;
+    }
+  }
+  DB.personas=(DB.personas||[]).map(function(x){
+    if(String((x||{}).email||'').toLowerCase()!==k) return x;
+    var y=Object.assign({}, x);
+    y.rolId=id;
+    delete y.rol;   // se reemplaza el campo viejo por el rol de verdad
+    return y;
+  });
+  save(); personasModal();
 }
 
 function configAgenciaHtml(){
@@ -10411,6 +10529,8 @@ function configAgenciaHtml(){
         +'<input id="ag-modelo" type="file" accept=".pdf,.docx,.txt,.md,.html" style="display:none" '
           +'onchange="contratoModeloArchivo(this)">'
       +'</div>'
+
+      +rolesAgHtml()
     +'</div>'
   +'</div>';
 }
@@ -13788,7 +13908,7 @@ function subOpciones(cat){
   return Object.keys(v).sort();
 }
 function abrirSubcategorias(){
-  if(csmFuera('las subcategorías de gastos')) return;
+  if(csmFuera('las subcategorías de gastos','finanzas')) return;
   var root=document.getElementById('modal-root'); if(!root) return;
   var bloques=EERR_CATS.map(function(c){
     var l=subOpciones(c.k);
@@ -14051,7 +14171,7 @@ function _txParseCSV(txt){
 
 var _txState=null;
 function abrirImportarTx(){
-  if(csmFuera('la importación de transacciones')) return;
+  if(csmFuera('la importación de transacciones','finanzas')) return;
   var root=document.getElementById('modal-root'); if(!root) return;
   root.innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
@@ -15536,41 +15656,95 @@ function rentabilidadHtml(){
 // Esto ESCONDE, no bloquea: la app se sincroniza entera, asi que los datos de
 // los otros clientes igual bajan a ese navegador. Para que no bajen hay que
 // meterse con las policies de la tabla, que es otro trabajo.
-function _rolDe(mail){
+// `_rolDe` y `setRolCsm` vivian aca. Los reemplazo `rolDePersona`, que en vez
+// del unico rol 'csm' devuelve el rol entero con sus permisos.
+
+
+// ========================== ROLES Y PERMISOS ==========================
+// Antes habia UN booleano: o eras del equipo y veias todo, o eras "csm" y
+// veias Panel 360 y nada mas. Las ocho compuertas del tracker colgaban de ese
+// mismo booleano, asi que no se podia, por ejemplo, dejar entrar a Tickets sin
+// dar tambien Finanzas.
+//
+// Ahora un rol es un nombre y un conjunto de permisos, y se arma desde
+// Configuracion de agencia.
+//
+// ⚠️  ESTO ES UNA PUERTA, NO UNA CAJA FUERTE. Se aplica en el navegador, y
+//     `sbBajar()` se trae todos los clientes completos para cualquiera que
+//     este logueado. Tapa lo accidental, no lo intencional. El corte de
+//     verdad es RLS: la migracion 022 dejo `puedo_ver_cliente()` lista para
+//     eso, pero todavia no esta conectada.
+var ROL_PERMISOS=[
+  {k:'clientes',     l:'Todos los clientes',  d:'Sin esto solo ve Panel 360, y ahi solo los clientes donde figura como responsable.'},
+  {k:'plata',        l:'Plata',               d:'Abonos, LTV y la pestana Rentabilidad.'},
+  {k:'personas',     l:'Personas',            d:'Dar de alta gente, invitarla y asignarle rol.'},
+  {k:'config',       l:'Configuracion',       d:'La configuracion de agencia, esta pantalla.'},
+  {k:'tickets',      l:'Tickets',             d:'El historial de tickets y las conversaciones.'},
+  {k:'finanzas',     l:'Finanzas',            d:'Subcategorias de gastos e importacion de transacciones.'},
+  {k:'integraciones',l:'Integraciones',       d:'Accesos del equipo y la configuracion de Fathom.'}
+];
+// Los dos que siempre existen. No se pueden borrar: sin un rol con todo
+// prendido no habria forma de volver a entrar a esta pantalla.
+var ROLES_BASE=[
+  {id:'admin', nombre:'Admin', fijo:true,
+   permisos:{clientes:1,plata:1,personas:1,config:1,tickets:1,finanzas:1,integraciones:1}},
+  {id:'csm',   nombre:'CSM',   fijo:true,
+   permisos:{clientes:0,plata:0,personas:0,config:0,tickets:0,finanzas:0,integraciones:0}}
+];
+
+function rolesAg(){
+  var a=cfgAg();
+  if(!Array.isArray(a.roles)||!a.roles.length){
+    a.roles=ROLES_BASE.map(function(r){
+      return {id:r.id, nombre:r.nombre, fijo:true, permisos:Object.assign({}, r.permisos)};
+    });
+  }
+  return a.roles;
+}
+function rolPorId(id){
+  var L=rolesAg();
+  for(var i=0;i<L.length;i++) if(L[i].id===id) return L[i];
+  return null;
+}
+// Que rol tiene una persona. La compatibilidad importa: antes el unico rol que
+// se guardaba era `rol:'csm'` en la persona, y quien no lo tenia veia todo.
+function rolDePersona(mail){
   var k=String(mail||'').toLowerCase();
-  if(!k) return '';
+  if(!k) return null;
   var p=(DB.personas||[]).filter(function(x){
     return String((x||{}).email||'').toLowerCase()===k; })[0];
-  return String((p||{}).rol||'');
+  if(!p) return null;
+  if(p.rolId){ var r=rolPorId(p.rolId); if(r) return r; }
+  // Sin rolId: se traduce lo viejo. `rol:'csm'` -> CSM, el resto -> Admin.
+  return rolPorId(String(p.rol||'')==='csm' ? 'csm' : 'admin');
 }
+// Los permisos de quien esta usando la app. Sin persona cargada se asume todo:
+// es el estado de una agencia que todavia no configuro nada, y encerrarla
+// afuera de su propio tracker seria peor que no filtrar.
+function permisos(){
+  var r=rolDePersona(SB.email);
+  if(!r) return {clientes:1,plata:1,personas:1,config:1,tickets:1,finanzas:1,integraciones:1};
+  return r.permisos||{};
+}
+function puede(clave){ return !!permisos()[clave]; }
 
-function soloCartera(){ return _rolDe(SB.email)==='csm'; }
+// Se queda por compatibilidad: lo llaman ocho lugares y significa lo mismo que
+// "no tiene el permiso de ver todos los clientes".
+function soloCartera(){ return !puede('clientes'); }
 
 // Se llama al ENTRAR a la pantalla, no al dibujar el link. Esconder el link
 // deja la puerta: se llega por una posicion guardada, por un toast que
 // linkea, o escribiendo la funcion en la consola. Paso de verdad: la CSM
 // termino adentro de Configuracion de agencia con el menu ya cerrado.
-function csmFuera(que){
-  if(!soloCartera()) return false;
+function csmFuera(que, clave){
+  // `clave` es el permiso que hace falta. Sin clave se comporta como antes y
+  // mira el de clientes, para que ningun llamado viejo quede abierto.
+  if(puede(clave||'clientes')) return false;
   toast('No tenés acceso a '+que+'.','amber');
   try{ irTorre('panel360'); }catch(e){}
   return true;
 }
 
-function setRolCsm(mail, es){
-  // Nadie se puede acotar a si mismo: quedaria encerrado en Panel 360 sin la
-  // pantalla de Personas para volver atras.
-  if(soyYo(mail)){ toast('No podés acotarte a vos misma.','amber'); return; }
-  var k=String(mail).toLowerCase();
-  DB.personas=(DB.personas||[]).map(function(x){
-    if(String((x||{}).email||'').toLowerCase()!==k) return x;
-    var y=Object.assign({}, x);
-    if(es) y.rol='csm'; else delete y.rol;
-    return y;
-  });
-  save();
-  if(typeof personasModal==='function') personasModal();
-}
 
 // El responsable convivio como nombre ("Ashy") y como mail, por eso existe
 // _respMail. Comparando el campo crudo, una CSM cuyos clientes la tengan
@@ -63461,7 +63635,7 @@ async function personasInvitar(mail){
 }
 
 async function abrirEquipo(){
-  if(csmFuera('los accesos del equipo')) return;
+  if(csmFuera('los accesos del equipo','integraciones')) return;
   if(!SB.listo){ toast('Entra con tu cuenta para ver el equipo.','amber'); return; }
   document.getElementById('modal-root').innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
@@ -63561,7 +63735,7 @@ async function eqSacar(mail){
 }
 
 function openTicketsProxyModal(){
-  if(csmFuera('la configuración de Fathom')) return;
+  if(csmFuera('la configuración de Fathom','integraciones')) return;
   var cur=localStorage.getItem('evold-fathom-proxy')||localStorage.getItem('evold-tickets-proxy')||'';
   var inp='padding:8px 11px;font-size:12.5px;border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);color:var(--text);font-family:var(--font);outline:none';
   var esRestringido=/\/a\/macros\//.test(cur);
