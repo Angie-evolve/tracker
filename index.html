@@ -56341,10 +56341,52 @@ function embudoSubNav(){
 }
 // Los controles de Meta son de Top of Funnel y no entran en la isla: son
 // desplegables anchos y la reventaban. Van arriba, pegados a su contenido.
+var VTA_PERIODOS={todo:'todo', mes:'este mes', '30d':'ultimos 30 dias'};
+/* Habia DOS filtros de periodo en la misma pantalla: este, arriba a la derecha,
+   y el chip "periodo" de la fila de condiciones. Encima no hacian lo mismo:
+   el de arriba era el rango de META (`metaDays`), que en el embudo no gobierna
+   ningun numero -el gasto se pide con `_metaSpendKey(c, period)`, o sea con el
+   chip-, y solo manda en Ads & Guiones.
+   Asi que en las hojas del embudo la barra muestra el periodo de verdad, y el
+   chip se saca de abajo. En Ads & Guiones sigue estando el de Meta. */
+// La etiqueta del rango propio. Vivia adentro de `renderVentasTab`, donde la
+// pildora de arriba no la ve.
+function vtaCustomLabel(){
+  var cr=_customRange();
+  if(!cr) return 'Personalizado';
+  var f=function(d){ return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2); };
+  return f(cr.from)+' - '+f(cr.to);
+}
+function vtaPeriodoControl(){
+  var period=S.ventasPeriod||'todo';
+  var texto=(period==='custom') ? vtaCustomLabel() : (VTA_PERIODOS[period]||period);
+  var ops=Object.keys(VTA_PERIODOS).map(function(k){
+    return '<option value="'+k+'"'+(period===k?' selected':'')+'>'+esc(VTA_PERIODOS[k])+'</option>';
+  }).join('')+'<option value="custom"'+(period==='custom'?' selected':'')+'>personalizado...</option>';
+  return '<span style="position:relative;display:inline-flex;align-items:center;gap:9px;'
+    +'border:0.5px solid var(--border2);border-radius:99px;padding:6px 13px">'
+    +'<span style="font-size:11px;color:var(--text3);position:relative;z-index:1">periodo</span>'
+    +'<span style="position:relative;z-index:1;font-size:12.5px;color:var(--text)">'+esc(texto)+'</span>'
+    +'<span style="font-size:9px;color:var(--text3)">&#9660;</span>'
+    +'<select onchange="vtaPeriodoElegir(this.value)" aria-label="Periodo" '
+      +'style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;'
+      +'font-family:var(--font)">'+ops+'</select>'
+  +'</span>';
+}
+function vtaPeriodoElegir(v){
+  if(v==='custom'){ openCustomRangeModal(); return; }
+  setVentasPeriod(v);
+}
+// Las hojas que dibuja `renderVentasTab`. Son las que tienen el chip.
+function _esHojaVentas(){
+  var h=S._hoja||'';
+  return h==='bottom'||h==='records'||h==='cap';
+}
 function embudoCtrlHtml(){
-  return '<div id="emb-ctrl"'+(S._topControles?'':' hidden')
+  var dentro=_esHojaVentas()?vtaPeriodoControl():(S._topControles||'');
+  return '<div id="emb-ctrl"'+(dentro?'':' hidden')
     +' style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;'
-    +'justify-content:flex-end;margin-bottom:14px">'+(S._topControles||'')+'</div>';
+    +'justify-content:flex-end;margin-bottom:14px">'+dentro+'</div>';
 }
 
 // Top of Funnel abre ademas el Guionizador. Va colgado de ahi porque escribir el
@@ -60291,13 +60333,12 @@ function renderVentasTab(c, el){
   }
   const vbtn=function(v,l){return '<button class="'+(view===v?'on':'')+'" onclick="setVentasView(\''+v+'\')">'+l+'</button>';};
   const pbtn=function(p,l){return '<button class="'+(period===p?'on':'')+'" onclick="setVentasPeriod(\''+p+'\')">'+l+'</button>';};
-  const _fmtCustomLabel=function(){var cr=_customRange();if(!cr)return 'Personalizado';var f=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2);};return f(cr.from)+' - '+f(cr.to);};
+  const _fmtCustomLabel=vtaCustomLabel;   // una sola definicion, arriba
   // === FILTROS: condiciones encadenadas ===
   // Antes eran tres filas de pildoras (agrupacion, valores, periodo) mas la de cruce por pais.
   // Ahora cada filtro es una condicion "clave: valor" y el "y" entre ellas deja explicito
   // que se combinan, que era justo lo que las pildoras no comunicaban.
   const _vLabels={anuncios:'anuncio',adset:'conjunto',placement:'placement',embudo:'campana',pais:'pais'};
-  const _pLabels={todo:'todo',mes:'este mes','30d':'ultimos 30 dias'};
 
   const _cond=function(clave, valor, menuId, extra){
     return '<span class="vh-cond" onclick="event.stopPropagation();toggleCondMenu(\'' + menuId + '\')">'
@@ -60360,13 +60401,8 @@ function renderVentasTab(c, el){
     }
   }
 
-  // 4. periodo
-  _conds.push('<span class="vh-condwrap">'
-    +_cond('periodo', period==='custom'?_fmtCustomLabel():(_pLabels[period]||period), 'per')
-    +_menu('per', Object.keys(_pLabels).map(function(pk){
-        return _mItem(_pLabels[pk], "setVentasPeriod('"+pk+"')", period===pk);
-      }).concat([_mItem('personalizado...', "openCustomRangeModal()", period==='custom')]))
-    +'</span>');
+  // 4. periodo: ya NO va aca. Se mudo a la barra de arriba -vtaPeriodoControl()-
+  //    para que no queden dos filtros de periodo en la misma pantalla.
 
   html+='<div class="vh-conds">'+_conds.join('<span class="y">y</span>')+'</div>';
 
