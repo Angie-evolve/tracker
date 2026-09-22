@@ -24036,7 +24036,9 @@ var _META_OPT_BALDE={
 };
 function _metaObjetivoResultado(as){
   if(!as) return null;
-  var og=String(as.optimization_goal||'').toUpperCase();
+  // `optimization_goal` es el nombre crudo de la API; `optGoal` el que queda
+  // guardado despues del map. Se aceptan los dos.
+  var og=String(as.optimization_goal||as.optGoal||'').toUpperCase();
   var po=as.promoted_object||null;
   // Conversiones fuera del sitio (y VALUE, que es lo mismo optimizando por importe):
   // la meta sola no alcanza, el evento concreto vive en promoted_object.
@@ -24062,7 +24064,14 @@ function _metaObjCampana(camp){
   var ads=(camp&&camp.adsets)||[];
   var uno=null;
   for(var i=0;i<ads.length;i++){
-    var o=_metaObjetivoResultado(ads[i]);
+    /* ⚠️  SE LEE `objResultado`, NO SE RECALCULA. El conjunto que llega aca ya
+       paso por el map que lo guarda, y ese map NO conserva `promoted_object`
+       ni `optimization_goal`: solo `optGoal` y el nombre del evento traducido.
+       Recalcular sobre esa forma da siempre null, y la campana terminaba
+       cayendo al orden viejo aunque el conjunto de abajo tuviera el numero
+       bien. Se veia exactamente asi: el conjunto "Argentina" mostraba 48 y la
+       campana de arriba 11. */
+    var o=ads[i].objResultado||_metaObjetivoResultado(ads[i]);
     if(!o) return null;
     if(!uno) uno=o;
     else if(uno.clave!==o.clave) return null;
@@ -60738,7 +60747,7 @@ var META_METRIC_COLS=[
      // conjunto y el numero sale del orden de prioridad, asi que puede no
      // coincidir con Ads Manager. Sin punteado = es el evento optimizado.
      var est=(obj.resultsFuente==='estimado');
-     var t=est?('Aproximado: mostramos '+e+', el evento mas fuerte. No pudimos leer por que evento optimiza el conjunto, asi que puede no coincidir con Meta.')
+     var t=est?('Aproximado: mostramos '+e+', el evento mas fuerte. No pudimos determinar por que evento optimiza (o sus conjuntos optimizan por eventos distintos), asi que puede no coincidir con Meta.')
               :(e+' \u2014 es el evento por el que optimiza el conjunto, igual que la columna Resultados de Meta.');
      return '<span title="'+esc(t)+'"'+(est?' style="border-bottom:1px dotted #777"':'')+'>'+v+'</span>';
    }},
@@ -62412,7 +62421,10 @@ async function syncMetaAds(clientId){
         console.log('adsets before map:', JSON.stringify(adsets.map(function(a){return {id:a.id,name:a.name,adsLen:a.ads&&a.ads.length};})));
         campaigns[ci].adsets=adsets.map(function(as){
           var ins=as.insights&&as.insights.data&&as.insights.data[0];
-          var m=extractIns(ins, 0, _metaObjetivoResultado(as));
+          // Se calcula con el conjunto CRUDO, que es el unico momento en que
+          // `promoted_object` existe, y se guarda para que la campana lo use.
+          var _obj=_metaObjetivoResultado(as);
+          var m=extractIns(ins, 0, _obj);
           var bud=as.daily_budget||as.lifetime_budget||0;
           return {
             id:as.id,name:as.name,status:as.status,
@@ -62432,6 +62444,7 @@ async function syncMetaAds(clientId){
               ?((as.targeting.age_min||18)+'-'+(as.targeting.age_max||65)):'',
             advantage:_cfgAdvantage(as, campaigns[ci]),
             optGoal:as.optimization_goal||'', bidStrategy:as.bid_strategy||'',
+            objResultado:_obj,
             endTime:as.end_time||null,
             spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
             impressions:m.impressions,reach:m.reach,frequency:m.frequency,
