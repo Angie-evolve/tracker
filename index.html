@@ -19205,9 +19205,69 @@ function lpPaginasDe(c){
 }
 function lpAuto(c){ return !(Array.isArray(c.lpPaginas)&&c.lpPaginas.length); }
 
-// Opt-in con la definicion de GHL: opt-ins sobre visitantes unicos de las
-// paginas de registro. El opt-in en si no se filtra por ruta, porque suele
-// dispararse en la de gracias.
+/* ── De donde salen los registros ─────────────────────────────────────────
+   Hay DOS fuentes y no miden lo mismo:
+
+   1. La medicion propia (`lp_eventos`, tipo 'optin'). La manda el script de
+      la landing. Tiene un problema de fondo: de sus tres señales, la unica
+      que dispara en la practica es "la URL es de gracias". Medido sobre los
+      66 opt-ins de toda la historia, NINGUNO se registro en una landing: los
+      66 estan en una pagina de gracias. Y un quiz funnel no cambia de
+      pagina, asi que ahi esa señal no puede dispararse nunca. Ojapo tenia
+      583 vistas y 0 opt-ins con 67 registros reales.
+
+   2. GHL. Cada oportunidad ES un registro, con su fecha y su origen. Es la
+      fuente que ya usa el equipo para saber cuantos entraron.
+
+   Se usa GHL cuando esta conectado, y la medicion propia cuando no. Las
+   vistas y los unicos salen SIEMPRE de la medicion propia: eso GHL no lo
+   sabe.
+
+   ⚠️  LA PAGINA DE ORIGEN VIVE EN DOS CAMPOS DISTINTOS Y HAY QUE MIRAR LOS
+       DOS. Medido el 2026-09-22 sobre los 11 clientes con GHL conectado:
+       Ojapo tiene `formAnswers.link_origen` en 39 oportunidades y CERO
+       `source.landingUrl`; los otros diez, al reves —1233 con `landingUrl`
+       y cero `link_origen`—. Mirando uno solo, la mitad de la agencia
+       quedaba en cero.
+   ═══════════════════════════════════════════════════════════════════════ */
+function _ghlLandingDe(o){
+  var u=(o&&o.source&&o.source.landingUrl)||(o&&o.formAnswers&&o.formAnswers.link_origen)||'';
+  u=String(u||'').trim();
+  if(!u) return '';
+  // Se queda con la ruta, sin dominio ni query: es lo que guarda el script en
+  // `pagina` y es lo unico que se puede cruzar entre las dos fuentes.
+  try{ return new URL(u).pathname||'/'; }
+  catch(e){
+    var m=u.match(/^https?:\/\/[^\/]+(\/[^?#]*)/);
+    return m?(m[1]||'/'):'';
+  }
+}
+
+function ghlRegistros(c, dias){
+  var ops=(c&&c.ghl&&c.ghl.opportunities)||[];
+  if(!ops.length) return null;
+  var desde=Date.now()-((dias||7)*86400000);
+  var porPagina={}, total=0, sinOrigen=0;
+  ops.forEach(function(o){
+    var t=new Date(o&&o.createdAt).getTime();
+    if(!isFinite(t)||t<desde) return;
+    total++;
+    var pag=_ghlLandingDe(o);
+    if(!pag){ sinOrigen++; return; }
+    porPagina[pag]=(porPagina[pag]||0)+1;
+  });
+  // Cuantas oportunidades tienen el contacto ya traido. El origen llega con
+  // ese paso, que va de a tres y desde el navegador: hasta que termina, el
+  // numero por pagina esta CORTO y hay que decirlo en vez de mostrar una
+  // tasa que despues sube sola.
+  var enriquecidas=0;
+  ops.forEach(function(o){ if(o&&o._enrichOk) enriquecidas++; });
+  return { porPagina:porPagina, total:total, sinOrigen:sinOrigen,
+           enriquecidas:enriquecidas, opsTotal:ops.length, dias:dias||7 };
+}
+
+// Opt-in con la definicion de GHL: registros sobre visitantes unicos de las
+// paginas de registro.
 function lpOptIn(c, dias){
   var raw=(S._lpRaw||{})[String(c.id)];
   if(!raw) return null;
@@ -19222,7 +19282,14 @@ function lpOptIn(c, dias){
     unicos[f.visitante]=1;
   });
   var u=Object.keys(unicos).length;
-  return { unicas:u, optins:optins, tasa:u?(optins/u*100):null, dias:dias||7 };
+  // Con GHL conectado, los registros salen de ahi. Las vistas y los unicos
+  // siguen saliendo de la medicion propia en los dos casos.
+  var g=ghlRegistros(c, dias);
+  var n=g?g.total:optins;
+  return { unicas:u, optins:n, tasa:u?(n/u*100):null, dias:dias||7,
+           fuente:g?'ghl':'propia',
+           sinOrigen:g?g.sinOrigen:0,
+           enriquecidas:g?g.enriquecidas:0, opsTotal:g?g.opsTotal:0 };
 }
 function lpRecalcular(c){
   var r7=lpOptIn(c,7), r30=lpOptIn(c,30);
@@ -55854,12 +55921,32 @@ function lpFilasLandings(c, dias){
     m[r2]=m[r2]||{ruta:r2,vistas:0,_u:{},optins:0};
     m[r2].optins++;
   });
+
+  /* Con GHL conectado, los registros de cada fila salen de ahi y no de la
+     medicion propia. Se cruza por la RUTA, que es lo unico que las dos
+     fuentes escriben igual.
+     Los que no caen en ninguna fila visible se cuentan aparte en vez de
+     desaparecer: pueden ser de una pagina que quedo fuera de "Elegir
+     paginas", de una de gracias, o de un lead cargado a mano. */
+  var g=ghlRegistros(c, dias), enOtraPagina=0;
+  if(g){
+    Object.keys(m).forEach(function(k){ m[k].optins=0; });
+    sinAtribuir=g.sinOrigen;
+    Object.keys(g.porPagina).forEach(function(pag){
+      if(m[pag]) m[pag].optins+=g.porPagina[pag];
+      else enOtraPagina+=g.porPagina[pag];
+    });
+  }
+
   var filas=Object.keys(m).map(function(k){
     var u=Object.keys(m[k]._u).length;
     return { ruta:k, embudo:m[k].embudo||'', vistas:m[k].vistas, unicas:u, optins:m[k].optins,
              tasa:u?(m[k].optins/u*100):null };
   }).sort(function(a,b){ return b.unicas-a.unicas; });
-  return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7 };
+  return { filas:filas, sinAtribuir:sinAtribuir, dias:dias||7,
+           fuente:g?'ghl':'propia', enOtraPagina:enOtraPagina,
+           total:g?g.total:null, enriquecidas:g?g.enriquecidas:0,
+           opsTotal:g?g.opsTotal:0 };
 }
 
 // Aviso cuando llegan eventos sin embudo: hasta que se etiqueten, no se puede
@@ -55987,16 +56074,55 @@ function lpTablaLandingsHtml(c, dias){
   return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;margin-bottom:18px">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px">'
       +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Landings de conversion</span>'
-      +'<span style="font-size:11px;color:var(--text3)">ultimos '+r.dias+' dias &middot; medicion propia</span>'
+      // El rotulo dice de donde sale cada mitad: las vistas siempre son de la
+      // medicion propia, los registros dependen de si GHL esta conectado.
+      +'<span style="font-size:11px;color:var(--text3)">ultimos '+r.dias+' dias &middot; '
+        +(r.fuente==='ghl'?'vistas propias, registros de GHL':'medicion propia')+'</span>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-      +'Opt-ins sobre visitantes unicos, la misma definicion que usa GHL. '
+      +(r.fuente==='ghl'
+         ? 'Registros de GHL sobre visitantes unicos. Cada oportunidad es un registro, y la pagina sale de su origen. '
+         : 'Opt-ins sobre visitantes unicos, la misma definicion que usa GHL. ')
       +'<a href="javascript:void(0)" onclick="lpModal('+c.id+')" style="color:var(--accent);text-decoration:none">Elegir paginas</a></div>'
     +'<table width="100%" cellpadding="0" cellspacing="0"><tr>'
-      +th('Landing')+th('Vistas','right')+th('Unicas','right')+th('Opt-ins','right')+th('Opt-in %','right')
+      +th('Landing')+th('Vistas','right')+th('Unicas','right')
+      +th(r.fuente==='ghl'?'Registros':'Opt-ins','right')
+      +th(r.fuente==='ghl'?'Registro %':'Opt-in %','right')
     +'</tr>'+cuerpo+'</table>'
-    +(r.sinAtribuir?'<div style="font-size:10.5px;color:var(--text3);margin-top:9px">'
-      +r.sinAtribuir+' opt-in'+(r.sinAtribuir===1?'':'s')+' sin landing identificada (el visitante no tenia una vista previa registrada).</div>':'')
+    +(function(){
+      var notas=[];
+      if(r.fuente==='ghl'){
+        // ⚠️  EL ORIGEN LLEGA CON EL PASO DE ENRIQUECIDO, que va de a tres y
+        //     desde el navegador. Hasta que termina, lo repartido por pagina
+        //     esta CORTO. Sin decirlo, se lee una tasa baja que despues sube
+        //     sola y nadie entiende por que.
+        if(r.opsTotal && r.enriquecidas < r.opsTotal){
+          notas.push('<span style="color:var(--amberx)">Origen identificado en '
+            +r.enriquecidas+' de '+r.opsTotal+' oportunidades. '
+            +'Lo que falta se trae solo con el tracker abierto: hasta entonces '
+            +'el reparto por pagina esta corto.</span>');
+        }
+        if(r.sinAtribuir) notas.push(r.sinAtribuir+' registro'+(r.sinAtribuir===1?'':'s')
+          +' sin pagina de origen guardada en GHL.');
+        if(r.enOtraPagina) notas.push(r.enOtraPagina+' registro'+(r.enOtraPagina===1?'':'s')
+          +' de una pagina que no esta en la lista (revisa "Elegir paginas").');
+        // La landing puede medir menos visitas que registros: pasa cuando el
+        // script no esta en la pagina por donde entra el trafico. Eso es un
+        // aviso, no una tasa: hoy DblandIT daria 366%.
+        var rota=r.filas.filter(function(f){ return f.tasa!=null && f.tasa>100; });
+        if(rota.length) notas.push('<span style="color:var(--redx)">Hay mas registros que '
+          +'visitantes unicos en '+rota.map(function(f){ return esc(f.ruta); }).join(', ')
+          +': la landing no esta midiendo las visitas. El porcentaje de esa fila no '
+          +'significa nada hasta que el script este puesto donde entra el trafico.</span>');
+      }else if(r.sinAtribuir){
+        notas.push(r.sinAtribuir+' opt-in'+(r.sinAtribuir===1?'':'s')
+          +' sin landing identificada (el visitante no tenia una vista previa registrada).');
+      }
+      return notas.length
+        ? ('<div style="font-size:10.5px;color:var(--text3);margin-top:9px;line-height:1.6">'
+            +notas.join('<br>')+'</div>')
+        : '';
+    })()
     +'</div>';
 }
 
