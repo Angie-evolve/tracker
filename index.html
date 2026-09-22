@@ -34139,6 +34139,35 @@ function _p360FaltanHtml(f){
       }))
   +'</div>';
 }
+/* Hace cuanto corren las campanas activas de un cliente.
+   Sale de `start_time` de Meta -la fecha de arranque- y solo mira las que
+   estan ACTIVE ahora.
+
+   ⚠️  NO DESCUENTA LAS PAUSAS DEL MEDIO. Una campana que arranco hace 40 dias
+       y estuvo frenada 30 igual dice 40. Sirve para saber si ya paso tiempo
+       suficiente como para juzgar un resultado, no para facturar dias. Saber
+       los dias con entrega de verdad obliga a pedir insights dia por dia, que
+       es otra llamada por cliente.
+   Se toma la MAS VIEJA de las activas: es la que contesta "hace cuanto que
+   esto viene corriendo". */
+function _p360DiasCampanas(c){
+  var al=(typeof getActiveLine==='function')?getActiveLine((c&&c.conversionLines)||[]):null;
+  var camps=(al&&al.metaCampaigns)||[];
+  var hoy=Date.now(), desde=null, n=0;
+  camps.forEach(function(cp){
+    if(String(cp.effectiveStatus||cp.status||'').toUpperCase()!=='ACTIVE') return;
+    var t=cp.startTime||cp.createdTime;
+    if(!t) return;
+    var ms=new Date(t).getTime();
+    // Una fecha futura es una campana programada que todavia no arranco.
+    if(!ms||isNaN(ms)||ms>hoy) return;
+    n++;
+    if(desde===null||ms<desde) desde=ms;
+  });
+  if(desde===null) return null;
+  return {dias:Math.max(0, Math.floor((hoy-desde)/86400000)), cuantas:n};
+}
+
 function p360Html(){
   // Los prospectos entran aca y en ningun otro lado: el tablero es
   // justamente donde tienen que verse avanzar.
@@ -34270,6 +34299,10 @@ function p360Html(){
         if(partes.length) mt=partes.join(' \u00b7 ');
       }
     }
+    // Hace cuanto corren las campanas. Va en las dos ramas -con freno y sin
+    // freno- porque la pregunta "¿hace cuanto que esto viene?" es la misma.
+    var _cmp=_p360DiasCampanas(d.c);
+    if(_cmp) mt=(mt?(mt+' \u00b7 '):'')+_cmp.dias+' d prendida'+(_cmp.cuantas>1?'s':'');
     // La proxima reunion de cualquier etapa: con la fecha ya agendada, un chip
     // rojo se lee como "esto esta parado" cuando en realidad espera un dia que
     // ya existe.
@@ -63202,7 +63235,10 @@ async function syncMetaAds(clientId){
       +',quality_ranking,engagement_rate_ranking,conversion_rate_ranking'
       +',video_thruplay_watched_actions,cost_per_thruplay,video_play_actions,video_avg_time_watched_actions'
       +',video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions';
-    var fieldsStr='id,name,status,effective_status,issues_info,objective,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
+    // `start_time` y `created_time` no se pedian, asi que no habia forma de
+    // saber hace cuanto corre una campana. Son dos campos, no cuestan otra
+    // llamada.
+    var fieldsStr='id,name,status,effective_status,issues_info,objective,start_time,created_time,daily_budget,lifetime_budget,insights.time_range('+timeRange+'){'+insFields+'}';
     var url='https://graph.facebook.com/v25.0/'+actId+'/campaigns'
       +'?fields='+encodeURIComponent(fieldsStr)
       +'&access_token='+token
@@ -63511,6 +63547,8 @@ async function syncMetaAds(clientId){
         effectiveStatus:camp.effective_status||'', issues:_metaIssues(camp),
         objective:camp.objective||'',
         objetivo:_cfgEs(_OBJ_ES, camp.objective),   // traducido, para la columna
+        startTime:camp.start_time||null,
+        createdTime:camp.created_time||null,
         spend:m.spend,budget:parseFloat(bud/100||0).toFixed(0),
         budgetTipo:(camp.daily_budget?'diario':(camp.lifetime_budget?'total':'')),
         impressions:m.impressions,reach:m.reach,frequency:m.frequency,
