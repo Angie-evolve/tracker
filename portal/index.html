@@ -286,7 +286,11 @@
   .velo{position:fixed;inset:0;background:rgba(0,0,0,.6);opacity:0;pointer-events:none;
         transition:opacity .18s;z-index:8}
   .velo.ver{opacity:1;pointer-events:auto}
-  .hoja{position:fixed;left:50%;transform:translate(-50%,100%);bottom:0;width:100%;max-width:520px;
+  /* `bottom:var(--tecla)`: cuanto tapa el teclado del telefono. Lo mide
+     `_hojaTeclado` con `visualViewport` mientras la hoja de escribir esta
+     abierta, y vale 0 el resto del tiempo. En pantalla ancha no aplica: ahi
+     el media query de 860px pone `bottom:auto`. */
+  .hoja{position:fixed;left:50%;transform:translate(-50%,100%);bottom:var(--tecla,0px);width:100%;max-width:520px;
         z-index:9;background:var(--bg2);border-top:1px solid var(--line2);
         border-radius:16px 16px 0 0;padding:6px 0 calc(14px + env(safe-area-inset-bottom));
         transition:transform .22s cubic-bezier(.32,.72,0,1);max-height:86vh;overflow-y:auto}
@@ -329,6 +333,27 @@
   .grupo{font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--text3);padding:12px 18px 6px}
   .op{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:12px 18px;font-size:14.5px;color:var(--text)}
   .op .pt{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--text3)}
+
+  /* Escribir la nota o el monto, adentro de la misma hoja. */
+  .escribir{padding:2px 18px 4px}
+  .escribir textarea,.escribir input{width:100%;background:var(--bg3);color:var(--text);
+        border:1px solid var(--line2);border-radius:10px;padding:12px;
+        font-family:inherit;font-size:16px;line-height:1.5;resize:vertical}
+  /* ⚠️  16px Y NO MENOS. Con una letra mas chica, iOS hace zoom solo al
+     enfocar el campo y despues deja la pagina corrida y agrandada. Es el
+     unico numero de este archivo que esta puesto por el navegador y no por
+     como se ve. */
+  .escribir textarea{min-height:96px}
+  .escribir textarea::placeholder,.escribir input::placeholder{color:var(--text3)}
+  .escribir textarea:focus,.escribir input:focus{outline:none;border-color:var(--verde)}
+  .escribir-pie{display:flex;gap:8px;align-items:center;margin-top:10px}
+  .guardar{margin-left:auto;background:var(--verde);color:#06140f;border:0;
+           font-size:14px;font-weight:500;padding:12px 22px;border-radius:10px}
+  .borrar{background:none;border:1px solid var(--line);color:var(--text3);
+          font-size:14px;padding:12px 16px;border-radius:10px}
+  @media (hover:hover){
+    .borrar:hover{color:#ffcbbd;border-color:rgba(240,112,80,.5)}
+  }
   .op[aria-current="true"]{background:var(--bg3);font-weight:500}
   .op[aria-current="true"]::after{content:"✓";margin-left:auto;color:var(--verde);font-size:14px}
 
@@ -1472,6 +1497,8 @@ function abrirHojaForm(lead){
 function cerrarHoja(){
   abierto = null;
   hojaModo = 'etapa';
+  // Si quedaba prendida, la hoja se queda pegada a donde estaba el teclado.
+  _hojaTeclado(false);
   $('velo').classList.remove('ver');
   const h = $('hoja');
   h.classList.remove('ver');
@@ -1666,16 +1693,25 @@ function avisar(txt, mal){
    rechaza el cambio se vuelve atrás y se avisa. Nunca queda mostrando
    algo que no se guardó.
    ══════════════════════════════════════════════════════════════ */
-async function cambiarEtapa(lead, slug){
+async function cambiarEtapa(lead, slug, montoDado){
   const e = etapaDe(slug);
   if(!e || lead.etapa_portal === slug) return;
 
+  // Las etapas que cierran una venta piden el monto. Se pide en la misma
+  // hoja que todo lo demas y NO en un `prompt`: ver `abrirHojaTexto`.
+  // La hoja de la etapa ya se cerro cuando se eligio la opcion, asi que
+  // esta se abre encima sin pisar nada; al guardar vuelve aca con el
+  // monto puesto y sigue por el mismo camino de siempre.
   let monto = null;
-  if(e.pide_monto){
-    const m = prompt('¿Por cuánto cerró ' + nombreDe(lead) + '?', lead.monto || '');
-    if(m === null) return;                       // canceló: no se cambia nada
-    monto = Number(soloDigitos(m)) || null;
+  if(e.pide_monto && montoDado === undefined){
+    abrirHojaTexto(lead, 'monto', {
+      sub: '¿Por cuánto cerró?',
+      sinBorrar: true,
+      alGuardar: v => cambiarEtapa(lead, slug, Number(soloDigitos(v)) || null)
+    });
+    return;
   }
+  if(e.pide_monto) monto = montoDado;
 
   const antesEtapa = lead.etapa_portal;
   const antesMonto = lead.monto;
@@ -1698,16 +1734,116 @@ async function cambiarEtapa(lead, slug){
   }
 }
 
-/* Nota y monto. Se pinta primero y si la base lo rechaza se vuelve atras,
-   igual que al cambiar de etapa: nunca queda mostrando algo que no se guardo. */
-async function editarDato(lead, cual){
+/* ── Escribir la nota y el monto ──────────────────────────────────────
+   ⚠️  NADA DE `prompt()`. El cuadro del navegador viene con el nombre del
+       sitio adelante —"angie-evolve.github.io dice:"— y en el teléfono eso
+       se lee como un cartel del navegador, no como parte del portal. Un
+       cliente que ve "github" en el medio de su pantalla no entiende qué
+       le está preguntando quién.
+
+       Además no se puede ni escribir varios renglones en una nota, ni
+       borrar con un botón, ni se parece a nada del resto de la app.
+
+   Se usa LA MISMA hoja que la etapa, la calificación y la oferta: en el
+   teléfono sube desde abajo y en pantalla ancha ya es una tarjeta
+   centrada. No hace falta un componente nuevo. */
+function abrirHojaTexto(lead, cual, opts){
+  opts = opts || {};
   const esMonto = cual === 'monto';
-  const actual = esMonto ? (lead.monto == null ? '' : lead.monto) : (lead.nota || '');
-  const pedido = prompt(
-    esMonto ? '¿Por cuánto es la oportunidad de ' + nombreDe(lead) + '?\n(vacío para borrarlo)'
-            : 'Nota sobre ' + nombreDe(lead) + '\n(vacío para borrarla)',
-    actual);
-  if(pedido === null) return;                       // cancelo
+  abierto = lead;
+  hojaModo = 'texto';
+  const actual = opts.valor !== undefined ? String(opts.valor)
+               : esMonto ? (lead.monto == null ? '' : String(lead.monto))
+                         : (lead.nota || '');
+  $('hoja-nom').textContent = nombreDe(lead);
+  $('hoja-sub').textContent = opts.sub || (esMonto ? '¿Por cuánto es la oportunidad?'
+                                                   : 'Una nota sobre este lead');
+  $('hoja-ops').innerHTML = '<div class="escribir">'
+    + (esMonto
+        // `inputmode` y no `type="number"`: con number, el navegador se come
+        // los puntos de mil mientras escribís y el valor queda en otra cosa.
+        // El teclado numérico igual sale, que es lo único que se buscaba.
+        ? '<input id="hoja-txt" type="text" inputmode="decimal" autocomplete="off"'
+          + ' placeholder="Sin monto" value="' + esc(actual) + '">'
+        : '<textarea id="hoja-txt" rows="4" placeholder="Escribí lo que quieras'
+          + ' acordarte. Si pegás un link, después se abre tocándolo.">'
+          + esc(actual) + '</textarea>')
+    + '<div class="escribir-pie">'
+    +   ((actual && !opts.sinBorrar)
+          ? '<button type="button" id="hoja-borrar" class="borrar">Borrar</button>'
+          : '')
+    +   '<button type="button" id="hoja-guardar" class="guardar">Guardar</button>'
+    + '</div></div>';
+  _hojaAbrir();
+  _hojaTeclado(true);
+
+  const campo = $('hoja-txt');
+  const alGuardar = opts.alGuardar || (v => guardarDato(lead, cual, v));
+  $('hoja-guardar').addEventListener('click', () => {
+    const v = campo.value;
+    cerrarHoja();
+    alGuardar(v);
+  });
+  const borrar = $('hoja-borrar');
+  if(borrar) borrar.addEventListener('click', () => {
+    cerrarHoja();
+    alGuardar('');
+  });
+  // En el monto, Enter guarda: es un renglón solo y es lo que se espera.
+  // En la nota, Enter hace un renglón nuevo —para eso es una nota— y se
+  // guarda con el botón o con Cmd/Ctrl+Enter.
+  campo.addEventListener('keydown', ev => {
+    if(ev.key !== 'Enter') return;
+    if(esMonto || ev.metaKey || ev.ctrlKey){ ev.preventDefault(); $('hoja-guardar').click(); }
+  });
+  // El foco va después de que la hoja terminó de subir: pedirlo antes, en
+  // iOS, abre el teclado contra una hoja que todavía se está moviendo y la
+  // deja a mitad de camino.
+  setTimeout(() => { try{ campo.focus(); if(esMonto) campo.select(); }catch(e){} }, 260);
+}
+
+/* En iOS el teclado NO achica la ventana: se dibuja encima. Una hoja pegada
+   a `bottom:0` queda debajo del teclado y se escribe a ciegas.
+   `visualViewport` es lo único que dice cuánto está tapado. */
+let _ajusteTecla = null;
+function _hojaTeclado(prender){
+  const vv = window.visualViewport;
+  if(!vv) return;                                   // sin soporte, se queda como estaba
+  if(prender){
+    if(_ajusteTecla) return;
+    _ajusteTecla = () => {
+      const tapado = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--tecla', tapado + 'px');
+    };
+    vv.addEventListener('resize', _ajusteTecla);
+    vv.addEventListener('scroll', _ajusteTecla);
+    _ajusteTecla();
+  }else{
+    if(_ajusteTecla){
+      vv.removeEventListener('resize', _ajusteTecla);
+      vv.removeEventListener('scroll', _ajusteTecla);
+      _ajusteTecla = null;
+    }
+    document.documentElement.style.setProperty('--tecla', '0px');
+  }
+}
+
+/* La que abre. Se queda con el nombre de siempre porque es la que llama el
+   click global para la nota y para el monto. */
+function editarDato(lead, cual){
+  abrirHojaTexto(lead, cual);
+}
+
+/* Y la que guarda. Se pinta primero y si la base lo rechaza se vuelve
+   atrás, igual que al cambiar de etapa: nunca queda mostrando algo que no
+   se guardó.
+
+   ⚠️  ES LA MISMA DE ANTES, palabra por palabra de la validación para
+       abajo. Lo único que cambió es de dónde sale `pedido`: antes del
+       `prompt`, ahora de la hoja. Guardar sigue siendo un solo camino. */
+async function guardarDato(lead, cual, pedido){
+  const esMonto = cual === 'monto';
+  if(pedido === null || pedido === undefined) return;
 
   const vacio = String(pedido).trim() === '';
   const valor = vacio ? null : (esMonto ? (Number(soloDigitos(pedido)) || null) : String(pedido).trim());
@@ -1860,10 +1996,17 @@ $('f-entrar').addEventListener('submit', async ev => {
 $('b-olvide').addEventListener('click', async ev => {
   ev.preventDefault();
   const e = $('e-entrar');
-  // Si ya escribió el correo arriba, no se lo pedimos de nuevo.
-  let mail = $('i-mail').value.trim();
-  if(!mail) mail = String(window.prompt('¿Cuál es tu correo?') || '').trim();
-  if(!mail) return;
+  // El correo ya está en pantalla, arriba del botón. Si está vacío se lo
+  // señalamos ahí en vez de abrir un `prompt` del navegador, que aparece
+  // con el nombre del sitio adelante y se lee como un cartel de otro lado.
+  // Esto no dice nada sobre si la cuenta existe: el mensaje de después
+  // sigue siendo el mismo exista o no. Ver `recuperar`.
+  const mail = $('i-mail').value.trim();
+  if(!mail){
+    avisar('Escribí tu correo arriba y volvé a tocar', true);
+    try{ $('i-mail').focus(); }catch(_){}
+    return;
+  }
   await recuperar(mail);
   // Una pantalla entera, no un renglón: en el teléfono el renglón quedaba
   // abajo del botón y no se notaba que hubiera pasado algo.
