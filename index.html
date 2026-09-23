@@ -4033,7 +4033,15 @@ function clientDrop(ev, idx){
 // Punto del sidebar: verde = campanas activas gastando; amarillo = pausadas / sin gasto; gris = sin Meta
 function adsDot(c){
   const al=getActiveLine(c.conversionLines||[]);
-  const camps=(al&&al.metaCampaigns)||[];
+  /* ⚠️  LAS DESTILDADAS NO CUENTAN. La cuenta de un cliente suele tener
+     campanas que no montamos nosotros, y estan destildadas en Ads & Guiones.
+     Sin este filtro el punto se pone verde y la ficha dice LIVE por una
+     campana ajena: PlayWith figuraba en vivo con las 21 destildadas. Es la
+     misma lista que usan la inversion y los dias de campana. */
+  const _todasCamps=(al&&al.metaCampaigns)||[];
+  const _fueraCamps=(al&&al.excludedCampaigns)||[];
+  const camps=_todasCamps.filter(function(cp){ return _fueraCamps.indexOf(cp.id)===-1; });
+  const todasFuera=(_todasCamps.length>0 && camps.length===0);
   const roll=(c.liveLines||[]).find(function(l){return l.rolling;});
   const spending=!!(roll&&roll.metrics&&Number(roll.metrics.adSpent)>0);
   // Un anuncio entrega de verdad solo si los TRES niveles estan activos.
@@ -4057,6 +4065,14 @@ function adsDot(c){
   const _sync=_syncAt?(' - ultimo sync de Meta: '+new Date(_syncAt).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):'';
   // Sin lineas de conversion no hay arbol de campanas guardado. En ese caso el estado
   // se decide por el dato mas directo que tenemos: si hubo gasto en los ultimos 7 dias.
+  /* ⚠️  DESTILDARLAS TODAS NO ES LO MISMO QUE NO TENER CAMPANAS. Sin esto se
+     caia en la rama de abajo, que decide por el gasto de los ultimos 7 dias
+     —un gasto que viene de esas mismas campanas ajenas— y volvia a dar LIVE
+     por la ventana. Si no seguimos ninguna, el estado es gris. */
+  if(todasFuera){
+    return {syncAt:_syncAt,color:hc('gray'),state:'gray',live:false,
+      title:'Las '+_todasCamps.length+' campanas de la cuenta estan destildadas: no seguimos ninguna'+_sync};
+  }
   if(!camps.length){
     if(spending) return {syncAt:_syncAt,color:hc('green'),state:'green',live:true,title:'Gastando en los ultimos 7 dias'+_sync};
     if(c.metaToken) return {syncAt:_syncAt,color:hc('amber'),state:'amber',live:false,title:'Sin gasto en los ultimos 7 dias'+_sync};
@@ -5359,6 +5375,13 @@ function _overviewMetricsHtml(_ovDonde){
   // puede recuperar.
   var LANZA_DIAS=7;
   var porLanzar=_base.map(function(cl){
+      /* ⚠️  SI YA TIENE CAMPANAS NUESTRAS AL AIRE, YA LANZO, DIGA LO QUE DIGA
+         LA CUENTA. `_lanzaCuenta` es una PROYECCION: onboarding + 30 dias. No
+         mira Meta, asi que a un cliente que lanzo antes de lo previsto lo
+         seguia anunciando como proximo. Centercheques figuraba "faltan 2 d"
+         con una campana corriendo desde hacia 8, y su propia tarjeta del
+         tablero decia "8 d prendidas" tres lineas mas abajo. */
+      if(_yaLanzo(cl)) return null;
       var q=(typeof _lanzaCuenta==='function')?_lanzaCuenta(cl):null;
       return (q && q.faltan>=0 && q.faltan<=LANZA_DIAS) ? {cl:cl, q:q} : null;
     }).filter(Boolean)
@@ -8357,6 +8380,22 @@ function _lanzaCuenta(c){
   return {ini:ini, fin:fin, total:dLanz, faltan:faltan,
           dia:Math.round((hoy-ini)/86400000)};
 }
+/* Lanzo de verdad: hay al menos una campana NUESTRA prendida y arrancada.
+   Es el unico hecho comprobable de que salio al aire; todo lo demas -la
+   proyeccion de `_lanzaCuenta`, la etapa tildada a mano- es una intencion.
+   Devuelve los dias que lleva corriendo, o null si todavia no lanzo.
+   Se apoya en `_p360DiasCampanas` para no tener dos ideas distintas de que
+   campana cuenta: esa ya descarta las destildadas y las que no arrancaron. */
+function _yaLanzo(c){
+  if(typeof _p360DiasCampanas!=='function') return null;
+  var cmp=null;
+  try{ cmp=_p360DiasCampanas(c); }catch(e){ return null; }
+  // `sinFecha` es "hay campanas prendidas pero se sincronizaron antes de que
+  // se pidiera la fecha". Lanzo igual; lo que no sabemos es cuando.
+  if(cmp && cmp.sinFecha) return {dias:null, cuantas:cmp.cuantas};
+  return (cmp && cmp.cuantas>0) ? {dias:cmp.dias, cuantas:cmp.cuantas} : null;
+}
+
 // ---- Alta automatica al pasar a onboarding -------------------------------
 // Pasar un lead a onboarding es convertirlo en cliente, y hasta ahora eso dejaba
 // la ficha entera vacia: habia que volver a escuchar las mismas llamadas para
@@ -34512,14 +34551,9 @@ function p360Html(){
   if(_sinVenta) cols=cols.filter(function(c){ return !p360EsVenta(c.l); });
   // Y el conteo de arriba cuenta lo que se ve: si dijera 29 con trece leads
   // escondidos, estaria mintiendo justo arriba del tablero.
-  var _ocultos=0;
   if(_sinVenta){
     var _vis=[];
     cols.forEach(function(c){ c.cards.forEach(function(d){ _vis.push(d); }); });
-    // Cuantos quedaron afuera. Sin esto, un cliente recien creado -que arranca
-    // en la primera etapa, que es de venta- desaparecia del tablero sin una
-    // sola senal, y desde afuera se lee como que no se creo.
-    _ocultos=ver.length-_vis.length;
     ver=_vis;
   }
   // La misma gramatica que el reparto: un cliente, un chip. Antes cada tarjeta
@@ -34633,8 +34667,18 @@ function p360Html(){
         +(f.de==='cliente'?', lo destraba el cliente.':', lo destrabamos nosotros.'))
       : 'Sin frenos.';
     var dias=null, queCuenta='';
+    // Mismo criterio que el Mirador: las campanas al aire le ganan a la
+    // proyeccion. Sin esto el circulo decia "Faltan 2 d para lanzar" arriba de
+    // la linea que dice "8 d prendidas", en la misma tarjeta.
+    var _yl=(typeof _yaLanzo==='function')?_yaLanzo(d.c):null;
     var q2=(typeof _lanzaCuenta==='function')?_lanzaCuenta(d.c):null;
-    if(q2){
+    if(_yl){
+      dias=(_yl.dias===null) ? (q2?Math.abs(q2.faltan):0) : _yl.dias;
+      queCuenta=(_yl.dias===null)
+        ? 'Ya lanzo: tiene campanas prendidas. Sincroniza Meta para saber desde cuando.'
+        : ('Lanzo hace '+_yl.dias+' d: es lo que llevan corriendo sus campanas.');
+    }
+    else if(q2){
       dias=Math.abs(q2.faltan);
       queCuenta=(q2.faltan<0) ? ('Lanzo hace '+dias+' d.')
               : (q2.faltan===0 ? 'Lanza hoy.' : ('Faltan '+dias+' d para lanzar.'));
@@ -34834,23 +34878,10 @@ function p360Html(){
     // trabaja la cartera todos los dias, y tenerlas en otra pantalla obligaba a
     // ir y volver para saber quien lanza esta semana.
     +((typeof _overviewMetricsHtml==='function')?_overviewMetricsHtml():'')
-    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;'
-      +'flex-wrap:wrap;margin-bottom:4px">'
-      // El titulo lo pone la cabecera de la pantalla: aca era el mismo texto
-      // dos veces, uno abajo del otro.
-      +'<div></div>'
-      +'<div style="font-size:11px;color:var(--text3)">'
-        +ver.length+' cliente'+(ver.length===1?'':'s')
-        +(sel?(' en '+esc(selLabel)):'')
-        +' \u00b7 '+ver.filter(function(d){return d.peor;}).length+' con algo trabado'
-        +(_ocultos
-          ? (' \u00b7 <a href="javascript:void(0)" onclick="p360VerVenta(true)" '
-             +'style="color:var(--amberx)" title="Estan en Diagnostico, Presentacion o '
-             +'Alta cliente, que estan ocultas">'+_ocultos+' oculto'
-             +(_ocultos===1?'':'s')+' en etapas de venta</a>')
-          : '')
-        +'</div>'
-    +'</div>'
+    // El renglon gris de resumen -"13 clientes en X, 6 con algo trabado, 18
+    // ocultos"- se saco: arriba ya estan las tarjetas del Mirador con las
+    // mismas cifras, y el tablero de abajo se cuenta solo. Las etapas de venta
+    // se muestran con el tilde de la isla de filtros, no con ese enlace.
     // La frase que explicaba cada vista se saco: ocupaba una fila arriba del
     // tablero para decir algo que se entiende mirandolo. LEAD queda definido
     // por si alguna vuelve, en un tooltip o en la isla.
