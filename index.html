@@ -32114,6 +32114,20 @@ function _citaCalId(ev){
   return String(ev.calendarioId||ev.calendarId||ev.calendar_id||ev.idCalendario
     ||ev.calendario||'');
 }
+/* Que reunion es, en dos palabras, para una cita que no tiene etapa.
+   El nombre del calendario es lo unico descriptivo que traen: el titulo suele
+   ser el nombre del contacto -"Pablo De Paoli"-, que en la tarjeta del cliente
+   no agrega nada. Pero `_citaCalNombre` devuelve el ID crudo cuando el
+   calendario no esta en la lista que se bajo al conectar, y un
+   "tjgo2kZaFilvXDaE7lTU" en la tarjeta es peor que nada: por eso se comprueba
+   que el nombre sea de verdad, y si no, no se dice nada. */
+function _citaQueEs(x){
+  if(!x) return '';
+  var id=(typeof _citaCalId==='function')?_citaCalId(x):(x.calendario||'');
+  var m=(DB.ghlCalendariosAgencia||[]).filter(function(k){
+    return String(k.id)===String(id); })[0];
+  return (m && m.nombre) ? String(m.nombre) : '';
+}
 function _citaCalNombre(ev){
   if(!ev) return '';
   var lista=(DB.ghlCalendariosAgencia||[]);
@@ -32799,6 +32813,11 @@ function p360IrACita(clientId, etapa){
   if(!c) return;
   S.p360Abierto=clientId;
   _citasRepintar();
+  // Una cita suelta llega sin etapa. Ofrecer "agendar una nueva" ahi era
+  // justo lo contrario de lo que hace falta: la reunion ya existe, lo que
+  // falta es decirle a que etapa pertenece, y eso se hace en la ficha, que
+  // esta linea ya dejo abierta.
+  if(!etapa) return;
   setTimeout(function(){
     var x=_deEtapa(c.citas, etapa);
     // Sin reunion en GHL no hay nada que mover: se ofrece agendar una.
@@ -34616,7 +34635,7 @@ function p360Html(){
       // la tarjeta decia "se cancelo la reunion" con el onboarding en pie.
       var cs=(d.c.citas||{});
       var ahora=Date.now();
-      var viva=null, cancelada=null, vivaEt='';
+      var viva=null, cancelada=null, vivaEt='', suelta=false;
       Object.keys(cs).forEach(function(k){
         var x=cs[k];
         if(!x||!x.inicio) return;
@@ -34626,20 +34645,40 @@ function p360Html(){
           if(!cancelada||t<new Date(cancelada.inicio).getTime()) cancelada=x;
           return;
         }
-        if(!viva||t<new Date(viva.inicio).getTime()){ viva=x; vivaEt=k; }
+        if(!viva||t<new Date(viva.inicio).getTime()){ viva=x; vivaEt=k; suelta=false; }
+      });
+      /* ⚠️  LAS SUELTAS TAMBIEN SON REUNIONES. `c.citas` solo tiene las que
+         matchearon una etapa; una reunion cuyo calendario no pertenece a
+         ninguna cae en `c.citasSinEtapa` y para esta tarjeta no existia. A los
+         clientes ya en Recurrente les pasa siempre: esa etapa no tiene
+         calendario ni palabras clave, asi que la capacitacion quedaba invisible
+         y la tarjeta mostraba el "+" de agendar con la reunion ya tomada.
+         Centercheques tenia el 25/09 10:00 agendado y la tarjeta no decia nada. */
+      (d.c.citasSinEtapa||[]).forEach(function(x){
+        if(!x||!x.inicio) return;
+        if(String(x.estado||'')==='cancelled') return;
+        var t=new Date(x.inicio).getTime();
+        if(isNaN(t)||t<ahora) return;
+        if(!viva||t<new Date(viva.inicio).getTime()){ viva=x; vivaEt=''; suelta=true; }
       });
       // Devuelve los datos, no el HTML: la proxima reunion ahora se dibuja como
       // un boton de calendario arriba a la derecha, con la fecha al pasar el
       // cursor, y la cancelada sigue siendo una linea porque hay que leerla.
-      return {viva:viva, cancelada:cancelada, etapa:vivaEt};
+      return {viva:viva, cancelada:cancelada, etapa:vivaEt, suelta:suelta};
     })();
     var proxTxt=prox.viva
       ? (_citaFechaAR(prox.viva.inicio)+' '+_citaHora(prox.viva.inicio)) : '';
     // El boton solo existe si hay reunion en pie: sin ella no se deja ni el
     // hueco ni un icono apagado.
+    // Una suelta no se puede reprogramar por etapa -no tiene-, asi que el
+    // boton lleva a la ficha, que es donde se le asigna una.
+    var _calTit=prox.suelta
+      ? (proxTxt+' \u00b7 '+(_citaQueEs(prox.viva)||'reunion')
+         +' \u2014 no esta enganchada a ninguna etapa; tocala para abrir la ficha y '
+         +'asignarsela')
+      : (proxTxt+' \u2014 tocala para cambiarle la fecha o la hora');
     var calBtn=prox.viva
-      ? ('<span class="p3kcal" title="'+esc(proxTxt)+' \u2014 tocala para cambiarle la fecha '
-        +'o la hora" style="cursor:pointer" '
+      ? ('<span class="p3kcal" title="'+esc(_calTit)+'" style="cursor:pointer" '
         +'onclick="event.stopPropagation();p360IrACita('+d.c.id+',\''
         +esc(String(prox.etapa)).replace(/'/g,"\\'")+'\')">'
         +'<span class="p3kcalb"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" '
@@ -34771,6 +34810,20 @@ function p360Html(){
         +'si se hizo, se reprogramo o no vino nadie.">'
         +esc(pend.l)+(fp?(' del '+fp):'')+' \u00b7 \u00bfqu\u00e9 pas\u00f3?</span>';
     })();
+    /* La reunion suelta se dice en voz alta, no solo en el tooltip del
+       calendario. Es el unico rastro de que un cliente que ya no avanza de
+       etapa sigue activo: los de Recurrente no tienen etapa que mover ni
+       reunion que confirmar, asi que sin esta linea la tarjeta se ve igual
+       que la de uno abandonado. */
+    if(prox.viva && prox.suelta){
+      var _qe=_citaQueEs(prox.viva);
+      lineas+='<span class="p3klin" style="color:var(--accent)" title="'
+        +esc(proxTxt+(_qe?(' \u00b7 '+_qe):'')
+             +'. No esta enganchada a ninguna etapa: abri la ficha para asignarsela.')
+        +'">'+esc(_citaFechaAR(prox.viva.inicio).replace(/\/\d{4}$/,'')
+             +' '+_citaHora(prox.viva.inicio)
+             +' \u00b7 '+(_qe||'agendada'))+'</span>';
+    }
     // Y si la unica que habia se cancelo, hay que volver a agendar.
     if(!prox.viva && prox.cancelada){
       lineas+='<span class="p3klin" style="color:var(--redx)">se cancelo la del '
