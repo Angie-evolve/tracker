@@ -4633,6 +4633,9 @@ function personasDatalist(id, campo){
 // el resto de la app los ofrece desde aca.
 function personasModal(){
   if(csmFuera('la administración de personas','personas')) return;
+  // Se pregunta una sola vez por apertura: la funcion repinta sola cuando
+  // contesta, y sin este `null` la lista se quedaria con lo de la vez pasada.
+  if(_fathomCuentas===null) fathomCuentasCargar(false);
   var lista=personas();
   var inp='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit';
   var filas=lista.length
@@ -4664,28 +4667,50 @@ function personasModal(){
             +' onchange="setNotifEod(\''+esc(p.email)+'\',this.checked)">fin de dia'
             +(p.notifEod&&!p.tel?' (sin telefono)':'')+'</label>'
         +'</div>'
-        +'<div style="font-size:10.5px;margin-top:2px">'
-          +(p.fathomAt
-            ?('<span style="color:'+(p.fathomKeyGuardada?'var(--accent)':'var(--amberx)')+'">'
-              +(p.fathomKeyGuardada?'Fathom conectado':'Conectado, sin key guardada')+'</span>'
-              +'<span style="color:var(--text3)"> &middot; desde el '
-              +esc(new Date(p.fathomAt).toLocaleDateString('es-AR'))
-              +(p.fathomMail&&p.fathomMail.toLowerCase()!==p.email.toLowerCase()
-                ?('</span><span style="color:var(--amberx)"> &middot; la key era de '+esc(p.fathomMail))
-                :'')
-              +'</span>'
-              // Reconectar tiene que estar a mano: la key se guarda del lado del
-              // servidor, y quien se conecto antes de que eso existiera figura
-              // como conectado pero no esta en la tabla. Sin este link habia que
-              // borrar la persona para poder volver a cargarla.
-              +' <span style="color:var(--text3)">&middot;</span> '
-              +'<a href="javascript:void(0)" onclick="personaFathomAbrir(\''+esc(p.email)+'\')" '
-              +'style="color:var(--text3);text-decoration:none;'
-              +'border-bottom:1px dotted var(--border2)">reconectar</a>')
-            :'<a href="javascript:void(0)" onclick="personaFathomAbrir(\''+esc(p.email)+'\')" '
-              +'style="color:var(--text2);text-decoration:none;border-bottom:1px dotted var(--border2)">'
-              +'Conectar su Fathom</a>')
-        +'</div>'
+        +(function(){
+          /* Una persona puede tener VARIAS cuentas de Fathom. Antes esto
+             dibujaba una sola linea de estado, sacada de la marca que se
+             guardo el dia que conecto; ahora se dibuja lo que el servidor dice
+             que hay, y el link de sumar otra queda siempre a mano. */
+          var _cs=fathomCuentasDe(p.email);
+          var _link=function(t,col){
+            return '<a href="javascript:void(0)" onclick="personaFathomAbrir(\''+esc(p.email)+'\')" '
+              +'style="color:'+(col||'var(--text3)')+';text-decoration:none;'
+              +'border-bottom:1px dotted var(--border2)">'+t+'</a>'; };
+          var h='<div style="font-size:10.5px;margin-top:2px">';
+          if(_cs===null){
+            // No se pudo preguntar. Se dice lo ultimo que se supo, pero
+            // aclarando que es viejo: dar por buena esa marca es justo el
+            // error que dejo a dos personas en verde sin key guardada.
+            h+=(p.fathomAt
+              ? '<span style="color:var(--text3)">'
+                +(p.fathomKeyGuardada?'Fathom conectado':'Conectado, sin key guardada')
+                +' el '+esc(new Date(p.fathomAt).toLocaleDateString('es-AR'))
+                +' \u00b7 sin comprobar contra el servidor</span> '
+                +'<span style="color:var(--text3)">&middot;</span> '+_link('conectar otra')
+              : _link('Conectar su Fathom','var(--text2)'));
+            return h+'</div>';
+          }
+          if(!_cs.length){
+            // Sabemos que no hay ninguna. Si la app decia que si, se dice la
+            // diferencia: es la unica forma de que alguien la vaya a arreglar.
+            h+=(p.fathomAt
+              ? '<span style="color:var(--redx)">Figuraba conectado el '
+                +esc(new Date(p.fathomAt).toLocaleDateString('es-AR'))
+                +', pero no hay ninguna key guardada</span> '
+                +'<span style="color:var(--text3)">&middot;</span> '+_link('conectar')
+              : _link('Conectar su Fathom','var(--text2)'));
+            return h+'</div>';
+          }
+          h+='<span style="color:var(--accent)">'+_cs.length+' Fathom conectado'
+            +(_cs.length===1?'':'s')+'</span>';
+          _cs.forEach(function(x){
+            h+='<span style="color:var(--text3)"> \u00b7 '+esc(x.cuenta)
+              +(x.tiene_webhook?'':' (sin webhook)')+'</span>';
+          });
+          h+=' <span style="color:var(--text3)">&middot;</span> '+_link('conectar otra');
+          return h+'</div>';
+        })()
         +(S._personaFathom&&S._personaFathom.toLowerCase()===p.email.toLowerCase()
           ?('<div style="margin-top:7px;display:flex;gap:6px;align-items:center">'
             +'<input id="pf-key" placeholder="API key de Fathom de '+esc(p.nombre||p.email)+'" '
@@ -4758,6 +4783,7 @@ function personasModal(){
       +'<div class="modal-sub">Nombre, mail y telefono de cada uno. Se cargan una vez aca y despues '
         +'se eligen en el informe, en los avisos y en el reparto de clientes.<br>'
         +'<b>plata</b>: ve los abonos, el LTV y la pestana Rentabilidad.</div>'
+      +'<div id="pf-lista-marca" hidden></div>'
       +filas
       +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-top:14px">'
         +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">'
@@ -4835,6 +4861,39 @@ function setNotifEod(mail, on){
 function eodDestinatario(){
   return personas().filter(function(p){ return p.notifEod; })[0]||null;
 }
+/* Las cuentas de Fathom que hay guardadas, preguntandole al servidor.
+   ⚠️  NO ALCANZA CON `p.fathomKeyGuardada`. Esa marca se escribe cuando
+   alguien conecta y dice lo que PASO ese dia, no lo que hay hoy: si la fila
+   despues desaparece, la pantalla se queda en verde para siempre. Angie y
+   Joela figuraban "Fathom conectado" desde el 02/09 con la tabla sin una sola
+   fila suya, y la busqueda hacia atras no las incluia sin que nada lo dijera.
+   La tabla no se puede leer desde el navegador —RLS sin policies, guarda
+   credenciales—, asi que va por la funcion, que devuelve todo menos la key. */
+var _fathomCuentas=null;   // null = todavia no se pregunto
+async function fathomCuentasCargar(callado){
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec){ _fathomCuentas={error:'sin webhook configurado'}; return _fathomCuentas; }
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=keys',
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    var d=null; try{ d=await r.json(); }catch(e){}
+    if(!r.ok||!d||!d.ok){ _fathomCuentas={error:(d&&d.error)||('HTTP '+r.status)}; }
+    else _fathomCuentas={lista:(d.cuentas||[])};
+  }catch(e){ _fathomCuentas={error:String(e&&e.message||e)}; }
+  if(!callado && typeof personasModal==='function' && document.getElementById('pf-lista-marca')){
+    personasModal();
+  }
+  return _fathomCuentas;
+}
+// Las de una persona. Sin respuesta todavia devuelve null, que no es lo mismo
+// que "ninguna": una cosa es no saber y la otra es saber que no hay.
+function fathomCuentasDe(mail){
+  if(!_fathomCuentas||_fathomCuentas.error) return null;
+  var k=String(mail||'').toLowerCase();
+  return (_fathomCuentas.lista||[]).filter(function(x){
+    return String(x.persona||'').toLowerCase()===k; });
+}
 function personaFathomAbrir(mail){
   S._personaFathom=mail;
   personasModal();
@@ -4890,9 +4949,25 @@ async function personaFathomConectar(mail){
     p.fathomKeyGuardada=!!d.guardada;
     try{ save(); }catch(e){ console.error('no pude guardar el estado:', e); }
     S._personaFathom=null;
+    // Lo que hay cambio, asi que lo de antes ya no sirve: se vuelve a
+    // preguntar y la lista se repinta sola cuando llega la respuesta.
+    _fathomCuentas=null;
     personasModal();
+    // Que la key sea de otra cuenta NO es un error cuando se estan sumando
+    // varias: es exactamente lo que pasa al conectarle a alguien su segundo
+    // Fathom. Se dice cual quedo, sin el "ojo" de antes, que ahora asustaria
+    // en el caso normal.
     var aviso=(d.duenio && String(d.duenio).toLowerCase()!==String(mail).toLowerCase())
-      ? ' Ojo: esa key es de '+d.duenio+', no de '+mail+'.' : '';
+      ? (' Quedo como cuenta '+d.duenio+'.') : '';
+    /* ⚠️  A CIEGAS: Fathom no dijo de quien es la cuenta, cosa que pasa cuando
+       todavia no tiene ninguna grabacion. Sin ese dato las dos cuentas de una
+       misma persona caen en la misma fila y la segunda pisa a la primera, que
+       es justo lo que esto vino a arreglar. Hay que decirlo. */
+    if(d.a_ciegas){
+      aviso+=' Ojo: Fathom no me dijo de que cuenta es —suele pasar cuando todavia'
+            +' no tiene ninguna grabacion—, asi que quedo guardada como la unica de'
+            +' esta persona. Si le sumas otra, esta se pierde.';
+    }
     // Que el webhook se cree y que la key quede guardada son dos cosas: si la
     // segunda falla, la busqueda hacia atras no va a andar y hay que decirlo.
     if(!d.guardada){
