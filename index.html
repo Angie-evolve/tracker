@@ -7970,6 +7970,12 @@ async function convEnviarMsg(){
 // cada persona pone un webhook en su propio Fathom, las llamadas caen en
 // Supabase apenas terminan, y aca solo se bajan y se asignan al cliente.
 // Ademas queda registrado quien la grabo, que antes se perdia.
+// Las llamadas que llegaron y no son de nadie, tal como las devolvio la ultima
+// sincronizacion. `null` es "todavia no se sincronizo en esta sesion", que no
+// es lo mismo que "no hay ninguna": decir "nada pendiente" sin haber mirado es
+// la forma mas facil de que algo se pierda.
+var _fathomSinCliente=null;
+var _fathomSinClienteAt=0;
 async function fathomWebhookSync(silent){
   if(!SB.token){ if(!silent) toast('Entra con tu cuenta para sincronizar.','amber'); return {added:0}; }
   var filas;
@@ -8060,6 +8066,14 @@ async function fathomWebhookSync(silent){
       +' sin cliente: asignalas en Integraciones.','amber');
     else toast('Sin llamadas nuevas.');
   }
+  /* ⚠️  LAS QUE NO ENGANCHARON SE GUARDAN, NO SOLO SE CUENTAN. Antes de esto
+     el unico rastro era un numero en Integraciones -"3 sin cliente"- y un
+     toast que se va solo. La llamada de David con Martin estuvo un dia entero
+     ahi sin que nadie pudiera verla, y termino con el cliente cargado a mano y
+     sin sus llamadas. Ahora la lista viaja hasta "Datos que faltan", que es
+     donde se mira que quedo pendiente. */
+  _fathomSinCliente=sinCliente;
+  _fathomSinClienteAt=Date.now();
   return {added:added, sinCliente:sinCliente.length,
           clientes:Object.keys(tocados).map(function(cid){
             var c2=DB.clients.find(function(x){ return String(x.id)===String(cid); });
@@ -34515,7 +34529,8 @@ function _p360Faltan(datos, sinRuta){
     if(a.dudosa!==b.dudosa) return a.dudosa?-1:1;
     return a.t-b.t;
   });
-  return {citas:citas, etapa:(sinRuta||[]), prod:prod, adivinadas:adivinadas};
+  return {citas:citas, etapa:(sinRuta||[]), prod:prod, adivinadas:adivinadas,
+          llamadas:_fathomSinCliente};
 }
 function _p360FaltanHtml(f){
   var link=function(c){
@@ -34591,6 +34606,30 @@ function _p360FaltanHtml(f){
         return '<div class="r">'+link(d.c)
           +'<span class="b">'+(n?(n+(n===1?' tarea':' tareas')):'sin tareas')+'</span></div>';
       }))
+    +(function(){
+        var ll=f.llamadas;
+        // Sin sincronizar todavia no se sabe: decir "nada pendiente" seria
+        // inventar. Es lo mismo que pasa con las cuentas de Fathom.
+        if(ll===null){
+          return grupo('Llamadas sin cliente',
+            'Llegaron por el webhook de Fathom y ninguna ficha las reclama.',
+            ['<div class="nada">Todavia no se sincronizo en esta sesion.</div>']);
+        }
+        return grupo('Llamadas sin cliente',
+          'Llegaron por el webhook de Fathom y ninguna ficha las reclama, asi que no '
+          +'estan en ningun lado. Se arregla cargandole el mail del contacto a la ficha, '
+          +'o una palabra clave: la proxima sincronizacion las engancha sola.',
+          ll.map(function(x){
+            var por=(typeof _fathomPorQueNoLead==='function')?_fathomPorQueNoLead(x):null;
+            var fch=x.fecha?new Date(x.fecha):null;
+            return '<div class="r"><span class="a">'+esc(x.titulo||'sin titulo')+'</span>'
+              +'<span class="meta"><span style="color:var(--text3);font-size:10px">'
+              +esc((fch&&!isNaN(fch)?fch.toLocaleDateString('es-AR'):'')
+                   +' \u00b7 grabo '+(x.grabo_nombre||x.grabo_mail||'?')
+                   +(por&&por.texto?(' \u00b7 '+por.texto):''))
+              +'</span></span></div>';
+          }));
+      })()
     +grupo('Sin producto',
       'Aparecen en Todos pero en ninguna solapa de producto. Se cargaron antes '
       +'de que el alta lo pidiera.',
@@ -35095,7 +35134,8 @@ function p360Html(){
   var vista=(S.p360Vista||'etapas');
   var faltan=_p360Faltan(datos, sinRuta);
   var nFaltan=faltan.citas.length+faltan.etapa.length+faltan.prod.length
-    +(faltan.adivinadas||[]).filter(function(x){ return x.dudosa; }).length;
+    +(faltan.adivinadas||[]).filter(function(x){ return x.dudosa; }).length
+    +((faltan.llamadas||[]).length);
   var LEAD={
     reparto:'Quien tiene que mover a cada cliente y hace cuanto espera. '
       +'Lo unico que se pinta es lo que ya paso su plazo.',
