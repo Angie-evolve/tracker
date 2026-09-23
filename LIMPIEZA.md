@@ -344,3 +344,121 @@ Lo que **no** se sabe y hay que medir antes de tocar nada:
 
 Es distinto de los 401 de Razor Tech, que son token vencido. Este es tiempo,
 no permiso.
+
+# Plan de arquitectura y seguridad
+
+Diagnóstico medido el 2026-09-23 sobre el commit `da66b01` y sobre la base de
+producción. Nada de lo que sigue está estimado. La propuesta completa, con las
+cinco fases y el checklist, está en el artifact
+`https://claude.ai/artifact/1M1tKZdFbPQuoXnYofU8su`; acá queda lo accionable,
+para que viva en el repo y no en un chat.
+
+## Lo que se midió
+
+| Qué | Cuánto |
+|---|---|
+| JavaScript en un solo `<script>` | 64.150 líneas, 3,49 M caracteres |
+| Funciones en el ámbito global | 2.507 (mediana 13 líneas; 95 pasan 100, 12 pasan 300) |
+| Tests, build, linter, tipos | 0 de cada uno |
+| Accesos directos a `DB.` / `S.` | 1.039 / 886 |
+| `save()` sueltos / `fetch()` crudos | 517 / 150 |
+| `onclick=` inline / `innerHTML` / `esc()` | 1.325 / 491 / 1.732 |
+| Historial de git | 1.590 commits, **limpio**: dos pases, ningún secreto |
+
+Las cinco funciones más largas son las que más se tocan: `renderTab` (784),
+`_lpPaginaHtml` (703), `renderVentasTab` (668), `p360Html` (639) y
+`showTickets` (482).
+
+**El dato que ordena todo lo demás:** de seis fallas encontradas en un día de
+trabajo, **cinco fueron de lógica** —el badge LIVE, "próximos a lanzar", un
+interruptor que mandaba lo contrario de lo que mostraba, el buscador incompleto
+y 54 llamadas invisibles—. Ninguna la habría atajado un hosting distinto.
+Todas las habría atajado un test.
+
+## Fase 0 — cerrojo. No toca la app
+
+- [ ] **Rotar cinco tokens de GHL.** Quedaron escritos completos en un chat el
+      2026-09-23, al imprimir sin enmascarar el campo `ghl` de varias fichas.
+      No se listan acá los nombres a propósito: este repo es público y el
+      CLAUDE.md dice que los nombres de clientes no entran a git. Para
+      identificarlos:
+      `select datos->>'name' from clientes where datos->'ghl'->>'token' ilike 'pit-%';`
+      y cruzar con los cinco que aparecen en la conversación de esa fecha.
+- [ ] **Prender secret scanning y push protection.** Hoy están apagados, y son
+      gratis en repos públicos. Bloquean el push si alguna vez se pega una clave.
+- [ ] **Proteger `main`.** Hoy no tiene protección: todo push va directo a
+      producción, sin diff previo ni forma de revisar.
+- [ ] **Versionar tres Edge Functions.** `GHL`, `Google-calendar` y
+      `segumiento-agendas-de-equipo-c-cliente` sólo existen desplegadas. Si se
+      borran, se perdieron. Se bajan con
+      `npx supabase functions download <slug>`.
+- [ ] **Alargar tres secretos.** `evold-gcal-fn-sec`, `evold-ghl-fn-sec` y
+      `evold-hf-fn-sec` tienen **6 caracteres**. Es corto para lo que protegen.
+      Se hace al rotarlos, no aparte.
+
+## Fase 1 — la red de seguridad, antes que cualquier refactor
+
+Herramientas: esbuild, Vitest, Biome, GitHub Actions. Todas gratis y estándar.
+
+- [ ] `package.json` y toolchain, **sin cambiar cómo se sirve la app**.
+- [ ] Extraer a `src/dominio/` las funciones puras que deciden plata y estado.
+- [ ] ~25 tests sobre `_lanzaCuenta`, `adsDot`, `_p360DiasCampanas`,
+      `_fathomMatchClient` y `_metaObjetivoResultado`. Se escriben **contra el
+      código roto primero**: si no fallan, no prueban nada.
+- [ ] CI que corra tests y lint en cada push, obligatorio para mergear.
+- [ ] Chequeo de versión en la app. Hoy GitHub Pages cachea 10 minutos y ya
+      pasó dos veces que se mirara una versión sin los cambios publicados.
+
+## Fase 2 — cortar el archivo, por dominio
+
+⚠️ **Los 1.325 `onclick=` inline exigen que las funciones sigan siendo
+globales.** Cualquier modularización tiene que exponer explícitamente en
+`window` lo que el HTML llama, o la app deja de responder a los clics. Ese
+puente es lo que permite cortar sin un big bang, y es lo primero que hay que
+construir.
+
+Orden sugerido: `fathom` → `meta` → `ghl` → `panel360` → `ventas`. Después,
+una capa de datos para que `DB` y `save()` dejen de tocarse desde 1.500
+lugares, y un esquema del cliente documentado y validado al guardar —hoy
+`contacto`, `contactoEmail` y `contactEmail` conviven, y por eso el buscador
+del panel no encontraba por nombre de contacto.
+
+## Fase 3 — secretos y hosting, en ese orden
+
+- [ ] **Sacar los tokens de las filas.** 12 de GHL y 13 de Meta viven en
+      `clientes.datos`, y la policy `cartera_alcanza` deja que cualquier cuenta
+      de agencia que alcance ese cliente los lea por la API con su propia
+      sesión. El patrón correcto ya existe y funciona: `fathom_keys`, con RLS y
+      cero policies, accesible sólo desde una Edge Function.
+- [ ] **Recortar la policy de `config`.** Nueve campos sensibles y la condición
+      es `mi_rol() = 'agencia'`, sin recorte por cartera: cualquier cuenta de
+      agencia los lee todos.
+- [ ] **Hosting con dominio propio y headers de caché**, y recién ahí el repo a
+      privado. Hoy es público **obligado**: es la condición de GitHub Pages
+      gratis.
+- [ ] Antes de cortar Pages: agregar las URLs nuevas a Supabase → Auth →
+      Redirect URLs, o los logins se rompen.
+- [ ] Al pasar el repo a privado, **revisar el cron de
+      `.github/workflows/editor-ia-worker.yml`**. Corre cada 10 minutos y su
+      propio comentario dice que los minutos son gratis porque el repo es
+      público. En privado empieza a consumir cuota.
+
+## Lo que queda pendiente de decidir
+
+- Alcance de la Fase 1: 25 tests sobre lo que ya falló (2–3 días) o cobertura
+  amplia desde el arranque (dos semanas).
+- Hosting: Cloudflare Pages permite uso comercial en el plan gratis; Vercel lo
+  prohíbe en el suyo y cobra Pro.
+- Ejecución: secuencial, o agentes en paralelo por dominio. En paralelo conviene
+  **recién con los tests andando**; antes, nadie sabría quién rompió qué.
+
+## Fuera del plan, anotado el 2026-09-23
+
+- **Joela y Angie figuran con Fathom conectado y no tienen key guardada.** Sus
+  webhooks existen, así que las llamadas nuevas entran; lo que no funciona es la
+  búsqueda hacia atrás. Se arregla reconectando desde Usuarios. No se sabe por
+  qué desaparecieron esas dos filas: las tres se conectaron el mismo día y la
+  tercera sobrevivió.
+- **La lista de "abre leads" nunca se había guardado.** Caía siempre en el
+  default del código —una sola persona—, así que las llamadas de todos los demás
+  se guardaban sin abrir tarjeta. Ya es editable desde Usuarios; falta marcarla.
