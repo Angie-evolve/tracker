@@ -4192,10 +4192,42 @@ function esProspecto(c){ return !!(c&&c.prospecto); }
 function activeClients(){ return DB.clients.filter(function(c){return !c.archived && !esAgencia(c) && !esProspecto(c);}); }
 // Quien prospecta. Sus llamadas con alguien de afuera abren tarjeta; las de
 // cualquier otro, no, o cada daily interna crearia un prospecto.
+/* Quien prospecta. Solo las llamadas de esta gente abren tarjeta de lead:
+   una reunion de delivery con el equipo del cliente no es un prospecto nuevo.
+
+   ⚠️  ESTA LISTA DECIDE QUE LEADS EXISTEN, Y HASTA AHORA NO SE PODIA EDITAR.
+   `DB.comerciales` no se escribia en ningun lado, asi que siempre caia en el
+   default -Joela sola- y las llamadas de cualquier otro morian en el limbo:
+   Martin tenia 54 grabadas, entre ellas "David y Martin <> Presentacion de
+   Gameplan", y ninguna abrio tarjeta. Ahora se elige en Usuarios.
+
+   ⚠️  `[]` NO ES LO MISMO QUE NO HABER ELEGIDO NUNCA. Antes la lista vacia
+   caia en el default igual, asi que sacar a la ultima persona la volvia a
+   poner sola. Solo se cae al default cuando la clave no existe todavia. */
 function _fathomComerciales(){
   var v=DB.comerciales;
-  if(!Array.isArray(v)||!v.length) return ['joela@theflowingcode.com'];
-  return v.map(function(x){ return String(x).trim().toLowerCase(); });
+  if(!Array.isArray(v)) return ['joela@theflowingcode.com'];
+  return v.map(function(x){ return String(x).trim().toLowerCase(); }).filter(Boolean);
+}
+function esComercial(mail){
+  return _fathomComerciales().indexOf(String(mail||'').trim().toLowerCase())>=0;
+}
+function setComercial(mail, on){
+  var m=String(mail||'').trim().toLowerCase();
+  if(!m) return;
+  // Se parte de la lista EFECTIVA, no de `DB.comerciales`: la primera vez que
+  // se toca un interruptor la clave no existe, y guardar solo lo tocado
+  // borraria a quien venia por el default sin que nadie lo pidiera.
+  var out=_fathomComerciales().filter(function(x){ return x!==m; });
+  if(on) out.push(m);
+  DB.comerciales=out;
+  try{ save(); }catch(e){ console.error('no pude guardar comerciales:', e); }
+  if(typeof personasModal==='function') personasModal();
+  if(typeof toast==='function'){
+    toast(on ? ('Las llamadas de '+m+' van a abrir leads. Sincroniza Fathom para '
+                +'que entren las que ya estan guardadas.')
+             : ('Las llamadas de '+m+' ya no abren leads.'));
+  }
 }
 // El equipo: las personas cargadas mas los dominios corporativos que usen.
 // Sirve para saber quien es "de afuera" en una reunion.
@@ -4666,6 +4698,18 @@ function personasModal(){
             +'<input type="checkbox" class="sw"'+(p.notifEod?' checked':'')
             +' onchange="setNotifEod(\''+esc(p.email)+'\',this.checked)">fin de dia'
             +(p.notifEod&&!p.tel?' (sin telefono)':'')+'</label>'
+          // Quien prospecta. Va al lado de los otros dos porque es lo mismo:
+          // una cosa que esta persona hace, no un permiso.
+          +(function(){
+              var on=esComercial(p.email);
+              return '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;'
+                +'cursor:pointer;color:'+(on?'var(--accent)':'var(--text3)')+'" '
+                +'title="'+esc('Cuando graba una llamada con alguien de afuera, se abre '
+                  +'solo un lead en el Panel 360. Sin esto la llamada queda guardada pero '
+                  +'sin tarjeta, y no hay donde leerla.')+'">'
+                +'<input type="checkbox" class="sw"'+(on?' checked':'')
+                +' onchange="setComercial(\''+esc(p.email)+'\',this.checked)">abre leads</label>';
+            })()
         +'</div>'
         +(function(){
           /* Una persona puede tener VARIAS cuentas de Fathom. Antes esto
@@ -4784,6 +4828,14 @@ function personasModal(){
         +'se eligen en el informe, en los avisos y en el reparto de clientes.<br>'
         +'<b>plata</b>: ve los abonos, el LTV y la pestana Rentabilidad.</div>'
       +'<div id="pf-lista-marca" hidden></div>'
+      // Sin nadie marcado no se abre ni un lead, y eso desde la lista no se ve:
+      // son seis interruptores apagados, que es lo mismo que se ve cuando la
+      // pantalla todavia no cargo.
+      +(_fathomComerciales().length
+        ?''
+        :('<div style="margin-top:10px;font-size:11px;color:var(--amberx)">'
+          +'Nadie tiene <b>abre leads</b>. Las llamadas se van a seguir guardando, '
+          +'pero ninguna va a abrir una tarjeta en el Panel 360.</div>'))
       +filas
       +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-top:14px">'
         +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">'
