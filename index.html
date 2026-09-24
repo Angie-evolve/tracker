@@ -32241,23 +32241,27 @@ function _p360ColHtml(etapa, cards){
 function p360Abrir(clientId){
   if(S.p360Abierto===clientId){ p360FichaCerrar(); return; }
   S.p360Abierto=clientId;
-  p360FichaModal(clientId);
+  p360FichaModal(clientId, false);
   if(typeof showTickets==='function' && S.view==='tickets') showTickets();
 }
 function p360FichaCerrar(){
   S.p360Abierto=null;
+  S.p360FichaAgenda=false;   // la proxima ficha abre en tareas, como corresponde
   closeModal();
   if(typeof showTickets==='function' && S.view==='tickets') showTickets();
 }
-function p360FichaModal(clientId){
+function p360FichaModal(clientId, conAgenda){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   var root=document.getElementById('modal-root');
   if(!c||!root) return;
+  // Se guarda para que los repintados -tildar una tarea, mover una cita- no
+  // cierren la agenda que se acababa de abrir.
+  if(conAgenda!==undefined) S.p360FichaAgenda=!!conAgenda;
   root.innerHTML=''
     +'<div class="modal-overlay" onclick="if(event.target===this)p360FichaCerrar()">'
     +'<div class="modal" id="p3-ficha-modal" style="max-width:980px;width:96%;'
       +'max-height:88vh;overflow:auto;padding-top:14px">'
-      +_p360FichaHtml(c)
+      +_p360FichaHtml(c, !!S.p360FichaAgenda)
     +'</div></div>';
 }
 /* Repintar lo que este a la vista. Tildar una tarea tiene que actualizar el
@@ -32665,10 +32669,23 @@ function _citaEsDe(c, titulo, con, mail){
     // varias: el contacto de Avigest es "Santiago Abad" y con "santiago" se
     // llevaba la reunion de Santiago Rios, que no tiene nada que ver. Un
     // nombre de pila es de las cosas menos distintivas que hay.
-    var ps=n.split(/\s+/).filter(function(w){ return w.length>=5; });
+    var todas=n.split(/\s+/);
+    var ps=todas.filter(function(w){ return w.length>=5; });
+    /* ⚠️  EL PISO DE 5 LETRAS DEJABA NOMBRES CON UNA SOLA PALABRA UTIL, Y CON
+       UNA SOLA NUNCA SE LLEGA AL MINIMO DE DOS. El contacto de Albet es "Fede
+       Jose Tanco": "fede" y "jose" tienen 4 letras, asi que quedaba solo
+       "tanco" y la regla pedia dos coincidencias. Su capacitacion del 25/09,
+       titulada "Fede Tanco", no enganchaba con nadie.
+       Si con 5 no quedan dos palabras, se baja el piso a 4. Lo que NO se baja
+       es el minimo de dos coincidencias, que es lo que impide que "Santiago
+       Abad" se lleve la reunion de Santiago Rios: ahi las palabras son
+       "santiago" y "abad", y "abad" no esta en el titulo. */
+    if(ps.length<2 && todas.length>=2){
+      ps=todas.filter(function(w){ return w.length>=4; });
+    }
     if(!ps.length) return false;
     var hay=ps.filter(function(w){ return t.indexOf(w)>=0; }).length;
-    return (n.split(/\s+/).length>=2) ? (hay>=2) : (hay>=1);
+    return (todas.length>=2) ? (hay>=2) : (hay>=1);
   });
 }
 // Deja anotado a que etapa pertenece una cita, para que no cambie sola en la
@@ -33027,8 +33044,8 @@ function p360IrACita(clientId, etapa){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
   S.p360Abierto=clientId;
-  // La ficha ahora es un popup: hay que abrirlo, no solo marcar el estado.
-  if(typeof p360FichaModal==='function') p360FichaModal(clientId);
+  // El icono del calendario es el gesto que pide la agenda: abre con ella.
+  if(typeof p360FichaModal==='function') p360FichaModal(clientId, true);
   _citasRepintar();
   // Una cita suelta llega sin etapa. Ofrecer "agendar una nueva" ahi era
   // justo lo contrario de lo que hace falta: la reunion ya existe, lo que
@@ -34179,7 +34196,11 @@ async function _citasAgendaAgencia(ctx){
     return todos;
   }catch(e){ return null; }
 }
-function _p360FichaHtml(c){
+/* `conAgenda` decide si el calendario de GHL entra o no. Por defecto NO: la
+   agenda mide mas que todo lo demas junto y tapaba las tareas, que es a lo que
+   uno entra. Se abre tocando el icono de calendario de la tarjeta, que es el
+   gesto que ya existia para eso. */
+function _p360FichaHtml(c, conAgenda){
   var ruta=_ruta(c).filter(function(x){ return !x.manual; });
   var calls=(c.fathomCalls||[]);
   var fila=function(e){
@@ -34296,7 +34317,15 @@ function _p360FichaHtml(c){
     +_petHtml(c)
     // Va abajo de la ruta y no arriba: primero donde esta parado, despues que
     // tiene agendado. Arriba empujaba lo que se viene a ver al panel.
-    +_citasHtml(c)
+    +(conAgenda
+      ? _citasHtml(c)
+      // Sin la agenda queda el link que la trae, para que no sea un callejon:
+      // el icono de la tarjeta la abre, pero desde adentro tambien se llega.
+      : ('<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border);'
+         +'font-size:11px;color:var(--text3)">'
+         +'<a href="javascript:void(0)" onclick="p360FichaModal('+c.id+',true)" '
+         +'style="color:var(--text2);text-decoration:none;'
+         +'border-bottom:1px dotted var(--border2)">Ver la agenda de GHL</a></div>'))
   +'</div>';
 }
 /* Las etapas con sus tareas, adentro del detalle del cliente en el tablero.
