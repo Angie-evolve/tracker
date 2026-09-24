@@ -11173,17 +11173,149 @@ function cerLeerGuardar(){
    El primero es guiones porque el ejemplo ya existe: el dataset de Meritium
    tiene la oferta Y los guiones adentro, asi que muestra justamente el salto
    que hay que dar. */
+/* Cada generador dice tres cosas: de que cerebro saca el oficio, DE DONDE
+   saca el material del cliente, y que le encarga.
+
+   `fuente` es lo que evita el error mas caro: generar sobre nada. Un dataset
+   sale de lo que se dijo en las llamadas; los guiones salen de la oferta ya
+   escrita. Si el insumo no esta, no se pide nada a la API y se dice que falta.
+     - 'transcripciones': las llamadas del cliente, con su texto
+     - 'doc:<marca>'    : un documento que genero otro generador
+     - 'doc'            : cualquier documento cargado, el mas largo */
 var GENERADORES=[
+  {clave:'mercado', titulo:'Análisis de mercado', marca:'gen-mercado',
+   fuente:'transcripciones', pide:'las llamadas del cliente',
+   encargo:'Escribi el analisis de mercado inicial de este cliente a partir de lo que se '
+     +'dijo en sus llamadas. Quien es el avatar, que dolor tiene, como compra hoy, contra '
+     +'quien compite y que hueco hay. Citando lo que dijeron cuando lo dijeron; lo que no '
+     +'este en las llamadas se marca como pendiente de averiguar en vez de suponerlo.'},
+  {clave:'onboarding', titulo:'Documento de onboarding', marca:'gen-onboarding',
+   fuente:'transcripciones', pide:'las llamadas del cliente',
+   encargo:'Arma el documento de onboarding: las preguntas que hay que hacerle a este '
+     +'cliente en la llamada de bienvenida, agrupadas por tema, y al lado de cada una lo '
+     +'que YA sabemos por sus llamadas anteriores, para no volver a preguntarlo. Marca '
+     +'aparte los accesos y materiales que hay que pedirle.'},
+  {clave:'oferta', titulo:'Dataset y oferta', marca:'gen-oferta',
+   fuente:'transcripciones', pide:'las llamadas del cliente',
+   encargo:'Arma el dataset de oferta de este cliente a partir de sus llamadas: avatar, '
+     +'dolores, la oferta con su promesa y lo que la hace irresistible, y las objeciones '
+     +'que aparecieron. Lo que no se haya dicho va como pendiente, no inventado.'},
   {clave:'guiones', titulo:'Guiones', marca:'gen-guiones',
-   pide:'la oferta o el dataset del cliente',
+   fuente:'doc:gen-oferta', pide:'la oferta o el dataset del cliente',
    encargo:'Escribi los guiones de anuncios para este cliente a partir de su oferta. '
      +'Cada guion va completo y listo para grabar: hook, desarrollo y cierre, con el '
      +'texto hablado tal cual se dice. Indica al principio de cada uno a que avatar le '
      +'habla y que dolor toca. Hace entre 4 y 8, variando el angulo, no el mismo con '
-     +'otras palabras.'}
+     +'otras palabras.'},
+  {clave:'comercial', titulo:'Proceso comercial y lead journey', marca:'gen-comercial',
+   fuente:'doc:gen-oferta', pide:'la oferta o el dataset del cliente',
+   encargo:'Diseña el recorrido del lead y el proceso comercial de este cliente: por donde '
+     +'entra, que pasa en cada paso hasta la venta, que etapa del CRM le corresponde a cada '
+     +'momento, quien hace que, y que se le dice en cada contacto. Marca donde se puede caer '
+     +'y con que se lo recupera.'}
 ];
 function _genDe(clave){ return GENERADORES.filter(function(g){ return g.clave===clave; })[0]||null; }
 
+/* El material del cliente para un generador, segun lo que ese generador pide.
+   Devuelve null cuando no esta: es la diferencia entre "no hay con que" y
+   "salio vacio", y decide si se llama a la API o no. */
+function _genMaterial(c, g){
+  if(!c||!g) return null;
+  var f=String(g.fuente||'doc');
+  if(f==='transcripciones'){
+    var t='';
+    try{ t=_asTranscripciones(c)||''; }catch(e){}
+    // `_asTranscripciones` devuelve un cartel cuando no hay ninguna: eso no es
+    // material, es la explicacion de que falta.
+    if(!t || /no tiene transcripcion guardada|Ninguna de las/.test(t)) return null;
+    return {texto:t, de:'las transcripciones de sus llamadas'};
+  }
+  if(f.indexOf('doc:')===0){
+    var marca=f.slice(4);
+    var d=(docs(c)||[]).filter(function(x){ return x && x.auto===marca; })[0];
+    if(!d || String(d.texto||'').trim().length<200) return null;
+    return {texto:d.texto, de:'"'+(d.titulo||'')+'"'};
+  }
+  var todos=(docs(c)||[]).filter(function(x){ return String((x&&x.texto)||'').trim().length>400; })
+    .sort(function(a,b){ return (b.texto||'').length-(a.texto||'').length; });
+  if(!todos.length) return null;
+  return {texto:todos[0].texto, de:'"'+(todos[0].titulo||'')+'"'};
+}
+// Que documentos pide una etapa. Se guarda en la ruta, al lado de sus tareas.
+function etapaGenera(label){
+  var e=null;
+  try{ e=rutaDef().filter(function(x){ return x.l===label; })[0]; }catch(err){}
+  return (e&&Array.isArray(e.genera)) ? e.genera.filter(function(k){ return !!_genDe(k); }) : [];
+}
+function rutaGenera(i, clave, on){
+  var r=(DB.ruta&&DB.ruta.length)?DB.ruta:JSON.parse(JSON.stringify(RUTA_DEFAULT||[]));
+  if(!r[i]) return;
+  var l=(r[i].genera||[]).filter(function(k){ return k!==clave; });
+  if(on) l.push(clave);
+  r[i].genera=l;
+  DB.ruta=r; save(); rutaModal();
+}
+/* Al llegar a una etapa, escribir lo que esa etapa pide.
+
+   ⚠️  NO PISA NADA Y NO GENERA DOS VECES. Si el documento ya existe se saltea:
+       mover una tarjeta de ida y de vuelta no puede reescribir lo que alguien
+       ya corrigio a mano.
+   ⚠️  NI GENERA SOBRE NADA. Sin el insumo no se llama a la API: se avisa que
+       falta y se sigue. Un dataset inventado desde cero es peor que ninguno.
+   Sale en segundo plano y deja el borrador en la ficha; el aviso dice que
+       quedo sin revisar, porque nadie lo leyo todavia. */
+async function etapaGenerar(clientId, label){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var claves=etapaGenera(label);
+  if(!claves.length) return;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey) return;
+  var hechos=[], faltan=[], yaEstaban=0;
+  for(var i=0;i<claves.length;i++){
+    var g=_genDe(claves[i]); if(!g) continue;
+    if((docs(c)||[]).some(function(d){ return d && d.auto===g.marca; })){ yaEstaban++; continue; }
+    var mat=_genMaterial(c, g);
+    if(!mat){ faltan.push(g.titulo+' (falta '+g.pide+')'); continue; }
+    var cer=cerebroMaterial(g.clave);
+    if(!cer){ faltan.push(g.titulo+' (el cerebro está vacío)'); continue; }
+    if(typeof toast==='function') toast('Escribiendo '+g.titulo+' de '+(c.name||'')+'…');
+    var txt='';
+    try{ txt=await _genLlamar(c, g, cer, mat.texto); }catch(e){ faltan.push(g.titulo+' ('+(e&&e.message||'falló')+')'); continue; }
+    if(!txt){ faltan.push(g.titulo+' (vino vacío)'); continue; }
+    docAuto(c, g.marca, g.titulo+' — '+(c.name||''), txt, 'archivo');
+    hechos.push(g.titulo);
+  }
+  if(hechos.length||faltan.length){
+    save();
+    if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+  }
+  if(typeof toast==='function'){
+    if(hechos.length) toast('Escribí '+hechos.join(' y ')+' en '+(c.name||'')
+      +'. Sin revisar: abrí su ficha.', faltan.length?'amber':undefined);
+    else if(faltan.length) toast('No pude escribir: '+faltan.join(' · '),'amber');
+  }
+}
+function _genLlamar(c, g, cer, material){
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  var mat=(material.length>30000)?(material.slice(0,30000)+'\n[...cortado]'):material;
+  return fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':apiKey,
+      'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,
+      system:'Sos parte de una agencia de marketing. Escribís en castellano rioplatense. '
+        +'Abajo está cómo trabaja la agencia: el método, lo que ya aprendió y un ejemplo de '
+        +'una salida buena. Seguilo.\n\n'+cer,
+      messages:[{role:'user',content:
+        g.encargo+'\n\nEl cliente es '+(c.name||'')+(c.industry?(' ('+c.industry+')'):'')+'.\n\n'
+        +'=== MATERIAL DE ESTE CLIENTE ===\n'+mat}]})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.error) throw new Error(d.error.message||'error de la API');
+    return (d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('').trim();
+  });
+}
 function generarAbrir(clave){
   var g=_genDe(clave); if(!g){ toast('Ese cerebro todavia no genera nada.','amber'); return; }
   S._gen={clave:clave, cid:null, doc:'', texto:'', salida:'', estado:''};
@@ -32610,6 +32742,7 @@ function rutaModal(){
        sin que nadie lo pida. Queda anotado en LIMPIEZA.md. Lo que se saco es su
        EDITOR: las tareas de una etapa son las de la plantilla, y se editan
        abajo, en esta misma pantalla. */
+    +_rutaGeneraHtml(sel, e)
     +_rutaSopHtml(sel, e, inp)
     +_rutaTareasHtml(sel, e, inp);
 
@@ -33337,6 +33470,11 @@ function p360Mover(clientId, hasta){
   save();
   showTickets();
   toast(c.name+' quedo en '+hasta);
+  /* Y si la etapa pide documentos, se escriben. Va despues del toast y sin
+     await: mover una tarjeta tiene que sentirse instantaneo, y escribir un
+     dataset tarda. Los avisos de lo generado llegan solos cuando termina. */
+  try{ if(typeof etapaGenerar==='function') etapaGenerar(clientId, hasta); }
+  catch(e){ console.error('no pude generar los documentos de la etapa:', e); }
 }
 // ---- Citas de GHL --------------------------------------------------------
 // Que etapa ya tiene su llamada agendada, para cuando, con quien, y si se
@@ -35510,6 +35648,41 @@ function _areaColor(r){
    cliente: elegir SOP es configurar la etapa, no trabajar un cliente, y estaba
    metido justo donde uno entra a mirar que falta. Ahora vive aca, al lado de
    las palabras clave, el calendario y las tareas. */
+/* Que escribe el sistema al llegar a esta etapa. Es la unica parte de la
+   pantalla que produce algo sola, asi que dice en voz alta lo que hace y lo
+   que no: no pisa lo que ya existe y no genera si falta el insumo. */
+function _rutaGeneraHtml(i, e){
+  var act=(e.genera||[]);
+  return '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">'
+    +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
+      +'text-transform:uppercase;margin-bottom:7px">Documentos que escribe al llegar acá</div>'
+    +GENERADORES.map(function(g){
+        var on=act.indexOf(g.clave)>=0;
+        var cer=null;
+        try{ cer=cerebros().filter(function(x){ return x.clave===g.clave; })[0]; }catch(err){}
+        var vacio=!cer || (!(cer.metodo||'').trim() && !(cer.notas||[]).length
+                           && !(cer.ejemplos||[]).length);
+        return '<label style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;'
+          +'cursor:pointer">'
+          +'<input type="checkbox" class="sw"'+(on?' checked':'')
+            +' onchange="rutaGenera('+i+',\''+esc(g.clave)+'\',this.checked)" '
+            +'style="margin:2px 0 0;flex:none">'
+          +'<span style="flex:1;min-width:0">'
+            +'<span style="font-size:12.5px;color:'+(on?'var(--text)':'var(--text2)')+'">'
+            +esc(g.titulo)+'</span>'
+            +'<span style="font-size:10.5px;color:var(--text3)"> \u00b7 necesita '
+            +esc(g.pide)+'</span>'
+            +(vacio?('<span style="font-size:10.5px;color:var(--amberx)"> \u00b7 el cerebro '
+                     +'de '+esc(g.titulo)+' está vacío, no va a poder escribirlo</span>'):'')
+          +'</span></label>';
+      }).join('')
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-top:8px">'
+      +'Se escriben cuando un cliente queda en esta etapa, con el cerebro de cada uno y el '
+      +'material del cliente. <b style="color:var(--text2)">No pisa lo que ya existe</b> '
+      +'—mover la tarjeta de ida y vuelta no reescribe nada— y si falta el insumo no '
+      +'escribe: avisa qué falta. Quedan como borrador en la ficha, sin revisar.</div>'
+  +'</div>';
+}
 function _rutaSopHtml(i, e, inp){
   var sops=(DB.sops||[]);
   var cab='<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">'
@@ -37122,6 +37295,9 @@ function rutaDef(){
             // El procedimiento de la etapa. Mismo cuidado que `cal`: si no se
             // suma a esta lista, se guarda bien en DB.ruta y se pierde aca.
             sop:e.sop||'',
+            // Que documentos escribe el sistema al llegar a esta etapa. Mismo
+            // cuidado: sin estar aca, se guarda y no se lee nunca.
+            genera:Array.isArray(e.genera)?e.genera.slice():[],
             // Los pasos que se hacen adentro de esta etapa. Son de la etapa, no
             // del cliente: se definen una vez y valen para todos. Lo que cambia
             // por cliente es cuales estan hechos.
