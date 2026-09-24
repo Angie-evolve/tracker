@@ -462,3 +462,32 @@ del panel no encontraba por nombre de contacto.
 - **La lista de "abre leads" nunca se había guardado.** Caía siempre en el
   default del código —una sola persona—, así que las llamadas de todos los demás
   se guardaban sin abrir tarjeta. Ya es editable desde Usuarios; falta marcarla.
+
+## `ruta[].pasos` — datos vivos sin pantalla donde verlos
+
+El 2026-09-24 se saco el editor de pasos de "Etapas del cliente", porque las
+tareas de cada etapa pasaron a la plantilla nueva —que es por cliente y se
+copia— y tener las dos pantallas era tener dos listas distintas para la misma
+etapa: Onboarding decia cinco pasos en una y dos tareas en la otra.
+
+**El dato NO se borro, y no es olvido.** Quedan 12 pasos cargados: 4 en Alta
+Cliente, 5 en Onboarding y 3 en Estrategia. `_citaEtapaPara` los sigue leyendo:
+busca los que dicen "agendar" para decidir de que etapa es una reunion que no
+reconocio ni por titulo ni por calendario. Vaciarlos romperia ese
+reconocimiento sin que nadie lo haya pedido.
+
+⚠️  **Entonces hoy hay datos que cambian el comportamiento y no se pueden ver
+    ni editar desde ninguna pantalla.** Es deuda, y esta es la unica anotacion
+    que existe de eso. Las dos salidas, cuando se decida:
+
+- Mover esa heuristica a la plantilla nueva. Requiere que las tareas digan
+  "agendar" algo, y las 25 actuales no lo dicen: seria un cambio de
+  comportamiento, no una mudanza.
+- O devolverle una pantalla a `pasos`, aceptando que es un dato de otra cosa
+  -reconocer reuniones- y no una lista de tareas.
+
+Aparte quedaron 34 tildes viejas en 6 clientes (`c.rutaPasos`) que apuntan a
+etapas que ya no existen —"Sprint de lanzamiento", "Estrategia 1",
+"Estrategia 2"—, nombres de una version anterior de la ruta. Estan muertas: no
+se muestran en ningun lado. Se pueden borrar sin consecuencia el dia que se
+haga limpieza de `clientes.datos`.
