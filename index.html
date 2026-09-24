@@ -4076,7 +4076,7 @@ function adsDot(c){
      —un gasto que viene de esas mismas campanas ajenas— y volvia a dar LIVE
      por la ventana. Si no seguimos ninguna, el estado es gris. */
   if(todasFuera){
-    return {syncAt:_syncAt,color:hc('gray'),state:'gray',live:false,
+    return {syncAt:_syncAt,color:hc('gray'),state:'gray',live:false,todasFuera:true,
       title:'Las '+_todasCamps.length+' campanas de la cuenta estan destildadas: no seguimos ninguna'+_sync};
   }
   if(!camps.length){
@@ -13259,7 +13259,26 @@ function _mpEdadTxt(iso){
 // unico que hay ya esta viejo se dice, en vez de mostrarlo como si fuera de
 // ahora.
 var AIRE_VIEJO_H=24;
+/* Si TODAS las campanas de la cuenta estan destildadas, nada de lo que pasa
+   en esa cuenta es nuestro. Sirve para callar al Pulso, que mide la cuenta
+   entera y no sabe de destildados. */
+function _todasDestildadas(c){
+  try{ var a=(typeof adsDot==='function')?adsDot(c):null; return !!(a&&a.todasFuera); }
+  catch(e){ return false; }
+}
 function _estadoAire(c){
+  /* ⚠️  EL PULSO VA SEGUNDO CUANDO NO SEGUIMOS NINGUNA CAMPANA. `metaPulso`
+     cuenta los adsets activos y el gasto de la CUENTA ENTERA: no sabe de
+     campanas destildadas. PlayWith tiene las 21 destildadas y el Pulso veia
+     1 adset activo con 8.548 de gasto, asi que el circulo latia en verde como
+     si lo hubieramos lanzado nosotros. Arregle `adsDot` y no esto, que va
+     primero: el mismo error, una funcion mas alla. */
+  if(_todasDestildadas(c)){
+    var a0=null;
+    try{ a0=adsDot(c); }catch(e){}
+    return { live:false, at:(a0&&a0.syncAt)||null, fuente:'arbol',
+             viejo:(!a0||!a0.syncAt||_horasDesde(a0.syncAt)>AIRE_VIEJO_H) };
+  }
   var p=c&&c.metaPulso;
   if(p && p.at && !p.error && (p.activos!==undefined)){
     return { live:!!(p.activos>0 && p.gasto>0), at:p.at, fuente:'pulso',
@@ -13277,6 +13296,10 @@ function _horasDesde(iso){
 }
 // Que hay que mirar de este cliente. Devuelve null si esta todo bien.
 function mpDiagnostico(c){
+  // Mismo motivo que en `_estadoAire`: sin campanas nuestras, lo que diga el
+  // Pulso es de otro. "Sin gasto en 3 dias" sobre campanas ajenas no es una
+  // alarma, es ruido.
+  if(typeof _todasDestildadas==='function' && _todasDestildadas(c)) return null;
   var p=c.metaPulso;
   if(!p||p.error) return p&&p.error?{ nivel:'info', txt:p.error }:null;
   if(p.activos===0) return null;                       // sin conjuntos activos no hay nada que avisar
@@ -32211,9 +32234,41 @@ function _p360ColHtml(etapa, cards){
     }).join('')
   +'</div>';
 }
+/* La ficha del cliente se abre en un popup. Antes se dibujaba abajo del
+   tablero: empujaba las columnas fuera de la pantalla y para volver a mirar
+   otra tarjeta habia que scrollear hasta arriba. Encima, con seis etapas y 25
+   tareas adentro, el bloque medía mas que el tablero entero. */
 function p360Abrir(clientId){
-  S.p360Abierto=(S.p360Abierto===clientId)?null:clientId;
-  showTickets();
+  if(S.p360Abierto===clientId){ p360FichaCerrar(); return; }
+  S.p360Abierto=clientId;
+  p360FichaModal(clientId);
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+}
+function p360FichaCerrar(){
+  S.p360Abierto=null;
+  closeModal();
+  if(typeof showTickets==='function' && S.view==='tickets') showTickets();
+}
+function p360FichaModal(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var root=document.getElementById('modal-root');
+  if(!c||!root) return;
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)p360FichaCerrar()">'
+    +'<div class="modal" id="p3-ficha-modal" style="max-width:980px;width:96%;'
+      +'max-height:88vh;overflow:auto;padding-top:14px">'
+      +_p360FichaHtml(c)
+    +'</div></div>';
+}
+/* Repintar lo que este a la vista. Tildar una tarea tiene que actualizar el
+   popup -donde se tildo- y tambien la tarjeta de atras, que lleva la cuenta.
+   Antes alcanzaba con `showTickets()` porque la ficha vivia adentro del
+   tablero; ahora son dos lugares. */
+function p360Repintar(){
+  try{ if(typeof showTickets==='function' && S.view==='tickets') showTickets(); }catch(e){}
+  try{
+    if(S.p360Abierto && document.getElementById('p3-ficha-modal')) p360FichaModal(S.p360Abierto);
+  }catch(e){}
 }
 // Tildar desde el panel y quedarse en el panel. rutaTildar re-renderiza la
 // ficha del cliente, que no es donde estamos.
@@ -32972,6 +33027,8 @@ function p360IrACita(clientId, etapa){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
   S.p360Abierto=clientId;
+  // La ficha ahora es un popup: hay que abrirlo, no solo marcar el estado.
+  if(typeof p360FichaModal==='function') p360FichaModal(clientId);
   _citasRepintar();
   // Una cita suelta llega sin etapa. Ofrecer "agendar una nueva" ahi era
   // justo lo contrario de lo que hace falta: la reunion ya existe, lo que
@@ -33605,6 +33662,12 @@ function _citasRepintar(){
   _citasPintando=true;
   try{ if(typeof renderTab==='function') renderTab(); }catch(e){}
   try{ if(typeof showTickets==='function' && S.view==='tickets') showTickets(); }catch(e){}
+  // La agenda vive adentro de la ficha del cliente, que ahora es un popup: sin
+  // esto se repinta el tablero de atras y la agenda que se toco queda igual.
+  try{
+    if(S.p360Abierto && document.getElementById('p3-ficha-modal')
+       && typeof p360FichaModal==='function') p360FichaModal(S.p360Abierto);
+  }catch(e){}
   _citasPintando=false;
 }
 // "En vivo" y "\u00bfque paso?" son estados que cambian solos con el reloj, no
@@ -35028,7 +35091,7 @@ function plantillaCargar(clientId, callado){
      que tocar "Cargar la plantilla" dejaba el panel diciendo "todavia no tiene
      las etapas cargadas" con las etapas ya cargadas. Desde afuera se lee como
      que el boton no hace nada. */
-  if(!callado && typeof showTickets==='function') showTickets();
+  if(!callado) p360Repintar();
   return true;
 }
 
@@ -35062,7 +35125,7 @@ function petTildar(clientId, etapa, tareaId, val){
   t.at=t.ok?new Date().toISOString():'';
   t.por=t.ok?String((SB&&SB.email)||''):'';
   save();
-  if(typeof showTickets==='function') showTickets();
+  p360Repintar();
 }
 
 function petResponsable(clientId, etapa, tareaId, mail){
@@ -35084,7 +35147,7 @@ function petAgregar(clientId, etapa){
   e.tareas=e.tareas||[];
   e.tareas.push({id:'t'+Date.now()+'-'+e.tareas.length, t:nom, r:'', ok:false, at:'', por:''});
   save();
-  if(typeof showTickets==='function') showTickets();
+  p360Repintar();
 }
 function petBorrar(clientId, etapa, tareaId){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
@@ -35094,7 +35157,7 @@ function petBorrar(clientId, etapa, tareaId){
   if(!t || !confirm('Borrar "'+t.t+'" de '+(c.name||'este cliente')+'?\n\nNo toca la plantilla ni a los demás clientes.')) return;
   e.tareas=e.tareas.filter(function(x){ return x.id!==tareaId; });
   save();
-  if(typeof showTickets==='function') showTickets();
+  p360Repintar();
 }
 
 /* Hace cuanto corren las campanas activas de un cliente.
@@ -35725,11 +35788,9 @@ function p360Html(){
       var col=cols.filter(function(x){ return x.l===S.p360Col; })[0];
       return col?_p360ColHtml(col.l, col.cards):'';
     })()
-    +(function(){
-      if(!S.p360Abierto) return '';
-      var d=ver.filter(function(x){ return x.c.id===S.p360Abierto; })[0];
-      return d?_p360FichaHtml(d.c):'';
-    })()
+    // La ficha del cliente ya no va aca: se abre en un popup. Dibujarla abajo
+    // del tablero empujaba las columnas fuera de la pantalla.
+    +''
     // El bloque de productos al pie se saco: el producto es un dato de la ficha
     // y ahora se elige ahi, en Cliente. Listar catorce clientes con un
     // desplegable al lado ocupaba media pantalla del tablero para un dato que
