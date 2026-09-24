@@ -13952,6 +13952,93 @@ function mpDiagnostico(c){
   return null;
 }
 
+/* Lo que a un cliente le falta CONFIGURAR para que el tracker pueda leerlo.
+
+   No son alarmas de rendimiento: son huecos de setup. La diferencia importa
+   porque un hueco de setup no se arregla tocando la campana, se arregla
+   cargando un dato, y hasta que no se carga TODO lo que cuelga de el miente
+   por omision: Albet aparecia sin opt-in y sin embudo, y no era que fueran
+   cero, era que su linea no tenia fecha de inicio y su pipeline no tenia
+   reglas. Preguntando cliente por cliente eso tarda una tarde en descubrirse. */
+function _incDe(c){
+  var f=[];
+  try{
+    // 1. La linea de conversion sin fecha: sin eso no hay "linea activa", y de
+    //    la activa cuelgan el opt-in, los registros y los costos por registro.
+    var ls=(c.conversionLines||[]);
+    if(!ls.length) f.push({q:'sin linea de conversion', d:'No hay ninguna cargada.'});
+    else if(!ls.some(function(l){ return String(l.dateStart||'').trim(); }))
+      f.push({q:'linea sin fecha de inicio',
+              d:'Sin fecha no cuenta como activa: quedan vacios el opt-in, los registros y el costo por registro.'});
+    // 2. Oportunidades sin reglas: el dato esta y no se sabe leer.
+    var ops=(c.ghl&&c.ghl.opportunities)||[];
+    var rg=(typeof getGhlRules==='function')?getGhlRules(c):null;
+    if(ops.length && rg && !(rg.agendas||[]).length)
+      f.push({q:'sin reglas de etapas',
+              d:ops.length+' oportunidades cargadas que no se pueden leer: no se sabe cual etapa es agenda, asistencia ni calificada.'});
+    // 3. Moneda: sin esto ningun importe se puede comparar contra un benchmark.
+    var al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+    var hayCamp=!!(al&&(al.metaCampaigns||[]).length);
+    if(hayCamp && !String(c.metaCurrency||'').trim())
+      f.push({q:'sin moneda de la cuenta',
+              d:'No se sabe en que moneda factura Meta: los importes no se pueden comparar contra los benchmarks.'});
+    else if(hayCamp && String(c.metaCurrency||'')!=='USD'
+            && !((typeof fxActiva==='function') && fxActiva(c)))
+      f.push({q:'sin tasa de cambio',
+              d:'Factura en '+c.metaCurrency+' y no hay tasa cargada: los importes no se pueden pasar a dolares.'});
+    // 4. Campanas sin fecha de arranque: hay numeros pero no se sabe hace cuanto.
+    var cm=(typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
+    if(cm && cm.sinFecha)
+      f.push({q:'campanas sin fecha de arranque',
+              d:'Se sincronizaron antes de que se pidiera. Hay numeros, pero no se sabe hace cuanto corren.'});
+  }catch(e){}
+  return f;
+}
+function incompletosHtml(){
+  var cls=(DB.clients||[]).filter(function(c){
+    if(c.archived) return false;
+    if(typeof esProspecto==='function' && esProspecto(c)) return false;
+    if(typeof soloCartera==='function' && soloCartera()
+       && typeof esDeMiCartera==='function' && !esDeMiCartera(c)) return false;
+    return true;
+  });
+  var conFalta=cls.map(function(c){ return {c:c, f:_incDe(c)}; })
+                  .filter(function(x){ return x.f.length; })
+                  .sort(function(a,b){ return b.f.length-a.f.length; });
+  if(!conFalta.length){
+    return _torreVacio('Configuracion de clientes',
+      (cls.length===1 ? 'El unico cliente activo tiene todo lo que hace falta para leerlo.'
+                      : ('Los '+cls.length+' clientes activos tienen todo lo que hace falta para leerlos.')));
+  }
+  var tot=conFalta.reduce(function(a,x){ return a+x.f.length; },0);
+  return '<div class="tk-card" style="padding:18px 20px;margin-bottom:14px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:4px">'
+      +'<div style="font-size:14px;font-weight:600;color:var(--strong)">'
+        +'Clientes a medio configurar</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+conFalta.length+' de '+cls.length
+        +' · '+tot+' cosa'+(tot===1?'':'s')+' por cargar</div>'
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:12px">'
+      +'No es rendimiento: son datos que faltan. Hasta que se carguen, lo que cuelga de '
+      +'ellos aparece vacio y se lee como si fuera cero.</div>'
+    +conFalta.map(function(x){
+        return '<div style="border-top:1px solid var(--border);padding:9px 0">'
+          +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+            +'<a href="javascript:void(0)" onclick="irCliente('+x.c.id+')" '
+              +'style="font-size:13px;color:var(--text);text-decoration:none">'
+              +esc(x.c.name||'')+'</a>'
+            +x.f.map(function(u){
+                return '<span title="'+esc(u.d)+'" style="font-size:10.5px;padding:2px 8px;'
+                  +'border-radius:999px;border:1px solid var(--border2);color:var(--amberx);'
+                  +'white-space:nowrap">'+esc(u.q)+'</span>'; }).join('')
+          +'</div>'
+          +'<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:3px">'
+            +esc(x.f[0].d)+'</div>'
+        +'</div>';
+      }).join('')
+  +'</div>';
+}
 function mpPanelHtml(){
   var lista=mpClientes();
   if(!lista.length) return '';
@@ -17395,6 +17482,7 @@ function showTickets(){
       ? (cobrosHtml()
          +(_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
+         +incompletosHtml()
          +rvPanelHtml())
       :(soloCartera()?p360Html()
       :(_torre==='estaticos'?estaticosHtml()
