@@ -31615,6 +31615,7 @@ function rutaModal(){
        sin que nadie lo pida. Queda anotado en LIMPIEZA.md. Lo que se saco es su
        EDITOR: las tareas de una etapa son las de la plantilla, y se editan
        abajo, en esta misma pantalla. */
+    +_rutaSopHtml(sel, e, inp)
     +_rutaTareasHtml(sel, e, inp);
 
   document.getElementById('modal-root').innerHTML=
@@ -31987,27 +31988,10 @@ function p360AbrirCol(etapa){
 // Enganchar un procedimiento desde el panel. Un SOP no se corre suelto: cuelga
 // de una tarea, porque el avance es por cliente y no del SOP en si. Asi que
 // esto crea la tarea y le ata el procedimiento en un paso.
-function p360EngancharSop(clientId, etapa){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c) return;
-  var sel=document.getElementById('p3sop-'+clientId);
-  var sid=+((sel||{}).value||0);
-  if(!sid){ toast('Elegi un procedimiento','amber'); return; }
-  var s=_sop(sid);
-  if(!s) return;
-  c.tasks=c.tasks||[];
-  c.tasks.unshift({
-    id:Date.now()+Math.floor(Math.random()*100000),
-    text:(s.titulo||'Procedimiento')+' \u2014 '+etapa,
-    responsible:(c.owner||''),
-    due:'', done:false, source:'Panel 360', delegated:false,
-    ticket:(typeof nextTicketFromApp==='function')?('#'+nextTicketFromApp()):'',
-    sopId:sid, sopHechos:{}
-  });
-  save();
-  showTickets();
-  toast(s.titulo+' enganchado a '+(c.name||''));
-}
+/* `p360EngancharSop` se borro: enganchaba el SOP desde la ficha del cliente,
+   y ahora el procedimiento es de la etapa y se engancha desde "Etapas del
+   cliente", a todos los que estan en ella. Lo reemplaza `rutaSopEnganchar`. */
+
 // Los entregables pendientes agrupados por area, como en el diagrama de
 // proceso: lo que importa no es solo cuantos faltan sino quien los tiene.
 // Solo los pendientes: los hechos no dicen nada sobre lo que traba hoy.
@@ -32174,21 +32158,23 @@ function _p360SubprocesoHtml(c, etapa){
         +'<a href="javascript:void(0)" onclick="abrirSopsModal()" '
         +'style="color:var(--text2);text-decoration:none">Operaciones</a>.</div>';
     }
-    return '<div style="display:flex;gap:6px;align-items:center;padding:3px 0 3px 14px;'
-        +'flex-wrap:wrap">'
-      +'<span style="flex:none;font-size:11px;color:var(--text3)">Sin procedimiento.</span>'
-      +'<select id="p3sop-'+c.id+'" style="flex:none;font-size:10.5px;padding:2px 6px;'
-        +'border-radius:var(--radius);border:1px solid var(--border2);'
-        +'background:var(--bg3);color:var(--text);max-width:230px">'
-      +sops.map(function(s){
-        var cu=_sopCuenta(s);
-        return '<option value="'+s.id+'">'+esc(s.titulo||'SOP')
-          +(cu&&cu.tot?(' ('+cu.tot+' pasos)'):'')+'</option>'; }).join('')
-      +'</select>'
-      +'<button class="btn btn-sm" style="flex:none;font-size:10px;padding:2px 7px" '
-        +'onclick="p360EngancharSop('+c.id+',\''+esc(etapa||'').replace(/'/g,"\\'")+'\')">'
-        +'Enganchar</button>'
-    +'</div>';
+    /* ⚠️  ACA NO SE ENGANCHA MAS. Elegir el procedimiento es configurar la
+       etapa, no trabajar un cliente, y estaba metido justo donde uno entra a
+       mirar que falta. Ahora el SOP es de la etapa y se elige en "Etapas del
+       cliente", igual que sus palabras clave, su calendario y sus tareas.
+       Aca solo se dice cual le toca y si todavia no arranco. */
+    var _def=null;
+    try{ _def=rutaDef().filter(function(x){ return x.l===etapa; })[0]; }catch(e2){}
+    var _s=(_def&&_def.sop)?_sop(+_def.sop):null;
+    if(!_s){
+      return '<div style="padding:2px 0 2px 14px;font-size:11px;color:var(--text3)">'
+        +'Esta etapa no tiene procedimiento. Se le asigna en '
+        +'<a href="javascript:void(0)" onclick="rutaModal()" '
+        +'style="color:var(--text2);text-decoration:none">Etapas del cliente</a>.</div>';
+    }
+    return '<div style="padding:2px 0 2px 14px;font-size:11px;color:var(--text3)">'
+      +'Procedimiento de la etapa: <b style="color:var(--text2);font-weight:500">'
+      +esc(_s.titulo||'SOP')+'</b> \u00b7 todavía no arrancó para este cliente.</div>';
   }
   return tareas.map(function(t){
     var av=sopAvanceTarea(t);
@@ -34484,6 +34470,94 @@ function _areaColor(r){
   var a=_areaDe(r);
   return a ? a.c : (String(r||'') ? 'var(--text2)' : 'var(--text3)');
 }
+/* El procedimiento de la etapa. Antes se enganchaba desde la ficha de cada
+   cliente: elegir SOP es configurar la etapa, no trabajar un cliente, y estaba
+   metido justo donde uno entra a mirar que falta. Ahora vive aca, al lado de
+   las palabras clave, el calendario y las tareas. */
+function _rutaSopHtml(i, e, inp){
+  var sops=(DB.sops||[]);
+  var cab='<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">'
+    +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
+    +'text-transform:uppercase;margin-bottom:7px">Procedimiento</div>';
+  if(!sops.length){
+    return cab+'<div style="font-size:11px;color:var(--text3)">'
+      +'No hay procedimientos cargados. Se arman en '
+      +'<a href="javascript:void(0)" onclick="abrirSopsModal()" '
+      +'style="color:var(--text2);text-decoration:none">Operaciones</a>.</div></div>';
+  }
+  var act=String(e.sop||'');
+  // Cuantos clientes estan hoy en esta etapa: es lo que se va a enganchar.
+  var n=0;
+  try{
+    (DB.clients||[]).forEach(function(c){
+      if(c.archived && !(typeof esProspecto==='function' && esProspecto(c))) return;
+      var et=(typeof _p360Etapa==='function')?_p360Etapa(c):null;
+      if(et && et.l===e.l) n++;
+    });
+  }catch(err){}
+  return cab
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +'<select onchange="rutaSop('+i+',this.value)" style="'+inp+';flex:1 1 200px;'
+        +'min-width:180px;max-width:320px">'
+        +'<option value=""'+(act?'':' selected')+'>Sin procedimiento</option>'
+        +sops.map(function(s){
+            var cu=(typeof _sopCuenta==='function')?_sopCuenta(s):null;
+            return '<option value="'+s.id+'"'+((String(s.id)===act)?' selected':'')+'>'
+              +esc(s.titulo||'SOP')+(cu&&cu.tot?(' ('+cu.tot+' pasos)'):'')+'</option>';
+          }).join('')
+      +'</select>'
+      +(act
+        ? ('<button class="btn btn-sm" style="flex:none;font-size:10.5px" '
+           +'onclick="rutaSopEnganchar('+i+')">Engancharlo a los '+n+' de esta etapa</button>')
+        : '')
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-top:7px">'
+      +'Elegirlo acá deja anotado cuál le toca a esta etapa. Para que aparezca como '
+      +'tarea en cada cliente hay que engancharlo: eso crea una tarea por cliente, '
+      +'con sus pasos, y no se deshace solo.</div>'
+  +'</div>';
+}
+function rutaSop(i, v){
+  var r=(DB.ruta&&DB.ruta.length)?DB.ruta:JSON.parse(JSON.stringify(RUTA_DEFAULT||[]));
+  if(!r[i]) return;
+  r[i].sop=String(v||'');
+  DB.ruta=r; save(); rutaModal();
+}
+/* Engancharlo a todos los que estan hoy en esa etapa. Es lo que antes se hacia
+   de a uno desde cada ficha. Pide confirmacion con el numero porque crea una
+   tarea por cliente y eso no se deshace solo. */
+function rutaSopEnganchar(i){
+  var e=rutaDef()[i]; if(!e||!e.sop) return;
+  var s=_sop(+e.sop); if(!s){ toast('Ese procedimiento ya no existe','amber'); return; }
+  var dest=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived && !(typeof esProspecto==='function' && esProspecto(c))) return;
+    var et=null;
+    try{ et=(typeof _p360Etapa==='function')?_p360Etapa(c):null; }catch(err){}
+    if(!et || et.l!==e.l) return;
+    // Al que ya lo tiene no se le duplica.
+    var ya=(c.tasks||[]).some(function(t){
+      return String(t.sopId||'')===String(e.sop) && !t.done && !t.deleted && !t.archivada; });
+    if(!ya) dest.push(c);
+  });
+  if(!dest.length){ toast('No hay ningún cliente en "'+e.l+'" sin ese procedimiento.'); return; }
+  if(!confirm('Enganchar "'+(s.titulo||'SOP')+'" a '+dest.length+' cliente'
+      +(dest.length===1?'':'s')+' que hoy están en "'+e.l+'".\n\n'
+      +'Crea una tarea en cada uno, con sus pasos. No se deshace solo.')) return;
+  dest.forEach(function(c){
+    c.tasks=c.tasks||[];
+    c.tasks.unshift({
+      id:Date.now()+Math.floor(Math.random()*100000),
+      text:(s.titulo||'Procedimiento')+' — '+e.l,
+      responsible:(c.owner||''),
+      due:'', done:false, source:'Etapas', delegated:false,
+      ticket:(typeof nextTicketFromApp==='function')?('#'+nextTicketFromApp()):'',
+      sopId:+e.sop, sopHechos:{}
+    });
+  });
+  save(); rutaModal();
+  toast('Enganchado a '+dest.length+' cliente'+(dest.length===1?'':'s')+'.');
+}
 // En que posicion de la plantilla esta una etapa de la ruta. -1 si no esta.
 function _plIndexDe(label){
   var k=_p360Norm(label||'');
@@ -36009,6 +36083,9 @@ function rutaDef(){
             // campos, y agregar uno nuevo sin sumarlo aca lo deja invisible para
             // todo el resto de la app.
             cal:e.cal||'',
+            // El procedimiento de la etapa. Mismo cuidado que `cal`: si no se
+            // suma a esta lista, se guarda bien en DB.ruta y se pierde aca.
+            sop:e.sop||'',
             // Los pasos que se hacen adentro de esta etapa. Son de la etapa, no
             // del cliente: se definen una vez y valen para todos. Lo que cambia
             // por cliente es cuales estan hechos.
