@@ -26594,53 +26594,45 @@ function _asLineaCliente(c){
   var camp='';
   try{
     var cm=(typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
+    /* ⚠️  EL RENDIMIENTO NO DEPENDE DE LA FECHA DE ARRANQUE. Lo tenia adentro
+       de la rama "hay fecha", asi que un cliente sincronizado antes de que se
+       pidiera `startTime` perdia TODOS sus numeros: Ojapo tiene su campana
+       activa con 98.587 y 48 leads, y el asistente contestaba "no hay datos de
+       gasto, leads, CPL ni frecuencia". El dato estaba; lo tapaba mi if. */
+    var _al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+    var _f=(_al&&_al.excludedCampaigns)||[];
+    var _t=(_al&&_al.metaCampaigns)||[];
+    var g=0, le=0, fmax=0, hayG=false;
+    _t.forEach(function(cp){
+      if(_f.indexOf(cp.id)!==-1) return;
+      if(String(cp.effectiveStatus||cp.status||'').toUpperCase()!=='ACTIVE') return;
+      var sp=Number(cp.spend), lk=Number(cp.leads), fr=Number(cp.frequency);
+      if(isFinite(sp)&&sp>0){ g+=sp; hayG=true; }
+      if(isFinite(lk)&&lk>0) le+=lk;
+      if(isFinite(fr)&&fr>fmax) fmax=fr;
+    });
+    var mo=String(c.metaCurrency||'');
+    var fx=(typeof fxActiva==='function') && fxActiva(c);
+    var pl=function(v){
+      var x=+Number(v).toFixed(2);
+      return (mo?(mo+' '+x):(x+' (moneda sin identificar)'))
+        +(mo&&fx?(' / USD '+(+aUsd(c,x).toFixed(2))):'');
+    };
+    var rend=hayG
+      ? (', gasto '+pl(g)+(le?(', '+le+' leads, CPL '+pl(g/le)):', sin leads todavia')
+         +(fmax?(', frecuencia '+(+fmax.toFixed(2))):''))
+      : '';
+
     if(cm && cm.sinFecha) camp=' | campanas nuestras: '+cm.cuantas
-      +' activa'+(cm.cuantas===1?'':'s')
-      +' (sin fecha de arranque cargada: hay que sincronizar Meta)';
-    else if(cm){
-      camp=' | campanas nuestras: '+cm.cuantas+' activa'+(cm.cuantas===1?'':'s')
-        +', al aire hace '+cm.dias+' d';
-      /* El rendimiento agregado de esas campanas, en el renglon de TODOS. Sin
-         esto habia que abrir el cliente para que el asistente supiera si una
-         campana va bien o mal, y la pregunta se hace mirando el tablero. Los
-         12 campos por campana siguen yendo solo del abierto: 40 clientes con
-         eso no entran. Esto son cuatro numeros y alcanzan para responder. */
-      var _al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
-      var _f=(_al&&_al.excludedCampaigns)||[];
-      var g=0, le=0, fmax=0, hay=false;
-      ((_al&&_al.metaCampaigns)||[]).forEach(function(cp){
-        if(_f.indexOf(cp.id)!==-1) return;
-        if(String(cp.effectiveStatus||cp.status||'').toUpperCase()!=='ACTIVE') return;
-        var sp=Number(cp.spend), lk=Number(cp.leads), fr=Number(cp.frequency);
-        if(isFinite(sp)&&sp>0){ g+=sp; hay=true; }
-        if(isFinite(lk)&&lk>0) le+=lk;
-        if(isFinite(fr)&&fr>fmax) fmax=fr;
-      });
-      if(hay){
-        // Misma regla que en las campanas: la moneda de la cuenta, y el
-        // equivalente en dolares solo si hay tasa. Nunca "USD" a secas.
-        var mo=String(c.metaCurrency||'');
-        var fx=(typeof fxActiva==='function') && fxActiva(c);
-        var pl=function(v){
-          var x=+Number(v).toFixed(2);
-          return (mo?(mo+' '+x):(x+' (moneda sin identificar)'))
-            +(mo&&fx?(' / USD '+(+aUsd(c,x).toFixed(2))):'');
-        };
-        camp+=', gasto '+pl(g)
-          +(le?(', '+le+' leads, CPL '+pl(g/le)):', sin leads todavia')
-          +(fmax?(', frecuencia '+(+fmax.toFixed(2))):'');
-      }
-    }
+      +' activa'+(cm.cuantas===1?'':'s')+rend
+      +' (sin fecha de arranque cargada: hay que sincronizar Meta para saber hace cuanto)';
+    else if(cm) camp=' | campanas nuestras: '+cm.cuantas+' activa'+(cm.cuantas===1?'':'s')
+      +', al aire hace '+cm.dias+' d'+rend;
     else {
-      var _al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
-      var _t=(_al&&_al.metaCampaigns)||[];
-      var _f=(_al&&_al.excludedCampaigns)||[];
       if(_t.length && _t.length===_f.length){
         camp=' | campanas: las '+_t.length
           +' de la cuenta estan destildadas, ninguna es nuestra';
-        // Y entonces el gasto de la linea tampoco es nuestro: decir "invirtio
-        // USD 9000" al lado de "ninguna es nuestra" es contradecirse en el
-        // mismo renglon, y el asistente elige una de las dos.
+        // Y entonces el gasto de la linea tampoco es nuestro.
         gasto=0;
       }
       else if(_t.length) camp=' | campanas nuestras: ninguna activa';
@@ -26929,9 +26921,35 @@ function _asEmbudo(c){
       +'asi que los importes de Meta de aca abajo estan en '+mon+' y no en USD: '
       +'no los compares contra los benchmarks.';
   }
+  /* ⚠  LO QUE FALTA HAY QUE NOMBRARLO. Una metrica en null se omitia, y el
+     modelo leia la ausencia como CERO: con Albet dijo "0 agendas, eso entra en
+     el criterio de alarma" cuando en realidad no se sabe cuantas agendas tuvo,
+     porque no estan cargadas las reglas de etapas. El sistema de alarmas no
+     comete ese error -`_condCumple` devuelve null y no dispara-, pero el
+     asistente si, porque solo ve lo que le llega. */
+  var faltan=defs.filter(function(m){
+    var v=M[m.id];
+    return (v==null || !isFinite(Number(v)));
+  }).map(function(m){ return m.label; });
+  var porQue='';
+  try{
+    var ops=(c.ghl&&c.ghl.opportunities)||[];
+    var rg=(typeof getGhlRules==='function')?getGhlRules(c):null;
+    if(ops.length && rg && !(rg.agendas||[]).length){
+      porQue=' Tiene '+ops.length+' oportunidades en GHL pero NO estan configuradas las '
+        +'reglas de etapas, asi que no se puede saber cuales son agendas, asistencias ni '
+        +'calificadas. Eso se arregla en la ficha del cliente.';
+    } else if(!ops.length){
+      porQue=' No hay ninguna oportunidad de GHL cargada para este cliente.';
+    }
+  }catch(e){}
   return 'EMBUDO Y METRICAS (las mismas con las que se calculan las alarmas; '
     +'los importes ya vienen en USD).'+aviso+'\n'
-    +orden.map(function(g){ return '  '+g+': '+grupos[g].join(' · '); }).join('\n');
+    +orden.map(function(g){ return '  '+g+': '+grupos[g].join(' · '); }).join('\n')
+    +(faltan.length
+      ? ('\n  SIN DATO (no es cero, es que no se sabe): '+faltan.slice(0,14).join(', ')
+         +(faltan.length>14?(' y '+(faltan.length-14)+' mas'):'')+'.'+porQue)
+      : '');
 }
 function _asContexto(){
   var hoy=new Date().toLocaleDateString('es-AR');
@@ -27092,6 +27110,10 @@ async function asEnviar(){
           +'dias o poco gasto todavia no hay con que concluir, y eso tambien se dice.\n'
           +'Cuando hables de campanas, hablas SOLO de las que figuran como incluidas. Las '
           +'otras son del cliente, no las manejamos, y opinar sobre ellas es peor que callarse.\n'
+          +'FALTA UN DATO NO ES CERO. Una metrica que no figura es desconocida, no vale cero. '
+          +'Nunca concluyas que una alarma se disparo por una metrica que no esta: decis que '
+          +'falta ese dato y por que, si te lo dicen. El tracker tampoco dispara alarmas con '
+          +'datos faltantes, asi que afirmarlo seria contradecirlo.\n'
           +'Cuando haya transcripciones, contestas sobre lo que se dijo de verdad: citas '
           +'entre comillas SOLO texto que este literal en la transcripcion, y decis de que '
           +'llamada sale. Si algo no lo dijeron, decilo; no lo deduzcas del resumen.\n\n'
