@@ -26000,8 +26000,40 @@ function _asLineaCliente(c){
     if(cm && cm.sinFecha) camp=' | campanas nuestras: '+cm.cuantas
       +' activa'+(cm.cuantas===1?'':'s')
       +' (sin fecha de arranque cargada: hay que sincronizar Meta)';
-    else if(cm) camp=' | campanas nuestras: '+cm.cuantas+' activa'+(cm.cuantas===1?'':'s')
-      +', al aire hace '+cm.dias+' d';
+    else if(cm){
+      camp=' | campanas nuestras: '+cm.cuantas+' activa'+(cm.cuantas===1?'':'s')
+        +', al aire hace '+cm.dias+' d';
+      /* El rendimiento agregado de esas campanas, en el renglon de TODOS. Sin
+         esto habia que abrir el cliente para que el asistente supiera si una
+         campana va bien o mal, y la pregunta se hace mirando el tablero. Los
+         12 campos por campana siguen yendo solo del abierto: 40 clientes con
+         eso no entran. Esto son cuatro numeros y alcanzan para responder. */
+      var _al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
+      var _f=(_al&&_al.excludedCampaigns)||[];
+      var g=0, le=0, fmax=0, hay=false;
+      ((_al&&_al.metaCampaigns)||[]).forEach(function(cp){
+        if(_f.indexOf(cp.id)!==-1) return;
+        if(String(cp.effectiveStatus||cp.status||'').toUpperCase()!=='ACTIVE') return;
+        var sp=Number(cp.spend), lk=Number(cp.leads), fr=Number(cp.frequency);
+        if(isFinite(sp)&&sp>0){ g+=sp; hay=true; }
+        if(isFinite(lk)&&lk>0) le+=lk;
+        if(isFinite(fr)&&fr>fmax) fmax=fr;
+      });
+      if(hay){
+        // Misma regla que en las campanas: la moneda de la cuenta, y el
+        // equivalente en dolares solo si hay tasa. Nunca "USD" a secas.
+        var mo=String(c.metaCurrency||'');
+        var fx=(typeof fxActiva==='function') && fxActiva(c);
+        var pl=function(v){
+          var x=+Number(v).toFixed(2);
+          return (mo?(mo+' '+x):(x+' (moneda sin identificar)'))
+            +(mo&&fx?(' / USD '+(+aUsd(c,x).toFixed(2))):'');
+        };
+        camp+=', gasto '+pl(g)
+          +(le?(', '+le+' leads, CPL '+pl(g/le)):', sin leads todavia')
+          +(fmax?(', frecuencia '+(+fmax.toFixed(2))):'');
+      }
+    }
     else {
       var _al=(typeof getActiveLine==='function')?getActiveLine(c.conversionLines||[]):null;
       var _t=(_al&&_al.metaCampaigns)||[];
@@ -26159,8 +26191,29 @@ function _asCampanas(c){
       : '';
   }
   var n=function(v,d){ var x=Number(v); return isNaN(x)?null:(d===undefined?x:+x.toFixed(d)); };
+  /* ⚠️  LA PLATA DE META VIENE EN LA MONEDA DE LA CUENTA, NO EN DOLARES.
+     Centercheques factura en pesos: su CPL de 21.990 son ARS, unos USD 14.
+     Mandarlo como "USD 21990" contra un benchmark de 15 le hace decir que
+     esta 1.400 veces afuera, y la recomendacion que sale de ahi es tirar la
+     campana. Se manda la moneda real y, si hay tasa cargada, el equivalente
+     en dolares al lado, que es contra lo que estan escritos los benchmarks. */
+  var mon=String(c.metaCurrency||'');
+  var hayFx=(typeof fxActiva==='function') && fxActiva(c);
+  var plata=function(lab,v,d){
+    var x=n(v,d); if(x===null||!x) return null;
+    var t=lab+' '+(mon?(mon+' '):'')+x;
+    if(!mon) t+=' (moneda sin identificar)';
+    else if(hayFx) t+=' (USD '+(+aUsd(c,x).toFixed(2))+')';
+    return t;
+  };
   var out=['CAMPANAS DE ESTE CLIENTE ('+nuestras.length+' incluidas de '+todas.length
-           +' que hay en la cuenta; las otras son del cliente y no se tocan):'];
+           +' que hay en la cuenta; las otras son del cliente y no se tocan).'
+           +(mon
+             ? (' La cuenta factura en '+mon+'; los importes van en esa moneda'
+                +(hayFx?' y el equivalente en USD entre parentesis.'
+                       :' y NO hay tasa cargada, asi que no los compares contra '
+                        +'benchmarks en dolares.'))
+             : ' No se sabe en que moneda factura esta cuenta: no compares importes.')];
   nuestras.slice(0,12).forEach(function(cp){
     var st=String(cp.effectiveStatus||cp.status||'').toUpperCase();
     var p=[];
@@ -26168,14 +26221,13 @@ function _asCampanas(c){
       var x=n(v,d); if(x===null||x===0&&lab!=='gasto') return;
       p.push(lab+' '+(pre||'')+x+(suf||''));
     };
-    num('gasto', cp.spend, 0, 'USD ');
+    [plata('gasto', cp.spend, 0), null].forEach(function(x){ if(x) p.push(x); });
     num('leads', cp.leads, 0);
-    num('CPL', cp.cpl, 2, 'USD ');
+    [plata('CPL', cp.cpl, 2)].forEach(function(x){ if(x) p.push(x); });
     num('resultados', cp.results, 0);
-    num('costo x resultado', cp.costPerResult, 2, 'USD ');
+    [plata('costo x resultado', cp.costPerResult, 2)].forEach(function(x){ if(x) p.push(x); });
     num('CTR', cp.ctr, 2, '', '%');
-    num('CPM', cp.cpm, 2, 'USD ');
-    num('CPC', cp.cpc, 2, 'USD ');
+    [plata('CPM', cp.cpm, 2), plata('CPC', cp.cpc, 2)].forEach(function(x){ if(x) p.push(x); });
     num('frecuencia', cp.frequency, 2);
     num('alcance', cp.reach, 0);
     num('hook rate', cp.hookRate, 1, '', '%');
@@ -26188,7 +26240,9 @@ function _asCampanas(c){
     out.push('  - '+_asCortar(cp.name||'sin nombre',70)+' ['+(st||'?')+']'
       +(dias!==null?(' | '+dias+' d al aire'):'')
       +(cp.objetivo||cp.objective?(' | optimiza: '+(cp.objetivo||cp.objective)):'')
-      +(cp.budget?(' | presupuesto '+cp.budget+(cp.budgetTipo?(' '+cp.budgetTipo):'')):'')
+      +(cp.budget?(' | presupuesto '+(mon?(mon+' '):'')+cp.budget
+          +(hayFx?(' (USD '+(+aUsd(c,Number(cp.budget)).toFixed(2))+')'):'')
+          +(cp.budgetTipo?(' '+cp.budgetTipo):'')):'')
       +(p.length?('\n      '+p.join(' · ')):'  (sin numeros todavia)')
       +((cp.issues&&String(cp.issues).trim())?('\n      avisos de Meta: '+_asCortar(String(cp.issues),120)):''));
   });
