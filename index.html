@@ -10927,12 +10927,23 @@ function cerebros(){
   var v=DB.cerebros;
   if(!Array.isArray(v)||!v.length){
     return CEREBROS_BASE.map(function(x){
-      return {clave:x.clave, nombre:x.nombre, para:x.para, notas:[]};
+      return {clave:x.clave, nombre:x.nombre, para:x.para,
+              metodo:'', ejemplos:[], notas:[]};
     });
   }
   return v.map(function(x){
     return {clave:String(x.clave||''), nombre:String(x.nombre||''),
-            para:String(x.para||''), notas:(x.notas||[]).map(function(n){
+            para:String(x.para||''),
+            /* `metodo` es COMO se hace, en prosa: el paso a paso del oficio.
+               `ejemplos` son referencias a documentos ya cargados, no copias:
+               un ejemplo de salida buena pesa mas que cualquier instruccion
+               abstracta, y el de Meritium ya esta escrito. Guardar la
+               referencia y no el texto evita que el ejemplo quede viejo
+               cuando se edita el documento. */
+            metodo:String(x.metodo||''),
+            ejemplos:(x.ejemplos||[]).map(function(e){
+              return {cid:e.cid, i:+e.i||0, titulo:String(e.titulo||'')}; }),
+            notas:(x.notas||[]).map(function(n){
               return (typeof n==='string')
                 ? {t:n, at:'', por:''}
                 : {t:String(n.t||''), at:String(n.at||''), por:String(n.por||'')};
@@ -10957,6 +10968,32 @@ function cerebroTexto(clave, tope){
     +ns.map(function(n){ return '- '+n.t; }).join('\n');
   var max=tope||2000;
   return (out.length>max) ? (out.slice(0,max)+'\n[...]') : out;
+}
+/* Todo lo que el cerebro le da a un generador: el metodo, los aprendizajes y
+   los ejemplos. Es lo mismo que `cerebroTexto` mas las dos partes que solo
+   hacen falta cuando hay que PRODUCIR algo, no cuando hay que responder. */
+function cerebroMaterial(clave, topeEjemplo){
+  var i=_cerIndex(clave); if(i<0) return '';
+  var c=cerebros()[i];
+  var partes=[];
+  if(String(c.metodo||'').trim())
+    partes.push('COMO SE HACE UN '+(c.nombre||clave).toUpperCase()+':\n'+c.metodo.trim());
+  var ap=cerebroTexto(clave);
+  if(ap) partes.push(ap);
+  var te=topeEjemplo||18000;
+  (c.ejemplos||[]).forEach(function(e){
+    var t=(typeof _cerDocTexto==='function')?_cerDocTexto(e.cid, e.i):'';
+    t=String(t||'').trim();
+    if(!t) return;
+    if(t.length>te) t=t.slice(0,te)+'\n[...cortado por largo]';
+    /* ⚠️  EL EJEMPLO ES DE OTRO CLIENTE. Sin decirlo, el modelo copia sus
+       datos —el nicho, los precios, los nombres— al cliente nuevo. Se dice
+       que se imita la FORMA, no el contenido. */
+    partes.push('EJEMPLO DE UNO BIEN HECHO ("'+(e.titulo||'sin titulo')+'"). '
+      +'Es de OTRO cliente: imita la estructura, el tono y el nivel de detalle, '
+      +'NUNCA sus datos, su nicho, sus precios ni sus nombres.\n'+t);
+  });
+  return partes.join('\n\n');
 }
 // Agregar un aprendizaje desde cualquier lado, sin abrir la pantalla.
 function cerebroAprender(clave, texto){
@@ -11121,6 +11158,147 @@ function cerLeerGuardar(){
   cerebrosModal();
   if(typeof toast==='function') toast('Guardé '+n+' aprendizaje'+(n===1?'':'s')+' en '+(c.nombre||'')+'.');
 }
+/* ============================ GENERADORES ===================================
+   El cerebro deja de ser un cuaderno y pasa a producir. La formula es siempre
+   la misma:
+
+     metodo + aprendizajes + ejemplo   (del cerebro, vale para todos)
+   + el material de ESTE cliente       (su oferta, sus llamadas)
+   = un borrador que ella revisa
+
+   ⚠️  SIEMPRE BORRADOR. Se guarda como documento del cliente solo cuando ella
+       aprieta guardar, y queda marcado como generado. Un generador que publica
+       solo es un generador que nadie revisa.
+
+   El primero es guiones porque el ejemplo ya existe: el dataset de Meritium
+   tiene la oferta Y los guiones adentro, asi que muestra justamente el salto
+   que hay que dar. */
+var GENERADORES=[
+  {clave:'guiones', titulo:'Guiones', marca:'gen-guiones',
+   pide:'la oferta o el dataset del cliente',
+   encargo:'Escribi los guiones de anuncios para este cliente a partir de su oferta. '
+     +'Cada guion va completo y listo para grabar: hook, desarrollo y cierre, con el '
+     +'texto hablado tal cual se dice. Indica al principio de cada uno a que avatar le '
+     +'habla y que dolor toca. Hace entre 4 y 8, variando el angulo, no el mismo con '
+     +'otras palabras.'}
+];
+function _genDe(clave){ return GENERADORES.filter(function(g){ return g.clave===clave; })[0]||null; }
+
+function generarAbrir(clave){
+  var g=_genDe(clave); if(!g){ toast('Ese cerebro todavia no genera nada.','amber'); return; }
+  S._gen={clave:clave, cid:null, doc:'', texto:'', salida:'', estado:''};
+  generarModal();
+}
+function generarModal(){
+  var st=S._gen||{}; var g=_genDe(st.clave)||{};
+  var inp='width:100%;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none';
+  var cls=(DB.clients||[]).filter(function(c){ return !c.archived; })
+    .sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var docsDe=st.cid ? _cerDocs().filter(function(d){ return d.cid===st.cid; }) : [];
+  var cuerpo;
+  if(st.salida){
+    cuerpo='<div style="font-size:11.5px;color:var(--text3);margin-bottom:8px">'
+      +'Borrador. Revisalo y corregilo acá antes de guardarlo.</div>'
+      +'<textarea id="gen-salida" rows="18" style="'+inp+';line-height:1.55;resize:vertical;'
+        +'font-size:12px">'+esc(st.salida)+'</textarea>'
+      +'<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm btn-primary" onclick="generarGuardar()">Guardar en la ficha</button>'
+        +'<button class="btn btn-sm" onclick="generarPedir()">Rehacer</button>'
+        +'<button class="btn btn-sm" onclick="S._gen.salida=\'\';generarModal()">Volver</button>'
+      +'</div>';
+  }else{
+    cuerpo='<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +'Usa el método, los aprendizajes y el ejemplo del cerebro, más '+esc(g.pide||'')
+      +'. Sale un borrador que revisás vos.</div>'
+      +'<select id="gen-cli" onchange="generarCli(this.value)" style="'+inp+';margin-bottom:10px">'
+        +'<option value="">— elegir cliente —</option>'
+        +cls.map(function(c){
+            return '<option value="'+c.id+'"'+((st.cid===c.id)?' selected':'')+'>'
+              +esc(c.name||'')+'</option>'; }).join('')
+      +'</select>'
+      +(st.cid
+        ? (docsDe.length
+            ? ('<select id="gen-doc" style="'+inp+';margin-bottom:10px">'
+               +'<option value="">— '+esc(g.pide||'el material')+' —</option>'
+               +docsDe.map(function(d){
+                   return '<option value="'+d.i+'"'+((String(st.doc)===String(d.i))?' selected':'')+'>'
+                     +esc(d.titulo)+' · '+Math.round(d.largo/1000)+'k</option>'; }).join('')
+               +'</select>')
+            : '<div style="font-size:11.5px;color:var(--amberx);margin-bottom:10px">'
+              +'Ese cliente no tiene documentos cargados. Pegá el material abajo.</div>')
+        : '')
+      +'<textarea id="gen-pegar" rows="5" placeholder="…o pegá acá '+esc(g.pide||'el material')+'" '
+        +'style="'+inp+';resize:vertical;line-height:1.5">'+esc(st.texto||'')+'</textarea>'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm btn-primary" onclick="generarPedir()">Generar</button>'
+        +'<span style="font-size:11.5px;color:'
+        +(/^No |^Fall/.test(st.estado||'')?'var(--redx)':'var(--text3)')+'">'+esc(st.estado||'')+'</span>'
+      +'</div>';
+  }
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)cerebrosModal()">'
+    +'<div class="modal" style="max-width:780px;width:95%;max-height:88vh;overflow:auto">'
+      +'<div class="modal-title">Generar '+esc(g.titulo||'')+'</div>'
+      +'<div class="modal-sub">Con el cerebro de '+esc(g.titulo||'')+'</div>'
+      +cuerpo
+    +'</div></div>';
+}
+function generarCli(v){ S._gen.cid=+v||null; S._gen.doc=''; generarModal(); }
+
+async function generarPedir(){
+  var st=S._gen; if(!st) return;
+  var g=_genDe(st.clave); if(!g) return;
+  var c=(DB.clients||[]).find(function(x){ return x.id===st.cid; });
+  if(!c){ st.estado='Elegí un cliente.'; generarModal(); return; }
+  var pegado=String((document.getElementById('gen-pegar')||{}).value||'').trim();
+  var iDoc=(document.getElementById('gen-doc')||{}).value;
+  st.texto=pegado;
+  if(iDoc!==undefined && iDoc!=='') st.doc=iDoc;
+  var material=pegado || (st.doc!==''? _cerDocTexto(c.id, +st.doc) : '');
+  if(!material){ st.estado='Elegí un documento o pegá el material.'; generarModal(); return; }
+  var mat=cerebroMaterial(g.clave);
+  if(!mat){
+    st.estado='El cerebro de '+g.titulo+' está vacío: cargale el método, algún aprendizaje o un ejemplo.';
+    generarModal(); return;
+  }
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey){ st.estado='No hay clave de Anthropic cargada.'; generarModal(); return; }
+  st.estado='Generando…'; st.salida=''; generarModal();
+  if(material.length>30000) material=material.slice(0,30000)+'\n[...cortado]';
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:4000,
+        system:'Sos parte de una agencia de marketing. Escribís en castellano rioplatense. '
+          +'Abajo está cómo trabaja la agencia: el método, lo que ya aprendió y un ejemplo de '
+          +'una salida buena. Seguilo.\n\n'+mat,
+        messages:[{role:'user',content:
+          g.encargo+'\n\nEl cliente es '+(c.name||'')+(c.industry?(' ('+c.industry+')'):'')+'.\n\n'
+          +'=== MATERIAL DE ESTE CLIENTE ===\n'+material}]})
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||'error de la API');
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('').trim();
+    if(!txt) throw new Error('vino vacío');
+    st.salida=txt; st.estado=''; generarModal();
+  }catch(e){ st.estado='Falló: '+(e&&e.message||''); generarModal(); }
+}
+function generarGuardar(){
+  var st=S._gen; if(!st||!st.salida) return;
+  var g=_genDe(st.clave); if(!g) return;
+  var c=(DB.clients||[]).find(function(x){ return x.id===st.cid; }); if(!c) return;
+  var txt=String((document.getElementById('gen-salida')||{}).value||st.salida).trim();
+  if(!txt) return;
+  // `docAuto` pisa por marca y no por titulo, asi que rehacerlo no deja dos.
+  docAuto(c, g.marca, g.titulo+' — '+(c.name||''), txt, 'archivo');
+  save();
+  S._gen=null; closeModal();
+  toast(g.titulo+' guardado en la ficha de '+(c.name||'')+'.');
+}
 function cerebrosModal(){
   var cs=cerebros();
   var sel=(typeof S._cerSel==='number' && cs[S._cerSel]) ? S._cerSel : 0;
@@ -11181,7 +11359,37 @@ function cerebrosModal(){
             +'placeholder="Para qué sirve este cerebro" style="'+inp+';font-size:11.5px;'
             +'color:var(--text2);margin-bottom:12px">'
           +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
-            +'text-transform:uppercase;margin-bottom:2px">Aprendizajes '
+            +'text-transform:uppercase;margin:14px 0 4px">Método</div>'
+          +'<textarea onchange="cerMetodo('+sel+',this.value)" rows="4" '
+            +'placeholder="Cómo se hace, paso a paso. Es lo que sigue el generador." '
+            +'style="'+inp+';line-height:1.55;resize:vertical;font-size:12px">'
+            +esc(c.metodo||'')+'</textarea>'
+          +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
+            +'text-transform:uppercase;margin:14px 0 4px">Ejemplos de uno bien hecho</div>'
+          +((c.ejemplos||[]).length
+            ? (c.ejemplos||[]).map(function(e,j){
+                return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;'
+                  +'font-size:12px;color:var(--text2)">'
+                  +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;'
+                    +'white-space:nowrap">'+esc(e.titulo||'sin titulo')+'</span>'
+                  +'<span role="button" tabindex="0" onclick="cerEjBorrar('+sel+','+j+')" '
+                    +'title="Sacar" style="flex:none;cursor:pointer;color:var(--text3);'
+                    +'font-size:13px;padding:0 2px">\u00d7</span></div>';
+              }).join('')
+            : '<div style="font-size:11.5px;color:var(--text3);padding:2px 0">'
+              +'Ninguno. Un ejemplo de salida buena pesa más que cualquier instrucción.</div>')
+          +'<a href="javascript:void(0)" onclick="cerEjSumar('+sel+')" '
+            +'style="font-size:11.5px;color:var(--text2);text-decoration:none;'
+            +'border-bottom:1px dotted var(--border2)">+ ejemplo</a>'
+          +(_genDe(c.clave)
+            ? ('<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+               +'<button class="btn btn-sm btn-primary" onclick="generarAbrir(\''
+               +esc(String(c.clave)).replace(/'/g,"\\'")+'\')">Generar para un cliente</button>'
+               +'<span style="font-size:10.5px;color:var(--text3);margin-left:8px">'
+               +'usa el método, los aprendizajes y el ejemplo</span></div>')
+            : '')
+          +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
+            +'text-transform:uppercase;margin:16px 0 2px">Aprendizajes '
             +'<span class="mono" style="letter-spacing:0">'+((c.notas||[]).length)+'</span></div>'
           +(notas||'<div style="font-size:11.5px;color:var(--text3);padding:10px 0">'
               +'Todavía no hay ninguno. Escribí uno por línea: "los hooks de más de 3 segundos '
@@ -11209,6 +11417,27 @@ function cerebrosModal(){
     +'</div></div>';
 }
 function cerSel(i){ S._cerSel=i; cerebrosModal(); }
+function cerMetodo(i,v){ var cs=cerebros(); if(!cs[i])return; cs[i].metodo=String(v||''); _cerSet(cs); }
+function cerEjBorrar(i,j){ var cs=cerebros(); if(!cs[i]||!cs[i].ejemplos[j])return; cs[i].ejemplos.splice(j,1); _cerSet(cs); }
+/* Sumar un ejemplo eligiendo un documento ya cargado. Se guarda la REFERENCIA,
+   no el texto: si se edita el documento, el ejemplo se actualiza solo. */
+function cerEjSumar(i){
+  var ds=_cerDocs();
+  if(!ds.length){ toast('No hay documentos cargados con texto.','amber'); return; }
+  var lista=ds.slice(0,25).map(function(d,k){
+    return (k+1)+') '+d.titulo+' \u00b7 '+d.cliente+' \u00b7 '+Math.round(d.largo/1000)+'k'; }).join('\n');
+  var r=prompt('¿Cuál es un buen ejemplo? Escribí el número:\n\n'+lista,'');
+  if(r===null) return;
+  var k=parseInt(r,10)-1;
+  var d=ds[k]; if(!d){ toast('No encontré ese número.','amber'); return; }
+  var cs=cerebros(); if(!cs[i])return;
+  cs[i].ejemplos=cs[i].ejemplos||[];
+  if(cs[i].ejemplos.some(function(e){ return e.cid===d.cid && e.i===d.i; })){
+    toast('Ese ejemplo ya estaba.','amber'); return;
+  }
+  cs[i].ejemplos.push({cid:d.cid, i:d.i, titulo:d.titulo});
+  _cerSet(cs);
+}
 function cerNombre(i,v){ var cs=cerebros(); if(!cs[i])return; cs[i].nombre=String(v||'').trim()||cs[i].nombre; _cerSet(cs); }
 function cerPara(i,v){ var cs=cerebros(); if(!cs[i])return; cs[i].para=String(v||''); _cerSet(cs); }
 function cerNotaTexto(i,j,v){
