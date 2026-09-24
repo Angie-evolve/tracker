@@ -10967,6 +10967,160 @@ function cerebroAprender(clave, texto){
   DB.cerebros=cs; save();
   return true;
 }
+/* Sacar aprendizajes de un documento que ya existe.
+
+   La agencia ya tiene los datasets, los blueprints y las investigaciones
+   escritos adentro de cada cliente. Copiarlos a mano al cerebro es trabajo, y
+   copiarlos ENTEROS es peor: lo que sirve para el proximo cliente no es "a
+   Meritium le cerramos con 5000 dolares" sino "la garantia de devolucion es lo
+   que desbloquea el cierre en ticket alto". Uno es un hecho de ese cliente; el
+   otro es el aprendizaje.
+
+   Por eso la IA propone y ella elige. Nada se guarda solo: proponer de mas es
+   barato, guardar basura en el cerebro contamina todos los clientes. */
+function _cerDocs(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    var ds=(typeof docs==='function'?docs(c):(c.docs||[]))||[];
+    ds.forEach(function(d,i){
+      var t=String((d&&d.texto)||'').trim();
+      if(t.length<400) return;
+      out.push({cid:c.id, i:i, cliente:String(c.name||''),
+                titulo:String(d.titulo||'sin titulo'), largo:t.length});
+    });
+  });
+  return out.sort(function(a,b){ return b.largo-a.largo; });
+}
+function _cerDocTexto(cid, i){
+  var c=(DB.clients||[]).find(function(x){ return x.id===cid; });
+  if(!c) return '';
+  var ds=(typeof docs==='function'?docs(c):(c.docs||[]))||[];
+  return String((ds[i]&&ds[i].texto)||'');
+}
+function cerDesdeDoc(iCer){
+  var cs=cerebros(); var c=cs[iCer]; if(!c) return;
+  S._cerLeer={i:iCer, props:null, estado:'', texto:''};
+  cerLeerModal();
+}
+function cerLeerModal(){
+  var st=S._cerLeer||{}; var cs=cerebros(); var c=cs[st.i]||{};
+  var ds=_cerDocs();
+  var inp='width:100%;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none';
+  var cuerpo;
+  if(st.props){
+    // Las propuestas, para tildar. Ninguna viene tildada: aceptar por defecto
+    // es como guardarlas solo.
+    cuerpo='<div style="font-size:11.5px;color:var(--text3);margin-bottom:8px">'
+      +'Elegí cuáles entran a <b style="color:var(--text2)">'+esc(c.nombre||'')+'</b>. '
+      +'Lo que sea de un cliente puntual y no sirva para el próximo, dejalo afuera.</div>'
+      +st.props.map(function(p,j){
+          return '<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;'
+            +'border-top:1px solid var(--border);cursor:pointer">'
+            +'<input type="checkbox" class="sw" data-cerp="'+j+'" style="margin:3px 0 0;flex:none">'
+            +'<span style="flex:1;min-width:0;font-size:12.5px;line-height:1.5;color:var(--text)">'
+            +esc(p)+'</span></label>';
+        }).join('')
+      +'<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm btn-primary" onclick="cerLeerGuardar()">Guardar los tildados</button>'
+        +'<button class="btn btn-sm" onclick="S._cerLeer.props=null;cerLeerModal()">Volver</button>'
+      +'</div>';
+  }else{
+    cuerpo='<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +'Elegí un documento ya cargado, o pegá un texto. La IA lee y propone los '
+      +'aprendizajes que sirven para el próximo cliente; vos elegís cuáles entran.</div>'
+      +(ds.length
+        ? ('<select id="cer-doc" style="'+inp+';margin-bottom:10px">'
+           +'<option value="">— elegir un documento cargado —</option>'
+           +ds.slice(0,40).map(function(d){
+               return '<option value="'+d.cid+'|'+d.i+'">'+esc(d.titulo)
+                 +' · '+esc(d.cliente)+' · '+Math.round(d.largo/1000)+'k</option>';
+             }).join('')
+           +'</select>')
+        : '<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px">'
+          +'No hay documentos cargados con texto.</div>')
+      +'<textarea id="cer-pegar" rows="6" placeholder="…o pegá el texto acá" '
+        +'style="'+inp+';resize:vertical;line-height:1.5">'+esc(st.texto||'')+'</textarea>'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">'
+        +'<button class="btn btn-sm btn-primary" onclick="cerLeerPedir()">Sacar aprendizajes</button>'
+        +'<span style="font-size:11.5px;color:'+(/^No |^Fall/.test(st.estado||'')?'var(--redx)':'var(--text3)')+'">'
+        +esc(st.estado||'')+'</span>'
+      +'</div>';
+  }
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)cerebrosModal()">'
+    +'<div class="modal" style="max-width:720px;width:94%;max-height:86vh;overflow:auto">'
+      +'<div class="modal-title">Aprender de un documento</div>'
+      +'<div class="modal-sub">Hacia <b>'+esc(c.nombre||'')+'</b></div>'
+      +cuerpo
+    +'</div></div>';
+}
+async function cerLeerPedir(){
+  var st=S._cerLeer; if(!st) return;
+  var sel=(document.getElementById('cer-doc')||{}).value||'';
+  var pegado=String((document.getElementById('cer-pegar')||{}).value||'').trim();
+  var texto=pegado;
+  if(!texto && sel){ var p=sel.split('|'); texto=_cerDocTexto(+p[0], +p[1]); }
+  if(!texto){ st.estado='Elegí un documento o pegá un texto.'; cerLeerModal(); return; }
+  st.texto=pegado;
+  var apiKey=localStorage.getItem('evold-anthropic-key');
+  if(!apiKey && !(typeof iaPorOtroLado==='function' && iaPorOtroLado())){
+    st.estado='No hay clave de Anthropic cargada ni puente prendido.'; cerLeerModal(); return;
+  }
+  var cs=cerebros(); var c=cs[st.i]||{};
+  var yaHay=(c.notas||[]).map(function(n){ return '- '+n.t; }).join('\n');
+  st.estado='Leyendo…'; cerLeerModal();
+  // 40k alcanza para un dataset entero y no revienta el pedido.
+  var corte=texto.length>40000 ? (texto.slice(0,40000)+'\n[...cortado]') : texto;
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,
+        'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,messages:[{role:'user',content:
+        'Sos parte de una agencia. Abajo hay un documento de trabajo. Sacá de ahí los '
+        +'APRENDIZAJES que sirvan para el PROXIMO cliente, para el cerebro "'+(c.nombre||'')+'"'
+        +((c.para)?(' ('+c.para+')'):'')+'.\n\n'
+        +'Un aprendizaje es algo que cambia como trabajamos la proxima vez. NO es un hecho de '
+        +'este cliente. "A Meritium le cerramos en 5000 dolares" es un hecho y no va. "La '
+        +'garantia de devolucion es lo que desbloquea el cierre en ticket alto" es un '
+        +'aprendizaje y si va.\n'
+        +'Una linea cada uno, concreto, sin nombres propios de clientes. Entre 3 y 10. Si el '
+        +'documento no tiene nada generalizable, devolve un array vacio en vez de inventar.\n'
+        +(yaHay?('\nYa estan guardados estos, no los repitas:\n'+yaHay+'\n'):'')
+        +'\nDevolve SOLO un JSON array de strings, sin markdown.\n\n=== DOCUMENTO ===\n'+corte}]})
+    });
+    var d=await r.json();
+    if(d.error) throw new Error(d.error.message||'error de la API');
+    var txt=(d.content||[]).filter(function(b){return b.type==='text';})
+      .map(function(b){return b.text;}).join('');
+    var a=txt.indexOf('['), b=txt.lastIndexOf(']');
+    if(a<0||b<=a) throw new Error('no devolvio una lista');
+    var arr=JSON.parse(txt.slice(a,b+1)).map(function(x){ return String(x||'').trim(); })
+      .filter(Boolean);
+    if(!arr.length){ st.estado='No encontré nada generalizable en ese documento.'; cerLeerModal(); return; }
+    st.props=arr; st.estado=''; cerLeerModal();
+  }catch(e){
+    st.estado='Falló: '+(e&&e.message||''); cerLeerModal();
+  }
+}
+function cerLeerGuardar(){
+  var st=S._cerLeer; if(!st||!st.props) return;
+  var cs=cerebros(); var c=cs[st.i]; if(!c) return;
+  var n=0;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-cerp]'), function(chk){
+    if(!chk.checked) return;
+    var t=st.props[+chk.getAttribute('data-cerp')];
+    if(!t) return;
+    c.notas=c.notas||[];
+    c.notas.unshift({t:t, at:new Date().toISOString(), por:String((SB&&SB.email)||'')});
+    n++;
+  });
+  if(!n){ st.estado='No tildaste ninguno.'; cerLeerModal(); return; }
+  DB.cerebros=cs; save(); S._cerLeer=null;
+  cerebrosModal();
+  if(typeof toast==='function') toast('Guardé '+n+' aprendizaje'+(n===1?'':'s')+' en '+(c.nombre||'')+'.');
+}
 function cerebrosModal(){
   var cs=cerebros();
   var sel=(typeof S._cerSel==='number' && cs[S._cerSel]) ? S._cerSel : 0;
@@ -11037,6 +11191,10 @@ function cerebrosModal(){
             +'<a href="javascript:void(0)" onclick="cerNotaNueva('+sel+')" '
               +'style="font-size:11.5px;color:var(--text2);text-decoration:none;'
               +'border-bottom:1px dotted var(--border2)">+ aprendizaje</a>'
+            +'<a href="javascript:void(0)" onclick="cerDesdeDoc('+sel+')" '
+              +'title="Lee un documento ya cargado y propone los aprendizajes" '
+              +'style="font-size:11.5px;color:var(--text2);text-decoration:none;'
+              +'border-bottom:1px dotted var(--border2)">aprender de un documento</a>'
             +'<span style="flex:1"></span>'
             +'<a href="javascript:void(0)" onclick="cerBorrar('+sel+')" '
               +'style="font-size:10.5px;color:var(--text3);text-decoration:none;'
