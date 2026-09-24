@@ -10892,6 +10892,201 @@ function setRolPersona(mail, id){
   });
 }
 
+/* ============================== CEREBROS =====================================
+   Lo que la agencia aprendio, por especialidad. No son prompts ni plantillas:
+   son los hallazgos que hoy viven en la cabeza de cada uno y se vuelven a
+   descubrir en cada cliente.
+
+   Cada cerebro junta aprendizajes sueltos —una linea cada uno— y despues se los
+   pasa a la IA como contexto. La diferencia con escribirlos adentro de un
+   prompt es que aca se editan sin tocar codigo, se ven todos juntos, y el mismo
+   aprendizaje sirve para todos los clientes.
+
+   ⚠️  NO HAY COLUMNAS NUEVAS. `DB.cerebros` la sube `sbSubir` sola como una
+       fila de `config`, porque recorre las claves de DB. Cero DDL.
+
+   `clave` es con que se lo pide desde el codigo -`cerebroTexto('meta')`-, asi
+   que renombrar el titulo no rompe nada. */
+var CEREBROS_BASE=[
+  {clave:'video',    nombre:'Edición de video',
+   para:'Cómo se cortan, qué ritmo, qué overlays, qué funcionó y qué no.'},
+  {clave:'onboarding', nombre:'Preguntas de onboarding',
+   para:'Qué hay que preguntar en el OBD para que no falte nada después.'},
+  {clave:'mercado',  nombre:'Análisis de mercado',
+   para:'Cómo se investiga un nicho, dónde se mira, qué señales importan.'},
+  {clave:'oferta',   nombre:'Datasets y ofertas',
+   para:'Cómo se arma la oferta, qué la hace irresistible, qué fue rechazado.'},
+  {clave:'guiones',  nombre:'Guiones',
+   para:'Estructuras, hooks y cierres que funcionaron, y los que no.'},
+  {clave:'comercial',nombre:'Lead journey y proceso comercial',
+   para:'Cómo se diseña el recorrido del lead y el proceso de venta detrás.'},
+  {clave:'meta',     nombre:'Experto en Meta',
+   para:'Estructura de campañas, señal, creativos y cuándo tocar qué.'}
+];
+function cerebros(){
+  var v=DB.cerebros;
+  if(!Array.isArray(v)||!v.length){
+    return CEREBROS_BASE.map(function(x){
+      return {clave:x.clave, nombre:x.nombre, para:x.para, notas:[]};
+    });
+  }
+  return v.map(function(x){
+    return {clave:String(x.clave||''), nombre:String(x.nombre||''),
+            para:String(x.para||''), notas:(x.notas||[]).map(function(n){
+              return (typeof n==='string')
+                ? {t:n, at:'', por:''}
+                : {t:String(n.t||''), at:String(n.at||''), por:String(n.por||'')};
+            })};
+  });
+}
+function _cerSet(cs){ DB.cerebros=cs; save(); if(typeof cerebrosModal==='function') cerebrosModal(); }
+function _cerIndex(clave){
+  var cs=cerebros();
+  for(var i=0;i<cs.length;i++) if(cs[i].clave===clave) return i;
+  return -1;
+}
+/* Lo que sabe un cerebro, listo para pegar en un prompt. Vacio si no hay nada:
+   mandar "APRENDIZAJES: (ninguno)" es peor que no mandar nada, porque ocupa
+   lugar y no dice nada. */
+function cerebroTexto(clave, tope){
+  var i=_cerIndex(clave); if(i<0) return '';
+  var c=cerebros()[i];
+  var ns=(c.notas||[]).filter(function(n){ return String(n.t||'').trim(); });
+  if(!ns.length) return '';
+  var out='LO QUE YA APRENDIMOS SOBRE '+(c.nombre||clave).toUpperCase()+':\n'
+    +ns.map(function(n){ return '- '+n.t; }).join('\n');
+  var max=tope||2000;
+  return (out.length>max) ? (out.slice(0,max)+'\n[...]') : out;
+}
+// Agregar un aprendizaje desde cualquier lado, sin abrir la pantalla.
+function cerebroAprender(clave, texto){
+  var t=String(texto||'').trim(); if(!t) return false;
+  var cs=cerebros(); var i=_cerIndex(clave); if(i<0) return false;
+  cs[i].notas=cs[i].notas||[];
+  cs[i].notas.unshift({t:t, at:new Date().toISOString(), por:String((SB&&SB.email)||'')});
+  DB.cerebros=cs; save();
+  return true;
+}
+function cerebrosModal(){
+  var cs=cerebros();
+  var sel=(typeof S._cerSel==='number' && cs[S._cerSel]) ? S._cerSel : 0;
+  S._cerSel=sel;
+  var inp='width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none';
+  var c=cs[sel]||{notas:[]};
+
+  var lista=cs.map(function(x,i){
+    var n=(x.notas||[]).length;
+    return '<div onclick="cerSel('+i+')" style="display:flex;gap:8px;align-items:center;'
+      +'padding:7px 9px;border-radius:6px;cursor:pointer;font-size:12px;'
+      +(i===sel?'background:rgba(255,255,255,.06);color:var(--text)':'color:var(--text2)')+'">'
+      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;'
+        +'white-space:nowrap">'+esc(x.nombre||'sin nombre')+'</span>'
+      +'<span class="mono" style="flex:none;font-size:10px;color:'
+        +(n?'var(--accent)':'var(--text3)')+'">'+n+'</span>'
+    +'</div>';
+  }).join('');
+
+  var notas=(c.notas||[]).map(function(n,j){
+    return '<div style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;'
+      +'border-top:1px solid var(--border)">'
+      +'<span style="flex:none;color:var(--text3);font-size:12px;line-height:1.5">•</span>'
+      +'<textarea onchange="cerNotaTexto('+sel+','+j+',this.value)" rows="1" '
+        +'oninput="this.style.height=\'auto\';this.style.height=this.scrollHeight+\'px\'" '
+        +'style="flex:1;min-width:0;font-size:12.5px;line-height:1.5;background:transparent;'
+        +'border:0;color:var(--text);font-family:inherit;outline:none;resize:none;'
+        +'overflow:hidden">'+esc(n.t)+'</textarea>'
+      +(n.at?('<span style="flex:none;font-size:10px;color:var(--text3);white-space:nowrap" '
+             +'title="'+esc((n.por?('Lo anoto '+n.por+', '):'')+'el '
+             +new Date(n.at).toLocaleDateString('es-AR'))+'">'
+             +esc(new Date(n.at).toLocaleDateString('es-AR'))+'</span>'):'')
+      +'<span role="button" tabindex="0" onclick="cerNotaBorrar('+sel+','+j+')" '
+        +'title="Borrar" style="flex:none;cursor:pointer;color:var(--text3);font-size:13px;'
+        +'padding:0 2px">×</span>'
+    +'</div>';
+  }).join('');
+
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:860px;width:95%;max-height:86vh;overflow:auto">'
+      +'<div class="modal-title">Cerebros</div>'
+      +'<div class="modal-sub">Lo que la agencia ya aprendió, por especialidad. '
+        +'No son plantillas: son los hallazgos que hoy viven en la cabeza de cada uno '
+        +'y se vuelven a descubrir en cada cliente. La IA los recibe como contexto, '
+        +'así que lo que anotes acá le llega a todos los clientes.</div>'
+      +'<div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">'
+        +'<div style="flex:0 0 210px;min-width:180px">'
+          +lista
+          +'<div onclick="cerNuevo()" style="padding:7px 9px;margin-top:4px;cursor:pointer;'
+            +'font-size:11.5px;color:var(--text3)">+ cerebro</div>'
+        +'</div>'
+        +'<div style="flex:1;min-width:280px">'
+          +'<input value="'+esc(c.nombre||'')+'" onchange="cerNombre('+sel+',this.value)" '
+            +'style="'+inp+';font-size:14px;font-weight:600;margin-bottom:6px">'
+          +'<input value="'+esc(c.para||'')+'" onchange="cerPara('+sel+',this.value)" '
+            +'placeholder="Para qué sirve este cerebro" style="'+inp+';font-size:11.5px;'
+            +'color:var(--text2);margin-bottom:12px">'
+          +'<div style="font-size:9.5px;color:var(--text3);letter-spacing:.07em;'
+            +'text-transform:uppercase;margin-bottom:2px">Aprendizajes '
+            +'<span class="mono" style="letter-spacing:0">'+((c.notas||[]).length)+'</span></div>'
+          +(notas||'<div style="font-size:11.5px;color:var(--text3);padding:10px 0">'
+              +'Todavía no hay ninguno. Escribí uno por línea: "los hooks de más de 3 segundos '
+              +'pierden la mitad de la audiencia", "el cliente de salud nunca aprueba testimonios".'
+              +'</div>')
+          +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+            +'<a href="javascript:void(0)" onclick="cerNotaNueva('+sel+')" '
+              +'style="font-size:11.5px;color:var(--text2);text-decoration:none;'
+              +'border-bottom:1px dotted var(--border2)">+ aprendizaje</a>'
+            +'<span style="flex:1"></span>'
+            +'<a href="javascript:void(0)" onclick="cerBorrar('+sel+')" '
+              +'style="font-size:10.5px;color:var(--text3);text-decoration:none;'
+              +'border-bottom:1px dotted var(--border2)">borrar este cerebro</a>'
+          +'</div>'
+          +'<div style="font-size:10.5px;color:var(--text3);line-height:1.5;margin-top:14px;'
+            +'border-top:1px solid var(--border);padding-top:10px">'
+            +'Desde el código se pide con <span class="mono">cerebroTexto(\''
+            +esc(c.clave||'')+'\')</span>. Renombrarlo acá no rompe nada.</div>'
+        +'</div>'
+      +'</div>'
+    +'</div></div>';
+}
+function cerSel(i){ S._cerSel=i; cerebrosModal(); }
+function cerNombre(i,v){ var cs=cerebros(); if(!cs[i])return; cs[i].nombre=String(v||'').trim()||cs[i].nombre; _cerSet(cs); }
+function cerPara(i,v){ var cs=cerebros(); if(!cs[i])return; cs[i].para=String(v||''); _cerSet(cs); }
+function cerNotaTexto(i,j,v){
+  var cs=cerebros(); if(!cs[i]||!cs[i].notas[j])return;
+  var t=String(v||'').trim();
+  if(!t){ cs[i].notas.splice(j,1); } else { cs[i].notas[j].t=t; }
+  _cerSet(cs);
+}
+function cerNotaBorrar(i,j){ var cs=cerebros(); if(!cs[i]||!cs[i].notas[j])return; cs[i].notas.splice(j,1); _cerSet(cs); }
+function cerNotaNueva(i){
+  var t=prompt('Un aprendizaje, en una línea:',''); if(t===null) return;
+  t=String(t).trim(); if(!t) return;
+  var cs=cerebros(); if(!cs[i])return;
+  cs[i].notas=cs[i].notas||[];
+  cs[i].notas.unshift({t:t, at:new Date().toISOString(), por:String((SB&&SB.email)||'')});
+  _cerSet(cs);
+}
+function cerNuevo(){
+  var n=prompt('Nombre del cerebro nuevo:',''); if(n===null) return;
+  n=String(n).trim(); if(!n) return;
+  // La clave sale del nombre pero no cambia nunca mas: es con lo que el codigo
+  // lo pide, asi que renombrar el titulo no puede romper una llamada.
+  var base=_p360Norm(n).replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||('c'+Date.now());
+  var cs=cerebros(); var k=base, n2=2;
+  while(cs.some(function(x){ return x.clave===k; })) k=base+'-'+(n2++);
+  cs.push({clave:k, nombre:n, para:'', notas:[]});
+  S._cerSel=cs.length-1;
+  _cerSet(cs);
+}
+function cerBorrar(i){
+  var cs=cerebros(); if(!cs[i])return;
+  var n=(cs[i].notas||[]).length;
+  if(!confirm('Borrar "'+cs[i].nombre+'"'+(n?(' y sus '+n+' aprendizaje'+(n===1?'':'s')):'')+'?\n\n'
+      +'No se deshace.')) return;
+  cs.splice(i,1); S._cerSel=0; _cerSet(cs);
+}
 function configAgenciaHtml(){
   var a=cfgAg();
   // Sin tope de ancho: la grilla de integraciones se reparte igual que en la
@@ -11623,6 +11818,21 @@ function integracionesAppHtml(){
   var idProxy=function(u){ return recortar(String(u||'').replace('https://script.google.com/macros/s/',''),26); };
 
   var tarjetas=[
+    // Los cerebros van primero: es lo unico de esta pantalla que no es una
+    // credencial, y es lo que mas se toca.
+    (function(){
+      var cs=(typeof cerebros==='function')?cerebros():[];
+      var n=cs.reduce(function(a,x){ return a+((x.notas||[]).length); },0);
+      var conAlgo=cs.filter(function(x){ return (x.notas||[]).length; }).length;
+      return card({name:'Cerebros', st:(n?'ok':'sug'),
+        desc:'Lo que la agencia ya aprendio, por especialidad: edicion de video, preguntas '
+          +'de onboarding, analisis de mercado, ofertas, guiones, proceso comercial y Meta. '
+          +'La IA los recibe como contexto, asi que un aprendizaje anotado una vez sirve '
+          +'para todos los clientes.',
+        detail:cs.length+' cerebros \u00b7 '+n+' aprendizaje'+(n===1?'':'s')
+          +(cs.length?(' \u00b7 '+conAlgo+' con algo cargado'):''),
+        action:'cerebrosModal()', actionLabel:n?'Ver y editar':'Empezar a cargar'});
+    })(),
     // La tarjeta "Proxy de GHL" se fusiono con "Subcuenta interna": son las dos
     // credenciales de GHL de la agencia y se cargan de una sola vez, en la misma
     // pantalla. openGhlProxyModal() sigue existiendo por si hace falta suelta.
@@ -26370,6 +26580,19 @@ function _asContexto(){
   }
   var bm=_asBenchmarks();
   if(bm) partes.push(bm);
+  /* Los cerebros: lo que la agencia aprendio. Van al final y acotados, porque
+     son contexto de fondo y no el dato de hoy: si crecen mucho no pueden
+     empujar afuera las campanas ni las transcripciones, que es lo que se
+     pregunta. Solo los que tienen algo cargado. */
+  try{
+    var cb=cerebros().map(function(x){
+      var t=cerebroTexto(x.clave, 700);
+      return t?t:'';
+    }).filter(Boolean);
+    if(cb.length) partes.push('=== LO QUE SABE LA AGENCIA ===\n'
+      +'Son aprendizajes propios, no reglas del cliente. Usalos para recomendar, '
+      +'y si contradicen un numero de este cliente, decilo.\n\n'+cb.join('\n\n'));
+  }catch(e){}
   return partes.join('\n\n');
 }
 function _asMontar(){
