@@ -26022,9 +26022,9 @@ function _asFicha(c){
     out.push('LINEA DE CONVERSION '+(l.name||'')+(l.live?' [activa]':'')
       +': invertido '+(m.adSpent||0)+', registros '+(m.registros||0)+', sql '+(m.sql||0)
       +(m.cpm?(', cpm '+m.cpm):'')+(m.cpc?(', cpc '+m.cpc):''));
-    (l.metaCampaigns||[]).slice(0,10).forEach(function(mc){
-      out.push('  campana: '+_asCortar(mc.name||'',70)+' ['+(mc.status||'')+']');
-    });
+    // Las campanas se mandan aparte, en `_asCampanas`: esta lista no filtraba
+    // las destildadas, asi que le daba al asistente campanas que no manejamos.
+
   });
   var cfg=(c.landing||{});
   if(cfg.piel) out.push('LANDING: piel '+cfg.piel+', mecanica '+(cfg.mecanica||'')
@@ -26104,9 +26104,89 @@ function _asDocumentos(c){
   if(fuera) out.push('[Faltan '+fuera+' documento'+(fuera===1?'':'s')+' que no entraron por largo.]');
   return out.join('\n');
 }
+/* Las campanas NUESTRAS de un cliente, con sus numeros, para el asistente.
+
+   ⚠️  SOLO LAS TILDADAS Y ACTIVAS. La cuenta de Meta de un cliente suele tener
+   campanas que el ya tenia montadas: hablarle al asistente de esas es hacerle
+   recomendar sobre plata que no manejamos. Es la misma lista que usan la
+   inversion, los dias de campana y el punto de LIVE.
+
+   ⚠️  Y SOLO LOS CAMPOS QUE SIRVEN PARA DECIDIR. La app guarda 43 por campana;
+   mandarlas todas de 96 campanas revienta el prompt y ademas entierra lo que
+   importa entre ruido. Van los que se miran cuando algo no rinde. */
+function _asCampanas(c){
+  var al=(typeof getActiveLine==='function')?getActiveLine((c&&c.conversionLines)||[]):null;
+  if(!al) return '';
+  var fuera=(al.excludedCampaigns||[]);
+  var todas=(al.metaCampaigns||[]);
+  var nuestras=todas.filter(function(cp){ return fuera.indexOf(cp.id)===-1; });
+  if(!nuestras.length){
+    return todas.length
+      ? ('CAMPANAS: la cuenta tiene '+todas.length+' pero estan TODAS destildadas, '
+         +'asi que ninguna es nuestra. No opines sobre ellas.')
+      : '';
+  }
+  var n=function(v,d){ var x=Number(v); return isNaN(x)?null:(d===undefined?x:+x.toFixed(d)); };
+  var out=['CAMPANAS DE ESTE CLIENTE ('+nuestras.length+' incluidas de '+todas.length
+           +' que hay en la cuenta; las otras son del cliente y no se tocan):'];
+  nuestras.slice(0,12).forEach(function(cp){
+    var st=String(cp.effectiveStatus||cp.status||'').toUpperCase();
+    var p=[];
+    var num=function(lab,v,d,pre,suf){
+      var x=n(v,d); if(x===null||x===0&&lab!=='gasto') return;
+      p.push(lab+' '+(pre||'')+x+(suf||''));
+    };
+    num('gasto', cp.spend, 0, 'USD ');
+    num('leads', cp.leads, 0);
+    num('CPL', cp.cpl, 2, 'USD ');
+    num('resultados', cp.results, 0);
+    num('costo x resultado', cp.costPerResult, 2, 'USD ');
+    num('CTR', cp.ctr, 2, '', '%');
+    num('CPM', cp.cpm, 2, 'USD ');
+    num('CPC', cp.cpc, 2, 'USD ');
+    num('frecuencia', cp.frequency, 2);
+    num('alcance', cp.reach, 0);
+    num('hook rate', cp.hookRate, 1, '', '%');
+    num('hold rate', cp.holdRate, 1, '', '%');
+    // Hace cuanto corre: sin esto no se puede decir si un numero malo es un
+    // problema o todavia es aprendizaje.
+    var t=cp.startTime||cp.createdTime, dias=null;
+    if(t){ var ms=new Date(t).getTime();
+      if(ms && !isNaN(ms) && ms<=Date.now()) dias=Math.floor((Date.now()-ms)/86400000); }
+    out.push('  - '+_asCortar(cp.name||'sin nombre',70)+' ['+(st||'?')+']'
+      +(dias!==null?(' | '+dias+' d al aire'):'')
+      +(cp.objetivo||cp.objective?(' | optimiza: '+(cp.objetivo||cp.objective)):'')
+      +(cp.budget?(' | presupuesto '+cp.budget+(cp.budgetTipo?(' '+cp.budgetTipo):'')):'')
+      +(p.length?('\n      '+p.join(' · ')):'  (sin numeros todavia)')
+      +((cp.issues&&String(cp.issues).trim())?('\n      avisos de Meta: '+_asCortar(String(cp.issues),120)):''));
+  });
+  return out.join('\n');
+}
+/* Los benchmarks de la agencia. Sin esto el asistente no tiene con que
+   comparar y una recomendacion sale de su opinion, no de tu regla. */
+function _asBenchmarks(){
+  var rs=[];
+  try{ rs=((typeof getDefaultAlarms==='function'?getDefaultAlarms():{}).rules)||[]; }catch(e){}
+  rs=rs.filter(function(r){ return r && r.enabled!==false && r.metric; });
+  if(!rs.length) return '';
+  var lab={}; try{ (ALARM_METRICS||[]).forEach(function(m){ lab[m.id]=m.label; }); }catch(e){}
+  var op={gt:'mayor que', lt:'menor que', gte:'mayor o igual que', lte:'menor o igual que',
+          eq:'igual a', ne:'distinto de'};
+  return 'BENCHMARKS DE LA AGENCIA (una metrica fuera de esto es una alarma):\n'
+    +rs.slice(0,25).map(function(r){
+        return '  - '+(lab[r.metric]||r.metric)+' '+(op[r.op]||r.op)+' '+r.value
+          +(r.metric2?(' Y '+(lab[r.metric2]||r.metric2)+' '+(op[r.op2]||r.op2||'')+' '+r.value2):'');
+      }).join('\n');
+}
 function _asContexto(){
   var hoy=new Date().toLocaleDateString('es-AR');
-  var cli=DB.clients.find(function(x){return x.id===S.clientId;});
+  /* ⚠️  TAMBIEN EL DEL POPUP DEL PANEL 360. El asistente miraba solo
+     `S.clientId`, que lo setea la ficha del menu lateral. Abrir un cliente en
+     el tablero setea `S.p360Abierto`, asi que se lo tenia en pantalla y el
+     chat solo veia su renglon resumen entre los 40: preguntarle por el cliente
+     que estabas mirando daba una respuesta generica. */
+  var cli=DB.clients.find(function(x){return x.id===S.clientId;})
+        || DB.clients.find(function(x){return x.id===S.p360Abierto;});
   var vivos=(DB.clients||[]).filter(function(c){ return !c.archived; });
   var partes=['Hoy es '+hoy+'.',
     '=== TODOS LOS CLIENTES ('+vivos.length+' activos) ===',
@@ -26117,6 +26197,10 @@ function _asContexto(){
     // densos, y si algo hay que recortar por largo que sea la charla.
     var dc=_asDocumentos(cli);
     if(dc) partes.push(dc);
+    // Las campanas antes que la charla: son numeros, ocupan poco y son lo que
+    // se pregunta cuando algo no rinde.
+    var cm=_asCampanas(cli);
+    if(cm) partes.push(cm);
     var tx=_asTranscripciones(cli);
     if(tx) partes.push(tx);
   } else {
@@ -26124,6 +26208,8 @@ function _asContexto(){
       +'que se dijo en una llamada hay que abrir el cliente: las transcripciones solo se '
       +'mandan las del que esta en pantalla.)');
   }
+  var bm=_asBenchmarks();
+  if(bm) partes.push(bm);
   return partes.join('\n\n');
 }
 function _asMontar(){
@@ -26148,7 +26234,8 @@ function asPintar(pensando){
   var p=document.getElementById('as-panel');
   if(!p){ p=document.createElement('div'); p.id='as-panel'; p.className='as-panel';
     document.body.appendChild(p); }
-  var cli=DB.clients.find(function(x){return x.id===S.clientId;});
+  var cli=DB.clients.find(function(x){return x.id===S.clientId;})
+        || DB.clients.find(function(x){return x.id===S.p360Abierto;});
   var msgs=S._asMsgs||[];
   var cuerpo=msgs.length
     ? msgs.map(function(m){
@@ -26165,6 +26252,10 @@ function asPintar(pensando){
       +'tareas, llamadas, campanas, landings.'
       +'<button class="as-ej" onclick="asEjemplo(this)">Que tareas abiertas hay y de quien son</button>'
       +'<button class="as-ej" onclick="asEjemplo(this)">Que clientes no tienen responsable</button>'
+      // Un ejemplo de lo que ahora si puede contestar: sin esto, nadie se
+      // entera de que empezo a ver los numeros de cada campana.
+      +'<button class="as-ej" onclick="asEjemplo(this)">Como vienen las campanas y que '
+      +'tocarias</button>'
       +(cli?('<button class="as-ej" onclick="asEjemplo(this)">Resumime la ultima llamada de '+esc(cli.name)+'</button>'
         +'<button class="as-ej" onclick="asEjemplo(this)">Que dijo textual sobre el precio</button>'):'')
       +'</div>';
@@ -26219,6 +26310,18 @@ async function asEnviar(){
           +'datos que te paso abajo y NADA MAS: si algo no esta ahi, decilo en una linea en '
           +'vez de suponerlo. Se breve y concreto, en castellano rioplatense. Cuando cuentes '
           +'cosas, dalas en lista corta. No repitas la pregunta.\n'
+          /* Antes tenia prohibido opinar, asi que pedirle una recomendacion
+             daba siempre la misma respuesta evasiva. Ahora puede, pero atado:
+             cada recomendacion tiene que poder senalar el numero de donde
+             sale. Sin eso volvemos a una opinion con forma de dato. */
+          +'RECOMENDACIONES: podes recomendar, con dos condiciones. Una, cada recomendacion '
+          +'cita el numero concreto de donde sale y contra que benchmark lo comparas: '
+          +'"CPL USD 42 contra el benchmark de 15" y no "el CPL esta alto". Dos, si el numero '
+          +'que haria falta no esta en los datos, decis que falta ese dato en vez de estimarlo. '
+          +'Antes de recomendar tocar una campana, mira cuantos dias lleva al aire: con pocos '
+          +'dias o poco gasto todavia no hay con que concluir, y eso tambien se dice.\n'
+          +'Cuando hables de campanas, hablas SOLO de las que figuran como incluidas. Las '
+          +'otras son del cliente, no las manejamos, y opinar sobre ellas es peor que callarse.\n'
           +'Cuando haya transcripciones, contestas sobre lo que se dijo de verdad: citas '
           +'entre comillas SOLO texto que este literal en la transcripcion, y decis de que '
           +'llamada sale. Si algo no lo dijeron, decilo; no lo deduzcas del resumen.\n\n'
