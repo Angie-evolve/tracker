@@ -12232,6 +12232,7 @@ function toggleTicketsMenu(btn){
     m.innerHTML=''
       +(((S.torreVista||'mirador')==='panel360')
         ? (it('rutaModal()','ti-layout-columns','Editar las etapas')
+           +it('plantillaModal()','ti-checklist','Plantilla de etapas y tareas')
            +'<div style="height:1px;background:var(--border);margin:4px 0"></div>')
         : '')
       +it('abrirConfigAgencia()','ti-building','Configuracion de agencia')
@@ -28255,6 +28256,11 @@ async function createClient(){
     // Si se creo la subcuenta, el locationId ya queda cargado: solo falta el token del cliente.
     ghl: (ghlLoc&&ghlLoc.id) ? {locationId:ghlLoc.id, token:''} : undefined
   });
+  /* Un cliente nuevo arranca con las etapas de la plantilla, copiadas. A los
+     que ya existen NO se les carga sola: eso se pide cliente por cliente desde
+     su tarjeta, porque reemplazar tareas ya tildadas no tiene vuelta atras. */
+  try{ plantillaCargar(nuevoId, true); }
+  catch(e){ console.error('no pude cargar la plantilla de etapas:', e); }
   save();
   closeModal();renderSidebar();showOverview();
   toast((ghlLoc&&ghlLoc.id) ? 'Cliente y subcuenta creados OK' : 'Cliente creado OK');
@@ -34218,9 +34224,208 @@ function _p360FichaHtml(c){
       +'"Mover aca" da por hechas las anteriores y destilda las de adelante.</div>'
     +ruta.map(fila).join('')
     +'</details>'
+    +_petHtml(c)
     // Va abajo de la ruta y no arriba: primero donde esta parado, despues que
     // tiene agendado. Arriba empujaba lo que se viene a ver al panel.
     +_citasHtml(c)
+  +'</div>';
+}
+/* Las etapas con sus tareas, adentro del detalle del cliente en el tablero.
+   La etapa en la que esta parado viene abierta y las demas plegadas: son seis
+   etapas con 25 tareas, y desplegarlas todas tapa el resto del panel. */
+/* El editor de la PLANTILLA. Lo que se toca aca no cambia a ningun cliente que
+   ya la tenga cargada: cada uno se quedo con su copia. Cambia a los que se den
+   de alta de ahora en mas, y a los que se la recarguen a mano desde su tarjeta.
+   Esa frase esta escrita tambien en la pantalla, porque es lo unico que hace
+   falta entender para usarla sin miedo. */
+function plantillaModal(){
+  var pl=plantillaEtapas();
+  var ops=(typeof personas==='function'?personas():[]).map(function(p){
+    return {m:String(p.email||''), n:String(p.nombre||p.email||'')}; });
+  var conCopia=(DB.clients||[]).filter(function(c){
+    var e=petDe(c); return !!(e&&e.length); }).length;
+
+  var et=function(e,i){
+    return '<div style="border-top:1px solid var(--border);padding:11px 0">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">'
+        +'<input value="'+esc(e.etapa)+'" onchange="plEtapaNombre('+i+',this.value)" '
+          +'style="flex:1;min-width:0;font-size:12.5px;font-weight:600;background:transparent;'
+          +'border:0;border-bottom:1px solid transparent;color:var(--strong);'
+          +'font-family:var(--font);outline:none;padding:2px 0">'
+        +'<span style="font-size:10px;color:var(--text3);flex:none">columna</span>'
+        +'<select onchange="plEtapaRuta('+i+',this.value)" style="flex:none;font-size:10.5px;'
+          +'background:var(--bg3);color:var(--text2);border:1px solid var(--border2);'
+          +'border-radius:var(--radius);padding:2px 5px;font-family:var(--font);outline:none">'
+          +'<option value="">— sin columna —</option>'
+          +rutaColumnas().map(function(x){
+              return '<option value="'+esc(x.l)+'"'
+                +((_p360Norm(x.l)===_p360Norm(e.ruta||''))?' selected':'')+'>'
+                +esc(x.l)+'</option>'; }).join('')
+        +'</select>'
+        +'<span role="button" tabindex="0" onclick="plEtapaBorrar('+i+')" '
+          +'title="Sacar esta etapa de la plantilla" '
+          +'style="flex:none;cursor:pointer;color:var(--text3);font-size:13px;padding:2px 4px">'
+          +'×</span>'
+      +'</div>'
+      +(e.tareas||[]).map(function(t,j){
+          return '<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 4px">'
+            +'<input value="'+esc(t.t)+'" onchange="plTareaNombre('+i+','+j+',this.value)" '
+              +'style="flex:1;min-width:0;font-size:11.5px;background:var(--bg3);'
+              +'border:1px solid var(--border2);border-radius:var(--radius);'
+              +'color:var(--text);font-family:var(--font);outline:none;padding:3px 7px">'
+            +'<select onchange="plTareaResp('+i+','+j+',this.value)" '
+              +'title="Responsable por defecto. Se puede cambiar despues en cada cliente." '
+              +'style="flex:none;font-size:10px;background:var(--bg3);color:'
+              +(t.r?'var(--text2)':'var(--text3)')+';border:1px solid var(--border2);'
+              +'border-radius:var(--radius);padding:2px 4px;font-family:var(--font);'
+              +'outline:none;max-width:120px">'
+              +'<option value="">sin dueño</option>'
+              +ops.map(function(p){
+                  return '<option value="'+esc(p.m)+'"'
+                    +((String(t.r||'').toLowerCase()===p.m.toLowerCase())?' selected':'')+'>'
+                    +esc(p.n)+'</option>'; }).join('')
+            +'</select>'
+            +'<span role="button" tabindex="0" onclick="plTareaBorrar('+i+','+j+')" '
+              +'title="Borrar" style="flex:none;cursor:pointer;color:var(--text3);'
+              +'font-size:12px;padding:2px 3px">×</span>'
+          +'</div>';
+        }).join('')
+      +'<a href="javascript:void(0)" onclick="plTareaNueva('+i+')" '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none;margin-left:4px;'
+        +'border-bottom:1px dotted var(--border2)">+ tarea</a>'
+    +'</div>';
+  };
+
+  document.getElementById('modal-root').innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:720px;width:94%;max-height:84vh;overflow:auto">'
+      +'<div class="modal-title">Plantilla de etapas</div>'
+      +'<div class="modal-sub">Con esto arranca cada cliente nuevo. '
+        +'<b>Lo que cambies acá no toca a ningún cliente que ya la tenga cargada</b>'
+        +(conCopia?(' — hoy son '+conCopia+'.'):'.')
+        +' Cada uno se quedó con su copia; para pasarle la plantilla nueva a uno, '
+        +'se le recarga desde su tarjeta en el tablero.</div>'
+      +pl.map(et).join('')
+      +'<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;'
+        +'display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+        +'<a href="javascript:void(0)" onclick="plEtapaNueva()" '
+          +'style="font-size:11.5px;color:var(--text2);text-decoration:none;'
+          +'border-bottom:1px dotted var(--border2)">+ etapa</a>'
+        +'<a href="javascript:void(0)" onclick="plRestaurar()" '
+          +'title="Vuelve a las seis etapas y las 25 tareas originales" '
+          +'style="font-size:11px;color:var(--text3);text-decoration:none;'
+          +'border-bottom:1px dotted var(--border2)">volver a la original</a>'
+      +'</div>'
+    +'</div></div>';
+}
+// Cada cambio guarda y repinta. La plantilla son seis filas: no hace falta un
+// boton de guardar que se pueda olvidar de apretar.
+function _plSet(pl){ DB.plantillaEtapas=pl; save(); plantillaModal(); }
+function plEtapaNombre(i,v){ var p=plantillaEtapas(); if(!p[i])return; p[i].etapa=String(v||'').trim()||p[i].etapa; _plSet(p); }
+function plEtapaRuta(i,v){ var p=plantillaEtapas(); if(!p[i])return; p[i].ruta=String(v||''); _plSet(p); }
+function plEtapaBorrar(i){
+  var p=plantillaEtapas(); if(!p[i])return;
+  if(!confirm('Sacar "'+p[i].etapa+'" de la plantilla?\n\nLos clientes que ya la tienen cargada no cambian.')) return;
+  p.splice(i,1); _plSet(p);
+}
+function plEtapaNueva(){
+  var n=prompt('Nombre de la etapa nueva:',''); if(n===null) return;
+  n=String(n).trim(); if(!n) return;
+  var p=plantillaEtapas(); p.push({etapa:n, ruta:'', tareas:[]}); _plSet(p);
+}
+function plTareaNombre(i,j,v){
+  var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return;
+  v=String(v||'').trim(); if(!v) return;
+  p[i].tareas[j].t=v; _plSet(p);
+}
+function plTareaResp(i,j,v){ var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return; p[i].tareas[j].r=String(v||''); _plSet(p); }
+function plTareaBorrar(i,j){ var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return; p[i].tareas.splice(j,1); _plSet(p); }
+function plTareaNueva(i){
+  var n=prompt('Nueva tarea:',''); if(n===null) return;
+  n=String(n).trim(); if(!n) return;
+  var p=plantillaEtapas(); if(!p[i])return;
+  p[i].tareas=p[i].tareas||[]; p[i].tareas.push({t:n, r:''}); _plSet(p);
+}
+function plRestaurar(){
+  if(!confirm('Volver a la plantilla original?\n\nSe pierde lo que hayas editado acá. Los clientes que ya la tienen cargada no cambian.')) return;
+  DB.plantillaEtapas=undefined; save(); plantillaModal();
+}
+function _petHtml(c){
+  var eas=petDe(c);
+  if(!eas || !eas.length){
+    // Sin plantilla cargada se dice por que y se ofrece cargarla. Un bloque
+    // vacio se lee como que la funcion no anda.
+    return '<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border);'
+      +'font-size:11px;color:var(--text3)">'
+      +'Todavía no tiene las etapas cargadas. '
+      +'<a href="javascript:void(0)" onclick="plantillaCargar('+c.id+')" '
+      +'style="color:var(--text2);text-decoration:none;border-bottom:1px dotted var(--border2)">'
+      +'Cargar la plantilla</a>'
+      +'<span style="color:var(--text3)"> · no toca a ningún otro cliente</span></div>';
+  }
+  var act=petEtapaActual(c);
+  var ops=(typeof personas==='function'?personas():[]).map(function(p){
+    return {m:String(p.email||''), n:String(p.nombre||p.email||'')}; });
+  var esc2=function(t){ return esc(String(t||'')).replace(/'/g,"\'"); };
+
+  var etapa=function(e){
+    var q=petCuenta(e);
+    var abierta=!!(act && act.etapa===e.etapa);
+    var todo=q.total>0 && q.hechas===q.total;
+    var col=todo?'var(--accent)':(abierta?'var(--amberx)':'var(--text3)');
+    return '<details'+(abierta?' open':'')+' style="margin-top:6px">'
+      +'<summary style="font-size:11.5px;cursor:pointer;color:'+col+';list-style:none">'
+        +'<b style="font-weight:600">'+esc(e.etapa)+'</b>'
+        +'<span style="color:var(--text3);font-weight:400"> · '
+        +q.hechas+'/'+q.total+(abierta?' · acá está parado':'')+'</span>'
+      +'</summary>'
+      +'<div style="margin:5px 0 8px 2px">'
+      +(e.tareas||[]).map(function(t){
+          return '<div style="display:flex;align-items:flex-start;gap:7px;padding:3px 0">'
+            +'<input type="checkbox" class="sw"'+(t.ok?' checked':'')
+              +' onchange="petTildar('+c.id+',\''+esc2(e.etapa)+'\',\''+esc2(t.id)+'\',this.checked)"'
+              +' style="margin:2px 0 0;flex:none">'
+            +'<span style="flex:1;min-width:0;font-size:11.5px;line-height:1.45;color:'
+              +(t.ok?'var(--text3)':'var(--text2)')+(t.ok?';text-decoration:line-through':'')+'"'
+              +(t.at?(' title="'+esc('Tildada el '+new Date(t.at).toLocaleDateString('es-AR')
+                    +(t.por?(' por '+t.por):''))+'"'):'')+'>'
+              +esc(t.t)+'</span>'
+            +'<select onchange="petResponsable('+c.id+',\''+esc2(e.etapa)+'\',\''+esc2(t.id)+'\',this.value)" '
+              +'title="Responsable de esta tarea" '
+              +'style="flex:none;font-size:10px;background:var(--bg3);color:'
+              +(t.r?'var(--text2)':'var(--text3)')+';border:1px solid var(--border2);'
+              +'border-radius:var(--radius);padding:1px 4px;font-family:var(--font);outline:none;'
+              +'max-width:110px">'
+              +'<option value="">sin dueño</option>'
+              +ops.map(function(p){
+                  return '<option value="'+esc(p.m)+'"'
+                    +((String(t.r||'').toLowerCase()===p.m.toLowerCase())?' selected':'')+'>'
+                    +esc(p.n)+'</option>'; }).join('')
+            +'</select>'
+            +'<span role="button" tabindex="0" title="Borrar esta tarea de este cliente" '
+              +'onclick="petBorrar('+c.id+',\''+esc2(e.etapa)+'\',\''+esc2(t.id)+'\')" '
+              +'style="flex:none;cursor:pointer;color:var(--text3);font-size:12px;'
+              +'line-height:1;padding:2px 3px">\u00d7</span>'
+          +'</div>';
+        }).join('')
+      +'<a href="javascript:void(0)" onclick="petAgregar('+c.id+',\''+esc2(e.etapa)+'\')" '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none;'
+        +'border-bottom:1px dotted var(--border2)">+ tarea</a>'
+      +'</div></details>';
+  };
+
+  return '<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;'
+      +'flex-wrap:wrap;margin-bottom:2px">'
+      +'<div style="font-size:11px;color:var(--text3)">Etapas y tareas'
+        +(act?('<span style="color:var(--text2)"> · está en <b style="font-weight:600">'
+               +esc(act.etapa)+'</b></span>'):'')+'</div>'
+      +'<a href="javascript:void(0)" onclick="plantillaCargar('+c.id+')" '
+        +'title="Reemplaza las etapas de este cliente por la plantilla actual. Pide confirmación." '
+        +'style="font-size:10.5px;color:var(--text3);text-decoration:none;'
+        +'border-bottom:1px dotted var(--border2)">recargar plantilla</a>'
+    +'</div>'
+    +eas.map(etapa).join('')
   +'</div>';
 }
 function p360Filtro(v){ S.p360=v||''; showTickets(); }
@@ -34639,6 +34844,176 @@ function _p360FaltanHtml(f){
       }))
   +'</div>';
 }
+/* ============================ PLANTILLA DE ETAPAS ============================
+   Las etapas de delivery con sus tareas. Habia `DB.ruta[i].pasos`, que es una
+   lista global: editarla cambiaba a TODOS los clientes a la vez, incluidos los
+   que estaban a mitad de camino. Esto es al reves.
+
+   ⚠️  LA PLANTILLA SE COPIA, NO SE REFERENCIA. Cuando un cliente la carga se
+       queda con SU copia en `c.etapasTareas`. Por eso editar la plantilla solo
+       afecta a los que la carguen despues, y agregarle o sacarle una tarea a
+       un cliente no toca a nadie mas. Es el requisito que pidio y es lo unico
+       que no se puede conseguir compartiendo la lista.
+
+   ⚠️  NO HAY COLUMNAS NUEVAS. `DB.plantillaEtapas` la sube `sbSubir` sola como
+       una fila de `config` -recorre las claves de DB-, y `c.etapasTareas` vive
+       adentro de `clientes.datos`, que ya es jsonb. Cero DDL.
+
+   `ruta` es con que columna del tablero se corresponde cada etapa. Cinco de las
+   seis se llaman igual que en la ruta; "Gestion mensual" es la que en la ruta
+   figura como "Recurrente", asi que la correspondencia se declara y no se
+   adivina por el nombre. */
+var PLANTILLA_BASE=[
+  {etapa:'Onboarding', ruta:'Onboarding', tareas:[
+    'Análisis de mercado inicial',
+    'Llamada de bienvenida (OBD)']},
+  {etapa:'Estrategia', ruta:'Estrategia', tareas:[
+    'Análisis de mercado para el dataset',
+    'Dataset armado',
+    'Llamada de estrategia',
+    'Dataset aprobado por el cliente',
+    'Guiones escritos',
+    'Guiones aprobados por el cliente']},
+  {etapa:'Sistemas', ruta:'Sistemas', tareas:[
+    'Llamada de setup',
+    'Accesos recibidos (Meta, GHL, dominio, píxel)',
+    'Videos crudos recibidos',
+    'Videos editados',
+    'Estáticos creados',
+    'Embudo montado',
+    'Medición conectada (píxel, CAPI y eventos)',
+    'Campaña montada']},
+  {etapa:'Proceso comercial', ruta:'Proceso Comercial', tareas:[
+    'Recorridos del lead armados',
+    'Documento de proceso comercial entregado',
+    'Llamada de proceso comercial']},
+  {etapa:'Lanzamiento', ruta:'Lanzamiento', tareas:[
+    'Prueba de punta a punta (un lead de prueba llega al CRM)',
+    'Campañas prendidas',
+    '72 h de monitoreo']},
+  {etapa:'Gestión mensual', ruta:'Recurrente', tareas:[
+    'Revisión semanal de la cuenta',
+    'Nuevos creativos al aire',
+    'Reporte mensual enviado']}
+];
+
+// La plantilla vigente. Si nunca se edito, vale la de arriba.
+function plantillaEtapas(){
+  var v=DB.plantillaEtapas;
+  if(!Array.isArray(v)||!v.length){
+    return PLANTILLA_BASE.map(function(e){
+      return {etapa:e.etapa, ruta:e.ruta,
+              tareas:e.tareas.map(function(t){ return {t:t, r:''}; })};
+    });
+  }
+  return v.map(function(e){
+    return {etapa:String(e.etapa||''), ruta:String(e.ruta||e.etapa||''),
+            tareas:(e.tareas||[]).map(function(t){
+              // Tolera las dos formas: texto suelto o {t,r}. La primera version
+              // guardo strings y no vale la pena migrar una config de 6 filas.
+              return (typeof t==='string') ? {t:t, r:''}
+                   : {t:String(t.t||''), r:String(t.r||'')};
+            })};
+  });
+}
+
+// Las etapas de ESTE cliente, que son su copia y no la plantilla.
+function petDe(c){ return (c && Array.isArray(c.etapasTareas)) ? c.etapasTareas : null; }
+
+/* Copiar la plantilla a un cliente. Nunca pasa solo en un cliente que ya
+   existe: lo pidio explicito, y sobrescribir tareas ya tildadas no tiene
+   vuelta atras. */
+function plantillaCargar(clientId, callado){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return false;
+  var ya=petDe(c);
+  if(ya && ya.length && !callado){
+    var n=0; ya.forEach(function(e){ n+=(e.tareas||[]).filter(function(t){return t.ok;}).length; });
+    if(!confirm('"'+(c.name||'')+'" ya tiene las etapas cargadas'
+        +(n?(', con '+n+' tarea'+(n===1?'':'s')+' tildada'+(n===1?'':'s')):'')+'.\n\n'
+        +'Volver a cargar la plantilla las reemplaza'+(n?' y pierde lo tildado':'')+'. ¿Seguir?')) return false;
+  }
+  var base=Date.now();
+  c.etapasTareas=plantillaEtapas().map(function(e,i){
+    return {etapa:e.etapa, ruta:e.ruta,
+            tareas:e.tareas.map(function(t,j){
+              return {id:'t'+base+'-'+i+'-'+j, t:t.t, r:t.r||'', ok:false, at:'', por:''};
+            })};
+  });
+  c.plantillaAt=new Date().toISOString();
+  save();
+  if(!callado && typeof toast==='function'){
+    var tot=0; c.etapasTareas.forEach(function(e){ tot+=e.tareas.length; });
+    toast('Cargué '+c.etapasTareas.length+' etapas y '+tot+' tareas en '+(c.name||'el cliente')+'.');
+  }
+  return true;
+}
+
+/* En que etapa de la plantilla esta parado. Se deriva de la columna del
+   tablero para que no haya DOS ideas de "en que etapa esta": la tarjeta vive
+   en una columna y decir otra cosa abajo seria contradecirse. */
+function petEtapaActual(c){
+  var eas=petDe(c); if(!eas||!eas.length) return null;
+  var col=null;
+  try{ var e=(typeof _p360Etapa==='function')?_p360Etapa(c):null; col=e&&e.l; }catch(err){}
+  if(!col) return null;
+  var k=_p360Norm(col);
+  return eas.filter(function(x){
+    return _p360Norm(x.ruta||x.etapa)===k || _p360Norm(x.etapa)===k; })[0]||null;
+}
+
+// Cuantas van y cuantas son, de una etapa.
+function petCuenta(e){
+  var ts=(e&&e.tareas)||[];
+  return {hechas:ts.filter(function(t){ return !!t.ok; }).length, total:ts.length};
+}
+
+function petTildar(clientId, etapa, tareaId, val){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var t=(e.tareas||[]).filter(function(x){ return x.id===tareaId; })[0]; if(!t) return;
+  t.ok=!!val;
+  // Quien y cuando: una tarea tildada sin rastro no se puede auditar despues,
+  // y es justo lo que se pregunta cuando algo no se hizo.
+  t.at=t.ok?new Date().toISOString():'';
+  t.por=t.ok?String((SB&&SB.email)||''):'';
+  save();
+  if(typeof showTickets==='function') showTickets();
+}
+
+function petResponsable(clientId, etapa, tareaId, mail){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var t=(e.tareas||[]).filter(function(x){ return x.id===tareaId; })[0]; if(!t) return;
+  t.r=String(mail||''); save();
+}
+
+// Agregar o sacar una tarea A ESTE CLIENTE. La plantilla no se entera.
+function petAgregar(clientId, etapa){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var nom=prompt('Nueva tarea en "'+etapa+'" para '+(c.name||'este cliente')+':','');
+  if(nom===null) return;
+  nom=String(nom).trim(); if(!nom) return;
+  e.tareas=e.tareas||[];
+  e.tareas.push({id:'t'+Date.now()+'-'+e.tareas.length, t:nom, r:'', ok:false, at:'', por:''});
+  save();
+  if(typeof showTickets==='function') showTickets();
+}
+function petBorrar(clientId, etapa, tareaId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var t=(e.tareas||[]).filter(function(x){ return x.id===tareaId; })[0];
+  if(!t || !confirm('Borrar "'+t.t+'" de '+(c.name||'este cliente')+'?\n\nNo toca la plantilla ni a los demás clientes.')) return;
+  e.tareas=e.tareas.filter(function(x){ return x.id!==tareaId; });
+  save();
+  if(typeof showTickets==='function') showTickets();
+}
+
 /* Hace cuanto corren las campanas activas de un cliente.
    Sale de `start_time` de Meta -la fecha de arranque- y solo mira las que
    estan ACTIVE ahora.
@@ -35003,6 +35378,25 @@ function p360Html(){
         +'title="Desde que arranco la mas vieja de las campanas activas que estan '
         +'incluidas. No descuenta las pausas del medio.">'
         +_cmp.dias+' d prendida'+(_cmp.cuantas>1?'s':'')+'</span>';
+    })();
+    /* Cuantas tareas le faltan de la etapa donde esta parado. No se dice el
+       nombre de la etapa: la tarjeta ya vive en esa columna y repetirlo gasta
+       el unico renglon que hay. Lo que no se ve desde la columna es cuanto
+       falta. */
+    (function(){
+      if(typeof petEtapaActual!=='function') return;
+      var e=null; try{ e=petEtapaActual(d.c); }catch(err){ return; }
+      if(!e) return;
+      var q=petCuenta(e);
+      if(!q.total) return;
+      var faltan=q.total-q.hechas;
+      lineas+='<span class="p3klin" style="color:'
+        +(faltan?'var(--text3)':'var(--accent)')+'" title="'
+        +esc((faltan?(faltan+' de las '+q.total+' tareas de '+e.etapa+' sin tildar.')
+                    :('Las '+q.total+' tareas de '+e.etapa+' estan hechas.'))
+             +' Abri la tarjeta para verlas.')+'">'
+        +(faltan?('faltan '+faltan+' de '+q.total+' tareas'):('\u2713 '+q.total+' tareas listas'))
+        +'</span>';
     })();
     // La cuenta del lanzamiento ya no va como linea: el circulo la muestra
     // siempre, con o sin freno, asi que este renglon la repetia.
