@@ -2625,10 +2625,10 @@ function _cfgEquipoNota(){
 async function sbBajar(){
   // Lo que hay ahora, antes de que lo de la nube lo reemplace.
   try{ await _copiaAntesDeBajar(DB); }catch(e){}
-  var filas=await sbFetch('clientes?select=id,datos,actualizado&order=id');
+  var filas=await sbFetch('clientes?select=id,datos,maquina,datos_at&order=id');
   var cfg=await sbFetch('config?select=clave,valor');
   if(!filas||!filas.length) return false;   // base vacia: se queda con lo local
-  var nuevo={clients:filas.map(function(f){ return f.datos; })};
+  var nuevo={clients:filas.map(_clienteDeFila)};
   (cfg||[]).forEach(function(row){ nuevo[row.clave]=row.valor; });
   // Lo borrado se queda borrado. Borrar hace un DELETE en la nube, pero si esa
   // llamada no sale -sin red, sin permiso, o la pestana cerrada antes de que
@@ -2637,7 +2637,21 @@ async function sbBajar(){
   // la lista de borrados por mail solo frena a Fathom, no a la sincronizacion.
   // Lo que vimos al bajar. Es la referencia para saber, al subir, si la nube
   // cambio por debajo: sin esto la app pisaba con lo local sin comparar nada.
-  filas.forEach(function(f){ _sbVisto[String(f.id)]=String(f.actualizado||''); });
+  /* ⚠️  SE MIRA `datos_at`, NO `actualizado`. `actualizado` lo mueve cualquier
+     escritura, incluida la de `maquina`, que pasa sola cada pocos minutos.
+     `datos_at` la mueve un trigger solo cuando `datos` cambio de verdad, o sea
+     cuando una persona edito algo. Comparar contra la otra es lo que hacia que
+     el latido de una sesion bloqueara los guardados de la otra. */
+  filas.forEach(function(f){
+    _sbVisto[String(f.id)]=String(f.datos_at||'');
+    /* Y las huellas de lo que acabamos de bajar. Sin esto, el primer `save()`
+       despues de abrir subia los 52 clientes enteros aunque no se hubiera
+       tocado ninguno: `_sbHuellas` arrancaba vacio y todo parecia cambiado.
+       La primera subida despues de este cambio SI los va a subir una vez, y
+       esta bien: es la que saca las claves de maquina de adentro de `datos`. */
+    _sbHuellas[String(f.id)]=_huella(f.datos||{});
+    _sbHuellasMaq[String(f.id)]=_huella(f.maquina||{});
+  });
   (cfg||[]).forEach(function(row){ _sbHuellas['cfg:'+row.clave]=_huella(row.valor); });
   var _bor=[].concat(DB.clientesBorrados||[], nuevo.clientesBorrados||[]).map(String);
   _bor=_bor.filter(function(v,i){ return v && _bor.indexOf(v)===i; });
@@ -2645,7 +2659,7 @@ async function sbBajar(){
     nuevo.clientesBorrados=_bor;
     var _vuelven=filas.filter(function(f){ return _bor.indexOf(String(f.id))>=0; });
     nuevo.clients=filas.filter(function(f){ return _bor.indexOf(String(f.id))<0; })
-      .map(function(f){ return f.datos; });
+      .map(_clienteDeFila);
     // Y se reintenta el borrado que habia quedado a medias, para que la fila no
     // siga volviendo en cada carga.
     _vuelven.forEach(function(f){
@@ -2670,6 +2684,9 @@ var _sbPendiente=null;
 // vimos. Subir sin mirarlo es lo que dejo que una ventana con datos viejos
 // borrara el trabajo de una tarde entera: el ultimo en guardar ganaba.
 var _sbVisto={};
+// Las huellas de `maquina` van aparte de las de `datos`: son dos columnas que
+// cambian a ritmos muy distintos y una sola huella volveria a mezclarlas.
+var _sbHuellasMaq={};
 // Hay claves que no son datos de nadie: son una copia de lo que hay afuera.
 // agendaGhl es la agenda de la agencia bajada de GHL, y la vuelve a traer
 // cualquiera que sincronice. Para esas, que la nube gane esta bien y avisar
@@ -2699,12 +2716,57 @@ function _huella(o){
   return s.length+':'+h;
 }
 
+/* Lo que escribe una maquina y se regenera solo. Vive en la columna `maquina`
+   de Supabase, aparte de `datos`, y se pisa sin preguntar: el que midio ultimo
+   tiene razon.
+
+   ⚠️  POR QUE ESTA SEPARACION EXISTE. `citasAuto` le estampaba `citasAt=now()`
+   a los 50 clientes cada 6 minutos, cambiara algo o no, y eso los subia a los
+   50. El guarda anti-pisada de `sbSubir` veia esa escritura como "otro cambio
+   esto" y rechazaba todo lo que guardara la otra sesion. Con dos personas
+   trabajando, la que no corria el latido quedaba de solo lectura sin
+   enterarse: un toast que pasa y se va. Paso de verdad, medido el 2026-09-25:
+   un token de GHL cargado dos veces que nunca llego a la base.
+
+   Ahora el latido escribe en `maquina`, que no tiene guarda porque no hace
+   falta —perder el ultimo pulso de Meta no es perder nada, se vuelve a bajar
+   solo— y las ediciones de personas viajan en `datos`, que es lo unico que se
+   compara. Ver supabase/migraciones/025_maquina_y_datos_at.sql.
+
+   ⚠️  PARA AGREGAR UNA CLAVE ACA, el filtro es uno solo: si se pierde, se
+   vuelve a conseguir sola sin que nadie escriba nada. `citas` NO esta, aunque
+   casi todo lo escriba GHL, porque adentro viven las cargadas a mano
+   (`manual:true`). `liveLines` tampoco: se editan en el formulario de linea. */
+var CLAVES_MAQUINA=['citasAt','metaPulso','lpStats','lpError',
+                    '_metaSnapshot','_liveEmptyWeeks',
+                    'fathomBuscadoAt','fathomLinksTry'];
+
+// El cliente, partido en las dos columnas. En memoria sigue siendo un objeto
+// solo: el resto de la app lee `c.metaPulso` como siempre y no se entera.
+function _partirCliente(c){
+  var datos={}, maquina={};
+  Object.keys(c||{}).forEach(function(k){
+    if(CLAVES_MAQUINA.indexOf(k)>=0) maquina[k]=c[k]; else datos[k]=c[k];
+  });
+  return {datos:datos, maquina:maquina};
+}
+// Y al reves: las dos columnas vuelven a ser un cliente.
+function _clienteDeFila(f){
+  return Object.assign({}, f&&f.datos, (f&&f.maquina)||{});
+}
+
 async function sbSubir(){
   if(!SB.listo) return;
-  var pend=[];
+  var pend=[], pendMaq=[];
   (DB.clients||[]).forEach(function(c){
-    var hh=_huella(c);
-    if(_sbHuellas[c.id]!==hh){ pend.push(c); }
+    var p=_partirCliente(c);
+    if(_sbHuellas[c.id]!==_huella(p.datos)) pend.push(c);
+    // ⚠️  `maquina` solo se sube de un cliente que YA existe en la nube. El
+    //     upsert de abajo manda {id, maquina} sin nombre ni datos: si la fila
+    //     no estuviera, crearia un cliente vacio y sin nombre. El alta la hace
+    //     siempre la subida de `datos`, que va primero.
+    if(_sbVisto[String(c.id)]!==undefined
+       && _sbHuellasMaq[c.id]!==_huella(p.maquina)) pendMaq.push(c);
   });
   // Claves globales (todo lo que no sea la lista de clientes)
   var globales=[];
@@ -2713,7 +2775,7 @@ async function sbSubir(){
     var hh=_huella(DB[k]);
     if(_sbHuellas['cfg:'+k]!==hh) globales.push({clave:k, valor:DB[k]});
   });
-  if(!pend.length && !globales.length) return;
+  if(!pend.length && !pendMaq.length && !globales.length) return;
 
   try{
     // Antes de pisar: mirar si la nube cambio desde que bajamos. Lo que cambio
@@ -2724,11 +2786,11 @@ async function sbSubir(){
       var ids=pend.map(function(c){ return c.id; }).filter(function(x){ return x!==undefined; });
       var enNube=null;
       try{
-        enNube=await sbFetch('clientes?select=id,actualizado&id=in.('+ids.join(',')+')');
+        enNube=await sbFetch('clientes?select=id,datos_at&id=in.('+ids.join(',')+')');
       }catch(e){ enNube=null; }
       if(enNube){
         var mapa={};
-        enNube.forEach(function(r){ mapa[String(r.id)]=String(r.actualizado||''); });
+        enNube.forEach(function(r){ mapa[String(r.id)]=String(r.datos_at||''); });
         pend=pend.filter(function(c){
           var k=String(c.id), ahora=mapa[k], visto=_sbVisto[k];
           if(ahora===undefined) return true;              // todavia no esta: es nuevo
@@ -2764,23 +2826,38 @@ async function sbSubir(){
       }
     }
     if(choque.length) _sbAvisarChoque(choque);
-    if(!pend.length && !globales.length){ _sbMarcar('ok'); return; }
+    if(!pend.length && !pendMaq.length && !globales.length){ _sbMarcar('ok'); return; }
     if(pend.length){
       await sbFetch('clientes', {
         method:'POST',
         headers:{'Prefer':'resolution=merge-duplicates'},
         body:JSON.stringify(pend.map(function(c){
-          return {id:c.id, nombre:c.name||'', datos:c, actualizado_por:SB.email};
+          return {id:c.id, nombre:c.name||'',
+                  datos:_partirCliente(c).datos, actualizado_por:SB.email};
         }))
       });
-      pend.forEach(function(c){ _sbHuellas[c.id]=_huella(c); });
+      pend.forEach(function(c){ _sbHuellas[c.id]=_huella(_partirCliente(c).datos); });
       // Y se vuelve a leer el "actualizado" que quedo: sin esto la proxima
       // subida confundiria nuestro propio cambio con el de otro y se frenaria.
       try{
-        var post=await sbFetch('clientes?select=id,actualizado&id=in.('
+        var post=await sbFetch('clientes?select=id,datos_at&id=in.('
           +pend.map(function(c){ return c.id; }).join(',')+')');
-        (post||[]).forEach(function(r){ _sbVisto[String(r.id)]=String(r.actualizado||''); });
+        (post||[]).forEach(function(r){ _sbVisto[String(r.id)]=String(r.datos_at||''); });
       }catch(e){}
+    }
+    /* `maquina` va DESPUES de `datos` y sin guarda anti-pisada, a proposito.
+       Son mediciones: el que midio ultimo tiene razon, y frenar una porque
+       otra sesion midio primero seria guardar la lectura vieja. Tampoco toca
+       `actualizado_por`: nadie la escribio, la escribio un latido. */
+    if(pendMaq.length){
+      await sbFetch('clientes', {
+        method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify(pendMaq.map(function(c){
+          return {id:c.id, maquina:_partirCliente(c).maquina};
+        }))
+      });
+      pendMaq.forEach(function(c){ _sbHuellasMaq[c.id]=_huella(_partirCliente(c).maquina); });
     }
     if(globales.length){
       await sbFetch('config', {
