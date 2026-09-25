@@ -59254,9 +59254,20 @@ async function enrichContactsBackground(c, proxy){
   var enriched=0;
   const CONC=3; // 3 en paralelo: baja el tiempo ~3x sin castigar la cuota del Apps Script
   const one=async function(opp){
+    /* ⚠️  SIN TIMEOUT, UN SOLO PEDIDO COLGADO CONGELA TODO EL ENRIQUECIDO.
+       Los tres de la tanda van adentro de un `Promise.all`: si uno no vuelve
+       nunca, la promesa no resuelve, el `for` de abajo no avanza mas y no
+       salta ningun error. La tabla se queda en "cargando..." para siempre y no
+       hay nada en pantalla que diga que se murio.
+       Paso el 2026-09-25 con Centercheques: freno en 4 de 18 y no se movio mas.
+       20 segundos porque el Apps Script puede tardar de verdad; pasado eso, el
+       contacto se marca como intentado y se reintenta a los 15 minutos, que es
+       lo que ya hacia con cualquier otro error. */
+    var _ctrl=(typeof AbortController!=='undefined')?new AbortController():null;
+    var _tmr=_ctrl?setTimeout(function(){ _ctrl.abort(); },20000):null;
     try{
       var url=base+'&action=contact&contactId='+encodeURIComponent(opp.contactId);
-      var res=await proxyFetch(url);
+      var res=await proxyFetch(url, _ctrl?{signal:_ctrl.signal}:undefined);
       var data=await res.json();
       if(data.ok){
         opp.source=opp.source||{}; opp.geo=opp.geo||{};
@@ -59284,6 +59295,7 @@ async function enrichContactsBackground(c, proxy){
         enriched++;
       }
     }catch(e){}
+    if(_tmr) clearTimeout(_tmr);
     opp._enrichTry=Date.now();
   };
   for(var i=0;i<toEnrich.length;i+=CONC){
@@ -60158,10 +60170,18 @@ function lpFilasLandings(c, v){
   var st=c.lpStats||{};
   var recorte=!!(st.tope && st.masViejo && new Date(st.masViejo).getTime() > desde);
   /* Todavia faltan contactos por traer: el reparto por pagina esta corto y
-     va a ir subiendo solo. Mientras tanto NO se muestra el numero.
-     ⚠️  Un numero corto es peor que ningun numero: "24 registros, 4,46%"
-         se lee como un dato cuando en realidad eran 66 y 12,3%, y nadie
-         mira el aviso de abajo si arriba hay una cifra que parece firme. */
+     va a ir subiendo. Se muestra el CONTEO y NO la tasa.
+     ⚠️  UNA TASA CORTA ES PEOR QUE NINGUNA: "4,46%" se lee como un dato
+         cuando en realidad eran 12,3%, y nadie mira el aviso de abajo si
+         arriba hay una cifra que parece firme. Por eso la tasa dice
+         "parcial".
+     ⚠️  EL CONTEO SI, Y ANTES TAMPOCO SE MOSTRABA. La idea era la misma, pero
+         el conteo no engana igual: es un piso, puede subir y nunca bajar, y
+         va con un "+" al lado que lo dice. Esconderlo tenia un costo peor:
+         con el enriquecido a medias no habia NINGUN numero en pantalla, y si
+         el enriquecido se colgaba no lo habia nunca. Paso el 2026-09-25 con
+         Centercheques: freno en 4 de 18 y la tabla quedo en "cargando..."
+         indefinidamente, sin forma de saber cuantos registros habia. */
   var trayendo=!!(g && g.opsTotal && g.enriquecidas < g.opsTotal);
   return { filas:filas, sinAtribuir:sinAtribuir, etiqueta:_v.etiqueta, propio:!!_v.propio,
            fuente:g?'ghl':'propia', enOtraPagina:enOtraPagina,
@@ -60306,7 +60326,9 @@ function lpTablaLandingsHtml(c, v){
       +'<span style="font-size:11px;font-weight:600;color:'+(nombre==='(sin embudo)'?'var(--amberx)':'var(--text2)')+';'
       +'text-transform:uppercase;letter-spacing:.06em">'+esc(nombre)+'</span></td>'
       +'<td style="text-align:right;padding:14px 0 4px;border-top:1px solid var(--border);font-size:12px;'
-      +'font-weight:600;color:var(--text2)">'+(t!=null?t.toFixed(2)+'%':'-')+'</td></tr>';
+      +'font-weight:600;color:var(--text2)">'
+      +(t!=null?t.toFixed(2)+'%':(r.trayendo?'<span style="color:var(--text3);font-weight:400">parcial</span>':'-'))
+      +'</td></tr>';
   };
   var cuerpo=r.filas.length
     ? nombres.map(function(n){
@@ -60316,11 +60338,18 @@ function lpTablaLandingsHtml(c, v){
               +td('<span class="mono" style="font-size:12px">'+esc(f.ruta)+'</span>')
               +td(String(f.vistas),'right','color:var(--text3)')
               +td(String(f.unicas),'right','color:var(--text2)')
+              /* ⚠️  EL CONTEO SE MUESTRA SIEMPRE; LA TASA NO. Antes las dos
+                 columnas decian "cargando…" hasta que estuvieran las 18 de 18,
+                 asi que con 4 ya traidas no se veia nada, y si el enriquecido
+                 se colgaba no se veia nada nunca.
+                 El conteo es un piso: puede subir, nunca bajar, y como piso ya
+                 sirve. La tasa no: una tasa corta se lee como una landing que
+                 convierte mal y despues sube sola sin que nadie entienda por
+                 que. Por eso esa dice "parcial" y no un numero. */
+              +td(String(f.optins)+(r.trayendo?'<span style="color:var(--text3)"> +</span>':''),
+                  'right','color:var(--text2)')
               +td(r.trayendo
-                    ? '<span style="color:var(--text3)">cargando…</span>'
-                    : String(f.optins),'right','color:var(--text2)')
-              +td(r.trayendo
-                    ? '<span style="color:var(--text3)">—</span>'
+                    ? '<span style="color:var(--text3)" title="Falta el origen de algunas oportunidades: la tasa recien significa algo cuando estan todas">parcial</span>'
                     : (f.tasa!=null?(f.tasa.toFixed(2)+'%'):'-'),
                   'right','font-weight:600;color:'+((!r.trayendo&&f.tasa)?'var(--accent)':'var(--text3)'))
               +'</tr>';
@@ -60379,8 +60408,10 @@ function lpTablaLandingsHtml(c, v){
         if(r.opsTotal && r.enriquecidas < r.opsTotal){
           notas.push('<span style="color:var(--amberx)">Origen identificado en '
             +r.enriquecidas+' de '+r.opsTotal+' oportunidades. '
-            +'Lo que falta se trae solo con el tracker abierto: hasta entonces '
-            +'el reparto por pagina esta corto.</span>');
+            +'El resto se trae de a poco con el tracker abierto, y lo que no '
+            +'llegue se reintenta en la proxima sincronizacion. Hasta entonces '
+            +'los registros de cada fila son un piso, no el total, y la tasa no '
+            +'se calcula.</span>');
         }
         if(r.sinAtribuir) notas.push(r.sinAtribuir+' registro'+(r.sinAtribuir===1?'':'s')
           +' sin pagina de origen guardada en GHL.');
