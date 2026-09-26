@@ -8181,7 +8181,25 @@ async function fathomWebhookSync(silent){
   if(!SB.token){ if(!silent) toast('Entra con tu cuenta para sincronizar.','amber'); return {added:0}; }
   var filas;
   try{
-    filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=recibida_at.desc&limit=60');
+    /* ⚠️  EN TANDAS HASTA AGOTAR, NO LAS PRIMERAS 60. Con un `limit` fijo y
+       orden descendente, las que no enganchan se quedan en `procesada=false`
+       y ocupan el cupo para siempre: las de mas atras no llegan nunca al
+       matcher, asi que crear el cliente despues no las rescata. Se detecto
+       midiendo: 132 sin procesar y 72 de ellas -toda la primera quincena de
+       septiembre- fuera del alcance de la sincronizacion.
+       El tope de vueltas es para que un error del lado del servidor no deje
+       el bucle girando; 12 tandas de 200 son 2400 llamadas, muy por encima de
+       lo que la agencia acumula entre sincronizaciones. */
+    filas=[];
+    var _tanda=200, _desde=0, _vuelta=0;
+    while(_vuelta<12){
+      var _p=await sbFetch('llamadas_fathom?procesada=eq.false&order=recibida_at.desc'
+        +'&limit='+_tanda+'&offset='+_desde);
+      if(!_p||!_p.length) break;
+      filas=filas.concat(_p);
+      if(_p.length<_tanda) break;
+      _desde+=_tanda; _vuelta++;
+    }
   }catch(e){
     // Si la tabla no existe todavia, no es un error: es que falta el paso 1.
     if(/relation|does not exist|404/i.test(e.message||'')){
