@@ -57715,17 +57715,123 @@ function _citasPiezaBtn(c, etapa){
   return '<button class="btn btn-sm" style="font-size:11px;padding:3px 9px" '
     +'onclick="onbModal('+c.id+')">Crear el formulario</button>';
 }
+/* ── Traer del historial de Fathom lo que el webhook no alcanzo ──────────────
+   ⚠️  ESTO EXISTE PORQUE EL WEBHOOK SOLO TRAE LO QUE PASA DESDE QUE SE
+       CONFIGURO. `llamadas_fathom` arranca el 3 de septiembre de 2026, que es
+       cuando se dio de alta: todo lo de antes -las ventas viejas, los leads
+       que despues compraron- no entro nunca y no hay forma de que entre solo.
+       Rippleinsights se cargo el 25/09 con la venta ya hecha por Joela, y su
+       ficha quedo en cero llamadas para siempre.
+   ⚠️  `accion=buscar` SI VE EL HISTORIAL COMPLETO de cada cuenta conectada, y
+       hasta ahora se usaba solo para reparar el link de llamadas que YA
+       estaban. Es la misma busqueda, usada para traerlas.
+   ⚠️  SE BUSCA POR LOS MAILS DEL CLIENTE, NO POR EL TITULO. Es lo unico que no
+       depende de como se haya titulado la reunion, que es justo lo que falla
+       cuando la grabacion se llama "Reunion con <la persona>". Sin ningun mail
+       cargado no hay busqueda posible, y la funcion lo dice en vez de
+       devolver cero en silencio. */
+async function fathomTraerHistorial(clientId){
+  var c=DB.clients.find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var url=(localStorage.getItem('evold-fathom-hook')||'').trim();
+  var sec=(localStorage.getItem('evold-fathom-hook-sec')||'').trim();
+  if(!url||!sec){ toast('Falta configurar el webhook en Integraciones.','amber'); return; }
+  var f=_fathomFiltro(c);
+  if(!f){
+    toast('Este cliente no tiene ningun mail cargado, y el mail es con lo que se busca. '
+      +'Cargalo en la ficha, o suma a quien estuvo en la llamada en Equipo.','amber');
+    return;
+  }
+  toast('Buscando en Fathom las reuniones de '+(c.name||'')+'...');
+  var d=null;
+  try{
+    var r=await fetch(url+(url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(sec)+'&accion=buscar',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       // Con transcripcion: es lo que alimenta los generadores y el asistente.
+       body:JSON.stringify({emails:f.mails, dominios:f.doms, transcripcion:true})});
+    d=await r.json();
+  }catch(e){ toast('No pude hablar con Fathom: '+(e&&e.message||''),'red'); return; }
+  if(!d||!d.ok){ toast((d&&d.error)||'Fathom no contesto bien.','red'); return; }
+
+  var items=d.items||[];
+  if(!items.length){
+    // Decir CON QUE se busco, no solo que no encontro: el error mas comun es
+    // un mail mal escrito, y asi se ve de una.
+    toast('Busque en '+(Number(d.cuentas)||0)+' cuenta'+((Number(d.cuentas)||0)===1?'':'s')
+      +' de Fathom por '+f.mails.join(', ')
+      +(f.doms.length?(' y por el dominio '+f.doms.join(', ')):'')
+      +' y no aparece ninguna reunion. Si los mails estan bien, la grabo alguien '
+      +'que todavia no conecto su Fathom.','amber');
+    return;
+  }
+
+  var _items=function(m){
+    return (m.action_items||[]).map(function(it){
+      return (it&&(it.description||it.texto||it.text))||String(it||''); }).filter(Boolean);
+  };
+  var _invit=function(m){
+    return (m.invitados||[]).map(function(x){
+      return String((x&&x.email)||x||'').trim().toLowerCase();
+    }).filter(function(x){ return x.indexOf('@')>0; });
+  };
+
+  var nuevas=0, completadas=0, yaEstaban=0;
+  c.fathomCalls=c.fathomCalls||[];
+  items.forEach(function(m){
+    var rid=String(m.recording_id||'');
+    var ya=_fathomExistente(c, rid, m.url, m.title, m.fecha);
+    if(ya){
+      yaEstaban++;
+      // La copia de Fathom puede traer lo que a la guardada le falta.
+      if(_fathomCompletar(ya, {transcript:m.transcripcion||'', summary:m.resumen||'',
+          duration:m.duracion||'', url:m.url||'', grabo:m.grabo||'',
+          actionItems:_items(m), participantes:_invit(m)})) completadas++;
+      return;
+    }
+    c.fathomCalls.unshift({
+      id:'fathom-'+rid, title:m.title||'Llamada',
+      date:m.fecha?new Date(m.fecha).toLocaleDateString('es-AR'):'',
+      duration:m.duracion||'', sentiment:'satisfecho',
+      summary:m.resumen||'', transcript:m.transcripcion||'',
+      actionItems:_items(m), riskFlags:[], url:m.url||'',
+      grabo:m.grabo||'', participantes:_invit(m), _cid:c.id
+    });
+    nuevas++;
+  });
+
+  if(nuevas||completadas){
+    _llDuracionesDe(c);
+    (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
+    _fathomSortMilestones(c);
+    save();
+    if(S.view==='client') renderClient();
+  }
+  toast(nuevas
+    ? (nuevas+' llamada'+(nuevas===1?'':'s')+' traida'+(nuevas===1?'':'s')+' del historial'
+       +(completadas?(' · '+completadas+' completada'+(completadas===1?'':'s')):'')
+       +(yaEstaban?(' · '+yaEstaban+' ya estaba'+(yaEstaban===1?'':'n')):''))
+    : (completadas
+        ? (completadas+' llamada'+(completadas===1?'':'s')+' completada'+(completadas===1?'':'s')
+           +' con lo que le faltaba.')
+        : ('Fathom devolvio '+items.length+' reunion'+(items.length===1?'':'es')
+           +' y todas ya estaban en la ficha.')));
+}
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const _dup=_fathomDuplicadas(c);
-  const btnAgregar=_masBoton(c.id)
+  const btnTraer='<button class="btn btn-sm" style="margin-left:8px" '
+    +'onclick="fathomTraerHistorial('+c.id+')" '
+    +'title="Le pregunta a Fathom por las reuniones de este cliente y trae las que '
+    +'falten. Sirve para las anteriores al webhook, que no entran solas.">'
+    +'Traer de Fathom</button>';
+  const btnAgregar=_masBoton(c.id)+btnTraer
     +(_dup?('<button class="btn btn-sm" style="margin-left:8px;color:var(--amberx)" '
       +'onclick="fathomUnificar('+c.id+')" title="La misma reunion grabada por dos personas '
       +'del equipo entro dos veces">Unificar '+_dup+' repetida'+(_dup===1?'':'s')+'</button>'):'');
   if(!calls.length){
     return '<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center">'
       +'<div style="font-size:13px;color:var(--text2);margin-bottom:3px">Sin llamadas sincronizadas</div>'
-      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px">Se sincronizan solas. Configura las palabras clave del mapeo si no aparecen, o cargala a mano.</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.55">Se sincronizan solas, pero solo las que pasaron desde que se conecto Fathom. Si son anteriores, traelas del historial.</div>'
       +btnAgregar
       +'</div>'
       +citasProximasHtml(c);
