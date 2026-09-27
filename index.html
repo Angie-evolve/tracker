@@ -8796,23 +8796,51 @@ function _fathomContexto(fila, c){
   }
   return out;
 }
-function _fathomQuienNombra(fila){
-  var t=_n(String((fila&&fila.transcripcion)||''));
-  if(!t) return [];
-  var out=[];
+/* ⚠️  ESTO ESTABA COSTANDO 690ms POR CADA DIBUJADO DE LA FICHA, medido con
+       los datos de verdad: 57 clientes y 120 llamadas sueltas. La primera
+       version llamaba a `_fathomAliasUnicos` adentro del bucle, y esa funcion
+       recorre TODOS los clientes para ver que palabra no comparte ninguno:
+       daba 57x120 = 6.840 recorridas completas por ficha. En la computadora se
+       notaba como un tironeo; en el telefono deja la pantalla en negro.
+    Se arregla con dos caches: las palabras de cada cliente se calculan una
+    sola vez, y el resultado por llamada se guarda por `recording_id`. */
+var _fathomIdx=null, _fathomIdxN=-1;
+function _fathomIndicePalabras(){
+  var n=(DB.clients||[]).length;
+  if(_fathomIdx && _fathomIdxN===n) return _fathomIdx;
+  var idx=[];
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
-    var palabras=_fathomAliasUnicos(c)
+    var ws=_fathomAliasUnicos(c)
       .concat(((c.fathomKeywords||[])).map(function(k){ return _n(k); }))
       .filter(function(w){ return w && w.length>=4; });
+    if(ws.length) idx.push({c:c, ws:ws});
+  });
+  _fathomIdx=idx; _fathomIdxN=n; _fathomNombraCache={};
+  return idx;
+}
+var _fathomNombraCache={};
+function _fathomQuienNombra(fila){
+  var k=String((fila&&fila.recording_id)||'');
+  var idx=_fathomIndicePalabras();
+  if(k && _fathomNombraCache[k]) return _fathomNombraCache[k];
+  // Los primeros 30 mil caracteres alcanzan: si a alguien lo nombran, lo
+  // nombran en la presentacion. Escanear los 60 mil de una reunion larga por
+  // cada uno de los 57 clientes es lo que hacia la diferencia.
+  var t=_n(String((fila&&fila.transcripcion)||'').slice(0,30000));
+  if(!t) return [];
+  var out=[];
+  idx.forEach(function(e){
     var n=0;
-    palabras.forEach(function(w){
+    e.ws.forEach(function(w){
       var i=0;
       while((i=t.indexOf(w,i))>=0){ n++; i+=w.length; }
     });
-    if(n) out.push({c:c, n:n});
+    if(n) out.push({c:e.c, n:n});
   });
-  return out.sort(function(a,b){ return b.n-a.n; }).slice(0,3);
+  out=out.sort(function(a,b){ return b.n-a.n; }).slice(0,3);
+  if(k) _fathomNombraCache[k]=out;
+  return out;
 }
 async function fathomSinClienteModal(){
   var filas=[];
@@ -8959,8 +8987,20 @@ async function _fathomSueltasCargar(){
   if(Array.isArray(_fathomSinCliente)||_fathomSueltasPidiendo||!SB.token) return;
   _fathomSueltasPidiendo=true;
   try{
-    var filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=fecha.desc&limit=120')||[];
+    // 60 y no 120: cada fila trae su transcripcion entera, y 120 son mas de
+    // cuatro megas por sesion. Las mas nuevas son las que importan.
+    var filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=fecha.desc&limit=60')||[];
     _fathomSinCliente=filas.filter(function(f){ return !_fathomMatchClient(f.titulo||'', f); });
+    /* ⚠️  EL CALCULO SE HACE ACA, UNA VEZ Y EN TANDAS, NO EN EL DIBUJADO.
+       Aunque este cacheado, llenar el cache de 60 llamadas de una sola vez
+       bloquea el hilo medio segundo y la pantalla queda en negro mientras
+       tanto. Cortando cada diez y cediendo el turno, la app sigue respondiendo
+       y las sugerencias aparecen cuando estan. */
+    _fathomIdx=null; _fathomNombraCache={};
+    for(var i=0;i<_fathomSinCliente.length;i++){
+      _fathomQuienNombra(_fathomSinCliente[i]);
+      if(i%10===9) await new Promise(function(r){ setTimeout(r,0); });
+    }
   }catch(e){ _fathomSinCliente=[]; }
   _fathomSueltasPidiendo=false;
   if(S.view==='client') renderClient();
@@ -28497,6 +28537,50 @@ function mercadoHtml(c){
     return html;
 }
 
+/* ⚠️  RED DE SEGURIDAD GLOBAL: QUE UNA PANTALLA ROTA SE PUEDA LEER.
+       Un error en medio de un dibujado corta el render por la mitad, y lo que
+       queda es una pantalla negra: sin mensaje, sin forma de saber que paso y
+       sin nada que tocar. Ya paso dos veces y las dos hubo que adivinar.
+       Esto NO arregla el error -para eso esta la consola-, pero lo convierte
+       en algo legible y de lo que se puede salir.
+   ⚠️  Solo habla si la pantalla quedo REALMENTE vacia. Un error suelto que no
+       rompio nada visible no tiene por que asustar a nadie, y un cartel que
+       aparece por cualquier cosa se vuelve ruido y se ignora. */
+function _pantallaRota(msg){
+  try{
+    var m=document.getElementById('main-content');
+    var vacio=!m || (m.innerText||'').trim().length<40;
+    if(!vacio) return;
+    if(document.getElementById('roto-aviso')) return;
+    var d=document.createElement('div');
+    d.id='roto-aviso';
+    d.style.cssText='position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);'
+      +'z-index:9999;max-width:min(520px,92vw);background:var(--bg2,#16181d);'
+      +'border:1px solid var(--border2,#333);border-radius:14px;padding:20px 22px;'
+      +'box-shadow:0 24px 80px rgba(0,0,0,.6);font-family:var(--font,system-ui);'
+      +'color:var(--text,#eee);line-height:1.6';
+    d.innerHTML='<div style="font-size:14px;font-weight:500;margin-bottom:6px">'
+        +'Se rompio al dibujar esta pantalla</div>'
+      +'<div style="font-size:12px;color:var(--text2,#999);margin-bottom:4px">'
+        +'Tus datos estan a salvo: esto es solo lo que se ve. Recarga y si vuelve '
+        +'a pasar, pasame este texto.</div>'
+      +'<div style="font-size:11px;color:var(--text3,#777);font-family:ui-monospace,'
+        +'Menlo,monospace;word-break:break-word;margin:8px 0 14px">'
+        +String(msg||'sin detalle').slice(0,300).replace(/[<>&]/g,' ')+'</div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+        +'<button onclick="location.reload()" style="background:var(--accent,#4ecfa0);'
+          +'color:var(--on-accent,#0b0d10);border:0;border-radius:10px;padding:7px 14px;'
+          +'font-size:12.5px;cursor:pointer;font-family:inherit">Recargar</button></div>';
+    document.body.appendChild(d);
+  }catch(e){ /* el aviso no puede ser el que rompa */ }
+}
+window.addEventListener('error', function(ev){
+  _pantallaRota((ev&&ev.message)||'');
+});
+window.addEventListener('unhandledrejection', function(ev){
+  var r=ev&&ev.reason;
+  _pantallaRota((r&&r.message)||String(r||''));
+});
 function renderTab(){
   if(S.tab!=='ads'&&S.tab!=='embudo') S._topControles='';
   const c=DB.clients.find(x=>x.id===S.clientId);
