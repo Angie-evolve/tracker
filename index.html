@@ -5233,6 +5233,36 @@ function fathomCuentasDe(mail){
   return (_fathomCuentas.lista||[]).filter(function(x){
     return String(x.persona||'').toLowerCase()===k; });
 }
+/* Las cuentas que grabaron reuniones del equipo y NO tienen la key guardada.
+   ⚠️  ES LA CAUSA MAS COMUN DE QUE UNA REUNION "NO APAREZCA" AL BUSCAR HACIA
+       ATRAS, y no se ve por ningun lado: el webhook y la key son DOS COSAS
+       DISTINTAS. Con el webhook puesto, lo que pasa de ahora en mas entra
+       solo; pero para ir a buscar lo viejo hay que preguntarle a la cuenta, y
+       eso necesita la key. Si no esta, esa cuenta es invisible hacia atras.
+       Medido: joela@theflowingcode.com grabo 78 reuniones y no tiene key;
+       mdlangierh@gmail.com, 56; melany@theflowingcode.com, 14. La busqueda
+       solo alcanzaba a dos cuentas de cinco y el aviso decia "no aparece
+       ninguna reunion", que manda a buscar el problema en el mail del cliente.
+   Se deduce de quien grabo lo que YA esta cargado: es lo unico que el
+   navegador sabe sin volver a preguntarle a Fathom. */
+function _fathomCuentasSinKey(){
+  // Sin saber quien esta conectado no se afirma nada: devolver una lista
+  // adivinada seria peor que no decir nada.
+  if(!_fathomCuentas || _fathomCuentas.error) return [];
+  var conectadas={};
+  (_fathomCuentas.lista||[]).forEach(function(k){
+    conectadas[String(k.email||'').toLowerCase()]=1; });
+  var graban={};
+  (DB.clients||[]).forEach(function(c){
+    (c.fathomCalls||[]).forEach(function(l){
+      var g=String(l.grabo||'').trim().toLowerCase();
+      if(g.indexOf('@')>0 && !conectadas[g]) graban[g]=(graban[g]||0)+1;
+    });
+  });
+  return Object.keys(graban)
+    .sort(function(a,b){ return graban[b]-graban[a]; })
+    .map(function(m){ return {mail:m, n:graban[m]}; });
+}
 function personaFathomAbrir(mail){
   S._personaFathom=mail;
   personasModal();
@@ -57757,11 +57787,23 @@ async function fathomTraerHistorial(clientId){
   if(!items.length){
     // Decir CON QUE se busco, no solo que no encontro: el error mas comun es
     // un mail mal escrito, y asi se ve de una.
+    // Antes de mandar a revisar el mail del cliente: fijarse si el problema es
+    // que a la cuenta que la grabo no se le puede preguntar.
+    var _sin=[];
+    try{ await fathomCuentasCargar(true); _sin=_fathomCuentasSinKey(); }catch(e){}
     toast('Busque en '+(Number(d.cuentas)||0)+' cuenta'+((Number(d.cuentas)||0)===1?'':'s')
       +' de Fathom por '+f.mails.join(', ')
       +(f.doms.length?(' y por el dominio '+f.doms.join(', ')):'')
-      +' y no aparece ninguna reunion. Si los mails estan bien, la grabo alguien '
-      +'que todavia no conecto su Fathom.','amber');
+      +' y no aparece ninguna reunion.'
+      +(_sin.length
+        ? (' Ojo: '+_sin.length+' cuenta'+(_sin.length===1?'':'s')+' que graba'
+           +(_sin.length===1?'':'n')+' no tiene'+(_sin.length===1?'':'n')+' la key guardada ('
+           +_sin.slice(0,3).map(function(x){ return x.mail+' \u00b7 '+x.n; }).join(', ')
+           +(_sin.length>3?', y mas':'')
+           +'). El webhook trae lo nuevo, pero para buscar hacia atras hace falta la '
+           +'key: se conecta desde Personas.')
+        : ' Si los mails estan bien, la grabo alguien que todavia no conecto su Fathom.')
+      ,'amber');
     return;
   }
 
