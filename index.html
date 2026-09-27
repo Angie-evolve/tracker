@@ -12025,6 +12025,56 @@ var GENERADORES=[
 ];
 function _genDe(clave){ return GENERADORES.filter(function(g){ return g.clave===clave; })[0]||null; }
 
+/* ── Encargos ─────────────────────────────────────────────────────────────
+   Un encargo es un pedido anotado para que el documento lo escriba Claude
+   Code desde afuera, con el skill entero y las transcripciones sin cortar.
+   La app no lo ejecuta: lo anota y sigue.
+
+   La lista es de una sola mano: la app agrega, el que cumple no la toca. Si
+   la tocara, chocaria contra esta pestaña y `sbSubir` frenaria la subida
+   pidiendo recargar. Por eso no hay estado "hecho": EL DOCUMENTO es la marca
+   de hecho, y el documento de error es la marca de "no pude".              */
+function encargos(){ if(!Array.isArray(DB.encargos)) DB.encargos=[]; return DB.encargos; }
+
+function encargoPendiente(cid, clave){
+  cid=+cid;
+  var g=_genDe(clave); if(!g) return null;
+  var c=(DB.clients||[]).find(function(x){ return x.id===cid; }); if(!c) return null;
+  var listo=(docs(c)||[]).some(function(d){
+    return d && (d.auto===g.marca || d.auto===g.marca+'-error'); });
+  if(listo) return null;
+  return encargos().filter(function(e){
+    return e && e.cid===cid && e.clave===clave; }).pop()||null;
+}
+
+function encargosAbiertos(){
+  return encargos().filter(function(e){
+    return e && encargoPendiente(e.cid, e.clave)===e; });
+}
+
+function encargoPedir(cid, clave){
+  /* Llega como texto desde el onclick y los id de cliente son numeros: sin
+     esto el === de abajo no matchea nunca y el boton no hace nada. */
+  cid=+cid;
+  var g=_genDe(clave); if(!g){ toast('Ese cerebro no genera nada.','amber'); return; }
+  var c=(DB.clients||[]).find(function(x){ return x.id===cid; });
+  if(!c){ toast('Eleg\u00ed un cliente.','amber'); return; }
+  if((docs(c)||[]).some(function(d){ return d && d.auto===g.marca; })){
+    toast((c.name||'')+' ya tiene '+g.titulo+' en la ficha.','amber'); return; }
+  /* Sin material no se anota: asi se entera ahora el que pide, y no dentro de
+     una hora cuando el pedido se muera solo del otro lado. */
+  if(!_genMaterial(c, g)){
+    toast('No puedo pedirlo: falta '+g.pide+' de '+(c.name||'')+'.','amber'); return; }
+  if(encargoPendiente(cid, clave)){
+    toast('Ya estaba pedido. Falta que lo escriba.','amber'); return; }
+  encargos().push({ id:'e'+Date.now()+Math.random().toString(36).slice(2,6),
+                    cid:cid, nombre:c.name||'', clave:clave,
+                    pedido:new Date().toISOString(), por:(typeof SB==='object'&&SB.email)||'' });
+  save();
+  toast('Pedido anotado. El documento va a aparecer solo en la ficha de '+(c.name||'')+'.');
+  if(S._gen) generarModal();
+}
+
 /* El material del cliente para un generador, segun lo que ese generador pide.
    Devuelve null cuando no esta: es la diferencia entre "no hay con que" y
    "salio vacio", y decide si se llama a la API o no. */
@@ -12132,6 +12182,7 @@ function generarAbrir(clave){
 }
 function generarModal(){
   var st=S._gen||{}; var g=_genDe(st.clave)||{};
+  var _encAbierto=st.cid?encargoPendiente(st.cid, st.clave):null;
   var inp='width:100%;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
     +'background:var(--bg3);color:var(--text);font-size:12.5px;font-family:inherit;outline:none';
   var cls=(DB.clients||[]).filter(function(c){ return !c.archived; })
@@ -12169,10 +12220,15 @@ function generarModal(){
             : '<div style="font-size:11.5px;color:var(--amberx);margin-bottom:10px">'
               +'Ese cliente no tiene documentos cargados. Pegá el material abajo.</div>')
         : '')
+      +(_encAbierto?('<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:10px;padding:9px 11px;border-radius:var(--radius);background:var(--bg3)">'
+        +'Pedido el '+esc(new Date(_encAbierto.pedido).toLocaleDateString('es-AR'))
+        +'. Se escribe afuera de la app; el documento aparece solo ac\u00e1 en la ficha.</div>'):'')
       +'<textarea id="gen-pegar" rows="5" placeholder="…o pegá acá '+esc(g.pide||'el material')+'" '
         +'style="'+inp+';resize:vertical;line-height:1.5">'+esc(st.texto||'')+'</textarea>'
       +'<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">'
         +'<button class="btn btn-sm btn-primary" onclick="generarPedir()">Generar</button>'
+        +(st.cid?('<button class="btn btn-sm" onclick="encargoPedir(\''+st.cid+'\',\''+st.clave+'\')">'
+          +'Ped\u00edrselo a Claude</button>'):'')
         +'<span style="font-size:11.5px;color:'
         +(/^No |^Fall/.test(st.estado||'')?'var(--redx)':'var(--text3)')+'">'+esc(st.estado||'')+'</span>'
       +'</div>';
