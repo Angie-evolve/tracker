@@ -8831,14 +8831,23 @@ function _fathomQuienNombra(fila){
   if(!t) return [];
   var out=[];
   idx.forEach(function(e){
-    var n=0;
+    var n=0, por=[], peso=0;
     e.ws.forEach(function(w){
-      var i=0;
-      while((i=t.indexOf(w,i))>=0){ n++; i+=w.length; }
+      var i=0, k=0;
+      while((i=t.indexOf(w,i))>=0){ k++; i+=w.length; }
+      if(!k) return;
+      n+=k; por.push({w:w, k:k});
+      /* ⚠️  NO TODAS LAS PALABRAS VALEN LO MISMO. "Mi stock" aporta "stock",
+         que en una reunion de negocios aparece por cualquier motivo: asi se
+         sugirio Mi stock para la reunion de Lorena Maruf, donde se hablaba de
+         inventario. "marcelo garavagno" no le pasa a nadie por casualidad.
+         Las largas pesan mas para que la sugerencia fuerte quede primero. */
+      peso += k * (w.length>=12 ? 4 : w.length>=8 ? 3 : w.length>=6 ? 2 : 1);
     });
-    if(n) out.push({c:e.c, n:n});
+    if(n) out.push({c:e.c, n:n, peso:peso,
+                    por:por.sort(function(a,b){ return b.w.length-a.w.length; })});
   });
-  out=out.sort(function(a,b){ return b.n-a.n; }).slice(0,3);
+  out=out.sort(function(a,b){ return (b.peso||b.n)-(a.peso||a.n); }).slice(0,3);
   if(k) _fathomNombraCache[k]=out;
   return out;
 }
@@ -9020,6 +9029,7 @@ function _fathomSugerenciasHtml(c){
   if(!cand.length) return '';
   return cand.map(function(f){
     var ctx=_fathomContexto(f, c);
+    var sug0=(_fathomQuienNombra(f)[0])||{};
     return '<div style="background:var(--bg2);border:1px solid var(--border2);'
         +'border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:8px">'
       +'<div style="font-size:12px;color:var(--text2);margin-bottom:6px">'
@@ -9031,6 +9041,29 @@ function _fathomSugerenciasHtml(c){
         +(f.fecha?(' \u00b7 '+new Date(f.fecha).toLocaleDateString('es-AR')):'')
         +(ctx.cerca?(' \u00b7 a '+ctx.cerca.dias+' dia'+(ctx.cerca.dias===1?'':'s')
            +' de \u201c'+esc(String(ctx.cerca.t).slice(0,30))+'\u201d'):'')
+        /* ⚠️  DECIR POR QUE PALABRA. Sin esto, "Mi stock" sugerida por la
+           palabra "stock" y sugerida por "marcelo garavagno" se ven igual, y
+           la primera es basura. Con la palabra a la vista se descarta de un
+           vistazo, sin abrir nada. */
+        +((sug0.por&&sug0.por.length)
+          ? (' \u00b7 por \u00ab'+esc(sug0.por[0].w)+'\u00bb'
+             +(sug0.por.length>1?(' y '+(sug0.por.length-1)+' mas'):''))
+          : '')
+        /* ⚠️  AVISAR CUANDO LA COINCIDENCIA ES FLOJA. Una sola palabra corta
+           -"stock", "potential"- aparece en cualquier reunion de negocios por
+           motivos que no tienen nada que ver: asi se sugirio Mi stock para la
+           reunion de Lorena Maruf, donde se hablaba de inventario. Mostrarla
+           igual pero marcada es mejor que esconderla: la buena del 24/09
+           tambien coincide solo por "stock", asi que un filtro se la llevaria
+           puesta. */
+        +((sug0.por&&sug0.por.length===1&&String(sug0.por[0].w).length<7)
+          ? ('<span style="color:var(--amberx)"> \u00b7 coincidencia floja, '
+             +'conviene abrirla</span>')
+          : '')
+        // El link, para confirmar sin salir a buscarlo a Fathom.
+        +(f.url?(' \u00b7 <a href="'+esc(f.url)+'" target="_blank" rel="noopener" '
+          +'style="color:var(--accent);text-decoration:none;border-bottom:1px dotted '
+          +'var(--accent)">ver la grabacion</a>'):'')
       +'</div>'
       +(ctx.deQue?('<div style="font-size:11px;color:var(--text2);margin-top:4px;'
         +'line-height:1.5">'+esc(ctx.deQue)+'</div>'):'')
