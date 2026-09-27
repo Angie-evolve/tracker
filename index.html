@@ -8900,7 +8900,7 @@ async function fathomSinClienteModal(){
       +'</div>'
     +'</div></div>';
 }
-async function fathomAsignar(recId, clientId){
+async function fathomAsignar(recId, clientId, desdeFicha){
   if(!clientId) return;
   var c=DB.clients.find(function(x){ return String(x.id)===String(clientId); });
   if(!c) return;
@@ -8924,10 +8924,88 @@ async function fathomAsignar(recId, clientId){
     await sbFetch('llamadas_fathom?recording_id=eq.'+encodeURIComponent(recId),
       {method:'PATCH', body:JSON.stringify({cliente_id:String(clientId)})});
   }catch(e){ toast('No pude asignarla: '+e.message,'red'); return; }
+  // Se saca de las sueltas para que la pregunta no vuelva a aparecer mientras
+  // dura la sesion: `fathomWebhookSync` la va a bajar, pero recien despues.
+  if(Array.isArray(_fathomSinCliente)){
+    _fathomSinCliente=_fathomSinCliente.filter(function(x){
+      return String(x.recording_id)!==String(recId); });
+  }
   save();
   await fathomWebhookSync(true);
-  fathomSinClienteModal();
+  // Desde la ficha se vuelve a la ficha. Abrir el modal de "sin cliente"
+  // sacaba del cliente que se estaba mirando.
+  if(desdeFicha){ if(S.view==='client') renderClient(); }
+  else fathomSinClienteModal();
   toast('Asignada a '+(c.name||'')+(kw?(' \u00b7 aprendi "'+kw+'"'):'')+'.');
+}
+/* La pregunta de la ficha: "?esta llamada es de este cliente?".
+   ⚠️  EL "NO" SE GUARDA. Si no, la misma sugerencia vuelve a aparecer en el
+       proximo dibujado y hay que descartarla una y otra vez. Se guarda en el
+       cliente, que es de quien es la respuesta: la misma reunion le puede
+       corresponder a otro. */
+function fathomSugNo(recId, clientId){
+  var c=DB.clients.find(function(x){ return String(x.id)===String(clientId); });
+  if(!c) return;
+  c.fathomNo=Array.isArray(c.fathomNo)?c.fathomNo:[];
+  if(c.fathomNo.indexOf(String(recId))<0) c.fathomNo.push(String(recId));
+  save();
+  if(S.view==='client') renderClient();
+}
+// Carga perezosa de las sueltas. `_fathomSinCliente` se llena al sincronizar,
+// pero la ficha se puede abrir sin haber sincronizado en esta sesion, y
+// entonces no habria nada que sugerir sin que se note por que.
+var _fathomSueltasPidiendo=false;
+async function _fathomSueltasCargar(){
+  if(Array.isArray(_fathomSinCliente)||_fathomSueltasPidiendo||!SB.token) return;
+  _fathomSueltasPidiendo=true;
+  try{
+    var filas=await sbFetch('llamadas_fathom?procesada=eq.false&order=fecha.desc&limit=120')||[];
+    _fathomSinCliente=filas.filter(function(f){ return !_fathomMatchClient(f.titulo||'', f); });
+  }catch(e){ _fathomSinCliente=[]; }
+  _fathomSueltasPidiendo=false;
+  if(S.view==='client') renderClient();
+}
+// Las sueltas que nombran a ESTE cliente y todavia no se contestaron.
+function _fathomCandidatasDe(c){
+  if(!c||!Array.isArray(_fathomSinCliente)) return [];
+  var no=(c.fathomNo||[]).map(String);
+  return _fathomSinCliente.filter(function(f){
+    if(no.indexOf(String(f.recording_id))>=0) return false;
+    var s2=_fathomQuienNombra(f);
+    return s2.length && String(s2[0].c.id)===String(c.id);
+  }).slice(0,4);
+}
+function _fathomSugerenciasHtml(c){
+  var cand=_fathomCandidatasDe(c);
+  if(!cand.length) return '';
+  return cand.map(function(f){
+    var ctx=_fathomContexto(f, c);
+    return '<div style="background:var(--bg2);border:1px solid var(--border2);'
+        +'border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:8px">'
+      +'<div style="font-size:12px;color:var(--text2);margin-bottom:6px">'
+        +'&iquest;Esta llamada es de <b style="color:var(--text);font-weight:500">'
+        +esc(c.name||'')+'</b>?</div>'
+      +'<div style="font-size:12.5px;color:var(--text)">'+esc(f.titulo||'Sin titulo')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:2px;line-height:1.5">'
+        +esc(f.grabo_nombre||f.grabo_mail||'')
+        +(f.fecha?(' \u00b7 '+new Date(f.fecha).toLocaleDateString('es-AR')):'')
+        +(ctx.cerca?(' \u00b7 a '+ctx.cerca.dias+' dia'+(ctx.cerca.dias===1?'':'s')
+           +' de \u201c'+esc(String(ctx.cerca.t).slice(0,30))+'\u201d'):'')
+      +'</div>'
+      +(ctx.deQue?('<div style="font-size:11px;color:var(--text2);margin-top:4px;'
+        +'line-height:1.5">'+esc(ctx.deQue)+'</div>'):'')
+      +(ctx.donde?('<div style="font-size:10.5px;color:var(--text3);margin-top:5px;'
+        +'line-height:1.5;padding-left:9px;border-left:2px solid var(--border2);'
+        +'font-style:italic">'+esc(ctx.donde)+'</div>'):'')
+      +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
+        +'<button class="btn btn-sm" onclick="fathomSugNo(\''+esc(f.recording_id)+'\','+c.id+')">'
+          +'No es de este cliente</button>'
+        +'<button class="btn btn-sm btn-primary" '
+          +'onclick="fathomAsignar(\''+esc(f.recording_id)+'\','+c.id+',true)">'
+          +'Si, sumala</button>'
+      +'</div>'
+    +'</div>';
+  }).join('');
 }
 
 // Los mails de los que estuvieron en la reunion. Es el dato que el titulo no
@@ -58010,6 +58088,10 @@ async function fathomTraerHistorial(clientId){
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const _dup=_fathomDuplicadas(c);
+  // Se piden una sola vez por sesion y quedan cacheadas; cuando llegan,
+  // `_fathomSueltasCargar` repinta la ficha sola.
+  try{ _fathomSueltasCargar(); }catch(e){}
+  const sug=_fathomSugerenciasHtml(c);
   const btnTraer='<button class="btn btn-sm" style="margin-left:8px" '
     +'onclick="fathomTraerHistorial('+c.id+')" '
     +'title="Le pregunta a Fathom por las reuniones de este cliente y trae las que '
@@ -58025,6 +58107,7 @@ function fathomCallsHTML(c){
       +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.55">Se sincronizan solas, pero solo las que pasaron desde que se conecto Fathom. Si son anteriores, traelas del historial.</div>'
       +btnAgregar
       +'</div>'
+      +sug
       +citasProximasHtml(c);
   }
   const opps = (c.ghl&&c.ghl.opportunities)||[];
@@ -58139,6 +58222,9 @@ function fathomCallsHTML(c){
       +'Calcular '+_recuperables+' duracion'+(_recuperables===1?'':'es')+'</button>';
   }
   html += '<div style="margin-top:10px">'+btnAgregar+'</div>';
+  // Las preguntas van despues de las llamadas que ya estan y antes de lo que
+  // viene: se leen en el mismo lugar donde se ve que falta algo.
+  if(sug) html += '<div style="margin-top:12px">'+sug+'</div>';
   // Lo que viene va abajo de lo que ya paso: se lee la ficha de arriba para
   // abajo como una linea de tiempo, y la ultima fila es la proxima reunion.
   html += citasProximasHtml(c);
