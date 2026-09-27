@@ -9074,10 +9074,68 @@ function _fathomTituloEsDeOtro(f, c){
     return w.length>=4 && (quien.indexOf(w)>=0 || w.indexOf(quien)>=0);
   });
 }
+/* ⚠️  LA BUSQUEDA LA HACE LA BASE, NO EL NAVEGADOR. La primera version se
+       bajaba las 60 llamadas mas nuevas -con transcripcion entera, mas de
+       cuatro megas- y filtraba aca. Dos problemas: el peso, y sobre todo que
+       el tope por fecha dejaba afuera todo lo anterior a unos dias atras. La
+       reunion de Rippleinsights es del 17/09 y no entraba en las 60 mas
+       nuevas, asi que su ficha seguia diciendo que no habia nada aunque la
+       llamada estuviera guardada.
+       Ahora se le pide a Postgres las que mencionan A ESTE CLIENTE, sin tope
+       de fecha y trayendo un puñado de filas en vez de sesenta. */
+var _fathomSugPorCli={}, _fathomSugPidiendo={};
+async function _fathomSugerirCargar(c){
+  var k=String(c&&c.id||'');
+  if(!k || _fathomSugPorCli[k] || _fathomSugPidiendo[k] || !SB.token) return;
+  /* ⚠️  SOLO PALABRAS SUELTAS Y EL NOMBRE DEL CLIENTE. `_fathomAliasUnicos`
+     incluye tambien los titulos de los documentos -"dataset y oferta -
+     Prueba"-, que como palabra a buscar dentro de una transcripcion no dicen
+     nada y solo hacen la consulta mas pesada. Lo que sirve es el apellido, el
+     dominio, la marca: una palabra sola.
+     Y el minimo es 5 y no 4: con 4 entra "stock", que aparece en cualquier
+     reunion de negocios. */
+  var _nom=_n(c.name);
+  var ws=_fathomAliasUnicos(c)
+    .concat(((c.fathomKeywords||[])).map(function(k2){ return _n(k2); }))
+    .filter(function(w){
+      if(!w || w.length<5) return false;
+      return w.indexOf(' ')<0 || w===_nom;
+    });
+  if(!ws.length){ _fathomSugPorCli[k]=[]; return; }
+  _fathomSugPidiendo[k]=true;
+  try{
+    // `or=(...)`: una condicion por palabra. Las comas y los parentesis de
+    // adentro romperian la consulta, asi que se sacan de la palabra.
+    var cond=ws.slice(0,6).map(function(w){
+      return 'transcripcion.ilike.*'+encodeURIComponent(w.replace(/[(),*]/g,' ').trim())+'*';
+    }).join(',');
+    /* ⚠️  SIN FILTRAR POR `procesada`. Ese era el criterio equivocado: una
+       llamada marcada como procesada puede no estar en la ficha de NADIE -es
+       justo lo que pasa con las que se perdieron-, y filtrando por ahi
+       quedaban invisibles para siempre. Las dos reuniones de Rippleinsights
+       estan procesadas y sin ficha: con el filtro viejo no aparecian nunca.
+       Lo que de verdad hay que descartar es lo que YA esta en alguna ficha, y
+       eso el navegador lo sabe sin preguntar. */
+    var r=await sbFetch('llamadas_fathom?or=('+cond+')&order=fecha.desc&limit=10')||[];
+    var ya={};
+    (DB.clients||[]).forEach(function(x){
+      (x.fathomCalls||[]).forEach(function(l){
+        var i=String(l.id||'').replace(/^(fw|fathom)-/,'');
+        if(i) ya[i]=1;
+      });
+    });
+    _fathomSugPorCli[k]=r.filter(function(f){ return !ya[String(f.recording_id)]; });
+  }catch(e){ _fathomSugPorCli[k]=[]; }
+  _fathomSugPidiendo[k]=false;
+  if(typeof renderClient==='function'){ try{ renderClient(); }catch(e){} }
+}
 function _fathomCandidatasDe(c){
-  if(!c||!Array.isArray(_fathomSinCliente)) return [];
+  if(!c) return [];
+  var k=String(c.id||'');
+  var pool=_fathomSugPorCli[k];
+  if(!Array.isArray(pool)){ try{ _fathomSugerirCargar(c); }catch(e){} return []; }
   var no=(c.fathomNo||[]).map(String);
-  return _fathomSinCliente.filter(function(f){
+  return pool.filter(function(f){
     if(no.indexOf(String(f.recording_id))>=0) return false;
     if(_fathomTituloEsDeOtro(f, c)) return false;
     var s2=_fathomQuienNombra(f);
@@ -58281,9 +58339,8 @@ async function fathomTraerHistorial(clientId){
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const _dup=_fathomDuplicadas(c);
-  // Se piden una sola vez por sesion y quedan cacheadas; cuando llegan,
-  // `_fathomSueltasCargar` repinta la ficha sola.
-  try{ _fathomSueltasCargar(); }catch(e){}
+  // Las candidatas se piden por cliente y a la base; cuando llegan, repintan
+  // la ficha solas.
   const sug=_fathomSugerenciasHtml(c);
   const btnTraer='<button class="btn btn-sm" style="margin-left:8px" '
     +'onclick="fathomTraerHistorial('+c.id+')" '
