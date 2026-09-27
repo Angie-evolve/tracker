@@ -8741,6 +8741,61 @@ async function fathomReponerMail(mail){
        ya cometimos con un nombre de pila suelto.
    ⚠️  Palabras de menos de cuatro letras afuera: "zen" aparece adentro de
        cualquier cosa y no identifica a nadie. */
+/* CUANTO SE PARECE ESTA REUNION A LAS QUE EL CLIENTE YA TIENE.
+   Tres senales, todas sacadas de lo que ya esta guardado. Ninguna decide:
+   las tres se muestran para que la decision la tome quien mira.
+     · cerca      los dias hasta la llamada mas cercana de ese cliente. Una
+                  reunion pegada a otra suya casi siempre es del mismo hilo;
+                  una a dos meses de distancia merece una mirada.
+     · deQue      la primera linea del resumen de Fathom, que es donde dice el
+                  proposito. Con eso se ve si fue auditoria, venta u onboarding
+                  sin abrir la grabacion.
+     · donde      el pedazo de transcripcion alrededor de la primera mencion.
+                  Es lo que resuelve "?son la misma persona?": si en una dice
+                  que tiene una panaderia y en otra que vende un software, se
+                  ve leyendo dos renglones. */
+function _fathomContexto(fila, c){
+  var out={};
+  // 1. Que tan cerca esta de las llamadas que el cliente ya tiene.
+  var f=fila&&fila.fecha ? new Date(fila.fecha).getTime() : 0;
+  if(f && c){
+    var mejor=null;
+    (c.fathomCalls||[]).forEach(function(l){
+      var d2=(typeof _fechaLL==='function')?_fechaLL(l):null;
+      var t=d2?d2.getTime():Date.parse(String(l.date||'').split('/').reverse().join('-'));
+      if(!t||isNaN(t)) return;
+      var dias=Math.round(Math.abs(f-t)/86400000);
+      if(mejor===null||dias<mejor.dias) mejor={dias:dias, t:l.title||''};
+    });
+    if(mejor) out.cerca=mejor;
+  }
+  // 2. De que se hablo, segun el resumen que manda Fathom.
+  var r=String((fila&&fila.resumen)||'').replace(/[#*_>`]/g,' ').replace(/\s+/g,' ').trim();
+  if(r){
+    // El resumen arranca con "Proposito de la reunion". Se saca el rotulo y se
+    // deja la oracion, que es lo unico que hace falta leer.
+    r=r.replace(/^\s*(prop[oó]sito de la reuni[oó]n|purpose of (the )?meeting)\s*:?\s*/i,'');
+    out.deQue=r.split(/(?<=[.!?])\s/)[0].slice(0,150);
+  }
+  // 3. Donde lo nombra, con lo que hay alrededor.
+  var t2=String((fila&&fila.transcripcion)||'');
+  if(t2 && c){
+    var n=_n(t2);
+    var palabras=_fathomAliasUnicos(c)
+      .concat(((c.fathomKeywords||[])).map(function(k){ return _n(k); }))
+      .filter(function(w){ return w && w.length>=4; });
+    var i=-1, largo=0;
+    palabras.forEach(function(w){
+      var j=n.indexOf(w);
+      if(j>=0 && (i<0 || j<i)){ i=j; largo=w.length; }
+    });
+    if(i>=0){
+      var a2=Math.max(0, i-90), b2=Math.min(t2.length, i+largo+110);
+      out.donde=(a2>0?'\u2026':'')+t2.slice(a2,b2).replace(/\s+/g,' ').trim()+(b2<t2.length?'\u2026':'');
+    }
+  }
+  return out;
+}
 function _fathomQuienNombra(fila){
   var t=_n(String((fila&&fila.transcripcion)||''));
   if(!t) return [];
@@ -8797,6 +8852,7 @@ async function fathomSinClienteModal(){
                 +(function(){
                     var s2=_fathomQuienNombra(f);
                     if(!s2.length) return '';
+                    var ctx=_fathomContexto(f, s2[0].c);
                     return '<div style="font-size:11px;color:var(--text3);margin-top:3px;'
                         +'line-height:1.5">La nombran adentro: '
                       +s2.map(function(x){
@@ -8806,7 +8862,27 @@ async function fathomSinClienteModal(){
                               +'text-underline-offset:2px">'+esc(x.c.name||'')+'</span>'
                             +' <span style="color:var(--text3)">\u00d7'+x.n+'</span>';
                         }).join(' \u00b7 ')
-                    +'</div>';
+                      // Los dias hasta la llamada mas cercana del primero de
+                      // la lista: pegada a otra suya casi siempre es del
+                      // mismo hilo, a dos meses merece una mirada.
+                      +(ctx.cerca
+                        ? (' \u00b7 a '+ctx.cerca.dias+' dia'+(ctx.cerca.dias===1?'':'s')
+                           +' de \u201c'+esc(String(ctx.cerca.t).slice(0,34))+'\u201d')
+                        : ' \u00b7 sin otra llamada suya cerca')
+                    +'</div>'
+                    +(ctx.deQue
+                      ? ('<div style="font-size:11px;color:var(--text2);margin-top:3px;'
+                         +'line-height:1.5">De que se hablo: '+esc(ctx.deQue)+'</div>')
+                      : '')
+                    // El pedazo donde lo nombran. Es lo que deja ver en dos
+                    // renglones si es la misma persona o un homonimo: si en
+                    // una tiene una panaderia y en otra vende un software,
+                    // se lee y listo.
+                    +(ctx.donde
+                      ? ('<div style="font-size:10.5px;color:var(--text3);margin-top:4px;'
+                         +'line-height:1.5;padding-left:9px;border-left:2px solid var(--border2);'
+                         +'font-style:italic">'+esc(ctx.donde)+'</div>')
+                      : '');
                   })()
               +'</div>'
               +'<select onchange="fathomAsignar(\''+esc(f.recording_id)+'\',this.value)" '
