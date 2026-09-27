@@ -8998,12 +8998,20 @@ async function fathomAsignar(recId, clientId, desdeFicha){
     await sbFetch('llamadas_fathom?recording_id=eq.'+encodeURIComponent(recId),
       {method:'PATCH', body:JSON.stringify({cliente_id:String(clientId), procesada:false})});
   }catch(e){ toast('No pude asignarla: '+e.message,'red'); return; }
-  // Se saca de las sueltas para que la pregunta no vuelva a aparecer mientras
-  // dura la sesion: `fathomWebhookSync` la va a bajar, pero recien despues.
+  /* ⚠️  SE SACA DE LAS DOS LISTAS. La de sueltas y, sobre todo, la de
+     candidatas de este cliente: esa es la que dibuja las tarjetas de la
+     ficha, y sin limpiarla la pregunta seguia abajo aunque la llamada ya
+     estuviera sumada arriba. Se veia como que el boton no hacia nada, otra
+     vez, pero esta vez por el lado del cache. */
   if(Array.isArray(_fathomSinCliente)){
     _fathomSinCliente=_fathomSinCliente.filter(function(x){
       return String(x.recording_id)!==String(recId); });
   }
+  Object.keys(_fathomSugPorCli||{}).forEach(function(k2){
+    if(!Array.isArray(_fathomSugPorCli[k2])) return;
+    _fathomSugPorCli[k2]=_fathomSugPorCli[k2].filter(function(x){
+      return String(x.recording_id)!==String(recId); });
+  });
   save();
   await fathomWebhookSync(true);
   // Desde la ficha se vuelve a la ficha. Abrir el modal de "sin cliente"
@@ -9146,11 +9154,19 @@ function _fathomCandidatasDe(c){
   var pool=_fathomSugPorCli[k];
   if(!Array.isArray(pool)){ try{ _fathomSugerirCargar(c); }catch(e){} return []; }
   var no=(c.fathomNo||[]).map(String);
+  // Cinturon: lo que ya esta en la ficha no se vuelve a preguntar, aunque
+  // haya quedado en el cache de antes.
+  var ya={};
+  (c.fathomCalls||[]).forEach(function(l){
+    var i=String(l.id||'').replace(/^(fw|fathom)-/,'');
+    if(i) ya[i]=1;
+  });
   /* Ordenadas por cuantas veces lo nombran. Las fuertes primero: la reunion
      donde Grace cerro el acuerdo la nombra 264 veces y una interna donde
      aparece al pasar, nueve. Las dos se preguntan -decidir es de quien mira-
      pero no tienen por que salir mezcladas. */
   return pool.filter(function(f){
+    if(ya[String(f.recording_id)]) return false;
     if(no.indexOf(String(f.recording_id))>=0) return false;
     if(_fathomTituloEsDeOtro(f, c)) return false;
     var s2=_fathomQuienNombra(f);
