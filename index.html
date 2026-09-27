@@ -8949,10 +8949,33 @@ async function fathomAsignar(recId, clientId, desdeFicha){
   // Se aprende del titulo: la palabra que no es del cliente ni generica suele
   // ser su nombre escrito distinto. Con eso la proxima entra sola.
   var t=String(f.titulo||'');
-  var partes=t.split(/[-–—|:]/).map(function(x){ return x.trim(); }).filter(Boolean);
-  var kw=partes.filter(function(x){
-    return x.length>3 && !/^(diagnostico|venta|onboarding|reunion|llamada|meeting|call|strategy|seguimiento)/i.test(x);
-  })[0];
+  var partes=t.split(/[-–—|:&]|<>/).map(function(x){ return x.trim(); }).filter(Boolean);
+  /* ⚠️  SOLO SE APRENDE SI EL TITULO TIENE UN SEPARADOR. Sin esa condicion,
+     asignar una "Impromptu Google Meet Meeting" guardaba ESE TITULO ENTERO
+     como palabra del cliente: no hay guion que cortar, asi que la unica parte
+     era el titulo completo, y pasaba el filtro porque no empieza con ninguna
+     de las genericas. A partir de ahi TODAS las reuniones espontaneas del
+     equipo enganchaban con ese cliente.
+     Paso de verdad: a Mi stock le entraron veinte llamadas ajenas de una, y
+     desde la pantalla se veia como que el boton "no hacia nada".
+   ⚠️  Y LA LISTA DE GENERICAS SE AMPLIA. Tenia nueve palabras y le faltaban
+     justo las que Fathom pone solo -impromptu, instant, google, meet- y las
+     de las reuniones internas. */
+  var _genKw=/^(impromptu|instant|google|meet|meeting|zoom|huddle|call|llamada|reunion|reunión|diagnostico|venta|ventas|onboarding|strategy|estrategia|seguimiento|daily|weekly|catchup|check|sync|interno|evolve|the flowing code|flowing|entrenamiento|capacitacion|capacitación|webinar|demo|soporte|software partners|presentacion|presentación|gameplan)/i;
+  /* ⚠️  NI UNA PALABRA DEL NOMBRE DE ALGUIEN DEL EQUIPO. Los titulos internos
+     empiezan por ahi -"Nacho y Martin <> Sygemat x Evolve"- y aprender
+     "Nacho y Martin" le da al cliente todas las reuniones internas. Es la
+     misma defensa que ya tiene `_fathomAlias`, que aca faltaba. */
+  var _equipoW={};
+  (DB.personas||[]).forEach(function(pp){
+    _n(pp&&pp.nombre).split(/\s+/).forEach(function(w){ if(w&&w.length>2) _equipoW[w]=1; });
+  });
+  var kw=(partes.length>1)
+    ? partes.filter(function(x){
+        if(x.length<=3 || _genKw.test(x)) return false;
+        return !_n(x).split(/\s+/).some(function(w){ return _equipoW[w]; });
+      })[0]
+    : null;
   if(kw){
     c.fathomKeywords=c.fathomKeywords||[];
     if(!c.fathomKeywords.some(function(k){ return _n(k)===_n(kw); })) c.fathomKeywords.push(kw);
@@ -8971,7 +8994,13 @@ async function fathomAsignar(recId, clientId, desdeFicha){
   await fathomWebhookSync(true);
   // Desde la ficha se vuelve a la ficha. Abrir el modal de "sin cliente"
   // sacaba del cliente que se estaba mirando.
-  if(desdeFicha){ if(S.view==='client') renderClient(); }
+  /* ⚠️  REPINTAR SIN DEPENDER DE `S.view`. Si no vale 'client' -y no siempre
+     vale, segun por donde se entro a la ficha- no se repintaba nada y el
+     boton parecia muerto, aunque la llamada ya se hubiera asignado. */
+  if(desdeFicha){
+    try{ if(typeof renderClient==='function') renderClient();
+         else if(typeof renderTab==='function') renderTab(); }catch(e){}
+  }
   else fathomSinClienteModal();
   toast('Asignada a '+(c.name||'')+(kw?(' \u00b7 aprendi "'+kw+'"'):'')+'.');
 }
