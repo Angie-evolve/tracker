@@ -8358,7 +8358,11 @@ async function fathomWebhookSync(silent){
     tocados[c.id]=true; marcar.push(f.recording_id); added++;
   });
 
-  if(added){
+  /* ⚠️  SE MIRA `tocados`, NO `added`. Cuando la llamada ya estaba y lo unico
+     que llego fue la transcripcion que le faltaba, `_fathomCompletar` marca el
+     cliente como tocado pero `added` sigue en cero: con `if(added)` eso no se
+     guardaba nunca y el dato nuevo se perdia al cerrar la pestaña. */
+  if(Object.keys(tocados).length){
     Object.keys(tocados).forEach(function(cid){
       var c=DB.clients.find(function(x){ return String(x.id)===String(cid); });
       if(!c) return;
@@ -8367,10 +8371,32 @@ async function fathomWebhookSync(silent){
       _fathomSortMilestones(c);
     });
     save();
+    /* ⚠️  HAY QUE ESPERAR LA SUBIDA ANTES DE MARCARLAS PROCESADAS.
+       El comentario de abajo decia "recien despues de guardar", pero `save()`
+       NO sube a la nube: escribe en el navegador y programa `sbSubir()` para
+       DOS SEGUNDOS despues. El PATCH se hacia enseguida, asi que en esos dos
+       segundos alcanzaba con cerrar la pestaña, recargar o perder la red para
+       que la llamada quedara marcada como procesada en la base con el cliente
+       sin subir. Y como ya esta procesada, la sincronizacion no la vuelve a
+       mirar nunca: se pierde en silencio, sin error y sin aviso.
+       Medido sobre los datos de verdad: 15 llamadas de clientes reales
+       -Gymtracko, Zentenio, Matias Bote, Martin Oyola, Meritium, Switcho...-
+       marcadas procesadas y que no estan en la ficha de nadie.
+       `sbSubir` sube solo lo que cambio, asi que llamarla aca no repite
+       trabajo: el timer que dejo `save()` la encuentra sin nada que hacer. */
+    if(SB.listo){
+      try{ await sbSubir(); }
+      catch(e){
+        // Sin subida confirmada NO se marcan: es preferible volver a bajarlas
+        // la proxima vez que perderlas.
+        console.warn('no pude subir antes de marcar las llamadas:', e && e.message);
+        marcar.length=0;
+        if(!silent) toast('Las llamadas entraron pero no pude subirlas. '
+          +'Se vuelven a intentar en la proxima sincronizacion.','amber');
+      }
+    }
     if(S.view==='client') renderClient(); else if(S.view==='overview') showOverview();
   }
-  // Se marcan procesadas recien despues de guardar: si el navegador se cierra
-  // en el medio, la proxima vez vuelven a bajar en vez de perderse.
   if(marcar.length){
     try{
       await sbFetch('llamadas_fathom?recording_id=in.('+marcar.map(function(x){
