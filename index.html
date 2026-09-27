@@ -58282,7 +58282,16 @@ async function fathomTraerHistorial(clientId){
     }).filter(function(x){ return x.indexOf('@')>0; });
   };
 
-  var nuevas=0, completadas=0, yaEstaban=0;
+  /* ⚠️  NO TODO LO QUE DEVUELVE LA BUSQUEDA ES DEL CLIENTE. Fathom filtra por
+     quien figura invitado en el calendario, y alcanza con que al cliente lo
+     hayan invitado a una reunion para que esa reunion salga: asi aparecio una
+     interna del equipo -Joela, Delia y Martin hablando de pipeline- en la
+     ficha de Rippleinsights.
+     Las que el reconocedor identifica como del cliente entran solas. Las
+     demas NO se agregan: quedan como pregunta, con su contexto y su link, y
+     se confirman de un clic. Es la misma tarjeta que ya se usa para las
+     sueltas, asi que no hay dos formas distintas de decidir lo mismo. */
+  var nuevas=0, completadas=0, yaEstaban=0, aPreguntar=[];
   c.fathomCalls=c.fathomCalls||[];
   items.forEach(function(m){
     var rid=String(m.recording_id||'');
@@ -58295,6 +58304,25 @@ async function fathomTraerHistorial(clientId){
           actionItems:_items(m), participantes:_invit(m)})) completadas++;
       return;
     }
+    /* ⚠️  ENTRA SOLA SOLO SI EL TITULO LA IDENTIFICA. Coincidir por el mail
+       del invitado NO alcanza, y es lo que hacia `_fathomMatchClient` como
+       ultimo recurso: a un cliente lo pueden haber invitado a una reunion
+       interna, y entonces esa reunion se da por suya. Paso de verdad, con una
+       de Joela, Delia y Martin hablando de pipeline que tenia a Grace
+       invitada. Por el mail entro la busqueda -y esta bien que la traiga-,
+       pero para guardarla sin preguntar hace falta algo mas firme. */
+    var _mn=_n(m.title||'');
+    var suya=_mn && _fathomAliasUnicos(c)
+      .concat(((c.fathomKeywords||[])).map(function(k){ return _n(k); }))
+      .concat([_n(c.name)])
+      .filter(Boolean)
+      .some(function(w){ return w.length>=4 && _fathomContiene(_mn, w); });
+    if(!suya){
+      aPreguntar.push({recording_id:rid, titulo:m.title||'', fecha:m.fecha||null,
+        grabo_mail:m.grabo||'', url:m.url||'', transcripcion:m.transcripcion||'',
+        resumen:m.resumen||'', participantes:(m.invitados||[])});
+      return;
+    }
     c.fathomCalls.unshift({
       id:'fathom-'+rid, title:m.title||'Llamada',
       date:m.fecha?new Date(m.fecha).toLocaleDateString('es-AR'):'',
@@ -58305,9 +58333,17 @@ async function fathomTraerHistorial(clientId){
     });
     nuevas++;
   });
+  // Las dudosas se suman a las que ya se preguntan en la ficha.
+  if(aPreguntar.length){
+    var _k=String(c.id);
+    var _ya={};
+    (_fathomSugPorCli[_k]||[]).forEach(function(x){ _ya[String(x.recording_id)]=1; });
+    _fathomSugPorCli[_k]=(_fathomSugPorCli[_k]||[])
+      .concat(aPreguntar.filter(function(x){ return !_ya[String(x.recording_id)]; }));
+  }
 
-  if(nuevas||completadas){
-    _llDuracionesDe(c);
+  if(nuevas||completadas||aPreguntar.length){
+    if(nuevas||completadas) _llDuracionesDe(c);
     (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
     _fathomSortMilestones(c);
     save();
@@ -58321,8 +58357,13 @@ async function fathomTraerHistorial(clientId){
      Fathom va despues, como explicacion. */
   toast(nuevas
     ? (nuevas+' llamada'+(nuevas===1?'':'s')+' agregada'+(nuevas===1?'':'s')+' a la ficha'
+       +(aPreguntar.length?(' · '+aPreguntar.length+' para confirmar abajo'):'')
        +(completadas?(' · '+completadas+' completada'+(completadas===1?'':'s')):'')
        +(yaEstaban?(' · '+yaEstaban+' ya estaba'+(yaEstaban===1?'':'n')):''))
+    : (aPreguntar.length
+      ? ('Fathom devolvio '+aPreguntar.length+' reunion'+(aPreguntar.length===1?'':'es')
+         +' que no reconozco como de este cliente. Te las dejo abajo para que '
+         +(aPreguntar.length===1?'la confirmes':'las confirmes')+'.')
     : (completadas
         ? ('Ninguna nueva. Complete '+completadas+' que ya estaba'+(completadas===1?'':'n')
            +' con el texto o el link que le faltaba.')
@@ -58334,7 +58375,7 @@ async function fathomTraerHistorial(clientId){
            +' cuenta'+((Number(d.cuentas)||0)===1?'':'s')+' conectada'
            +((Number(d.cuentas)||0)===1?'':'s')+', y ya esta'+(items.length===1?'':'n')
            +' en la ficha. Busque por '+f.mails.join(', ')
-           +'. Si hubo mas, entraron con otro mail.')));
+           +'. Si hubo mas, entraron con otro mail.'))));
 }
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
