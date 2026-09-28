@@ -5781,64 +5781,17 @@ function _overviewMetricsHtml(_ovDonde){
   // Activo = no archivado. Antes pedia una linea de conversion corriendo hoy, y
   // marcaba cero apenas se vencia la fecha de fin de los bloques.
   var activos=_base;
-  var now=new Date();
-  // Vigente = contrato con fin futuro, o una recurrencia activa (que no tiene fin).
-  var conGarantia=_base.filter(function(cl){
-    if(cl.serviceType==='recurrente'||cl.recurrente) return true;
-    var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null;
-    return end&&end>=now;
-  });
-  var recurrentes=_base.filter(function(cl){return cl.serviceType==='recurrente'||cl.recurrente;});
-  // Mismo criterio que el estado de resultados: solo lo comprometido para este
-  // mes. Si no, la tarjeta dice un numero y la tabla de abajo dice otro.
-  var mrr=(typeof eerrAbonos==='function')
-    ? eerrAbonos()
-    : recurrentes.reduce(function(s,cl){return s+_feeMensual(cl);},0);
-  // El detalle de la tarjeta sale de la misma cuenta que el total.
-  var mrrDet=(typeof eerrAbonosDetalle==='function')
-    ? eerrAbonosDetalle(now.getFullYear(), now.getMonth()) : [];
-  var conLtv=activos.filter(function(cl){
-    return (cl.serviceType!=='recurrente'||!!cl.contractValue)
-      && (parseFloat(cl.contractValue)||0)>0;
-  });
-  var ltv=conLtv.reduce(function(s,cl){return s+(parseFloat(cl.contractValue)||0);},0);
   // En riesgo / para escalar: se leen de los cierres reales de GHL, no de un
   // score que habia que cargar a mano y nadie completaba.
   var conGhl=_base.filter(function(cl){ return cl.ghl&&((cl.ghl.opportunities||[]).length); });
   var enRiesgo=conGhl.filter(function(cl){ return _cierresDe(cl,DIAS_CIERRE)===0; });
   var paraEscalar=conGhl.filter(function(cl){ return _cierresDe(cl,DIAS_CIERRE)>0; });
-  var vencidoActivo=activos.filter(function(cl){ var end=cl.contract&&cl.contract.endDate?new Date(cl.contract.endDate):null; return end&&end<now; });
 
-  var _plata=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };
   var _nom=function(cl,extra){ return esc(cl.name)+(extra?(' \u00b7 '+extra):''); };
 
   // El Mirador dice "lo que hay que mirar hoy". Contratos y facturacion no son
   // eso: viven en Rentabilidad, que es donde se los va a buscar.
-  if(_ovDonde==='comercial'){
-    return '<div class="cel-2col" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
-      +_ovCard('Contrato vigente', conGarantia.length, conGarantia.map(function(cl){
-          return _nom(cl, (cl.serviceType==='recurrente'||cl.recurrente)?'recurrencia activa'
-            :('vence '+((cl.contract&&cl.contract.endDate)||'-'))); }),
-               'Contrato con fin futuro o recurrencia activa.')
-      +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
-          // _feeMensual y no monthlyFee: el fee que es un % de lo que factura el
-          // cliente vive en otros campos y salia como "sin monto".
-          var f=_feeMensual(cl);
-          return _nom(cl, f?(_plata(f)+'/mes'):'sin monto'); }),
-               'Clientes con servicio recurrente.')
-      +_ovCard('Ingresos recurrentes', _plata(mrr), mrrDet.map(function(x){
-          return _nom(x.c, x.monto>0?(_plata(x.monto)+'/mes'):'sin monto cargado'); }),
-               'Lo comprometido para este mes: el abono de los recurrentes más los contratos '
-               +'repartidos entre los meses que duran. Es el mismo número que el Ingreso neto '
-               +'de este mes.', 'var(--accent)')
-      +_ovCard('LTV activos', _plata(ltv), conLtv.map(function(cl){
-          return _nom(cl, _plata(parseFloat(cl.contractValue))); }),
-               'Valor de contrato de los clientes por garantia.', 'var(--accent)')
-      +_ovCard('Contrato vencido activo', vencidoActivo.length, vencidoActivo.map(function(cl){
-          return _nom(cl, 'vencio '+((cl.contract&&cl.contract.endDate)||'-')); }),
-               'Sin archivar pero con el contrato ya vencido.', '#BA7517', 'rgba(186,117,23,0.08)', 'rgba(186,117,23,0.2)')
-    +'</div>';
-  }
+  if(_ovDonde==='comercial') return _ovComercialHtml(_nom);
 
   // Los que lanzan esta semana. Es la unica de estas cifras que tiene fecha de
   // vencimiento: si el numero sube y nadie lo mira, el que se pasa ya no se
@@ -5873,6 +5826,69 @@ function _overviewMetricsHtml(_ovDonde){
     +'</div>';
 }
 
+// Las tarjetas de Rentabilidad. Leian su propia lista (todo lo no archivado,
+// con o sin cobro) y la tabla de abajo leia la cartera del EERR, asi que la
+// tarjeta decia 13 recurrentes y el cuadro 11, y el LTV sumaba contratos que
+// terminaron en mayo. Ahora salen del mismo universo que el estado de
+// resultados: la cartera de hoy (_rtCarteraHoy), lo cubierto este mes
+// (_eerrCubre) y los vencidos a los que tiene sentido preguntarles.
+function _ovComercialHtml(_nom){
+  var now=new Date(), A=now.getFullYear(), M=now.getMonth();
+  var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  var _plata=function(n){ return '$'+Math.round(n).toLocaleString('es-AR'); };
+  var cartera=_rtCarteraHoy();
+  // Vigente = lo que el EERR cuenta "En servicio" este mes.
+  var vigentes=(typeof eerrEnServicio==='function')?eerrEnServicio(A, M)
+    .filter(function(c){ return cartera.indexOf(c)>=0; }):[];
+  var recurrentes=cartera.filter(function(cl){ return cl.serviceType==='recurrente'||cl.recurrente; });
+  // Mismo criterio que el estado de resultados: solo lo comprometido para este
+  // mes, y el detalle sale de la misma cuenta que el total. Partido en dos: el
+  // abono se repite todos los meses, la implementacion se cobra una vez.
+  var det=eerrAbonosDetalle(A, M);
+  var mrr=det.reduce(function(s,x){ return s+x.abono; },0);
+  var unico=det.reduce(function(s,x){ return s+x.unico; },0);
+  var conAbono=det.filter(function(x){ return x.abono>0; });
+  // Un mixto en su mes de implementacion todavia no paga el abono: se nombra
+  // con lo que va a pagar, sin sumarlo.
+  var abonoLuego=det.filter(function(x){ return !x.abono && x.c.serviceType==='mixto' && _feeMensual(x.c)>0; });
+  var conUnico=det.filter(function(x){ return x.unico>0; });
+  // LTV: el ticket de cada cliente vigente, con la misma cuenta que el detalle
+  // por cliente del EERR. Un contrato ya terminado no es valor de un activo.
+  var ltvL=vigentes.map(function(c){ return {c:c, t:_ltvTicket(c)}; })
+    .sort(function(a,b){ return b.t-a.t; });
+  var ltv=ltvL.reduce(function(s,x){ return s+x.t; },0);
+  var vencidos=(typeof eerrVencidosBaja==='function')?eerrVencidosBaja():[];
+  var hastaTxt=function(c){
+    var h=_eerrHasta(c);
+    return h?('vence '+MES[h.m]+' '+h.a):'sin fecha de fin';
+  };
+
+  return '<div class="cel-2col" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">'
+    +_ovCard('Contrato vigente', vigentes.length, vigentes.map(function(cl){
+        return _nom(cl, _eerrRelacionMensual(cl)&&!_eerrHasta(cl)?'recurrencia activa':hastaTxt(cl)); }),
+             'Los que el estado de resultados cuenta En servicio este mes: la garantia corriendo o el abono al dia.')
+    +_ovCard('Recurrentes', recurrentes.length, recurrentes.map(function(cl){
+        // _feeMensual y no monthlyFee: el fee que es un % de lo que factura el
+        // cliente vive en otros campos y salia como "sin monto".
+        var f=_feeMensual(cl);
+        return _nom(cl, f?(_plata(f)+'/mes'):'sin monto'); }),
+             'Clientes con servicio recurrente que ya tienen un cobro tildado.')
+    +_ovCard('Ingresos recurrentes', _plata(mrr), conAbono.map(function(x){
+        return _nom(x.c, _plata(x.abono)+'/mes'); }).concat(abonoLuego.map(function(x){
+        return _nom(x.c, _plata(_feeMensual(x.c))+'/mes al terminar la implementacion'); })),
+             'Solo el abono que se cobra este mes. La implementacion va aparte, en Pago unico.', 'var(--accent)')
+    +_ovCard('Pago unico &middot; este mes', _plata(unico), conUnico.map(function(x){
+        return _nom(x.c, _plata(x.unico)+(x.c.serviceType==='mixto'?' implementacion':' contrato')); }),
+             'Implementaciones de los mixtos y contratos por garantia, repartidos entre los meses que duran. '
+             +'No se repite. Sumado a Ingresos recurrentes da el Ingreso neto proyectado de este mes.')
+    +_ovCard('LTV activos', _plata(ltv), ltvL.map(function(x){
+        return _nom(x.c, x.t>0?_plata(x.t):'empezo este mes o sin monto'); }),
+             'El ticket de los clientes con contrato vigente, la misma cuenta que el detalle por cliente del estado de resultados.', 'var(--accent)')
+    +_ovCard('Contrato vencido activo', vencidos.length, vencidos.map(function(x){
+        return _nom(x.c, 'vencio '+MES[x.h.m]+' '+x.h.a); }),
+             'Pagaban mes a mes, siguen sin baja y el contrato ya termino.', '#BA7517', 'rgba(186,117,23,0.08)', 'rgba(186,117,23,0.2)')
+  +'</div>';
+}
 // Tarjeta con desglose: al pasar el cursor muestra que clientes componen el numero.
 // Sin esto hay que salir a buscar a mano quien esta adentro de cada cifra.
 function _ovCard(label, valor, lista, ayuda, color, bg, borde){
@@ -11334,7 +11350,7 @@ function _campanaRent(){
   var g=[];
   try{
     var v=(typeof eerrVencen==='function')?eerrVencen():[];
-    var vencidos=v.filter(function(x){ return _eerrVencida(x.c); });
+    var vencidos=eerrVencidosBaja();
     if(vencidos.length) g.push({t:'con la fecha vencida',
       d:'No entran en la proyeccion. Si siguen mes a mes, marca "Se renueva sola" en su ficha.',
       cs:vencidos.map(function(x){ return x.c; }), col:'var(--redx)'});
@@ -11355,7 +11371,10 @@ function _campanaRent(){
   try{
     var sa=(typeof eerrSinAporte==='function')?eerrSinAporte():[];
     var NOM={'sin-datos':'sin abono ni contrato cargado','sin-monto':'con contrato pero sin monto',
-      'sin-plazo':'con monto pero sin plazo','vencido':'con el contrato ya terminado',
+      'sin-plazo':'con monto pero sin plazo','sin-hito':'con plazo por hito sin la fecha del hito',
+      'mixto-sin-fee':'mixtos sin el fee cargado','fee-pct':'con fee por % sin el % o sin la base',
+      'cobro-sin-valor':'con cuotas cobradas pero sin valor ni fee',
+      'sin-cobro':'con abono o contrato pero ninguna cuota cobrada','vencido':'con el contrato ya terminado',
       'termina':'que terminan durante el ano','fin-viejo':'con el contrato vencido antes del alta'};
     var vistos={};
     sa.forEach(function(x){ (vistos[x.motivo]=vistos[x.motivo]||[]).push(x.c); });
@@ -15542,18 +15561,37 @@ function _rtMesesImpl(c){
 // Lo que aporta ESE mes. Un mixto no aporta lo mismo todos los meses: primero
 // la implementacion prorrateada, y cuando termina, el fee. Sumar los dos en el
 // mismo mes inflaba el arranque y dejaba en cero todo lo que venia despues.
-function rtMensualEn(c, anio, mes){
-  if(c.serviceType!=='mixto') return rtMensual(c).monto||0;
+// Lo mismo, partido en abono y pago unico. La tarjeta de recurrentes sumaba la
+// implementacion prorrateada de un mixto como si fuera abono: un mixto figuraba
+// con $2.000/mes cuando paga $100/mes y los $2.000 son una sola vez. El total
+// no cambia (rtMensualEn es la suma de las dos partes), solo el rotulo.
+function rtPartesEn(c, anio, mes){
+  if(c.serviceType!=='mixto'){
+    var r=rtMensual(c), n=r.monto||0;
+    return (r.origen==='abono') ? {abono:n, unico:0} : {abono:0, unico:n};
+  }
   var fee=_feeMensual(c);
   var valor=parseFloat(c.contractValue)||0;
   var meses=_rtMesesImpl(c);
   var d=(typeof _eerrDesde==='function')?_eerrDesde(c):null;
   // Sin plazo o sin fecha de alta no hay como saber cuando termina uno y
   // arranca el otro: se devuelve lo que se sepa y no se inventa el reparto.
-  if(!valor||!meses||!d) return (valor&&meses?(valor/meses):0)+fee;
+  if(!valor||!meses||!d) return {abono:fee, unico:(valor&&meses?(valor/meses):0)};
   var i=(anio-d.a)*12+(mes-d.m);
-  if(i<0) return 0;
-  return (i<meses) ? (valor/meses) : fee;
+  if(i<0) return {abono:0, unico:0};
+  return (i<meses) ? {abono:0, unico:valor/meses} : {abono:fee, unico:0};
+}
+function rtMensualEn(c, anio, mes){
+  var p=rtPartesEn(c, anio, mes);
+  return p.abono+p.unico;
+}
+// Plazo "hasta el hito" sin la fecha del hito: no hay duracion y la
+// implementacion no se puede repartir. En un mixto eso la hacia desaparecer
+// sin aviso, porque quedaba solo el fee y el fee si suma.
+function _rtHitoPendiente(c){
+  var ct=(c&&c.contract)||{};
+  return ct.plazoTipo==='hito' && !ct.hitoAt && (parseFloat(c.contractValue)||0)>0
+    && !_rtMesesImpl(c);
 }
 function rtMensual(c){
   var fee=_feeMensual(c);
@@ -15576,8 +15614,8 @@ function rtMensual(c){
   }
   var meses=dias?Math.max(1, Math.round(dias/30)):0;
   if(!meses) return mixto
-    ? {monto:fee, origen:'abono', valor:valor}
-    : {monto:0, origen:'contrato-sin-plazo', valor:valor};
+    ? {monto:fee, origen:'abono', valor:valor, hitoPendiente:_rtHitoPendiente(c)}
+    : {monto:0, origen:'contrato-sin-plazo', valor:valor, hitoPendiente:_rtHitoPendiente(c)};
   // En un mixto el "por mes" no es un solo numero: se devuelve el del mes en
   // curso, que es lo que la rentabilidad de hoy quiere saber.
   if(mixto){
@@ -15588,24 +15626,33 @@ function rtMensual(c){
   return {monto:valor/meses, origen:'contrato', valor:valor, meses:meses, fee:fee};
 }
 
-function _rtFilas(){
-  // Esta tabla es la cartera de HOY: la agencia no se factura a si misma, el
-  // prospecto todavia no paga, y el que ya se dio de baja dejo de aportar.
+// La cartera de HOY: la agencia no se factura a si misma, el prospecto todavia
+// no paga, y el que ya se dio de baja dejo de aportar. Aparte de la tabla la
+// usan las tarjetas de Rentabilidad: si cada una arma su propia lista, la
+// tarjeta cuenta a un cliente que la tabla de abajo no tiene.
+function _rtCarteraHoy(){
+  var h=new Date();
   return (DB.clients||[]).filter(function(c){
-      if(c.archived || !_eerrEsCartera(c)) return false;
-      var b=_bajaEfectiva(c);
-      if(!b) return true;
-      var h=new Date();
-      return (b.a>h.getFullYear())||(b.a===h.getFullYear()&&b.m>=h.getMonth());
-    })
+    if(c.archived || !_eerrEsCartera(c)) return false;
+    var b=_bajaEfectiva(c);
+    if(!b) return true;
+    return (b.a>h.getFullYear())||(b.a===h.getFullYear()&&b.m>=h.getMonth());
+  });
+}
+function _rtFilas(){
+  var h=new Date();
+  return _rtCarteraHoy()
     .map(function(c){
       var men=rtMensual(c);
       var fee=men.monto;
+      // Lo de este mes partido: la columna tiene que decir si esos pesos son
+      // abono o la implementacion, que se cobra una vez y no se repite.
+      var partes=rtPartesEn(c, h.getFullYear(), h.getMonth());
       var e=_rtEsfuerzo(c);
       // Por tarea cerrada: lo unico que se puede dividir hoy. Dice cuanto te
       // rinde el abono contra el trabajo que se hizo, no cuanto ganas.
       var porTarea=e.cerradas?(fee/e.cerradas):null;
-      return {c:c, fee:fee, men:men, e:e, porTarea:porTarea};
+      return {c:c, fee:fee, men:men, partes:partes, e:e, porTarea:porTarea};
     })
     .sort(function(a,b){ return b.fee-a.fee; });
 }
@@ -15686,13 +15733,28 @@ function eerrSinAporte(){
   var hoy=new Date(), anio=eerrAnio();
   var out=[];
   (DB.clients||[]).forEach(function(c){
+    // 0. Tiene abono o contrato cargado pero ninguna cuota tildada: el criterio
+    //    de cartera lo deja afuera a proposito (sin un cobro no hay cliente), y
+    //    asi un recurrente de $1.500/mes desaparecia de todo sin que nadie lo
+    //    viera. No se lo suma: se lo nombra, para que alguien tilde el cobro o
+    //    lo archive. Afuera quedan los mismos que afuera de la cartera por otro
+    //    motivo: archivados (ahi estan los de prueba), prospectos, la agencia y
+    //    los que ya se dieron de baja.
+    if(!c.archived && !c.bajaAt && !esAgencia(c) && !esProspecto(c) && !_primerCobro(c)){
+      var r0=(c.serviceType==='recurrente'||c.recurrente);
+      var tiene0=(parseFloat(c.contractValue)||0)>0 || (r0 && _feeMensual(c)>0)
+        || (c.serviceType==='mixto' && _feeMensual(c)>0);
+      if(tiene0) out.push({c:c, motivo:'sin-cobro'});
+      return;
+    }
     if(c.archived || !_eerrEsCartera(c)) return;
     // Ya esta dado de baja: que no aporte a la proyeccion no es un dato faltante,
     // es el resultado correcto. Avisarlo lo unico que hace es tapar los reales.
     if(c.bajaAt) return;
     var esRec=(c.serviceType==='recurrente'||c.recurrente);
+    var mixto=(c.serviceType==='mixto');
     var valor=parseFloat(c.contractValue)||0;
-    var fee=parseFloat(c.monthlyFee)||0;
+    var fee=_feeMensual(c);
     var ct=c.contract||{};
     var hayPdf=!!(ct.fileName||ct.driveUrl);
     // Se avisa aunque el cliente aporte: el dato esta mal y no se ve solo.
@@ -15705,16 +15767,45 @@ function eerrSinAporte(){
       out.push({c:c, motivo:hayPdf?'sin-monto':'sin-datos'});
       return;
     }
+    // Antes todo lo que sumaba cero caia en "con monto pero sin plazo", y la
+    // mitad de esos si tenia plazo: lo que faltaba era otra cosa, que se
+    // arregla en otro campo de la ficha. Cada caso con su nombre.
+    // 1b. Un fee por porcentaje sin el % o sin la base de facturacion: no hay
+    //     de donde sacar el numero. Se avisa aunque la implementacion aporte,
+    //     porque cuando termine el cliente pasa a sumar cero.
+    var ya=false;
+    if(c.feeTipo==='pct' && !fee){
+      out.push({c:c, motivo:'fee-pct'}); ya=true;
+    }
+    // 1c. Cobraron cuotas pero no hay valor de contrato ni fee: la plata entro
+    //     y la ficha no dice por que concepto.
+    else if(!valor && !fee){
+      out.push({c:c, motivo:hayPdf?'sin-monto':'cobro-sin-valor'});
+      return;
+    }
+    // 1d. Mixto sin fee: la implementacion suma sus meses y despues el cliente
+    //     cae a cero, cuando lo pactado es que siga pagando el abono.
+    else if(mixto && !fee){
+      out.push({c:c, motivo:'mixto-sin-fee'}); ya=true;
+    }
+    // 1e. Plazo por hito sin la fecha: la implementacion no se reparte. En un
+    //     mixto el fee sigue sumando y tapaba que faltaba la otra parte.
+    if(_rtHitoPendiente(c)){
+      out.push({c:c, motivo:'sin-hito'}); ya=true;
+    }
     var m=(typeof rtMensual==='function')?rtMensual(c):{monto:fee};
     // 2. Entra pero vale cero: falta el monto o el plazo del contrato.
     if(!(m.monto>0)){
-      out.push({c:c, motivo:(m.origen==='contrato-sin-monto')?'sin-monto':'sin-plazo'});
+      // Si ya se dijo por que, no se agrega un segundo motivo generico.
+      if(!ya) out.push({c:c, motivo:(m.origen==='contrato-sin-monto')?'sin-monto':'sin-plazo'});
       return;
     }
     // 3. Aporta, pero su contrato ya termino: de ahi en mas la proyeccion lo da
-    //    de baja aunque le sigas entregando servicio.
+    //    de baja aunque le sigas entregando servicio. Solo para quien paga mes a
+    //    mes: un one-time que termina es trabajo entregado, no alguien a quien
+    //    preguntarle si se fue.
     var h=(typeof _eerrHasta==='function')?_eerrHasta(c):null;
-    if(h){
+    if(h && _eerrPreguntaBaja(c, h)){
       var terminaAntesDeFinDeAnio=(h.a<anio)||(h.a===anio&&h.m<11);
       var yaTermino=(h.a<hoy.getFullYear())||(h.a===hoy.getFullYear()&&h.m<hoy.getMonth());
       if(yaTermino) out.push({c:c, motivo:'vencido', h:h});
@@ -15730,6 +15821,11 @@ function _eerrAvisoSinAporte(){
     'sin-datos':{t:'sin abono ni contrato cargado', d:'No suman nada a la proyeccion. Se arregla en la ficha del cliente, en <b>Tipo de servicio</b>.'},
     'sin-monto':{t:'con contrato pero sin monto', d:'Hay un PDF vinculado pero nadie cargo el precio: alguien tiene que leerlo del contrato.'},
     'sin-plazo':{t:'con monto pero sin plazo', d:'Sin duracion no se puede prorratear: falta la vigencia en dias o las fechas de inicio y fin.'},
+    'sin-hito':{t:'con plazo por hito pero sin la fecha del hito', d:'Falta la fecha del hito: sin ella la implementacion no se puede repartir y no entra en la proyeccion. Se marca en la ficha, en <b>cumplido el</b>, cuando el hito pase.'},
+    'mixto-sin-fee':{t:'de servicio mixto sin el fee cargado', d:'La implementacion suma sus meses y despues el cliente cae a cero. Falta el monto del abono en la ficha.'},
+    'fee-pct':{t:'con fee por porcentaje sin el % o sin la base', d:'Sin el porcentaje y la facturacion estimada del cliente no hay de donde sacar el abono. Se completa en la ficha, junto al fee.'},
+    'cobro-sin-valor':{t:'con cuotas cobradas pero sin valor de contrato ni fee', d:'Entro plata y la ficha no dice por que concepto: falta el valor de contrato o el abono.'},
+    'sin-cobro':{t:'con abono o contrato pero ninguna cuota marcada como cobrada', d:'No entran en ningun numero de esta pantalla: un cliente cuenta desde su primer cobro tildado. Si pagan, tilda la cuota en su plan de pagos; si no siguen, archivalos.'},
     'vencido':{t:'con el contrato ya terminado', d:'Dejaron de sumar aunque les sigas entregando servicio. Si renovaron, hay que cargar la renovacion.'},
     'termina':{t:'que terminan durante el ano', d:'Suman hasta ese mes y despues no: por eso la proyeccion baja.'},
     'fin-viejo':{t:'con el contrato vencido antes de su fecha de alta', d:'El PDF vinculado es de un ciclo anterior. Se ignora esa fecha y se usa la duracion, pero conviene vincular el contrato vigente.'}
@@ -15805,14 +15901,40 @@ function _ltvPactados(c){
   var n=(fa-d.a)*12+(fm-d.m)+1;
   return n>0?n:0;
 }
-function _ltvTicket(c){
-  var esRec=(c.serviceType==='recurrente'||c.recurrente);
-  if(esRec){
-    var fee=parseFloat(c.monthlyFee)||0;
-    return fee*_ltvPactados(c);
-  }
-  return parseFloat(c.contractValue)||0;
+// Lo que efectivamente entro: las cuotas tildadas como cobradas.
+function _ltvCobrado(c){
+  return ((typeof _pagos==='function'?_pagos(c):c&&c.pagos)||[]).reduce(function(s,x){
+    return s+((x&&x.pagadoAt)?(parseFloat(x.monto)||0):0);
+  },0);
 }
+// El ticket y de donde sale. Un mixto se trataba como abono puro (fee por
+// meses) y la implementacion, que es la mayor parte de lo que paga, no
+// figuraba: un mixto con valor de contrato y sin fee salia "falta el monto".
+// Con plazo por hito todavia sin cumplir, el contrato no esta entregado ni
+// cobrado entero: poner el ticket completo como valor del mes mostraba plata
+// que no entro. Ahi vale lo cobrado, y se marca.
+function _ltvTicketInfo(c){
+  var mixto=(c.serviceType==='mixto');
+  var esRec=(c.serviceType==='recurrente'||c.recurrente);
+  var fee=_feeMensual(c);
+  var valor=parseFloat(c.contractValue)||0;
+  var ct=c.contract||{};
+  var impl=valor, parcial=false, cobrado=0;
+  if(valor>0 && ct.plazoTipo==='hito' && !ct.hitoAt){
+    cobrado=_ltvCobrado(c);
+    if(cobrado<valor){ impl=cobrado; parcial=true; }
+  }
+  if(mixto){
+    // El fee arranca cuando termina la implementacion. Sin plazo conocido no
+    // se sabe cuando, y no se le suman meses de abono inventados.
+    var mi=_rtMesesImpl(c);
+    var mesesFee=mi?Math.max(0, _ltvPactados(c)-mi):0;
+    return {ticket:impl+fee*mesesFee, parcial:parcial, cobrado:cobrado, valor:valor};
+  }
+  if(esRec) return {ticket:fee*_ltvPactados(c), parcial:false, cobrado:0, valor:valor};
+  return {ticket:impl, parcial:parcial, cobrado:cobrado, valor:valor};
+}
+function _ltvTicket(c){ return _ltvTicketInfo(c).ticket; }
 function _ltvValorReal(c){
   var t=_ltvTicket(c), n=_ltvMeses(c);
   return (t>0&&n>0)?(t/n):0;
@@ -15994,6 +16116,17 @@ function _eerrRelacionMensual(c){
   if(c.serviceType==='recurrente'||c.recurrente) return (parseFloat(c.monthlyFee)||0)>0;
   if(c.serviceType==='mixto') return _feeMensual(c)>0;
   return false;
+}
+// Los carteles de "vencido, dalo de baja" preguntan si alguien se fue. Solo
+// tiene sentido con quien paga mes a mes, y en un mixto solo si la fecha es la
+// del contrato: cuando sale de la duracion es el fin de la implementacion, que
+// era el plan, y el fee sigue. Un one-time de 90 dias y los mixtos sin fee
+// figuraban "vencidos" por haber terminado lo que se habia vendido.
+function _eerrPreguntaBaja(c, h){
+  if(!_eerrRelacionMensual(c)) return false;
+  if(h===undefined) h=_eerrHasta(c);
+  if(c.serviceType==='mixto' && h && h.porPlazo) return false;
+  return true;
 }
 // Sin baja cargada, pero ese mes se les termina el contrato: pueden haberse ido
 // o haber renovado sin que nadie lo cargue. Van aparte de las confirmadas para
@@ -16800,13 +16933,19 @@ function eerrAbonosDetalle(anio, mes, soloFiables){
     })
     .filter(function(c){ return _eerrCubre(c, anio, mes); })
     .map(function(c){
-      var m=(typeof rtMensualEn==='function')
-        ? rtMensualEn(c, anio, mes)
-        : _feeMensual(c);
-      return {c:c, monto:m||0};
+      var p=(typeof rtPartesEn==='function')
+        ? rtPartesEn(c, anio, mes)
+        : {abono:_feeMensual(c), unico:0};
+      return {c:c, monto:(p.abono+p.unico)||0, abono:p.abono||0, unico:p.unico||0};
     })
     .sort(function(a,b){ return (b.monto-a.monto)
       || String(a.c.name||'').localeCompare(String(b.c.name||'')); });
+}
+// El mismo total, partido en abono y pago unico, para rotular la proyeccion.
+function eerrPartesMes(anio, mes, soloFiables){
+  return eerrAbonosDetalle(anio, mes, soloFiables).reduce(function(s,x){
+    s.abono+=x.abono; s.unico+=x.unico; return s;
+  },{abono:0, unico:0});
 }
 function eerrAbonosMes(anio, mes, soloFiables){
   return eerrAbonosDetalle(anio, mes, soloFiables)
@@ -17162,6 +17301,14 @@ function eerrVencen(){
     .filter(function(x){ return x.h; })
     .sort(function(a,b){ return (a.h.a*12+a.h.m)-(b.h.a*12+b.h.m); });
 }
+// Los vencidos a los que tiene sentido preguntarles si se fueron. Lo usan el
+// cartel rojo, la campanita y la tarjeta de Contrato vencido: si cada uno
+// filtra por su lado, cuentan distinto.
+function eerrVencidosBaja(){
+  return eerrVencen().filter(function(x){
+    return _eerrVencida(x.c) && _eerrPreguntaBaja(x.c, x.h);
+  });
+}
 // Un mes ya pasado no se puede completar con los abonos de HOY: la cartera era
 // otra. Rellenar hacia atras multiplicaba el MRR actual por doce y daba un
 // historico que nunca ocurrio. Los meses pasados sin dato quedan vacios.
@@ -17215,20 +17362,38 @@ function eerrGastos(m, tipo){
   return EERR_CATS.filter(function(c){ return !tipo||c.tipo===tipo; })
     .reduce(function(s,c){ return s+(eerrVal(m,c.k)||0); },0);
 }
+// Algun gasto escrito ese mes, en cualquier categoria. Un cero cargado a mano
+// cuenta como cargado: es un dato, no una celda vacia.
+function eerrHayGastos(m){
+  return EERR_CATS.some(function(c){ return eerrVal(m,c.k)!=null; });
+}
 function eerrResultado(m){
   var ing=eerrIngreso(m), gas=eerrGastos(m);
+  // Sin ningun gasto cargado el margen da 100% y se lee como que el mes fue
+  // perfecto, cuando lo que pasa es que falta la mitad de la cuenta.
+  var hayGas=eerrHayGastos(m);
   // Sin ingreso cargado no hay resultado que mostrar: un cashflow de -gastos
   // sobre un mes sin datos se lee como perdida y no lo es.
   if(ing==null){
     if(!gas) return { ingreso:null, gastos:0, neto:null, margen:null, bruto:null, margenBruto:null };
     return { ingreso:null, gastos:gas, neto:null, margen:null, bruto:null, margenBruto:null };
   }
-  return { ingreso:ing, gastos:gas, neto:ing-gas,
-           margen: ing>0?((ing-gas)/ing*100):null,
+  return { ingreso:ing, gastos:gas, neto:ing-gas, hayGastos:hayGas,
+           margen: (ing>0&&hayGas)?((ing-gas)/ing*100):null,
            bruto: ing-eerrGastos(m,'var'),
-           margenBruto: ing>0?((ing-eerrGastos(m,'var'))/ing*100):null };
+           margenBruto: (ing>0&&hayGas)?((ing-eerrGastos(m,'var'))/ing*100):null };
 }
 
+function eerrIngresoNeto(m){
+  var ing=eerrIngreso(m), otros=eerrVal(m,'otrosIngresos');
+  if(ing==null && otros==null) return null;
+  return (ing||0)+(otros||0);
+}
+function _eerrTitMargen(m, v){
+  if(v!=null) return '';
+  if(eerrIngreso(m)==null) return '';
+  return eerrHayGastos(m) ? '' : 'sin gastos cargados';
+}
 function _eerrPlata(n){
   if(n==null) return '&mdash;';
   var v=Math.round(n);
@@ -17282,8 +17447,14 @@ function eerrHtml(){
         // columna no se contradice, y dice de donde sale cada numero.
         var g=_eerrIngresoSugerido(i);
         if(g.monto>0) ph=String(Math.round(g.monto));
+        // La proyeccion mezcla dos platas distintas: el abono, que se repite, y
+        // la implementacion o el contrato repartido, que se cobra una vez. El
+        // total es el mismo; el rotulo dice cuanto es cada cosa.
+        var pp=(g.fuente==='proyeccion')?eerrPartesMes(eerrAnio(), i):null;
         ayuda={
-          proyeccion:'Proyectado con los abonos comprometidos de este mes en adelante.',
+          proyeccion:'Proyectado con lo comprometido de este mes en adelante'
+            +(pp?(': abonos '+_eerrPlata(pp.abono)+' + implementaciones y contratos (pago unico, repartido) '
+              +_eerrPlata(pp.unico)+'.'):'.'),
           cobrado:'Las cuotas del plan de pagos tildadas como cobradas en este mes.',
           devengado:'Los contratos prorrateados: nadie tildó cuotas cobradas en este mes. '
             +'Escribí el cobro real para reemplazarlo.'
@@ -17346,8 +17517,10 @@ function eerrHtml(){
       // real, en dos semanas nadie recuerda cual era cual.
       var proy=eerrEsEstimado(i);
       var col=opts.color||(typeof v==='number'&&v<0?'var(--redx)':(proy?'var(--text3)':'var(--text)'));
+      // El guion de un margen sin gastos tiene que decir por que esta vacio.
+      var tit=(opts.tit&&opts.tit(i,v))||(proy?'Proyectado con lo comprometido: abonos, implementaciones y contratos repartidos':'');
       return '<td style="'+cel+';color:'+col+(opts.fuerte&&!proy?';font-weight:600':'')
-        +(proy?';font-style:italic':'')+'" '+(proy?'title="Proyectado con los abonos de hoy"':'')+'>'
+        +(proy?';font-style:italic':'')+'" '+(tit?('title="'+esc(tit)+'"'):'')+'>'
         +(opts.pct?_eerrPct(v):_eerrPlata(v))+'</td>';
     }).join('');
     return '<tr style="'+(opts.borde?'border-top:1px solid var(--border)':'')+'">'
@@ -17379,14 +17552,17 @@ function eerrHtml(){
       +'</select>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">'
-      +'Los meses <b>desde este en adelante</b> se estiman con los abonos comprometidos, en gris cursiva. '
+      +'Los meses <b>desde este en adelante</b> se estiman con lo comprometido, en gris cursiva: los abonos '
+      +'y, aparte, las implementaciones y contratos repartidos entre los meses que duran (pago unico, no se repite). '
       +'Los pasados quedan vacios: la cartera era otra. Escribi el cobro real de cada mes para reemplazarlos. '
       +'Un cliente entra recien cuando tiene <b>una cuota tildada como cobrada</b> en su plan de pagos, '
       +'y cuenta desde ese mes: hasta que entra la primera plata hay un contrato cargado, no un cliente.</div>'
     +(function(){
         var MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
         var v=eerrVencen();
-        var vencidos=v.filter(function(x){ return _eerrVencida(x.c); });
+        // Rojo y "dalos de baja" solo para quien pagaba mes a mes: ver
+        // _eerrPreguntaBaja. Los que terminaron lo vendido no se listan aca.
+        var vencidos=eerrVencidosBaja();
         var vigentes=v.filter(function(x){ return !_eerrVencida(x.c); });
         var out='';
         // Una fecha ya pasada saca al cliente de la proyeccion. Si eso ocurre en
@@ -17487,15 +17663,24 @@ function eerrHtml(){
               var det=(tic>0&&nAct)
                 ? (nPac+' pactado'+(nPac===1?'':'s')+(deMas?(' \u00b7 '+deMas+' de mas'):''))
                 : '';
+              var info=_ltvTicketInfo(c);
+              if(info.parcial) det=(det?det+' \u00b7 ':'')+'cobrado de $'
+                +Math.round(info.valor).toLocaleString('es-AR')+', hito pendiente';
+              // El mes en curso no cuenta hasta cerrar, asi que el que entro este
+              // mes tiene cero meses y vale cero. No le falta ningun dato:
+              // decir "falta el monto" mandaba a buscar un error que no existe.
+              var recien=(nAct===0 && !!_eerrDesde(c));
               return '<tr style="background:var(--bg3)">'
                 +'<td style="'+rot+';padding-left:26px;color:var(--text2);font-weight:400">'+esc(c.name||'')+'</td>'
                 +tds
                 +'<td style="'+cel+'">'
                   +(vr>0
                     ?('<span style="color:var(--text)">$'+Math.round(vr).toLocaleString('es-AR')+'</span>'
-                      +'<span style="display:block;font-size:9.5px;color:'+(deMas?'var(--amberx)':'var(--text3)')+'">'
+                      +'<span style="display:block;font-size:9.5px;color:'+((deMas||info.parcial)?'var(--amberx)':'var(--text3)')+'">'
                       +'ticket $'+Math.round(tic).toLocaleString('es-AR')+(det?(' \u00b7 '+det):'')+'</span>')
-                    :'<span style="color:var(--amberx);font-size:10.5px">falta el monto</span>')
+                    :(recien
+                      ?'<span style="color:var(--text3);font-size:10.5px" title="El mes en curso no cuenta hasta cerrar">empez\u00f3 este mes</span>'
+                      :'<span style="color:var(--amberx);font-size:10.5px">falta el monto</span>'))
                 +'</td></tr>';
             }).join('')
             +'<tr><td colspan="14" style="padding:5px 10px 8px 26px;font-size:10.5px;color:var(--text3);line-height:1.55">'
@@ -17670,7 +17855,9 @@ function eerrHtml(){
           })()
         +filaEdit('ingresos','Ingresos totales')
         +filaEdit('otrosIngresos','Otros ingresos', true)
-        +filaCalc('Ingreso neto', function(i){ return eerrIngreso(i)+(eerrVal(i,'otrosIngresos')||0); }, {fuerte:true, borde:true})
+        // Sin ingreso ni otros ingresos el mes queda vacio: null+0 daba "$0" y
+        // se leia como un mes sin facturar, cuando es un mes sin dato.
+        +filaCalc('Ingreso neto', eerrIngresoNeto, {fuerte:true, borde:true})
         +seccion('Gastos')
         +EERR_CATS.map(function(c){
             var f=filaEdit(c.k, c.n, true);
@@ -17688,8 +17875,8 @@ function eerrHtml(){
         +filaCalc('Total gastos', function(i){ return eerrGastos(i); }, {fuerte:true, borde:true})
         +seccion('Resultado')
         +filaCalc('Cashflow', function(i){ return eerrResultado(i).neto; }, {fuerte:true})
-        +filaCalc('Rentabilidad', function(i){ return eerrResultado(i).margen; }, {pct:true, color:'var(--text2)'})
-        +filaCalc('Margen bruto', function(i){ return eerrResultado(i).margenBruto; }, {pct:true, color:'var(--text3)'})
+        +filaCalc('Rentabilidad', function(i){ return eerrResultado(i).margen; }, {pct:true, color:'var(--text2)', tit:_eerrTitMargen})
+        +filaCalc('Margen bruto', function(i){ return eerrResultado(i).margenBruto; }, {pct:true, color:'var(--text3)', tit:_eerrTitMargen})
       +'</tbody></table>'
     +'</div>'
   +'</div>';
@@ -17698,8 +17885,6 @@ function eerrHtml(){
 function rentabilidadHtml(){
   var filas=_rtFilas();
   var tira=(typeof _overviewMetricsHtml==='function')?_overviewMetricsHtml('comercial'):'';
-  var mrr=filas.reduce(function(s,f){ return s+f.fee; },0);
-  var sinMonto=filas.filter(function(f){ return !f.fee; }).length;
 
   var kpi=function(rot,val,pie,color){
     return '<div style="flex:1;min-width:150px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
@@ -17720,13 +17905,32 @@ function rentabilidadHtml(){
             +(f.fee?'var(--text)':'var(--amberx)')+'">'
             +(f.fee
               ? (_rtPlata(f.fee)+'<span style="font-size:10px;color:var(--text3)">/mes</span>'
-                 +(f.men.origen==='contrato'
-                   ? '<div style="font-size:9.5px;color:var(--text3)">'+_rtPlata(f.men.valor)+' en '+f.men.meses+' meses</div>'
-                   : ''))
-              : (f.men.origen==='contrato-sin-plazo'
+                 // Que es esa plata: abono (se repite) o pago unico repartido
+                 // (implementacion de un mixto o contrato por garantia).
+                 +'<div style="font-size:9.5px;color:var(--text3)">'
+                   +(f.men.origen==='contrato'
+                     ? ('pago unico: '+_rtPlata(f.men.valor)+' en '+f.men.meses+' meses')
+                     : f.men.origen==='mixto'
+                       ? (f.partes.unico>0
+                          ? ('implementacion, pago unico'+(f.men.fee>0?(' &middot; despues '+_rtPlata(f.men.fee)+'/mes'):''))
+                          : 'abono')
+                       : 'abono')
+                   +(f.men.hitoPendiente?' <span style="color:var(--amberx)" title="Sin la fecha del hito la implementacion no se puede repartir">&middot; falta la fecha del hito</span>':'')
+                 +'</div>')
+              : (f.men.hitoPendiente
+                 ? '<span title="Plazo por hito sin la fecha: la implementacion no se puede repartir">falta la fecha del hito</span>'
+              : f.men.origen==='contrato-sin-plazo'
                  ? '<span title="Hay valor de contrato pero no duracion">falta la duracion</span>'
                  : f.men.origen==='contrato-sin-monto'
                    ? '<span title="El contrato esta vinculado pero no dice cuanto paga">falta el monto</span>'
+                 // Mismos motivos que el aviso del EERR: "sin datos" no decia
+                 // que campo de la ficha habia que completar.
+                 : (f.c.feeTipo==='pct' && !_feeMensual(f.c))
+                   ? '<span title="Fee por porcentaje sin el % o sin la base de facturacion">falta el % del fee</span>'
+                 : (f.c.serviceType==='mixto' && !_feeMensual(f.c) && (parseFloat(f.c.contractValue)||0)>0)
+                   ? '<span title="Termino la implementacion y no hay fee cargado">falta el fee</span>'
+                 : (!(parseFloat(f.c.contractValue)||0) && !_feeMensual(f.c))
+                   ? '<span title="Tiene cuotas cobradas pero no valor de contrato ni fee">falta el valor</span>'
                    : 'sin datos'))
             +'</span>'
           +'<span style="width:96px;flex:none;text-align:right;font-size:11.5px;color:var(--text3)">'
@@ -17746,6 +17950,26 @@ function rentabilidadHtml(){
   var sinFecha=eerrSinFechaAlta();
   var MESN=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
             'septiembre','octubre','noviembre','diciembre'];
+  // Costo y margen salen del estado de resultados del mes. Estaban fijos en
+  // "sin cargar" aunque se cargaran los gastos: la pantalla decia que no habia
+  // con que restar teniendo la tabla de gastos completa abajo.
+  // El EERR guarda por el ano elegido en su selector: en otro ano se mira
+  // diciembre, que es su ultimo mes.
+  var mesK=(eerrAnio()===hoy.getFullYear())?hoy.getMonth():11;
+  var rotMes=MESN[mesK].slice(0,3)+' '+eerrAnio();
+  var resK=eerrResultado(mesK);
+  var equipoK=EERR_CATS.filter(function(c){ return c.k.indexOf('equipo')===0; });
+  var hayEquipo=equipoK.some(function(c){ return eerrVal(mesK,c.k)!=null; });
+  var costoEq=equipoK.reduce(function(t,c){ return t+(eerrVal(mesK,c.k)||0); },0);
+  var kpiCosto=hayEquipo
+    ? kpi('Costo del equipo', _rtPlata(costoEq), rotMes+' &middot; delivery, propio y ventas')
+    : kpi('Costo del equipo', '&mdash;', 'todavia sin cargar en '+rotMes, 'var(--text3)');
+  var kpiMargen=(resK.margen!=null)
+    ? kpi('Margen', resK.margen.toFixed(1)+'%',
+        rotMes+' &middot; '+_rtPlata(resK.ingreso)+' menos '+_rtPlata(resK.gastos)+' de gastos'
+          +(eerrEsEstimado(mesK)?' (ingreso proyectado)':''),
+        resK.margen<0?'var(--redx)':null)
+    : kpi('Margen', '&mdash;', resK.hayGastos?'falta el ingreso del mes':'necesita el costo', 'var(--text3)');
 
   return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">'
       +'<div style="flex:1;min-width:230px;background:var(--bg2);border:1px solid var(--border);'
@@ -17762,21 +17986,31 @@ function rentabilidadHtml(){
           +(sinFecha?(' &middot; <span style="color:var(--amberx)">'+sinFecha+' sin fecha</span>'):'')
         +'</div>'
       +'</div>'
-      +kpi('Costo del equipo', '&mdash;', 'todavia sin cargar', 'var(--text3)')
-      +kpi('Margen', '&mdash;', 'necesita el costo', 'var(--text3)')
+      +kpiCosto
+      +kpiMargen
     +'</div>'
     +tira
     +eerrHtml()
 
     // El aviso va arriba de la tabla, no al pie: si esta abajo, alguien lee los
     // numeros como margen y toma una decision con eso.
-    +'<div style="background:rgba(216,90,48,0.06);border:1px solid rgba(216,90,48,0.22);border-radius:var(--radius-lg);'
-      +'padding:12px 15px;margin-bottom:18px;font-size:11.5px;color:var(--text2);line-height:1.65">'
-      +'<b style="color:var(--strong)">Esto todavia es facturacion, no rentabilidad.</b> '
-      +'Falta el lado del costo: no se registran horas por cliente ni costo del equipo, '
-      +'asi que no hay con que restar. Las columnas de tareas son una pista de donde se va el trabajo, '
-      +'no una medida de plata.'
-    +'</div>'
+    +(resK.hayGastos
+      // Con gastos cargados ya hay resultado de la agencia; lo que sigue sin
+      // existir es el costo por cliente, y eso es lo que hay que decir.
+      ? ('<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);'
+        +'padding:12px 15px;margin-bottom:18px;font-size:11.5px;color:var(--text2);line-height:1.65">'
+        +'<b style="color:var(--strong)">El margen es de la agencia entera, no por cliente.</b> '
+        +'Sale de los gastos cargados en '+rotMes+' contra el ingreso del mes. No se registran horas por cliente, '
+        +'asi que la tabla de abajo no reparte el costo: las columnas de tareas son una pista de donde se va el trabajo, '
+        +'no una medida de plata.'
+      +'</div>')
+      : ('<div style="background:rgba(216,90,48,0.06);border:1px solid rgba(216,90,48,0.22);border-radius:var(--radius-lg);'
+        +'padding:12px 15px;margin-bottom:18px;font-size:11.5px;color:var(--text2);line-height:1.65">'
+        +'<b style="color:var(--strong)">Esto todavia es facturacion, no rentabilidad.</b> '
+        +'Falta el lado del costo: no se registran horas por cliente ni costo del equipo, '
+        +'asi que no hay con que restar. Las columnas de tareas son una pista de donde se va el trabajo, '
+        +'no una medida de plata.'
+      +'</div>'))
 
     +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px">'
       +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px">'
@@ -17787,8 +18021,9 @@ function rentabilidadHtml(){
           // Lista de lo que falta cargar. Sin esto hay que recorrer la tabla
           // cliente por cliente para encontrar los agujeros.
           var faltaMonto=filas.filter(function(f){ return f.men.origen==='contrato-sin-monto'; });
-          var faltaPlazo=filas.filter(function(f){ return f.men.origen==='contrato-sin-plazo'; });
-          if(!faltaMonto.length&&!faltaPlazo.length) return '';
+          var faltaPlazo=filas.filter(function(f){ return f.men.origen==='contrato-sin-plazo' && !f.men.hitoPendiente; });
+          var faltaHito=filas.filter(function(f){ return f.men.hitoPendiente; });
+          if(!faltaMonto.length&&!faltaPlazo.length&&!faltaHito.length) return '';
           var lista=function(arr){ return arr.map(function(f){ return esc(f.c.name); }).join(', '); };
           return '<div style="font-size:11px;color:var(--text2);line-height:1.7;margin:6px 0 4px;'
             +'background:rgba(216,90,48,0.06);border:1px solid rgba(216,90,48,0.2);'
@@ -17803,19 +18038,25 @@ function rentabilidadHtml(){
               ? '<b style="color:var(--amberx)">'+faltaPlazo.length+' sin duracion:</b> '+lista(faltaPlazo)
                 +'. Hay monto pero no se sabe en cuantos meses, asi que no se puede prorratear.'
               : '')
+            +((faltaMonto.length||faltaPlazo.length)&&faltaHito.length?'<br>':'')
+            +(faltaHito.length
+              ? '<b style="color:var(--amberx)">'+faltaHito.length+' con plazo por hito sin fecha:</b> '+lista(faltaHito)
+                +'. Falta la fecha del hito: hasta que se marque, la implementacion no entra en la proyeccion.'
+              : '')
           +'</div>';
         })()
       +'<div class="fin-fila fin-cab" style="display:flex;gap:12px;padding:8px 4px 6px;font-size:10px;color:var(--text3);'
         +'text-transform:uppercase;letter-spacing:.06em">'
         +'<span style="flex:1">Cliente</span>'
-        +'<span style="width:130px;text-align:right">Por mes</span>'
+        +'<span style="width:130px;text-align:right">Este mes</span>'
         +'<span style="width:96px;text-align:right">30 dias</span>'
         +'<span style="width:86px;text-align:right">Pendientes</span>'
         +'<span style="width:104px;text-align:right">Por tarea</span>'
       +'</div>'
       +cuerpo
       +'<div style="font-size:10.5px;color:var(--text3);margin-top:11px;line-height:1.6">'
-        +'Sale del abono mensual, o del valor de contrato dividido por su duracion cuando es por garantia. '
+        +'Lo que aporta este mes: el <b>abono</b>, que se repite, o un <b>pago unico</b> repartido entre los meses que dura '
+        +'(la implementacion de un mixto o el contrato por garantia). Un mixto pasa de implementacion a abono cuando termina el plazo. '
         +'&laquo;Por tarea&raquo; divide el abono por las tareas cerradas en 30 dias: sirve para comparar '
         +'clientes entre si, no para saber si uno deja plata.</div>'
     +'</div>';
