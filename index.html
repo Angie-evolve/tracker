@@ -30298,10 +30298,12 @@ function _ncCobroCambio(){
   // Igual que en Facturacion: el plazo vale para todo lo que no sea un fee
   // mensual —ahi no hay nada que prorratear— y el fee de soporte solo cuando
   // hay las dos cosas, implementacion y mes.
-  var ex=document.getElementById('nc-extra');
-  if(ex) ex.style.display=(t==='mixto'||t==='one-time')?'':'none';
-  var fr=document.getElementById('nc-fee-row');
-  if(fr) fr.style.display=(t==='mixto')?'':'none';
+  /* El fee y el plazo se escondian segun el tipo de cobro, asi que si todavia
+     no habias definido "Que paga" no tenias donde escribir un dato que ya
+     sabias, y despues habia que entrar a la ficha a completarlo. Quedan
+     siempre: un campo de mas se ignora, uno que falta obliga a volver. */
+  var ex=document.getElementById('nc-extra'); if(ex) ex.style.display='';
+  var fr=document.getElementById('nc-fee-row'); if(fr) fr.style.display='';
 }
 
 var NC_SECCIONES=[
@@ -30354,7 +30356,89 @@ function _ncNavPuntos(){
   });
 }
 
+/* Las cuotas se cargaban solo en Facturacion, o sea despues de crear al
+   cliente: cerrabas la venta sabiendo el plan de pagos y lo tenias que anotar
+   en otro lado. Es el mismo objeto que usa Facturacion -monto, tipo, fecha o
+   hito, concepto, pagadoAt- asi que lo que se carga aca se edita alla sin
+   convertir nada. */
+var _ncPagos=[];
+function _ncPagosHtml(){
+  var est='box-sizing:border-box;font-size:12px;padding:4px 7px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);'
+    +'font-family:var(--font);color-scheme:dark';
+  var filas=_ncPagos.map(function(x,i){
+    var esHito=(x.tipo==='hito');
+    return '<div style="display:flex;gap:7px;align-items:center;padding:6px 0;border-top:1px solid var(--border)">'
+      +'<button onclick="_ncPagoCampo('+i+',\'pagadoAt\',this)" data-p="'+(x.pagadoAt?1:0)+'" '
+        +'title="'+(x.pagadoAt?'Ya cobrada. Tocala para desmarcarla.':'Marcarla como cobrada')+'" '
+        +'style="flex:none;width:74px;font-size:10.5px;padding:3px 0;cursor:pointer;border-radius:99px;'
+        +'font-family:var(--font);border:1px solid '+(x.pagadoAt?'var(--green)':'var(--border2)')+';'
+        +'background:'+(x.pagadoAt?'var(--green)':'transparent')+';'
+        +'color:'+(x.pagadoAt?'var(--bg)':'var(--text3)')+'">'
+        +(x.pagadoAt?'Cobrada':'Pendiente')+'</button>'
+      +'<input type="number" step="0.01" placeholder="0" value="'+esc(String(x.monto||''))+'" '
+        +'oninput="_ncPagoCampo('+i+',\'monto\',this)" style="'+est+';width:86px" title="Monto en USD">'
+      +'<select onchange="_ncPagoCampo('+i+',\'tipo\',this)" style="'+est+';width:92px">'
+        +'<option value="fecha"'+(esHito?'':' selected')+'>Por fecha</option>'
+        +'<option value="hito"'+(esHito?' selected':'')+'>Por hito</option></select>'
+      +(esHito
+        ? '<input placeholder="lanzamiento, campanas prendidas..." value="'+esc(String(x.hito||''))+'" '
+          +'oninput="_ncPagoCampo('+i+',\'hito\',this)" style="'+est+';flex:1">'
+        : '<input type="date" value="'+esc(String(x.fecha||''))+'" '
+          +'onchange="_ncPagoCampo('+i+',\'fecha\',this)" style="'+est+';flex:1">')
+      +'<input placeholder="concepto" value="'+esc(String(x.concepto||''))+'" '
+        +'oninput="_ncPagoCampo('+i+',\'concepto\',this)" style="'+est+';width:110px">'
+      +'<button onclick="_ncPagoBorrar('+i+')" title="Borrar cuota" '
+        +'style="flex:none;background:none;border:none;color:var(--text3);cursor:pointer;'
+        +'font-size:15px;line-height:1;padding:0 4px">\u00d7</button>'
+      +'</div>';
+  }).join('');
+  var suma=_ncPagos.reduce(function(a,x){ return a+(parseFloat(x.monto)||0); },0);
+  var monto=parseFloat(((document.getElementById('nc-monto')||{}).value||'').trim())||0;
+  /* El aviso de descuadre solo sale si hay cuotas Y hay monto: con el plan
+     vacio no hay nada que descuadrar, y un cartel rojo antes de escribir la
+     primera cuota es ruido. */
+  var dif=(_ncPagos.length&&monto)?(suma-monto):0;
+  return '<div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:2px">Plan de pagos</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:8px">'
+      +'Opcional. Es el mismo plan que despues ves en Facturacion: lo que cargues aca ya queda ahi.</div>'
+    +(filas||'<div style="font-size:11.5px;color:var(--text3);padding:7px 0">Sin cuotas cargadas.</div>')
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm" onclick="_ncPagoAgregar()">Agregar cuota</button>'
+      +(_ncPagos.length?('<span style="font-size:11.5px;color:'+(dif?'var(--amberx)':'var(--text3)')+'">'
+        +'Suman '+suma.toLocaleString('es-AR')+' USD'
+        +(dif?(' \u00b7 '+(dif>0?'se pasan de':'faltan para')+' el monto por '
+               +Math.abs(dif).toLocaleString('es-AR')):'')+'</span>'):'')
+    +'</div>';
+}
+function _ncPagosRepintar(){
+  var e=document.getElementById('nc-pagos');
+  if(e) e.innerHTML=_ncPagosHtml();
+  if(typeof _ncNavPuntos==='function') _ncNavPuntos();
+}
+function _ncPagoAgregar(){
+  // Arranca con lo que falta para llegar al monto: casi siempre es un pago
+  // unico y queda cargado de una, igual que en Facturacion.
+  var monto=parseFloat(((document.getElementById('nc-monto')||{}).value||'').trim())||0;
+  var suma=_ncPagos.reduce(function(a,x){ return a+(parseFloat(x.monto)||0); },0);
+  var falta=monto?Math.max(monto-suma,0):0;
+  _ncPagos.push({id:Date.now()+_ncPagos.length, monto:(falta||''), tipo:'fecha',
+                 fecha:'', hito:'', concepto:'', pagadoAt:''});
+  _ncPagosRepintar();
+}
+function _ncPagoBorrar(i){ _ncPagos.splice(i,1); _ncPagosRepintar(); }
+function _ncPagoCampo(i, campo, el){
+  var x=_ncPagos[i]; if(!x) return;
+  if(campo==='pagadoAt'){
+    x.pagadoAt = x.pagadoAt ? '' : new Date().toISOString().slice(0,10);
+    _ncPagosRepintar(); return;
+  }
+  x[campo]=el.value;
+  // Cambiar de fecha a hito cambia que input va: hay que redibujar la fila.
+  if(campo==='tipo') _ncPagosRepintar();
+}
 function openNewClientModal(){
+  _ncPagos=[];
   _ncEquipo=[];
   _ncLlamadas=[];
   _ncEditIdx=null;
@@ -30438,8 +30522,8 @@ function openNewClientModal(){
                    que se cobra por mes. El alta pedia un monto solo, asi que el
                    cliente entraba con la mitad del acuerdo y habia que
                    completarlo despues en la ficha. -->
-              <div class="form-2col" id="nc-extra" style="display:none">
-                <div class="form-row" id="nc-fee-row" style="display:none">
+              <div class="form-2col" id="nc-extra">
+                <div class="form-row" id="nc-fee-row">
                   <label class="form-label">Fee mensual de soporte (USD)</label>
                   <input id="nc-fee" type="number" step="0.01" placeholder="0"
                     oninput="_ncNavPuntos()"></div>
@@ -30448,6 +30532,8 @@ function openNewClientModal(){
                     oninput="_ncNavPuntos()">
                   <div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5">Sin esto el contrato no entra en la proyeccion.</div></div>
               </div>
+              <div id="nc-pagos" style="margin:4px 0 16px;padding:13px 15px;background:var(--bg2);
+                border:0.5px solid var(--border);border-radius:var(--radius-lg)"></div>
               <!-- La garantia no es un tipo de cobro: es una condicion que puede
                    tener cualquiera de los tres. Es el mismo tilde que el de
                    Facturacion, y escribe el mismo campo. -->
@@ -30516,6 +30602,12 @@ function openNewClientModal(){
     if(_g) _g.style.color='var(--text3)';
   }
   _ncEquipoRender();
+  // El plan de pagos arranca vacio, pero la caja tiene que dibujarse igual: si
+  // no, no hay boton de "Agregar cuota" y la seccion parece no existir.
+  _ncPagosRepintar();
+  // Y el fee y el plazo se muestran desde el arranque, sin esperar a que se
+  // toque el desplegable de "Que paga".
+  _ncCobroCambio();
 }
 
 // Sin mail no hay a quien invitar, asi que el tilde no puede quedar prendido:
@@ -30576,8 +30668,8 @@ async function createClient(){
   // Se usan los mismos nombres que escribe el extractor de contratos: si despues
   // subis el PDF, completa o corrige estos campos en vez de crear otros.
   const _fee=(tipoCobro==='recurrente');
-  const _feeExtra=(tipoCobro==='mixto')
-    ? (parseFloat(((document.getElementById('nc-fee')||{}).value||'').trim())||0) : 0;
+  // Se lee siempre: el campo ya no depende del tipo de cobro.
+  const _feeExtra=parseFloat(((document.getElementById('nc-fee')||{}).value||'').trim())||0;
   const _garantia=!!(document.getElementById('nc-garantia')||{}).checked;
   const _dias=parseFloat(((document.getElementById('nc-dias')||{}).value||'').trim())||0;
   const contratoObj=(inicio||linkContrato||_dias)
@@ -30661,6 +30753,11 @@ async function createClient(){
     // Antes salia de si habia un fee cargado, asi que un mixto sin fee no
     // entraba en el MRR ni en las alarmas de cobro.
     recurrente:(tipoCobro==='recurrente'||tipoCobro==='mixto')||undefined,
+    // Las cuotas cargadas en el alta. Mismo formato que Facturacion: se
+    // descartan las que quedaron sin monto, que son las que se agregaron y no
+    // se llegaron a completar.
+    pagos:_ncPagos.filter(function(x){ return parseFloat(x.monto)||0; })
+                  .map(function(x){ return Object.assign({},x); }),
     contract:contratoObj,
     fathomCalls: llamadas,
     avatar:name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),
