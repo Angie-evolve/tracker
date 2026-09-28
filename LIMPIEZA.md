@@ -377,17 +377,12 @@ Todas las habría atajado un test.
 
 ## Fase 0 — cerrojo. No toca la app
 
-- [ ] **Rotar cinco tokens de GHL.** Quedaron escritos completos en un chat el
-      2026-09-23, al imprimir sin enmascarar el campo `ghl` de varias fichas.
-      No se listan acá los nombres a propósito: este repo es público y el
-      CLAUDE.md dice que los nombres de clientes no entran a git. Para
-      identificarlos:
-      `select datos->>'name' from clientes where datos->'ghl'->>'token' ilike 'pit-%';`
-      y cruzar con los cinco que aparecen en la conversación de esa fecha.
-- [ ] **Prender secret scanning y push protection.** Hoy están apagados, y son
-      gratis en repos públicos. Bloquean el push si alguna vez se pega una clave.
-- [ ] **Proteger `main`.** Hoy no tiene protección: todo push va directo a
-      producción, sin diff previo ni forma de revisar.
+- [x] **Prender secret scanning y push protection.** Hechos el 2026-09-28.
+      Bloquean el push si alguna vez se pega una clave.
+- [x] **Proteger `main`, en su versión mínima.** Desde el 2026-09-28 no se
+      puede borrar ni hacer force-push, y la regla vale también para admins.
+      Los push siguen yendo directo a producción: exigir PR frenaría el
+      trabajo diario, y se decide recién cuando haya CI que lo justifique.
 - [ ] **Versionar tres Edge Functions.** `GHL`, `Google-calendar` y
       `segumiento-agendas-de-equipo-c-cliente` sólo existen desplegadas. Si se
       borran, se perdieron. Se bajan con
