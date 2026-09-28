@@ -35738,8 +35738,14 @@ async function citasHuecos(clientId, ids){
         return y===f;
       }).sort(function(a,b){ return a-b; });
     if(!hoy.length){
+      /* Decir si el filtro de persona esta puesto: "sin horarios" a secas hace
+         pensar que el calendario esta lleno, cuando lo mas comun es que la
+         persona elegida no tenga disponibilidad cargada ahi y el equipo si. */
       caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">'
-        +'Sin horarios libres ese dia en ese calendario. Proba otra fecha.</span>';
+        +'Sin horarios libres ese dia'
+        +(_q?' para esa persona en ese calendario. Proba otra fecha, u otra persona en "Quien la toma".'
+            :' en ese calendario. Proba otra fecha.')
+        +'</span>';
       return;
     }
     // Se guardan para poder avisar antes de llamar a GHL: mandar una hora que no
@@ -35874,6 +35880,17 @@ function _citasHoraLibre(cajaId, f, hh){
   return 'Las '+hh+' no están entre los horarios libres de ese día ('
     +g.horas.join(', ')+'). Elegí uno de esos.';
 }
+/* Una fecha escrita como la escribe GHL: hora local con el desfasaje puesto,
+   no en UTC con Z. Las dos dicen el mismo instante, pero GHL compara la cadena
+   contra la que ofrecio, y con Z no matchea nunca. */
+function _isoGhl(d){
+  var p=function(n){ return ('0'+n).slice(-2); };
+  var off=-d.getTimezoneOffset(), sg=off<0?'-':'+';
+  off=Math.abs(off);
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())
+    +'T'+p(d.getHours())+':'+p(d.getMinutes())+':00'
+    +sg+p(Math.floor(off/60))+':'+p(off%60);
+}
 function citasElegirHora(hh, idHora){
   var i=document.getElementById(idHora||'cita-hora');
   if(i){ i.value=hh; i.style.borderColor='var(--accent)'; }
@@ -35902,7 +35919,7 @@ async function citasReprogramar(clientId, etapa){
   // rearmado, y se le manda el calendario para que pueda releer los huecos si
   // rechaza.
   var _g2=(S._huecos||{})['rp-huecos'];
-  var _envio2=(_g2 && _g2.dia===f && _g2.isos && _g2.isos[h||'09:00']) || d.toISOString();
+  var _envio2=(_g2 && _g2.dia===f && _g2.isos && _g2.isos[h||'09:00']) || _isoGhl(d);
   var _def2=rutaDef().filter(function(e){ return e.l===etapa; })[0];
   di('Reprogramando en GHL\u2026');
   try{
@@ -35944,10 +35961,15 @@ async function citasAgendarGhl(clientId){
   var aviso=_citasHoraLibre('cita-huecos', f, h||'09:00');
   if(aviso){ _citasDecir(clientId, aviso, 'var(--amberx)'); return; }
   // El horario que se manda es el que dio GHL, letra por letra, cuando lo
-  // tenemos. Solo se rearma cuando la cita se carga sin haber pedido huecos.
+  // tenemos. Solo se rearma cuando la cita se carga sin haber pedido huecos,
+  // y ahi se rearma CON EL DESFASAJE LOCAL, no con toISOString(): GHL entrega
+  // y espera "2026-10-08T16:00:00-03:00", y toISOString() escribe el mismo
+  // instante como "2026-10-08T19:00:00.000Z". GHL compara la cadena, no el
+  // instante, asi que rechazaba con "the slot you have selected is no longer
+  // available" un horario que acababa de ofrecer.
   var _g=(S._huecos||{})['cita-huecos'];
   var _iso=(_g && _g.dia===f && _g.isos) ? _g.isos[h||'09:00'] : '';
-  var _envio=_iso||d.toISOString();
+  var _envio=_iso||_isoGhl(d);
   // Si esa etapa ya tiene una reunion de GHL, esto la MUEVE. Crear otra dejaria
   // al cliente con dos invitaciones para lo mismo y al tablero sin saber cual
   // vale. Las cargadas a mano no cuentan: esas no existen en GHL.
