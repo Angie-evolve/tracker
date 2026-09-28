@@ -2535,20 +2535,45 @@ async function sbLogin(email, pass){
 }
 
 // El token dura una hora. Se renueva solo antes de que venza.
+// Dos pestanas del tracker comparten el mismo localStorage, pero cada una se
+// queda con SU copia de SB.refresh en memoria, leida una sola vez al abrir.
+// Cuando una renueva, Supabase ROTA el token y revoca el anterior; la otra
+// pestana sigue mandando el viejo y recibe "already used". Eso aparecia como
+// "tu sesion vencio" con la sesion en realidad viva, y el unico arreglo era
+// recargar. Antes de pedir nada se relee el storage, que es donde esta la
+// version buena, y se deja una sola renovacion en vuelo para que varios
+// sbFetch en paralelo no se pisen entre ellos.
+var _sbRenovando=null;
 async function sbRenovar(){
-  if(!SB.refresh) return false;
-  try{
-    var r=await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token',{
-      method:'POST', headers:{'apikey':SB_KEY,'Content-Type':'application/json'},
-      body:JSON.stringify({refresh_token:SB.refresh})
-    });
-    var d=await r.json();
-    if(!r.ok) return false;
-    SB.token=d.access_token; SB.refresh=d.refresh_token||SB.refresh;
-    SB.exp=Date.now()+((d.expires_in||3600)*1000);
-    sbGuardarSesion();
-    return true;
-  }catch(e){ return false; }
+  if(_sbRenovando) return _sbRenovando;
+  _sbRenovando=(async function(){
+    try{
+      var g=null;
+      try{ g=JSON.parse(localStorage.getItem('evold-sb-sesion')||'null'); }catch(e){}
+      if(g && g.refresh && g.refresh!==SB.refresh){
+        SB.refresh=g.refresh;
+        // Si la otra pestana ademas dejo un access token todavia vivo, no hace
+        // falta gastar una rotacion: se usa ese y listo.
+        if(g.token && g.exp && Date.now()<g.exp-60000){
+          SB.token=g.token; SB.exp=g.exp;
+          return true;
+        }
+      }
+      if(!SB.refresh) return false;
+      var r=await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token',{
+        method:'POST', headers:{'apikey':SB_KEY,'Content-Type':'application/json'},
+        body:JSON.stringify({refresh_token:SB.refresh})
+      });
+      var d=await r.json();
+      if(!r.ok) return false;
+      SB.token=d.access_token; SB.refresh=d.refresh_token||SB.refresh;
+      SB.exp=Date.now()+((d.expires_in||3600)*1000);
+      sbGuardarSesion();
+      return true;
+    }catch(e){ return false; }
+  })();
+  try{ return await _sbRenovando; }
+  finally{ _sbRenovando=null; }
 }
 
 async function sbFetch(ruta, opts, _reintento){
