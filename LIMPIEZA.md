@@ -395,12 +395,16 @@ Todas las habría atajado un test.
 
 Herramientas: esbuild, Vitest, Biome, GitHub Actions. Todas gratis y estándar.
 
-- [ ] `package.json` y toolchain, **sin cambiar cómo se sirve la app**.
+- [x] `package.json` y toolchain, **sin cambiar cómo se sirve la app**.
+      Vitest + acorn: `tests/cargar.js` saca las funciones de `index.html` por
+      nombre y las prueba aisladas, sin tocar el archivo.
 - [ ] Extraer a `src/dominio/` las funciones puras que deciden plata y estado.
-- [ ] ~25 tests sobre `_lanzaCuenta`, `adsDot`, `_p360DiasCampanas`,
+- [x] ~25 tests sobre `_lanzaCuenta`, `adsDot`, `_p360DiasCampanas`,
       `_fathomMatchClient` y `_metaObjetivoResultado`. Se escriben **contra el
       código roto primero**: si no fallan, no prueban nada.
-- [ ] CI que corra tests y lint en cada push, obligatorio para mergear.
+- [x] CI que corra los tests en cada push (`.github/workflows/tests.yml`).
+      Avisa, no bloquea: `main` todavía no lo exige.
+- [ ] Hacerlo obligatorio y sumar lint, cuando se trabaje con PRs.
 - [ ] Chequeo de versión en la app. Hoy GitHub Pages cachea 10 minutos y ya
       pasó dos veces que se mirara una versión sin los cambios publicados.
 
@@ -486,3 +490,20 @@ etapas que ya no existen —"Sprint de lanzamiento", "Estrategia 1",
 "Estrategia 2"—, nombres de una version anterior de la ruta. Estan muertas: no
 se muestran en ningun lado. Se pueden borrar sin consecuencia el dia que se
 haga limpieza de `clientes.datos`.
+
+## Lo que encontraron los tests, anotado el 2026-09-28
+
+- [x] **Una campaña programada a futuro daba al cliente por lanzado.**
+      Arreglado en `99ba621`.
+- [ ] **Casillas personales incompletas.** La lista de dominios que "no dicen
+      nada" (gmail, hotmail…) está copiada en cinco lugares de `index.html` y
+      le faltan `me`, `mac` y `aol`, que `_fathomAlias` sí excluye. Un cliente
+      con mail en `@me.com` se lleva las reuniones de cualquiera con iCloud.
+      El test está escrito como `it.fails` en `tests/fathomMatch.test.js`.
+      Vale unificar las cinco en una sola constante al arreglarlo.
+- [ ] **Texto de `adsDot` que no es cierto.** Con todas las campañas nuestras
+      pausadas y una ajena destildada gastando, dice "todavía hay gasto": el
+      gasto de 7 días es de la cuenta entera. No da LIVE, solo miente el texto.
+- [ ] **Sin medir: `contactEmail`.** `_fathomSenas` y `_fathomAlias` leen
+      `email` y `contactoEmail`. Si hay fichas con el mail solo en
+      `contactEmail`, no se reconocen por mail. Medirlo en la base.
