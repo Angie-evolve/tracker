@@ -59,12 +59,11 @@ describe('_p360DiasCampanas', () => {
     ).toBeNull();
   });
 
-  // ⚠️  BUG VIVO, documentado y sin arreglar (it.fails = hoy falla a proposito).
-  // Una campana ACTIVE programada para la semana que viene suma a `activas`
-  // antes de mirar la fecha, asi que devuelve `sinFecha` y `_yaLanzo` la toma
-  // como lanzada: "Ya lanzo, sincroniza Meta" de un cliente que no arranco.
-  // El dia que se arregle, este test se pone rojo: sacarle el `.fails`.
-  it.fails('una programada a futuro no es "prendida sin fecha"', () => {
+  // Regresion: una campana ACTIVE programada para la semana que viene sumaba
+  // a `activas` antes de mirar la fecha, asi que devolvia `sinFecha` y
+  // `_yaLanzo` la tomaba como lanzada: "Ya lanzo, sincroniza Meta" de un
+  // cliente que no arranco.
+  it('una programada a futuro no es "prendida sin fecha"', () => {
     const r = _p360DiasCampanas(
       cliente([{ id: 'b', status: 'ACTIVE', startTime: '2026-09-20T12:00:00-03:00' }]),
     );
