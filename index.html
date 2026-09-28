@@ -2598,7 +2598,7 @@ async function sbFetch(ruta, opts, _reintento){
     if(!_reintento && (r.status===401 || /jwt|token/i.test(msg))){
       var ok=await sbRenovar();
       if(ok) return sbFetch(ruta, {method:opts.method, body:base, headers:hdrExtra}, true);
-      throw new Error('tu sesion vencio: recarga la pagina y volve a entrar');
+      throw new Error('tu sesion vencio');
     }
     throw new Error(msg);
   }
@@ -12520,6 +12520,20 @@ function cerBorrar(i){
       +'No se deshace.')) return;
   cs.splice(i,1); S._cerSel=0; _cerSet(cs);
 }
+/* `sbCerrarSesion` vivio meses sin un solo boton que la llamara: con la sesion
+   rota la unica salida era la consola del navegador. Va aca arriba de todo, que
+   es donde se busca cuando algo de la cuenta no anda. */
+function _sesionHtml(){
+  var quien=(typeof SB==='object'&&SB.email)||'';
+  return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;'
+      +'padding:13px 15px;margin-bottom:22px;border:1px solid var(--border);border-radius:9px">'
+    +'<div style="flex:1;min-width:220px">'
+      +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Sesion</div>'
+      +'<div style="font-size:13px;color:var(--text)">'+(quien?esc(quien):'Sin sesion: estas trabajando solo en este navegador')+'</div>'
+    +'</div>'
+    +(quien?'<button class="btn btn-sm" onclick="if(confirm(\'Cerrar sesion? Tus datos quedan guardados en este navegador.\')) sbCerrarSesion()">Cerrar sesion</button>':'')
+    +'</div>';
+}
 function configAgenciaHtml(){
   var a=cfgAg();
   // Sin tope de ancho: la grilla de integraciones se reparte igual que en la
@@ -12534,6 +12548,7 @@ function configAgenciaHtml(){
       +'Credenciales del proxy de agencia. Van separadas del proxy de lectura porque este token '
       +'puede crear y borrar subcuentas de todos los clientes.</div>'
 
+    +_sesionHtml()
     +integracionesAppHtml()
     +'<div id="ag-sub-detalle" style="display:'+(S._agAbierto?'block':'none')+';margin-top:2px;padding:16px 0 4px;border-top:1px solid var(--border)">'
       +'<div style="font-size:12px;color:var(--text3);margin-bottom:18px;line-height:1.6">'
@@ -69517,6 +69532,10 @@ async function lpOlvide(){
 }
 
 function pantallaLogin(msg){
+  // Llamarla dos veces apilaba dos pantallas, y como las dos traen un #sb-msg
+  // el error quedaba escrito en la de abajo, invisible. Pasa de verdad cuando
+  // la sesion se muere con un login ya en pantalla.
+  try{ var _v=document.getElementById('sb-login'); if(_v) _v.remove(); }catch(_e){}
   var d=document.createElement('div');
   d.id='sb-login';
   d.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--bg);overflow:hidden;'
@@ -69633,6 +69652,20 @@ async function arrancarConSesion(){
   }catch(e){
     console.warn('[SB] no se pudo bajar:', e.message);
     SB.listo=false;   // seguimos en local para no pisar datos con una copia parcial
+    /* ⚠️  Una sesion muerta NO es un problema de red. Antes las dos caian en el
+       mismo toast, que se iba a los cinco segundos y despues no quedaba ni un
+       rastro: seguias adentro, editando, y todo se guardaba solo en este
+       navegador mientras el panel decia "actualizado hace 1 h" como si nada.
+       Y no habia salida, porque `sbCerrarSesion` existia sin boton que la
+       llamara. Con la sesion muerta no hay nada que reintentar: se limpia y se
+       va al login. Sin red, en cambio, se sigue trabajando en local. */
+    if(/sesion vencio|sesion venci/i.test(e.message||'')){
+      try{ localStorage.removeItem('evold-sb-sesion'); }catch(_e){}
+      SB.token=''; SB.refresh=''; SB.exp=0;
+      try{ bootListo(); }catch(_e){}
+      pantallaLogin('Tu sesion vencio. Entra de nuevo para volver a sincronizar.');
+      return;
+    }
     if(typeof toast==='function') toast('Sin sincronizar: '+e.message,'amber');
   }
   // Huellas de partida, asi el primer save() no reenvia todo de nuevo
