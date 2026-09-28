@@ -42057,6 +42057,72 @@ async function redactarContrato(clientId){
   }
 }
 
+/* Los [FALTA: ...] se completaban a mano, buscandolos adentro del texto. Esto
+   los junta arriba como preguntas: se contestan una vez y se escriben solos en
+   el lugar donde estaban. Va ADENTRO del mismo modal y no en otro encima:
+   apilar dos modales pisa el de abajo, porque los dos escriben en modal-root. */
+function _ctrHuecos(t){
+  var vis={}, out=[];
+  String(t||'').replace(/\[FALTA:\s*([^\]]*)\]/g, function(m, q){
+    if(vis[m]) return m;
+    vis[m]=1;
+    out.push({marca:m, que:(String(q||'').trim()||'este dato')});
+    return m;
+  });
+  return out;
+}
+function _ctrHuecosHtml(c){
+  var h=_ctrHuecos((c.contratoBorrador||{}).texto||'');
+  if(!h.length) return '';
+  var est='width:100%;box-sizing:border-box;padding:7px 10px;font-size:12.5px;'
+    +'border:1px solid var(--border2);border-radius:var(--radius);background:var(--bg3);'
+    +'color:var(--text);font-family:var(--font);outline:none';
+  return '<div style="margin-bottom:14px;padding:13px 15px;background:var(--bg2);'
+      +'border:1px solid var(--amberx);border-radius:var(--radius-lg)">'
+    +'<div style="font-size:12.5px;font-weight:500;color:var(--text);margin-bottom:3px">'
+      +'Completa esto y se escribe solo adentro del contrato</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-bottom:11px">'
+      +'Son los datos que no estaban en las llamadas. Lo que escribas reemplaza al hueco '
+      +'en el lugar exacto donde quedo marcado.</div>'
+    +h.map(function(x,i){
+      return '<div style="margin-bottom:9px">'
+        +'<label for="ctr-h'+i+'" style="display:block;font-size:11px;color:var(--text2);'
+          +'margin-bottom:4px;line-height:1.45">'+esc(x.que)+'</label>'
+        +'<input id="ctr-h'+i+'" style="'+est+'" placeholder="Escribilo tal cual tiene que salir" '
+          +'onkeydown="if(event.key===&quot;Enter&quot;)contratoHuecosAplicar('+c.id+')">'
+        +'</div>';
+    }).join('')
+    +'<button class="btn btn-sm" onclick="contratoHuecosAplicar('+c.id+')">Completar</button>'
+    +'</div>';
+}
+function contratoHuecosAplicar(clientId){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  var ta=document.getElementById('ctr-borrador-txt');
+  if(!c||!ta) return;
+  // Se trabaja sobre lo que hay en pantalla y no sobre lo guardado: si edito el
+  // texto a mano antes de completar, eso no se pierde.
+  var h=_ctrHuecos(ta.value), n=0;
+  h.forEach(function(x,i){
+    var e=document.getElementById('ctr-h'+i);
+    var v=e?String(e.value||'').trim():'';
+    if(!v) return;
+    ta.value=ta.value.split(x.marca).join(v);
+    n++;
+  });
+  if(!n){ toast('Escribi al menos uno.','amber'); return; }
+  contratoBorradorGuardar(clientId);
+  contratoBorradorModal(clientId);
+  toast(n+' hueco'+(n>1?'s':'')+' completado'+(n>1?'s':'')+'.');
+}
+/* Antes de bajar cualquier formato: si quedan huecos, avisar. Un contrato que
+   sale con "[FALTA: ...]" adentro es peor que uno que no sale. */
+function _ctrPuedeBajar(){
+  var h=_ctrHuecos(_ctrBorradorTexto());
+  if(!h.length) return true;
+  return confirm('Todavia quedan '+h.length+' hueco'+(h.length>1?'s':'')+' sin completar:\n\n'
+    +h.map(function(x){ return '\u2022 '+x.que; }).join('\n')
+    +'\n\nSe van a ver como [FALTA: ...] adentro del archivo. Lo bajas igual?');
+}
 function contratoBorradorModal(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c||!c.contratoBorrador) return;
@@ -42073,6 +42139,7 @@ function contratoBorradorModal(clientId){
                 +'adentro del texto, en el lugar donde hay que completarlos.')
               :' No quedaron huecos marcados, pero igual revisalo.')
     +'</div>'
+    +_ctrHuecosHtml(c)
     +'<textarea id="ctr-borrador-txt" spellcheck="false" style="width:100%;height:52vh;padding:12px;'
       +'font-size:12.5px;line-height:1.65;border:1px solid var(--border2);border-radius:var(--radius);'
       +'background:var(--bg3);color:var(--text);font-family:ui-monospace,Menlo,monospace;outline:none;resize:vertical">'
@@ -42293,6 +42360,7 @@ function contratoBorradorPdf(clientId){
   if(!c) return;
   var t=_ctrBorradorTexto();
   if(!t) return;
+  if(!_ctrPuedeBajar()) return;
   // Mismo criterio que el .docx: las lineas vacias no cuentan, el aire lo da
   // el espaciado. Si se contaran, el subtitulo no se detectaria.
   var n=-1;
@@ -42361,6 +42429,7 @@ async function contratoBorradorBajar(clientId, comoTexto){
   if(!c) return;
   var t=_ctrBorradorTexto();
   if(!t) return;
+  if(!_ctrPuedeBajar()) return;
   if(comoTexto){
     _bajarBlob(new Blob([t],{type:'text/plain;charset=utf-8'}), _nombreArchivo(c,'txt'));
     return;
