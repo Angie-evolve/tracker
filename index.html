@@ -18261,15 +18261,16 @@ var ROL_PERMISOS=[
   {k:'config',       l:'Configuracion',       d:'La configuracion de agencia, esta pantalla.'},
   {k:'tickets',      l:'Tickets',             d:'El historial de tickets y las conversaciones.'},
   {k:'finanzas',     l:'Finanzas',            d:'Subcategorias de gastos e importacion de transacciones.'},
-  {k:'integraciones',l:'Integraciones',       d:'Accesos del equipo y la configuracion de Fathom.'}
+  {k:'integraciones',l:'Integraciones',       d:'Accesos del equipo y la configuracion de Fathom.'},
+  {k:'calendario',   l:'Calendario',          d:'El calendario del equipo. Sin "Todos los clientes", solo ve las llamadas de su cartera.'}
 ];
 // Los dos que siempre existen. No se pueden borrar: sin un rol con todo
 // prendido no habria forma de volver a entrar a esta pantalla.
 var ROLES_BASE=[
   {id:'admin', nombre:'Admin', fijo:true,
-   permisos:{clientes:1,plata:1,personas:1,config:1,tickets:1,finanzas:1,integraciones:1}},
+   permisos:{clientes:1,plata:1,personas:1,config:1,tickets:1,finanzas:1,integraciones:1,calendario:1}},
   {id:'csm',   nombre:'CSM',   fijo:true,
-   permisos:{clientes:0,plata:0,personas:0,config:0,tickets:0,finanzas:0,integraciones:0}}
+   permisos:{clientes:0,plata:0,personas:0,config:0,tickets:0,finanzas:0,integraciones:0,calendario:1}}
 ];
 
 function rolesAg(){
@@ -18307,6 +18308,16 @@ function permisos(){
   return r.permisos||{};
 }
 function puede(clave){ return !!permisos()[clave]; }
+
+// El calendario se pregunta aparte y no con `puede`. Los roles de la agencia ya
+// estaban guardados antes de que este permiso existiera, y sus objetos no traen
+// la clave: con `puede` daria falso para TODOS, incluida la Admin, y la pestana
+// desapareceria para quien la venia usando. Ausente quiere decir "nunca se
+// decidio", y eso se resuelve mostrandolo; apagado a proposito se respeta.
+function puedeCalendario(){
+  var p=permisos();
+  return p.calendario===undefined ? true : !!p.calendario;
+}
 
 // Se queda por compatibilidad: lo llaman ocho lugares y significa lo mismo que
 // "no tiene el permiso de ver todos los clientes".
@@ -18371,7 +18382,9 @@ function esDeMiCartera(c){
 function irTorre(k){
   // La vista se fuerza y no solo se esconde el link: una posicion guardada de
   // antes, o un irTorre() a mano, entrarian igual.
-  S.torreVista=soloCartera()?'panel360':(k||'mirador');
+  var _k=k||'mirador';
+  if(_k==='calendario' && !puedeCalendario()) _k='panel360';
+  S.torreVista=(soloCartera()&&_k!=='calendario')?'panel360':_k;
   collapseSidebar();
   showTickets();
 }
@@ -18386,9 +18399,15 @@ function _torreSubVisible(){
     // Se esconden todas menos Panel 360, que es donde trabaja.
     if(soloCartera()){
       document.querySelectorAll('#torre-sub .torre-sub-item').forEach(function(el){
-        el.style.display=(el.dataset.k==='panel360')?'':'none';
+        var ok=(el.dataset.k==='panel360')
+             ||(el.dataset.k==='calendario'&&puedeCalendario());
+        el.style.display=ok?'':'none';
       });
     }
+    // Y si el permiso esta apagado a proposito, la pestana no va para nadie.
+    document.querySelectorAll('#torre-sub .torre-sub-item').forEach(function(el){
+      if(el.dataset.k==='calendario'&&!puedeCalendario()) el.style.display='none';
+    });
   }catch(e){}
   var sub=document.getElementById('torre-sub');
   var it=document.getElementById('nav-tickets');
@@ -18469,7 +18488,15 @@ function _calNombreDe(mail){
 }
 function _calEntradas(){
   var out=[];
-  (DB.clients||[]).forEach(function(c){
+  /* ⚠️  EL CALENDARIO NO ABRE UNA PUERTA QUE EL RESTO DE LA APP TIENE CERRADA.
+     Quien no tiene el permiso de "todos los clientes" ve, en cualquier otra
+     pantalla, unicamente su cartera. Sin este filtro, la pestana nueva le
+     mostraria las llamadas de los diecisiete clientes y el nombre de todos
+     ellos, que es justo lo que las otras pantallas evitan. */
+  var _acotado=soloCartera();
+  (DB.clients||[]).filter(function(c){
+    return _acotado ? esDeMiCartera(c) : true;
+  }).forEach(function(c){
     var cn=String(c.name||'');
     Object.keys(c.citas||{}).forEach(function(et){
       var x=(c.citas||{})[et];
@@ -18564,8 +18591,11 @@ function calendarioHtml(){
     +'</div>'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">'+pills+'</div>'
     +'<div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">'
-      +'Lo agendado y lo grabado, de todos los clientes. Ventas es todo lo anterior al '
-      +'Onboarding; Delivery, de ahi en adelante.'
+      +(soloCartera()
+        ? 'Lo agendado y lo grabado de <strong>tus clientes</strong>. Ventas es todo lo '
+          +'anterior al Onboarding; Delivery, de ahi en adelante.'
+        : 'Lo agendado y lo grabado, de todos los clientes. Ventas es todo lo anterior al '
+          +'Onboarding; Delivery, de ahi en adelante.')
       +(sinClasif?(' <span style="color:var(--amberx)">'+sinClasif+' sin clasificar: solo '
         +'aparecen en Todas.</span>'):'')
     +'</div>';
@@ -18720,7 +18750,9 @@ function showTickets(){
   // posicion guardada, S.torreVista arranca en 'mirador' y ese bloque se dibuja
   // antes de llegar al candado de mas abajo. Le mostraba a la CSM las alarmas y
   // el gasto de los diecisiete clientes.
-  if(soloCartera() && S.torreVista!=='panel360') S.torreVista='panel360';
+  if(S.torreVista==='calendario' && !puedeCalendario()) S.torreVista='panel360';
+  if(soloCartera() && S.torreVista!=='panel360' && S.torreVista!=='calendario')
+    S.torreVista='panel360';
   var _torre=S.torreVista||'mirador';
   S.view='tickets'; S.clientId=null; renderSidebar();
   // Se marca aca, ya con S.view puesto: con setTimeout quedaba un parpadeo y,
@@ -19124,7 +19156,7 @@ function showTickets(){
          +mpPanelHtml()
          +incompletosHtml()
          +rvPanelHtml())
-      :(soloCartera()?p360Html()
+      :((soloCartera()&&_torre!=='calendario')?p360Html()
       :(_torre==='estaticos'?estaticosHtml()
       :(_torre==='editor'?editorIaHtml()
       :(_torre==='panel360'?p360Html()
