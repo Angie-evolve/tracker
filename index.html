@@ -41099,12 +41099,8 @@ function _invAMano(c, mails){
   // Abrir la pestaña sola era peor el remedio: si el proxy falla varias veces
   // seguidas quedan seis GHL abiertos. Se copia el mail y se deja el link a
   // mano, que se abre solo si uno quiere.
-  var seguir=function(){
-    toast('Mail'+(mails.length===1?'':'es')+' copiado'+(mails.length===1?'':'s')
-      +'. En GHL: Configuracion \u2192 Mi equipo \u2192 Agregar empleado.');
-  };
-  if(txt && navigator.clipboard) navigator.clipboard.writeText(txt).then(seguir, seguir);
-  else seguir();
+  _copiarTexto(txt, 'Mail'+(mails.length===1?'':'es')+' copiado'+(mails.length===1?'':'s')
+    +'. En GHL: Configuracion \u2192 Mi equipo \u2192 Agregar empleado.');
 }
 // ---- Camino manual a GHL --------------------------------------------------
 // La API de agencia (crear subcuentas, snapshots, alta de usuarios) esta
@@ -41129,14 +41125,13 @@ function ghlInvitarAMano(clientId){
   var pend=_invPendientes(c);
   if(!pend.length){ toast('No queda nadie por invitar'); return; }
   var mails=pend.map(function(p){ return p.email; });
-  var seguir=function(){
-    var u=_ghlUrlEquipo(_ghlLoc(c));
-    if(u) window.open(u,'_blank','noopener');
-    toast(mails.length+' mail'+(mails.length===1?'':'es')+' copiado'+(mails.length===1?'':'s')
-      +'. En GHL: Add Employee, pegar y confirmar.');
-  };
-  if(navigator.clipboard) navigator.clipboard.writeText(mails.join(', ')).then(seguir, seguir);
-  else seguir();
+  // La pestana de GHL se abre igual: el trabajo se hace alla aunque el
+  // portapapeles falle. Lo que no se hace es decir "copiado" sin haber copiado.
+  var u=_ghlUrlEquipo(_ghlLoc(c));
+  if(u) window.open(u,'_blank','noopener');
+  _copiarTexto(mails.join(', '),
+    mails.length+' mail'+(mails.length===1?'':'es')+' copiado'+(mails.length===1?'':'s')
+    +'. En GHL: Add Employee, pegar y confirmar.');
 }
 // Marcar a mano que ya se invito: sin esto el contador nunca baja y no se sabe
 // a quien falta, que es el unico dato que el tracker puede aportar aca.
@@ -41424,9 +41419,73 @@ function _copiarPlantilla(id, bi, pi, i){
   if(!e) return;
   _copiar(e.texto||'');
 }
-function _copiar(t){
-  navigator.clipboard.writeText(t).then(function(){ toast('Copiado'); },function(){});
+// ---------- Copiar al portapapeles ----------
+// Todos los botones de copiar tenian el mismo manejador de error vacio, asi que
+// cuando fallaba no pasaba absolutamente nada: ni el texto copiado ni un cartel.
+// Parecia que el boton estaba roto. Y falla mas seguido de lo que uno cree:
+// `navigator.clipboard` no existe fuera de https, y aun existiendo tira error si
+// el documento perdio el foco -pasa al volver de otra pestana o de otra app- o
+// si el navegador no reconoce el gesto que disparo la copia.
+//
+// Tres intentos, en orden, y si los tres fallan se muestra el texto para
+// copiarlo a mano: el dato es lo que la persona venia a buscar, y dejarla sin el
+// es peor que cualquier cartel.
+function _copiarViejo(t){
+  try{
+    var ta=document.createElement('textarea');
+    ta.value=t;
+    ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try{ ta.setSelectionRange(0, t.length); }catch(e){}
+    var ok=document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  }catch(e){ return false; }
 }
+function _copiarAMano(t){
+  try{
+    var vp=document.getElementById('copiar-amano');
+    if(vp&&vp.parentNode) vp.parentNode.removeChild(vp);
+    var d=document.createElement('div');
+    d.id='copiar-amano';
+    d.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);'
+      +'display:flex;align-items:center;justify-content:center;padding:20px';
+    d.innerHTML='<div style="background:var(--bg2);border:1px solid var(--border);'
+        +'border-radius:var(--radius-lg);padding:18px;max-width:520px;width:100%">'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:4px">'
+        +'No pude copiarlo yo</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:10px;line-height:1.5">'
+        +'El navegador no me dejo usar el portapapeles. Esta todo seleccionado: '
+        +'copialo con Cmd+C o Ctrl+C.</div>'
+      +'<textarea id="copiar-amano-txt" readonly style="width:100%;box-sizing:border-box;'
+        +'min-height:96px;font-size:12.5px"></textarea>'
+      +'<div style="display:flex;justify-content:flex-end;margin-top:10px">'
+        +'<button class="btn btn-sm btn-primary" '
+        +'onclick="var e=document.getElementById(\'copiar-amano\');if(e&&e.parentNode)'
+        +'e.parentNode.removeChild(e)">Listo</button></div>'
+      +'</div>';
+    document.body.appendChild(d);
+    var ta=document.getElementById('copiar-amano-txt');
+    // Por valor y no por innerHTML: un mail con < o & se rompia al pintarlo.
+    if(ta){ ta.value=t; ta.focus(); ta.select(); }
+  }catch(e){ try{ alert(t); }catch(e2){} }
+}
+function _copiarTexto(t, msg){
+  t=String(t==null?'':t);
+  if(!t){ toast('No hay nada para copiar','red'); return; }
+  var listo=function(){ toast(msg||'Copiado'); };
+  var plan2=function(){ if(_copiarViejo(t)) listo(); else _copiarAMano(t); };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(listo, plan2);
+      return;
+    }
+  }catch(e){}
+  plan2();
+}
+function _copiar(t){ _copiarTexto(t); }
 // Para pegar de una en el invitador de GHL, que acepta varios separados por coma.
 function _copiarMails(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
@@ -41435,9 +41494,7 @@ function _copiarMails(clientId){
   if(c.email) ms.push(c.email);
   (c.equipo||[]).forEach(function(p){ var m=_eqMail(p); if(m && ms.indexOf(m)<0) ms.push(m); });
   if(!ms.length){ toast('No hay mails cargados'); return; }
-  navigator.clipboard.writeText(ms.join(', ')).then(function(){
-    toast(ms.length+' mail'+(ms.length===1?'':'s')+' copiados');
-  },function(){});
+  _copiarTexto(ms.join(', '), ms.length+' mail'+(ms.length===1?'':'s')+' copiados');
 }
 
 // ---- Tableros embebidos (Whimsical, Figma, Loom) -------------------------
