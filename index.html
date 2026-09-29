@@ -35896,13 +35896,68 @@ async function citasHuecos(clientId, ids){
         return y===f;
       }).sort(function(a,b){ return a-b; });
     if(!hoy.length){
-      /* Decir si el filtro de persona esta puesto: "sin horarios" a secas hace
-         pensar que el calendario esta lleno, cuando lo mas comun es que la
-         persona elegida no tenga disponibilidad cargada ahi y el equipo si. */
+      /* ⚠️  ANTES DE DECIR "no hay horarios", AVERIGUAR DE QUIEN ES EL PROBLEMA.
+         Con el filtro de persona puesto, vacio puede querer decir dos cosas muy
+         distintas: que ese dia el calendario esta cerrado, o que esta abierto y
+         GHL cree que ESA persona esta ocupada -casi siempre por su Google
+         conectado, que puede tener un evento que en el tracker no se ve-. El
+         mensaje de antes era el mismo para las dos, y mandaba a probar otra
+         fecha cuando la fecha estaba bien. Se vuelve a preguntar sin filtro y
+         se dice cual de las dos es. */
+      var _equipo=[];
+      if(_q){
+        try{
+          var rt=await agLlamar({accion:'huecos', calendarId:calUsar, dia:f});
+          _equipo=(rt.slots||[]).map(function(x){ return new Date(x); })
+            .filter(function(d){
+              if(isNaN(d.getTime())) return false;
+              var y=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+              return y===f;
+            }).sort(function(a,b){ return a-b; });
+          // Los ISO del equipo, para poder agendar sobre uno sin reconstruirlo.
+          var _isosEq={};
+          (rt.slots||[]).forEach(function(x){
+            var d3=new Date(x);
+            if(isNaN(d3.getTime())) return;
+            var y3=d3.getFullYear()+'-'+('0'+(d3.getMonth()+1)).slice(-2)+'-'+('0'+d3.getDate()).slice(-2);
+            if(y3!==f) return;
+            _isosEq[('0'+d3.getHours()).slice(-2)+':'+('0'+d3.getMinutes()).slice(-2)]=String(x);
+          });
+          if(_equipo.length){
+            S._huecos=S._huecos||{};
+            S._huecos[ids.caja]={dia:f, isos:_isosEq, sinPersona:true,
+              horas:_equipo.map(function(d){
+                return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); })};
+          }
+        }catch(e2){}
+      }
+      if(_equipo.length){
+        var _quienNom='';
+        try{
+          var _sq=document.getElementById('cita-quien');
+          _quienNom=_sq&&_sq.options[_sq.selectedIndex]?String(_sq.options[_sq.selectedIndex].text||''):'';
+        }catch(e3){}
+        caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx);display:block;margin-bottom:5px">'
+          +'Ese dia el calendario tiene '+_equipo.length+' horario'+(_equipo.length===1?'':'s')
+          +' libre'+(_equipo.length===1?'':'s')+', pero GHL dice que '
+          +esc(_quienNom||'esa persona')+' no esta disponible en ninguno. '
+          +'Suele ser un evento de su Google conectado que aca no se ve.'
+          +'</span>'
+          +'<span style="font-size:10.5px;color:var(--text3);margin-right:6px">'
+          +'Horarios del equipo:</span>'
+          +_equipo.map(function(d){
+            var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+            return '<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;margin:0 4px 4px 0" '
+              +'onclick="citasElegirHora(\''+hh+'\',\''+ids.hora+'\')">'+hh+'</button>';
+          }).join('')
+          +'<span style="font-size:10px;color:var(--text3);display:block;margin-top:3px">'
+          +'Si elegis uno de estos, la cita se agenda en el calendario del equipo y '
+          +'no a nombre de '+esc(_quienNom||'esa persona')+'.</span>';
+        return;
+      }
       caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">'
-        +'Sin horarios libres ese dia'
-        +(_q?' para esa persona en ese calendario. Proba otra fecha, u otra persona en "Quien la toma".'
-            :' en ese calendario. Proba otra fecha.')
+        +'Ese dia no hay ningun horario libre en ese calendario'
+        +(_q?', ni para esa persona ni para el equipo. Proba otra fecha.':'. Proba otra fecha.')
         +'</span>';
       return;
     }
