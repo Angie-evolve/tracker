@@ -2131,6 +2131,7 @@ table,.vh-cost,.metric-value,.vh-costs,.metrics-row{font-variant-numeric:tabular
         <div class="torre-sub-item" data-k="tickets" onclick="irTorre('tickets')">Tickets</div>
         <div class="torre-sub-item" data-k="actividad" onclick="irTorre('actividad')">Actividad</div>
         <div class="torre-sub-item" data-k="panel360" onclick="irTorre('panel360')">Panel 360</div>
+        <div class="torre-sub-item" data-k="calendario" onclick="irTorre('calendario')">Calendario</div>
         <div class="torre-sub-item" data-k="editor" onclick="irTorre('editor')">Editor con IA</div>
         <div class="torre-sub-item" data-k="estaticos" onclick="irTorre('estaticos')">Estáticos con IA</div>
         <div class="torre-sub-item" data-k="rentabilidad" id="nav-rentabilidad" onclick="irTorre('rentabilidad')">Rentabilidad</div>
@@ -18406,6 +18407,236 @@ function _torreSubMarcar(){
 
 // Cartel para las secciones que existen pero hoy no tienen nada que mostrar.
 // Mejor decirlo que dejar la pantalla en blanco.
+// ---------- Calendario del equipo ----------
+// Las llamadas estaban repartidas: las agendadas en la ficha de cada cliente,
+// las grabadas en su pestana de llamadas. Para saber que tiene el equipo esta
+// semana habia que abrir cliente por cliente. Aca se juntan las de todos.
+//
+// Dos origenes, a proposito: `citas` es lo que esta AGENDADO -tiene con quien,
+// quien la toma y en que calendario- y `fathomCalls` es lo que PASO y quedo
+// grabado. Una llamada vieja suele estar en los dos: no se deduplica por hora
+// porque la grabada trae la duracion real y el link, y la agendada trae quien
+// la iba a tomar. Se muestran con icono distinto y se ve enseguida cual es cual.
+var CAL_LADOS=[{k:'todas',l:'Todas'},{k:'ventas',l:'Ventas'},{k:'delivery',l:'Delivery'}];
+function _calEstado(){
+  // En el telefono la grilla del mes entra apretada y hay que arrastrar de
+  // costado para leerla. Mientras no se elija una vista a mano, se arranca en
+  // lista, que es la que se lee de un vistazo en una pantalla angosta.
+  var porDefecto='mes';
+  try{ if(window.innerWidth && window.innerWidth<760) porDefecto='lista'; }catch(e){}
+  return {mes:S.calMes||null, lado:S.calFiltro||'todas', vista:S.calVista||porDefecto};
+}
+// Antes del Onboarding es venta; de ahi en adelante, entrega. La linea la marca
+// la ruta configurada, no una lista escrita a mano: si se renombra una etapa o
+// se agrega una, esto sigue andando.
+function _calLadoDeEtapa(et){
+  if(!et) return '';
+  var cols=rutaColumnas().map(function(e){ return String(e.l||''); });
+  var i=cols.indexOf(String(et));
+  if(i<0){
+    // Sub-etapa: cuenta como su etapa madre.
+    var pa=null; try{ pa=rutaPadre(String(et)); }catch(e){}
+    if(pa) i=cols.indexOf(String(pa));
+  }
+  if(i<0) return '';
+  var iOnb=_iOnboarding();
+  if(iOnb<0) return '';
+  return i<iOnb ? 'ventas' : 'delivery';
+}
+// Cuando no hay etapa -una cita suelta, o una llamada grabada- se clasifica por
+// el texto, con las mismas palabras clave que usa la ruta para tildar etapas.
+function _calLadoDeTexto(txt){
+  var t=String(txt||'');
+  if(!t.trim()) return '';
+  var RD=rutaDef();
+  for(var i=0;i<RD.length;i++){
+    if(RD[i].re && RD[i].re.test(t)) return _calLadoDeEtapa(RD[i].l);
+  }
+  return '';
+}
+// "25/9/2026" es lo que guarda Fathom. Date.parse lo lee como mes/dia y corre
+// las fechas: el 25/9 se volvia invalido y el 5/9 aparecia en mayo.
+function _calFechaFathom(str){
+  var m=String(str||'').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) { var d0=new Date(str); return isNaN(d0.getTime())?null:d0; }
+  var d=new Date(+m[3], +m[2]-1, +m[1], 12, 0, 0);
+  return isNaN(d.getTime())?null:d;
+}
+function _calNombreDe(mail){
+  var p=(DB.personas||[]).filter(function(x){
+    return String(x.email||'').toLowerCase()===String(mail||'').toLowerCase(); })[0];
+  return p ? String(p.nombre||p.email||'') : String(mail||'');
+}
+function _calEntradas(){
+  var out=[];
+  (DB.clients||[]).forEach(function(c){
+    var cn=String(c.name||'');
+    Object.keys(c.citas||{}).forEach(function(et){
+      var x=(c.citas||{})[et];
+      if(!x||!x.inicio) return;
+      var d=new Date(x.inicio);
+      if(isNaN(d.getTime())) return;
+      out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:et,
+        titulo:String(x.titulo||et||''), con:String(x.con||''),
+        quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
+        cal:String(x.calendario||''),
+        lado:_calLadoDeEtapa(et)||_calLadoDeTexto(String(x.calendario||'')+' '+String(x.titulo||''))});
+    });
+    (c.citasSinEtapa||[]).forEach(function(x){
+      if(!x||!x.inicio) return;
+      var d=new Date(x.inicio);
+      if(isNaN(d.getTime())) return;
+      out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:'',
+        titulo:String(x.titulo||''), con:String(x.con||''),
+        quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
+        cal:String(x.calendario||''),
+        lado:_calLadoDeTexto(String(x.titulo||''))});
+    });
+    (c.fathomCalls||[]).forEach(function(x){
+      if(!x) return;
+      var d=_calFechaFathom(x.date);
+      if(!d) return;
+      out.push({at:d, cli:cn, cliId:c.id, tipo:'llamada', etapa:String(x.tipo||''),
+        titulo:String(x.title||''), con:'', quien:_calNombreDe(x.grabo),
+        estado:'', dur:String(x.duration||''), url:String(x.url||''),
+        soloDia:true,
+        lado:_calLadoDeEtapa(String(x.tipo||''))
+             ||_calLadoDeTexto(String(x.tipo||'')+' '+String(x.title||''))});
+    });
+  });
+  return out.sort(function(a,b){ return a.at-b.at; });
+}
+function calFiltro(k){ S.calFiltro=k; showTickets(); }
+function calVista(k){ S.calVista=k; showTickets(); }
+function calMover(d){
+  var e=_calEstado();
+  var base=e.mes?new Date(e.mes+'-01T12:00:00'):new Date();
+  base.setDate(1); base.setMonth(base.getMonth()+d);
+  S.calMes=base.getFullYear()+'-'+('0'+(base.getMonth()+1)).slice(-2);
+  showTickets();
+}
+function calHoy(){ S.calMes=null; showTickets(); }
+var _CAL_MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+                'septiembre','octubre','noviembre','diciembre'];
+function _calChip(e){
+  var hh=e.soloDia?'':(('0'+e.at.getHours()).slice(-2)+':'+('0'+e.at.getMinutes()).slice(-2));
+  var cancel=(e.estado==='cancelled');
+  var col=e.lado==='ventas'?'var(--amberx)':(e.lado==='delivery'?'var(--accent)':'var(--text3)');
+  return '<div onclick="selectClient('+e.cliId+')" title="'
+      +esc(e.titulo+(e.quien?(' · '+e.quien):'')+(e.cal?(' · '+e.cal):''))+'" '
+      +'style="display:flex;gap:5px;align-items:baseline;cursor:pointer;font-size:10.5px;'
+      +'padding:2px 4px;border-radius:4px;border-left:2px solid '+col+';background:var(--bg3);'
+      +'margin-bottom:3px;'+(cancel?'opacity:.45;text-decoration:line-through':'')+'">'
+    +(hh?'<span style="color:var(--text3);flex:none">'+hh+'</span>':'')
+    +'<span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      +esc(e.cli)+'</span>'
+    +(e.quien?'<span style="color:var(--text3);flex:none">'+esc(e.quien.split(' ')[0])+'</span>':'')
+    +'</div>';
+}
+function calendarioHtml(){
+  var e=_calEstado();
+  var todas=_calEntradas();
+  var lista=(e.lado==='todas')?todas:todas.filter(function(x){ return x.lado===e.lado; });
+  var sinClasif=todas.filter(function(x){ return !x.lado; }).length;
+  var hoy=new Date();
+  var ref=e.mes?new Date(e.mes+'-01T12:00:00'):new Date(hoy.getFullYear(),hoy.getMonth(),1,12);
+  var y=ref.getFullYear(), m=ref.getMonth();
+
+  var pills=CAL_LADOS.map(function(x){
+    var on=(e.lado===x.k);
+    var n=(x.k==='todas')?todas.length:todas.filter(function(z){ return z.lado===x.k; }).length;
+    return '<button class="btn btn-sm'+(on?' btn-primary':'')+'" '
+      +'style="font-size:11.5px;padding:3px 11px" onclick="calFiltro(\''+x.k+'\')">'
+      +x.l+' <span style="opacity:.6">'+n+'</span></button>';
+  }).join('');
+  var vistas=[{k:'mes',l:'Mes'},{k:'lista',l:'Lista'}].map(function(x){
+    return '<button class="btn btn-sm'+(e.vista===x.k?' btn-primary':'')+'" '
+      +'style="font-size:11.5px;padding:3px 11px" onclick="calVista(\''+x.k+'\')">'+x.l+'</button>';
+  }).join('');
+
+  var cab='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
+    +'<button class="btn btn-sm" style="padding:3px 9px" onclick="calMover(-1)">‹</button>'
+    +'<span style="font-size:14px;color:var(--strong);min-width:150px">'
+      +_CAL_MESES[m]+' '+y+'</span>'
+    +'<button class="btn btn-sm" style="padding:3px 9px" onclick="calMover(1)">›</button>'
+    +'<button class="btn btn-sm" style="font-size:11.5px;padding:3px 11px" onclick="calHoy()">Hoy</button>'
+    +'<span style="flex:1"></span>'+vistas
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">'+pills+'</div>'
+    +'<div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">'
+      +'Lo agendado y lo grabado, de todos los clientes. Ventas es todo lo anterior al '
+      +'Onboarding; Delivery, de ahi en adelante.'
+      +(sinClasif?(' <span style="color:var(--amberx)">'+sinClasif+' sin clasificar: solo '
+        +'aparecen en Todas.</span>'):'')
+    +'</div>';
+
+  if(e.vista==='lista'){
+    // De hoy en adelante primero: lo que viene es lo que se mira.
+    var desde=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate());
+    var prox=lista.filter(function(x){ return x.at>=desde; });
+    var pas=lista.filter(function(x){ return x.at<desde; }).reverse();
+    var bloque=function(tit,arr){
+      if(!arr.length) return '';
+      var porDia={};
+      arr.forEach(function(x){
+        var k=x.at.getFullYear()+'-'+('0'+(x.at.getMonth()+1)).slice(-2)+'-'+('0'+x.at.getDate()).slice(-2);
+        (porDia[k]=porDia[k]||[]).push(x);
+      });
+      return '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;'
+          +'letter-spacing:.06em;margin:16px 0 6px">'+tit+'</div>'
+        +Object.keys(porDia).map(function(k){
+          var d=new Date(k+'T12:00:00');
+          return '<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--border)">'
+            +'<div style="flex:none;width:96px;font-size:11.5px;color:var(--text2)">'
+              +d.getDate()+' '+_CAL_MESES[d.getMonth()].slice(0,3)+'</div>'
+            +'<div style="flex:1;min-width:0">'+porDia[k].map(_calChip).join('')+'</div>'
+          +'</div>';
+        }).join('');
+    };
+    var cuerpo=bloque('Lo que viene',prox)+bloque('Lo que ya paso',pas);
+    return '<div style="background:var(--bg2);border:1px solid var(--border);'
+      +'border-radius:var(--radius-lg);padding:16px">'+cab
+      +(cuerpo||_torreVacio('Sin llamadas','No hay ninguna con ese filtro.'))+'</div>';
+  }
+
+  // Grilla del mes. Arranca en lunes.
+  var prim=new Date(y,m,1);
+  var corr=(prim.getDay()+6)%7;
+  var ini=new Date(y,m,1-corr);
+  var porDia={};
+  lista.forEach(function(x){
+    var k=x.at.getFullYear()+'-'+('0'+(x.at.getMonth()+1)).slice(-2)+'-'+('0'+x.at.getDate()).slice(-2);
+    (porDia[k]=porDia[k]||[]).push(x);
+  });
+  var dias=['Lun','Mar','Mie','Jue','Vie','Sab','Dom'];
+  var celdas='';
+  for(var i=0;i<42;i++){
+    var d=new Date(ini.getFullYear(),ini.getMonth(),ini.getDate()+i);
+    var k=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+    var fuera=(d.getMonth()!==m);
+    var esHoy=(d.toDateString()===hoy.toDateString());
+    var ev=porDia[k]||[];
+    if(i>=35 && !ev.length && fuera) continue;
+    celdas+='<div style="min-height:86px;padding:5px 6px;border:1px solid var(--border);'
+      +'border-radius:6px;background:'+(esHoy?'rgba(78,207,160,.06)':'var(--bg2)')+';'
+      +(fuera?'opacity:.4;':'')+'overflow:hidden">'
+      +'<div style="font-size:10.5px;margin-bottom:4px;color:'
+        +(esHoy?'var(--accent)':'var(--text3)')+'">'+d.getDate()+'</div>'
+      +ev.slice(0,4).map(_calChip).join('')
+      +(ev.length>4?('<div style="font-size:10px;color:var(--text3)">+'+(ev.length-4)+' mas</div>'):'')
+    +'</div>';
+  }
+  return '<div style="background:var(--bg2);border:1px solid var(--border);'
+      +'border-radius:var(--radius-lg);padding:16px">'+cab
+    +'<div style="overflow-x:auto">'
+    +'<div style="min-width:680px">'
+      +'<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">'
+        +dias.map(function(x){ return '<div style="font-size:10px;color:var(--text3);'
+          +'text-transform:uppercase;letter-spacing:.06em;padding-left:3px">'+x+'</div>'; }).join('')
+      +'</div>'
+      +'<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">'+celdas+'</div>'
+    +'</div></div></div>';
+}
 function _torreVacio(titulo, texto){
   return '<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
     +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">'+titulo+'</div>'
@@ -18898,6 +19129,7 @@ function showTickets(){
       :(_torre==='editor'?editorIaHtml()
       :(_torre==='panel360'?p360Html()
       :(_torre==='rentabilidad'?(verPlata()?rentabilidadHtml():_torreVacio('Rentabilidad','Esta seccion no esta habilitada para tu usuario.'))
+      :(_torre==='calendario'?calendarioHtml()
       :(_torre==='actividad'?_actividadHtml():(''
     +rvAprobacionesHtml()
     +progresoHtml
@@ -18940,7 +19172,7 @@ function showTickets(){
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
-        +'</div>'))))))))))) 
+        +'</div>')))))))))))) 
     +'</div>';
   // La campanita se repinta en cada render: lo que muestra depende de la
   // pantalla, y el render es el unico momento en que se sabe cual es.
