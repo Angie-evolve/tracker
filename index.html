@@ -32409,8 +32409,31 @@ function _hitoEstado(c, x){
     return {ok:hay, porque:hay?'el contrato esta cargado':'todavia no hay contrato cargado'};
   }
   if(/campana(s)? prendida|campanas activas/.test(t)){
-    var viva=(c.conversionLines||[]).some(function(L){ return L.live; });
-    return {ok:viva, porque:viva?'hay una linea de conversion activa':'ninguna linea activa'};
+    /* ⚠️  EL CAMPO ES `status`, NO `live`. Las lineas de conversion no tienen
+       ninguna propiedad `live` -cero de 63 en la base-, asi que esta regla daba
+       falso para todo el mundo y el hito no se pudo disparar nunca, para ningun
+       cliente. `live` si existe, pero es de adsDot(), que es otra cosa.
+
+       Y es un hito de LANZAMIENTO, no un estado de este segundo: una campana que
+       se prendio y despues se pauso un dia ya cumplio el hito. Por eso se mira
+       el gasto acumulado y no si esta entregando ahora, que ademas se destildaria
+       solo en la proxima revision. */
+    var _ad=null; try{ _ad=adsDot(c); }catch(e){}
+    if(_ad && _ad.live) return {ok:true, porque:'las campanas estan entregando'};
+    var gasto=0, hayAct=false;
+    (c.conversionLines||[]).forEach(function(L){
+      if(String(L.status||'')!=='activa' && !L.live) return;
+      hayAct=true;
+      var fuera=(L.excludedCampaigns||[]);
+      ((L.metaCampaigns)||[]).forEach(function(cp){
+        if(fuera.indexOf(cp.id)>=0) return;
+        gasto+=Number(cp.spend)||0;
+      });
+    });
+    if(gasto>0) return {ok:true,
+      porque:'la campana ya gasto '+Math.round(gasto).toLocaleString('es-AR')};
+    if(hayAct) return {ok:false, porque:'hay linea activa pero la campana todavia no gasto'};
+    return {ok:false, porque:'ninguna linea de conversion activa'};
   }
   return null;   // no medible: se tilda a mano
 }
