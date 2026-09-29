@@ -3244,7 +3244,33 @@ function save(){
 // conversionLines.reduce sobre undefined y la pestana quedaba en blanco, sin
 // error a la vista. Se completan al cargar, que es el unico lugar por donde
 // pasan todos los clientes vengan de donde vengan.
+// ---------- Papelera ----------
+// Borrar era irreversible y pedia escribir el nombre entero para confirmar, asi
+// que en la practica no se borraba nada: se quedaba todo archivado ocupando
+// lugar. Ahora borrar es un solo confirmar, y lo borrado vive 7 dias en una
+// papelera de la que se recupera entero. Pasados los 7 dias se va solo.
+var _PAPELERA_DIAS=7;
+var _PAPELERA_MAX=20;
+function papeleraLista(){
+  return (DB.papelera||[]).slice().sort(function(a,b){ return (b.at||0)-(a.at||0); });
+}
+// Corre en cada carga, desde _normalizarClientes. La fila de Supabase ya se
+// borro al mandarlo a la papelera, asi que vencer aca es el borrado definitivo:
+// no hay nada mas que limpiar.
+function papeleraBarrer(){
+  var antes=(DB.papelera||[]).length;
+  if(!antes) return false;
+  var lim=Date.now()-_PAPELERA_DIAS*86400000;
+  var l=papeleraLista().filter(function(x){ return (x.at||0)>lim; });
+  if(l.length>_PAPELERA_MAX) l=l.slice(0,_PAPELERA_MAX);
+  DB.papelera=l;
+  return l.length!==antes;
+}
+function _papeleraDias(x){
+  return Math.max(0, Math.ceil(((x.at||0)+_PAPELERA_DIAS*86400000-Date.now())/86400000));
+}
 function _normalizarClientes(){
+  try{ papeleraBarrer(); }catch(e){}
   (DB.clients||[]).forEach(function(c){
     if(!Array.isArray(c.conversionLines)) c.conversionLines=[];
     if(!Array.isArray(c.tasks)) c.tasks=[];
@@ -4401,47 +4427,110 @@ function adsDot(c){
 // Borrar de verdad, no archivar. Se ofrece solo sobre clientes ya archivados:
 // obliga a pasar por archivar primero, que es reversible, antes del paso que no
 // tiene vuelta. Y libera el espacio que archivar no libera.
-function borrarClienteDefinitivo(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
+// Manda un cliente a la papelera. Antes esto borraba para siempre y pedia
+// escribir el nombre entero para confirmar: con un prospecto que se llama
+// "nombre@gmail.com" eso es imposible de acertar, y el borrado fallaba en
+// silencio con un toast rojo que se iba solo. Ahora es un confirmar y listo,
+// porque lo que lo hace seguro son los 7 dias de papelera, no la friccion.
+function clienteALaPapelera(clientId){
+  var c=(DB.clients||[]).find(function(x){return x.id===clientId;});
   if(!c) return;
-  var peso=(typeof _pesoMB==='function')?_pesoMB(c):0;
   var det=[];
   if((c.tasks||[]).length) det.push((c.tasks||[]).length+' tareas');
   if(c.ghl&&(c.ghl.opportunities||[]).length) det.push((c.ghl.opportunities||[]).length+' oportunidades');
   if((c.conversionLines||[]).length) det.push((c.conversionLines||[]).length+' lineas de conversion');
   if((c.fathomCalls||[]).length) det.push((c.fathomCalls||[]).length+' llamadas');
-  var txt='Borrar a '+c.name+' para siempre?\n\n'
-    +'Se pierde'+(det.length?(': '+det.join(', ')):' todo su historial')+'.\n'
-    +(peso?('Libera unos '+peso.toFixed(2)+' MB.\n'):'')
-    +'\nEsto no se puede deshacer. Si solo querés sacarlo de la vista, cancela y dejalo archivado.';
-  if(!confirm(txt)) return;
-  // Segunda confirmacion escribiendo el nombre: es irreversible y el historial
-  // de un cliente no se recupera de ningun lado.
-  var tecleado=prompt('Escribi el nombre del cliente para confirmar:', '');
-  if(tecleado===null) return;
-  if(_n(tecleado)!==_n(c.name)){ toast('El nombre no coincide, no borre nada','red'); return; }
-  DB.clients=DB.clients.filter(function(x){return x.id!==clientId;});
-  delete _sbHuellas[clientId];
-  // Igual que con los prospectos: si el DELETE de la nube falla, sbBajar lo
-  // devolvia entero en la siguiente carga y no habia forma de sacarlo.
+  if(!confirm('Mandar a "'+(c.name||'')+'" a la papelera?\n\n'
+    +(det.length?('Se lleva '+det.join(', ')+'.\n'):'')
+    +'Sale del sidebar, del tablero y de las metricas.\n\n'
+    +'Lo podes recuperar entero durante '+_PAPELERA_DIAS+' dias desde '
+    +'Configuracion de agencia. Despues se borra solo.')) return;
+  // Copia propia: el objeto sigue vivo en memoria hasta que alguien lo suelte,
+  // y si algo lo toca despues la papelera guardaria otra cosa.
+  var copia; try{ copia=JSON.parse(JSON.stringify(c)); }catch(e){ copia=c; }
+  DB.papelera=(DB.papelera||[]).filter(function(x){ return String(x.id)!==String(clientId); });
+  DB.papelera.push({id:String(clientId), nombre:c.name||'', at:Date.now(),
+                    prospecto:(typeof esProspecto==='function'&&esProspecto(c))||false, c:copia});
+  // Un prospecto se crea solo desde las llamadas de Fathom: sin el mail en la
+  // lista, la siguiente sincronizacion lo vuelve a crear igual.
+  var mail=String(c.email||'').trim().toLowerCase();
+  if(mail && typeof esProspecto==='function' && esProspecto(c)){
+    DB.prospectosNo=DB.prospectosNo||[];
+    if(DB.prospectosNo.indexOf(mail)<0) DB.prospectosNo.push(mail);
+  }
+  // Por id ademas de por mail: el mail frena a Fathom, el id frena a sbBajar,
+  // que es el otro camino por el que la tarjeta volvia sola.
   DB.clientesBorrados=DB.clientesBorrados||[];
   if(DB.clientesBorrados.indexOf(String(clientId))<0)
     DB.clientesBorrados.push(String(clientId));
+  DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
+  try{ delete _sbHuellas[clientId]; }catch(e){}
+  if(S.clientId===clientId){ S.view='overview'; S.clientId=null; }
+  if(S.p360Abierto===clientId) S.p360Abierto=null;
   save();
-  S.view='overview'; S.clientId=null;
-  renderSidebar(); showOverview();
-  // Supabase es la fuente al recargar: si la fila queda, sbBajar() lo devuelve
-  // y el borrado se deshace solo. Hay que sacarlo de los dos lados.
+  _repintarTrasBorrar();
+  // Supabase es la fuente al recargar: si la fila queda, sbBajar la devuelve y
+  // el borrado se deshace solo. Hay que sacarla de los dos lados.
   if(SB && SB.listo){
-    toast('Borrando de la nube...');
     sbFetch('clientes?id=eq.'+encodeURIComponent(clientId), {method:'DELETE'})
-      .then(function(){ toast(c.name+' borrado'); })
+      .then(function(){ toast((c.name||'El cliente')+' esta en la papelera'); })
       .catch(function(e){
-        toast('Se borro aca pero no en la nube: '+(e&&e.message||'')+'. Al recargar puede volver.','red');
+        toast('Fue a la papelera aca pero no en la nube: '+(e&&e.message||'')
+          +'. Al recargar puede volver.','red');
       });
   } else {
-    toast(c.name+' borrado de este navegador');
+    toast((c.name||'El cliente')+' esta en la papelera de este navegador');
   }
+}
+// El nombre viejo sigue llamando: hay menus y vistas que lo usan, y desde hoy
+// todos van a la papelera en vez de borrar.
+function borrarClienteDefinitivo(clientId){ return clienteALaPapelera(clientId); }
+function _repintarTrasBorrar(){
+  try{ renderSidebar(); }catch(e){}
+  try{
+    if(S.view==='cfgAgencia') abrirConfigAgencia();
+    else if(S.view==='tickets') showTickets();
+    else showOverview();
+  }catch(e){}
+}
+// Lo saca de la papelera y lo devuelve entero. Hay que sacarle el id de
+// clientesBorrados ademas de volver a ponerlo en la lista: al bajar, esa lista
+// se une con la de la nube y filtraria de nuevo al que acabamos de recuperar.
+function papeleraRecuperar(id){
+  var it=(DB.papelera||[]).find(function(x){ return String(x.id)===String(id); });
+  if(!it||!it.c) return;
+  if(!confirm('Recuperar a "'+(it.nombre||'')+'"?\n\n'
+    +'Vuelve entero, con todo su historial, al lugar donde estaba.')) return;
+  DB.clientesBorrados=(DB.clientesBorrados||[])
+    .filter(function(v){ return String(v)!==String(id); });
+  var mail=String(it.c.email||'').trim().toLowerCase();
+  if(mail) DB.prospectosNo=(DB.prospectosNo||[])
+    .filter(function(v){ return String(v).trim().toLowerCase()!==mail; });
+  DB.clients=DB.clients||[];
+  if(!DB.clients.some(function(x){ return String(x.id)===String(it.c.id); }))
+    DB.clients.push(it.c);
+  DB.papelera=(DB.papelera||[]).filter(function(x){ return String(x.id)!==String(id); });
+  try{ delete _sbHuellas[it.c.id]; }catch(e){}
+  try{ (DB.clients||[]).forEach(function(c){
+    if(!Array.isArray(c.conversionLines)) c.conversionLines=[];
+    if(!Array.isArray(c.tasks)) c.tasks=[];
+    if(!Array.isArray(c.fathomCalls)) c.fathomCalls=[];
+  }); }catch(e){}
+  save();
+  toast((it.nombre||'El cliente')+' volvio');
+  _repintarTrasBorrar();
+}
+// Borrar antes de que venzan los 7 dias. La fila de la nube ya no existe: lo
+// unico que queda es sacarlo de la papelera.
+function papeleraBorrarYa(id){
+  var it=(DB.papelera||[]).find(function(x){ return String(x.id)===String(id); });
+  if(!it) return;
+  if(!confirm('Borrar a "'+(it.nombre||'')+'" para siempre?\n\n'
+    +'Esto si no se puede deshacer.')) return;
+  DB.papelera=(DB.papelera||[]).filter(function(x){ return String(x.id)!==String(id); });
+  save();
+  toast((it.nombre||'El cliente')+' se borro para siempre');
+  _repintarTrasBorrar();
 }
 
 function toggleArchiveClient(clientId){
@@ -6027,8 +6116,8 @@ function _clientListHtml(){
           ?'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>'
           :'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>')
       +'</span>'
-      +(c.archived
-        ?('<span onclick="event.stopPropagation();borrarClienteDefinitivo('+c.id+')" title="Borrar para siempre" '
+      +(true
+        ?('<span onclick="event.stopPropagation();clienteALaPapelera('+c.id+')" title="Mandar a la papelera" '
           +'style="flex-shrink:0;cursor:pointer;color:var(--redx);opacity:.5;padding:2px 4px" '
           +'onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.5">'
           +'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></span>')
@@ -12544,6 +12633,32 @@ function _sesionHtml(){
     +(quien?'<button class="btn btn-sm" onclick="if(confirm(\'Cerrar sesion? Tus datos quedan guardados en este navegador.\')) sbCerrarSesion()">Cerrar sesion</button>':'')
     +'</div>';
 }
+function _papeleraHtml(){
+  var l=[]; try{ l=papeleraLista(); }catch(e){}
+  var filas=l.map(function(x){
+    var d=_papeleraDias(x);
+    return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;'
+        +'padding:10px 0;border-top:1px solid var(--border)">'
+      +'<div style="flex:1;min-width:190px">'
+        +'<div style="font-size:13px;color:var(--text)">'+esc(x.nombre||'(sin nombre)')
+        +(x.prospecto?' <span style="font-size:10.5px;color:var(--text3)">prospecto</span>':'')+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin-top:2px">'
+        +(d>0?('queda'+(d===1?'':'n')+' '+d+' dia'+(d===1?'':'s')):'se borra hoy')+'</div>'
+      +'</div>'
+      +'<button class="btn btn-sm" onclick="papeleraRecuperar(\''+esc(String(x.id))+'\')">Recuperar</button>'
+      +'<button class="btn btn-sm" style="color:var(--redx)" '
+        +'onclick="papeleraBorrarYa(\''+esc(String(x.id))+'\')">Borrar ya</button>'
+      +'</div>';
+  }).join('');
+  return '<div style="padding:13px 15px;margin-bottom:22px;border:1px solid var(--border);border-radius:9px">'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Papelera</div>'
+    +(l.length
+      ? ('<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+         +'Lo que borres vive aca '+_PAPELERA_DIAS+' dias y se recupera entero. Despues se va solo.</div>'+filas)
+      : '<div style="font-size:13px;color:var(--text)">Vacia. Lo que borres va a aparecer aca, '
+        +'y lo vas a poder recuperar entero durante '+_PAPELERA_DIAS+' dias.</div>')
+    +'</div>';
+}
 function configAgenciaHtml(){
   var a=cfgAg();
   // Sin tope de ancho: la grilla de integraciones se reparte igual que en la
@@ -12559,6 +12674,7 @@ function configAgenciaHtml(){
       +'puede crear y borrar subcuentas de todos los clientes.</div>'
 
     +_sesionHtml()
+    +_papeleraHtml()
     +integracionesAppHtml()
     +'<div id="ag-sub-detalle" style="display:'+(S._agAbierto?'block':'none')+';margin-top:2px;padding:16px 0 4px;border-top:1px solid var(--border)">'
       +'<div style="font-size:12px;color:var(--text3);margin-bottom:18px;line-height:1.6">'
@@ -30447,6 +30563,76 @@ function _ncPagoCampo(i, campo, el){
   // Cambiar de fecha a hito cambia que input va: hay que redibujar la fila.
   if(campo==='tipo') _ncPagosRepintar();
 }
+// Buscar antes de crear. Un cliente puede estar cargado y no verse: archivado,
+// en una etapa de venta que el tablero esconde, o cargado por otra persona del
+// equipo. Sin esto, la salida era crear uno nuevo y terminar con dos fichas del
+// mismo cliente. Busca en TODOS, sin ningun filtro, y tambien en la papelera.
+function _ncDondeEsta(c){
+  if(c.archived) return 'archivado';
+  if(esProspecto(c)) return 'prospecto';
+  var e=null; try{ e=_p360Etapa(c); }catch(x){}
+  if(e&&e.l) return e.l;
+  if(e&&typeof e==='string') return e;
+  return 'sin etapa';
+}
+function _ncBuscar(){
+  var box=document.getElementById('nc-buscar');
+  var res=document.getElementById('nc-buscar-res');
+  if(!res) return;
+  var q=_n((box&&box.value)||'');
+  // Si no escribio en el buscador, se usa el nombre que esta tipeando: el
+  // aviso de duplicado tiene que aparecer aunque nadie use la lupa.
+  if(!q){
+    var nm=document.getElementById('nc-name');
+    var ct=document.getElementById('nc-contact');
+    q=_n((nm&&nm.value)||'')||_n((ct&&ct.value)||'');
+  }
+  if(q.length<3){ res.innerHTML=''; res.style.display='none'; return; }
+  function pega(c){
+    return [c.name,c.email,c.contact,c.contactName,c.phone,c.company]
+      .some(function(v){ return v && _n(v).indexOf(q)>=0; });
+  }
+  var hay=(DB.clients||[]).filter(pega).slice(0,6);
+  var enPap=(DB.papelera||[]).filter(function(x){
+    return (x.nombre && _n(x.nombre).indexOf(q)>=0)
+        || (x.c && [x.c.email,x.c.contact].some(function(v){ return v && _n(v).indexOf(q)>=0; }));
+  }).slice(0,3);
+  if(!hay.length && !enPap.length){
+    res.style.display='block';
+    res.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">'
+      +'No hay ninguno cargado con eso. Segui y crealo.</div>';
+    return;
+  }
+  var filas=hay.map(function(c){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;'
+        +'border-top:1px solid var(--border)">'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+          +esc(c.name||'(sin nombre)')+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3);margin-top:1px">'
+          +esc(_ncDondeEsta(c))+(c.email?(' \u00b7 '+esc(c.email)):'')+'</div>'
+      +'</div>'
+      +'<button class="btn btn-sm" onclick="closeModal();selectClient('+c.id+')">Abrir</button>'
+      +'</div>';
+  }).join('');
+  var filasPap=enPap.map(function(x){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;'
+        +'border-top:1px solid var(--border)">'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13px;color:var(--text)">'+esc(x.nombre||'(sin nombre)')+'</div>'
+        +'<div style="font-size:11.5px;color:var(--amberx);margin-top:1px">en la papelera'
+          +' \u00b7 queda'+(_papeleraDias(x)===1?'':'n')+' '+_papeleraDias(x)+' dia'
+          +(_papeleraDias(x)===1?'':'s')+'</div>'
+      +'</div>'
+      +'<button class="btn btn-sm" onclick="papeleraRecuperar(\''+esc(String(x.id))+'\');closeModal()">Recuperar</button>'
+      +'</div>';
+  }).join('');
+  res.style.display='block';
+  res.innerHTML='<div style="font-size:12px;color:var(--amberx);padding:4px 0 2px">'
+      +'Ya hay '+(hay.length+enPap.length)+' cargado'+((hay.length+enPap.length)===1?'':'s')
+      +' con ese dato. Fijate antes de crear otro.</div>'
+    +filas+filasPap;
+}
 function openNewClientModal(){
   _ncPagos=[];
   _ncEquipo=[];
@@ -30468,6 +30654,12 @@ function openNewClientModal(){
       <div class="modal" style="width:min(1100px,94vw)">
         <div class="modal-title">Nuevo cliente</div>
         <div class="modal-sub">Con el nombre alcanza. Lo demas se puede completar despues desde la ficha.</div>
+        <div style="margin:0 0 16px">
+          <input id="nc-buscar" oninput="_ncBuscar()" autocomplete="off"
+                 placeholder="Buscar si ya esta cargado \u2014 nombre, mail o telefono"
+                 style="width:100%;box-sizing:border-box">
+          <div id="nc-buscar-res" style="display:none;margin-top:4px"></div>
+        </div>
         <div class="nc-cols" style="display:flex;gap:20px;align-items:flex-start">
           <div class="nc-nav" style="width:168px;flex:none;background:var(--bg3);border-radius:var(--radius);padding:8px 0">
             ${nav}
@@ -30484,9 +30676,9 @@ function openNewClientModal(){
                   </select></div>
                 <div class="form-row"><label class="form-label">Industria</label><input id="nc-industry" placeholder="Ej: Inmobiliaria" oninput="_ncNavPuntos()"></div>
               </div>
-              <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" oninput="_ncNavPuntos()" autofocus></div>
+              <div class="form-row" id="nc-empresa-row"><label class="form-label">Nombre / empresa</label><input id="nc-name" placeholder="Ej: InmoMax SA" oninput="_ncNavPuntos();_ncBuscar()" autofocus></div>
               <div class="form-2col">
-                <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona" oninput="_ncNavPuntos()"></div>
+                <div class="form-row"><label class="form-label" id="nc-cliente-label">Cliente</label><input id="nc-contact" placeholder="Nombre de la persona" oninput="_ncNavPuntos();_ncBuscar()"></div>
                 <div class="form-row"><label class="form-label">Email del cliente</label><input id="nc-email" type="email" placeholder="nombre@empresa.com" oninput="_ncNavPuntos();_ncPortalSync()"></div>
               </div>
               <!-- Fuera de la grilla de dos columnas y SIN class="form-row": como
@@ -33682,47 +33874,13 @@ function p360Cargar(clientId, etapa, esDoc){
 }
 // Borra una tarjeta de prospecto. Solo prospectos: un cliente de verdad tiene
 // facturacion, tickets y material colgando, y eso no se borra desde un tablero.
+// La x de la tarjeta de prospecto. Antes tenia su propio borrado, con su
+// propio confirmar y su propio texto: dos caminos que hacian casi lo mismo y
+// habia que acordarse de arreglar los dos. Ahora los dos van a la papelera.
 function p360BorrarProspecto(clientId){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c||!esProspecto(c)) return;
-  var n=(c.fathomCalls||[]).length;
-  if(!confirm('Borrar el prospecto "'+(c.name||'')+'"'
-    +(n?(n===1?' y su llamada guardada':(' y sus '+n+' llamadas guardadas')):'')+'?\n\n'
-    +'No se vuelve a crear, aunque aparezcan mas llamadas con ese mail.')) return;
-  // Sin esto volvia a aparecer sola: los prospectos se crean desde las llamadas
-  // de Fathom, asi que la siguiente sincronizacion la recreaba con el mismo
-  // mail. Borrar tiene que quedarse borrado.
-  var mail=String(c.email||'').trim().toLowerCase();
-  if(mail){
-    DB.prospectosNo=DB.prospectosNo||[];
-    if(DB.prospectosNo.indexOf(mail)<0) DB.prospectosNo.push(mail);
-  }
-  // Por id ademas de por mail: el mail frena a Fathom, el id frena a la
-  // sincronizacion, que es el otro camino por el que la tarjeta volvia.
-  DB.clientesBorrados=DB.clientesBorrados||[];
-  if(DB.clientesBorrados.indexOf(String(clientId))<0)
-    DB.clientesBorrados.push(String(clientId));
-  DB.clients=(DB.clients||[]).filter(function(x){ return x.id!==clientId; });
-  delete _sbHuellas[clientId];
-  if(S.p360Abierto===clientId) S.p360Abierto=null;
-  save();
-  // El panel vive en la torre: renderTab repinta la ficha de un cliente y
-  // dejaba la tarjeta en pantalla como si no se hubiera borrado.
-  showTickets();
-  // Sin esto la tarjeta volvia sola en la siguiente recarga, y borrarla de
-  // nuevo no servia de nada. sbSubir solo manda lo que cambio y nunca borra,
-  // asi que la fila seguia en Supabase y sbBajar la devolvia entera. La lista
-  // de borrados frenaba a Fathom, pero el que la recreaba era el sync.
-  if(SB && SB.listo){
-    sbFetch('clientes?id=eq.'+encodeURIComponent(clientId), {method:'DELETE'})
-      .then(function(){ toast('Prospecto borrado'); })
-      .catch(function(e){
-        toast('Se borro aca pero no en la nube: '+(e&&e.message||'')
-          +'. Al recargar puede volver.','red');
-      });
-  } else {
-    toast('Prospecto borrado de este navegador');
-  }
+  var c=(DB.clients||[]).find(function(x){return x.id===clientId;});
+  if(!c) return;
+  clienteALaPapelera(clientId);
 }
 // La lista de prospectos borrados ocupaba un renglon al pie del tablero para
 // algo que se toca una vez cada tanto. Se saco a pedido.
@@ -58748,9 +58906,9 @@ function herrAbrir(clientId, btn){
           ? 'Vuelve al sidebar y a las metricas'
           : 'Sale del sidebar. En el estado de resultados cuenta hasta el mes en '
             +'que lo archives, que es cuando dejo de facturar');
-  if(c.archived)
-    h+=op('borrarClienteDefinitivo('+c.id+')','Borrar para siempre',
-          'Saca todo su historial de las metricas y libera el espacio que archivar no libera');
+  h+=op('clienteALaPapelera('+c.id+')','Mandar a la papelera',
+        'Sale de todas las vistas y de las metricas. Se recupera entero durante '
+        +'7 dias desde Configuracion de agencia');
   e.innerHTML=h;
   e.style.display='block';
   document.querySelectorAll('.hdr-ico.on').forEach(function(b){ b.classList.remove('on'); });
