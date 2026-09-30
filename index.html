@@ -12673,6 +12673,10 @@ function _capacitacionHtml(){
     +'<div class="form-2col">'
       +'<div class="form-row"><label class="form-label">Fecha y hora</label>'
         +'<input id="cap-inicio" type="datetime-local" value="'+esc(_capLocal(k.inicio))+'"></div>'
+      +'<div class="form-row"><label class="form-label">Sesiones (semanales)</label>'
+        +'<input id="cap-ses" type="number" min="1" max="52" value="'+(k.sesiones||1)+'"></div>'
+    +'</div>'
+    +'<div class="form-2col">'
       +'<div class="form-row"><label class="form-label">Duracion (minutos)</label>'
         +'<input id="cap-min" type="number" min="5" max="480" value="'+(k.minutos||'')+'" placeholder="la del calendario"></div>'
     +'</div>'
@@ -12704,6 +12708,7 @@ function capGuardar(){
   }
   DB.capacitacion={nombre:v('cap-nombre'), cal:v('cap-cal'), inicio:iso,
                    minutos:parseInt(v('cap-min'),10)||0,
+                   sesiones:Math.max(1,Math.min(52,parseInt(v('cap-ses'),10)||1)),
                    userId:(DB.capacitacion&&DB.capacitacion.userId)||''};
   save();
   toast(capActiva()?'Capacitacion guardada':'Guardado. Falta nombre, calendario o fecha');
@@ -30389,7 +30394,8 @@ function _eqNombre(e){ return (e&&typeof e==='object')?String(e.nombre||''):Stri
 function capCfg(){
   var k=DB.capacitacion||{};
   return {cal:String(k.cal||''), nombre:String(k.nombre||''), inicio:String(k.inicio||''),
-          userId:String(k.userId||''), minutos:parseInt(k.minutos,10)||0};
+          userId:String(k.userId||''), minutos:parseInt(k.minutos,10)||0,
+          sesiones:Math.max(1, parseInt(k.sesiones,10)||1)};
 }
 function capActiva(){
   var k=capCfg();
@@ -30414,6 +30420,23 @@ function capDestinos(c){
     vistos[m.toLowerCase()]=1;
     out.push({mail:m, nombre:n||m, principal:false});
   });
+  return out;
+}
+/* Las fechas de todo el ciclo. GHL tiene recurrencia propia, pero la expande
+   SOLO cuando la reserva entra por su widget publico: creada por API arma una
+   sola cita, con recurring prendido y todo. Probado el 30/09. Asi que el ciclo
+   lo arma el tracker, una cita por semana, y GHL recibe cada una por separado.
+   El horario se rearma con el desfasaje local y no con toISOString(): GHL
+   compara la cadena, no el instante. */
+function capFechas(){
+  var k=capCfg(), out=[];
+  var d0=new Date(k.inicio);
+  if(isNaN(d0.getTime())) return out;
+  for(var i=0;i<k.sesiones;i++){
+    var d=new Date(d0.getTime());
+    d.setDate(d.getDate()+i*7);
+    out.push((typeof _isoGhl==='function')?_isoGhl(d):d.toISOString());
+  }
   return out;
 }
 function capInvitados(c){ return (c.capacitaciones||[]).slice(); }
@@ -30466,7 +30489,8 @@ function capModal(clientId){
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="width:min(460px,94vw)">'
       +'<div class="modal-title">Invitar a la capacitacion</div>'
-      +'<div class="modal-sub">'+esc(k.nombre)+' \u00b7 '+esc(_capCuando(k.inicio))+'</div>'
+      +'<div class="modal-sub">'+esc(k.nombre)+' \u00b7 '+esc(_capCuando(k.inicio))
+        +(k.sesiones>1?(' \u00b7 '+k.sesiones+' sesiones semanales'):'')+'</div>'
       +(ya?('<div style="font-size:12px;color:var(--accent);margin:-4px 0 14px">'
         +'Invitado desde el '+capFechaAr(ya.at)+' a '+esc(k.nombre)+'</div>'):'')
       +(princ.length?(rot('Contacto principal')+princ.map(fila).join('')):'')
@@ -30511,46 +30535,60 @@ function capContar(){
 async function capInvitar(clientId){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c) return;
-  var k=capCfg(), mails=_capMarcados();
-  if(!mails.length) return;
+  var k=capCfg(), mails=_capMarcados(), fechas=capFechas();
+  if(!mails.length || !fechas.length) return;
   var est=document.getElementById('cap-estado');
   var b=document.getElementById('cap-ok');
-  if(b){ b.disabled=true; b.textContent='Invitando\u2026'; }
-  var ok=[], mal=[];
-  for(var i=0;i<mails.length;i++){
-    var m=mails[i];
-    if(est) est.innerHTML='<span style="color:var(--text3)">Invitando a '+esc(m)
-      +' ('+(i+1)+' de '+mails.length+')\u2026</span>';
-    try{
-      await agLlamar(Object.assign({accion:'agendar', calendarId:k.cal, email:m,
-        inicio:k.inicio, titulo:k.nombre},
-        k.userId?{userId:k.userId}:{}, k.minutos?{minutos:k.minutos}:{}));
-      ok.push(m);
-    }catch(e){ mal.push({m:m, e:(e&&e.message)||''}); }
+  if(b){ b.disabled=true; }
+  var total=mails.length*fechas.length, hecho=0;
+  var ok={}, mal=[];
+  for(var m=0;m<mails.length;m++){
+    var mail=mails[m];
+    for(var f=0;f<fechas.length;f++){
+      hecho++;
+      if(b) b.textContent='Invitando '+hecho+' de '+total;
+      if(est) est.innerHTML='<span style="color:var(--text3)">'+esc(mail)
+        +' \u00b7 sesion '+(f+1)+' de '+fechas.length+'</span>';
+      try{
+        await agLlamar(Object.assign({accion:'agendar', calendarId:k.cal, email:mail,
+          inicio:fechas[f], titulo:k.nombre},
+          k.userId?{userId:k.userId}:{}, k.minutos?{minutos:k.minutos}:{}));
+        ok[mail]=(ok[mail]||0)+1;
+      }catch(e){
+        mal.push({m:mail, f:fechas[f], e:(e&&e.message)||''});
+        /* Si la PRIMERA sesion de esa persona falla, las otras van a fallar por
+           lo mismo -contacto que no existe, calendario mal configurado- y
+           dejarlas correr son 23 llamadas para llegar al mismo error. */
+        if(f===0) break;
+      }
+    }
   }
-  if(ok.length){
-    // Se guarda por calendario y fecha, y los mails se acumulan: invitar a dos
-    // personas en dos momentos distintos no puede pisar al primero.
+  var entraron=Object.keys(ok);
+  if(entraron.length){
     c.capacitaciones=c.capacitaciones||[];
     var reg=c.capacitaciones.filter(function(x){
       return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0];
-    if(!reg){ reg={cal:k.cal, nombre:k.nombre, inicio:k.inicio,
+    if(!reg){ reg={cal:k.cal, nombre:k.nombre, inicio:k.inicio, sesiones:fechas.length,
                    at:new Date().toISOString(), mails:[]};
               c.capacitaciones.push(reg); }
-    ok.forEach(function(m){ if(reg.mails.indexOf(m)<0) reg.mails.push(m); });
+    entraron.forEach(function(x){ if(reg.mails.indexOf(x)<0) reg.mails.push(x); });
     save();
     try{ if(typeof renderTab==='function') renderTab(); }catch(e){}
     try{ if(S.view==='tickets') showTickets(); }catch(e){}
   }
   if(est){
-    est.innerHTML=(ok.length?('<span style="color:var(--accent)">Invitado '+ok.length
-        +' de '+mails.length+'.</span>'):'')
+    est.innerHTML=entraron.map(function(x){
+        return '<div style="color:var(--accent)">'+esc(x)+': '+ok[x]+' de '
+          +fechas.length+' sesiones</div>'; }).join('')
       +(mal.length?('<div style="color:var(--redx);margin-top:6px">'
-        +mal.map(function(x){ return esc(x.m)+': '+esc(x.e); }).join('<br>')+'</div>'):'');
+        +mal.slice(0,3).map(function(x){
+            return esc(x.m)+' \u00b7 '+esc(String(x.f).slice(0,10))+': '+esc(x.e); }).join('<br>')
+        +(mal.length>3?('<br>y '+(mal.length-3)+' mas'):'')+'</div>'):'');
   }
   if(b){ b.disabled=false; b.textContent='Listo'; b.onclick=closeModal; }
-  if(ok.length && !mal.length) toast(ok.length+' invitado'+(ok.length===1?'':'s')
-    +' a '+k.nombre);
+  if(entraron.length && !mal.length)
+    toast(entraron.length+' invitado'+(entraron.length===1?'':'s')+' a las '
+      +fechas.length+' sesiones de '+k.nombre);
 }
 function capIconoHtml(c, antes){
   if(!capActiva()) return '';
