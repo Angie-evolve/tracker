@@ -930,6 +930,17 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
 .p3kcalb svg{transition:stroke .15s}
 .p3kcal:hover .p3kcalb{background:var(--accent)}
 .p3kcal:hover .p3kcalb svg{stroke:#0a0f0c}
+/* La capacitacion va DEBAJO del calendario y no en su lugar: son dos cosas
+   distintas -una reunion del proceso y una invitacion a un espacio comun- y
+   pueden convivir. Por eso no comparte el `top` con las otras dos. */
+.p3kcap{position:absolute;top:38px;right:11px;line-height:1;cursor:pointer}
+.p3kcapb{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--border2);
+  display:inline-flex;align-items:center;justify-content:center;color:var(--text3);
+  transition:background .15s,color .15s,border-color .15s}
+.p3kcap:hover .p3kcapb{background:var(--bg4);color:var(--text);border-color:var(--text3)}
+.p3kcap.hecho .p3kcapb{border-color:var(--accent);color:var(--accent);
+  background:rgba(78,207,160,.1)}
+.p3kcap.nomail .p3kcapb{opacity:.4;cursor:default}
 .p3tk2 .p3kdel{position:absolute;top:10px;right:12px;color:var(--text3);cursor:pointer;
   font-size:14px;line-height:1;padding:0 3px}
 .p3tk2 .p3kdel.concal{right:38px}
@@ -12634,6 +12645,65 @@ function _sesionHtml(){
     +(quien?'<button class="btn btn-sm" onclick="if(confirm(\'Cerrar sesion? Tus datos quedan guardados en este navegador.\')) sbCerrarSesion()">Cerrar sesion</button>':'')
     +'</div>';
 }
+function _capacitacionHtml(){
+  var k=capCfg();
+  var cals=(DB.ghlCalendariosAgencia||[]);
+  var opts='<option value="">Elegir calendario de GHL</option>'
+    +cals.map(function(x){
+      return '<option value="'+esc(x.id)+'"'+(String(x.id)===k.cal?' selected':'')+'>'
+        +esc(x.nombre||x.id)+'</option>'; }).join('');
+  var n=0;
+  (DB.clients||[]).forEach(function(c){ if(capYaInvitado(c)) n++; });
+  return '<div style="padding:13px 15px;margin-bottom:22px;border:1px solid var(--border);border-radius:9px">'
+    +'<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Capacitacion</div>'
+    +'<div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:12px">'
+      +'El espacio al que se invita desde la ficha y desde el Panel 360. La invitacion '
+      +'y el link de Meet los manda GHL con la configuracion de ese calendario.</div>'
+    +'<div class="form-2col">'
+      +'<div class="form-row"><label class="form-label">Nombre</label>'
+        +'<input id="cap-nombre" value="'+esc(k.nombre)+'" placeholder="Software Partners&lt;&gt; Bootcamp"></div>'
+      +'<div class="form-row"><label class="form-label">Calendario</label>'
+        +'<select id="cap-cal">'+opts+'</select></div>'
+    +'</div>'
+    +'<div class="form-2col">'
+      +'<div class="form-row"><label class="form-label">Fecha y hora</label>'
+        +'<input id="cap-inicio" type="datetime-local" value="'+esc(_capLocal(k.inicio))+'"></div>'
+      +'<div class="form-row"><label class="form-label">Duracion (minutos)</label>'
+        +'<input id="cap-min" type="number" min="5" max="480" value="'+(k.minutos||'')+'" placeholder="la del calendario"></div>'
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+      +'<button class="btn btn-sm btn-primary" onclick="capGuardar()">Guardar</button>'
+      +'<span style="font-size:11.5px;color:var(--text3)">'
+      +(capActiva()?(n+' cliente'+(n===1?'':'s')+' invitado'+(n===1?'':'s')):'Sin configurar: el icono no aparece')
+      +'</span>'
+    +'</div></div>';
+}
+// El input datetime-local no entiende el desfasaje: hay que darle la hora local
+// ya resuelta. Y al guardar se rearma CON el desfasaje, porque GHL compara la
+// cadena y no el instante.
+function _capLocal(iso){
+  var d=new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  var p=function(n){ return ('0'+n).slice(-2); };
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())
+    +'T'+p(d.getHours())+':'+p(d.getMinutes());
+}
+function capGuardar(){
+  var v=function(id){ var e=document.getElementById(id); return e?String(e.value||'').trim():''; };
+  var loc=v('cap-inicio');
+  var iso='';
+  if(loc){
+    var d=new Date(loc);
+    if(isNaN(d.getTime())){ toast('Esa fecha no se entiende','red'); return; }
+    iso=(typeof _isoGhl==='function')?_isoGhl(d):d.toISOString();
+  }
+  DB.capacitacion={nombre:v('cap-nombre'), cal:v('cap-cal'), inicio:iso,
+                   minutos:parseInt(v('cap-min'),10)||0,
+                   userId:(DB.capacitacion&&DB.capacitacion.userId)||''};
+  save();
+  toast(capActiva()?'Capacitacion guardada':'Guardado. Falta nombre, calendario o fecha');
+  abrirConfigAgencia();
+}
 function _papeleraHtml(){
   var l=[]; try{ l=papeleraLista(); }catch(e){}
   var filas=l.map(function(x){
@@ -12675,6 +12745,7 @@ function configAgenciaHtml(){
       +'puede crear y borrar subcuentas de todos los clientes.</div>'
 
     +_sesionHtml()
+    +_capacitacionHtml()
     +_papeleraHtml()
     +integracionesAppHtml()
     +'<div id="ag-sub-detalle" style="display:'+(S._agAbierto?'block':'none')+';margin-top:2px;padding:16px 0 4px;border-top:1px solid var(--border)">'
@@ -30304,6 +30375,192 @@ function _eqNombre(e){ return (e&&typeof e==='object')?String(e.nombre||''):Stri
 // pelado. Devolver '' para esos los dejaba sin mail a los ojos del tracker: no
 // entraban en "Copiar todos los mails" ni se podian invitar a GHL, y el chip no
 // mostraba el boton. Si el texto ES un mail, es el mail.
+// ---------- Capacitacion ----------
+// Un espacio comun -un bootcamp, una clase- al que se invita a clientes desde
+// su ficha o desde el tablero. La cita se crea en GHL con la misma funcion que
+// usa el agendar de siempre, asi que la invitacion, el link de Meet y los
+// recordatorios los manda GHL con la configuracion de su calendario: nosotros
+// no mandamos ningun mail.
+function capCfg(){
+  var k=DB.capacitacion||{};
+  return {cal:String(k.cal||''), nombre:String(k.nombre||''), inicio:String(k.inicio||''),
+          userId:String(k.userId||''), minutos:parseInt(k.minutos,10)||0};
+}
+function capActiva(){
+  var k=capCfg();
+  return !!(k.cal && k.inicio && k.nombre);
+}
+// Los mails a los que se puede invitar: el contacto principal primero y despues
+// el equipo. `equipo` viene en dos formas -texto suelto con el mail, u objeto
+// {nombre,email}- y algunos no tienen mail: esos se muestran apagados en vez de
+// esconderse, para que se vea que existen y falta cargarles el dato.
+function capDestinos(c){
+  var out=[], vistos={};
+  var m0=String(c.contactoEmail||c.email||'').trim();
+  if(m0){
+    out.push({mail:m0, nombre:String(c.contacto||c.name||''), principal:true});
+    vistos[m0.toLowerCase()]=1;
+  }
+  (c.equipo||[]).forEach(function(e){
+    var m=_eqMail(e);
+    var n=(e && typeof e==='object') ? String(e.nombre||'') : '';
+    if(!m){ if(n) out.push({mail:'', nombre:n, principal:false}); return; }
+    if(vistos[m.toLowerCase()]) return;
+    vistos[m.toLowerCase()]=1;
+    out.push({mail:m, nombre:n||m, principal:false});
+  });
+  return out;
+}
+function capInvitados(c){ return (c.capacitaciones||[]).slice(); }
+// Lo ya invitado a ESTA capacitacion. Se guarda por calendario y fecha, no por
+// nombre: el nombre se puede editar y la invitacion seguiria siendo la misma.
+function capYaInvitado(c){
+  var k=capCfg();
+  return capInvitados(c).filter(function(x){
+    return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0]||null;
+}
+function capFechaAr(iso){
+  var d=new Date(iso);
+  if(isNaN(d.getTime())) return String(iso||'');
+  var p=function(n){ return ('0'+n).slice(-2); };
+  return p(d.getDate())+'/'+p(d.getMonth()+1)+'/'+String(d.getFullYear()).slice(-2);
+}
+function capTitulo(c){
+  var k=capCfg(), ya=capYaInvitado(c);
+  if(!capActiva()) return 'No hay ninguna capacitacion configurada';
+  if(ya) return 'Invitado desde el '+capFechaAr(ya.at)+' a '+k.nombre;
+  if(!capDestinos(c).some(function(d){ return !!d.mail; }))
+    return 'Este cliente no tiene mail en la ficha';
+  return 'Invitar a '+k.nombre;
+}
+function capModal(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c || !capActiva()) return;
+  var k=capCfg(), ya=capYaInvitado(c), dest=capDestinos(c);
+  var yaM=(ya&&ya.mails)||[];
+  var fila=function(d,i){
+    var sin=!d.mail;
+    var invitado=d.mail && yaM.indexOf(d.mail)>=0;
+    return '<label style="display:flex;gap:10px;align-items:center;background:var(--bg3);'
+        +'border:1px solid var(--border);border-radius:8px;padding:10px 12px;'
+        +(sin||invitado?'opacity:.5;':'cursor:pointer;')+'margin-bottom:7px">'
+      +'<input type="checkbox" class="cap-chk" value="'+esc(d.mail)+'" '
+        +(sin||invitado?'disabled':(d.principal?'checked':''))+' '
+        +'onchange="capContar()" style="width:15px;height:15px;flex:none">'
+      +'<div style="min-width:0;flex:1">'
+        +'<div style="font-size:13px;color:var(--text)">'+esc(d.nombre||d.mail)+'</div>'
+        +'<div style="font-size:11.5px;color:var(--text3)">'
+        +(sin?'Sin mail en la ficha':(invitado?esc(d.mail)+' \u00b7 ya invitado':esc(d.mail)))
+        +'</div></div></label>';
+  };
+  var princ=dest.filter(function(d){ return d.principal; });
+  var equipo=dest.filter(function(d){ return !d.principal; });
+  var rot=function(t){ return '<div style="font-size:10.5px;letter-spacing:.1em;'
+    +'text-transform:uppercase;color:var(--text3);margin:0 0 7px">'+t+'</div>'; };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="width:min(460px,94vw)">'
+      +'<div class="modal-title">Invitar a la capacitacion</div>'
+      +'<div class="modal-sub">'+esc(k.nombre)+' \u00b7 '+esc(_capCuando(k.inicio))+'</div>'
+      +(ya?('<div style="font-size:12px;color:var(--accent);margin:-4px 0 14px">'
+        +'Invitado desde el '+capFechaAr(ya.at)+' a '+esc(k.nombre)+'</div>'):'')
+      +(princ.length?(rot('Contacto principal')+princ.map(fila).join('')):'')
+      +(equipo.length?('<div style="margin-top:15px">'+rot('Equipo del cliente')
+        +equipo.map(fila).join('')+'</div>'):'')
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:13px;'
+        +'padding-top:13px;border-top:1px solid var(--border)">'
+        +'Cada uno tiene que existir como contacto en GHL. La invitacion y el link '
+        +'de Meet los manda GHL.</div>'
+      +'<div id="cap-estado" style="font-size:12px;margin-top:11px;line-height:1.5"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:9px;margin-top:15px">'
+        +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-sm btn-primary" id="cap-ok" '
+          +'onclick="capInvitar('+c.id+')">Invitar</button>'
+      +'</div>'
+    +'</div></div>';
+  capContar();
+}
+function _capCuando(iso){
+  var d=new Date(iso);
+  if(isNaN(d.getTime())) return String(iso||'');
+  var D=['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
+  var M=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+         'septiembre','octubre','noviembre','diciembre'];
+  var p=function(n){ return ('0'+n).slice(-2); };
+  return D[d.getDay()]+' '+d.getDate()+' de '+M[d.getMonth()]
+    +', '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function _capMarcados(){
+  return Array.prototype.slice.call(document.querySelectorAll('.cap-chk'))
+    .filter(function(x){ return x.checked && !x.disabled; })
+    .map(function(x){ return x.value; });
+}
+function capContar(){
+  var b=document.getElementById('cap-ok');
+  if(!b) return;
+  var n=_capMarcados().length;
+  b.textContent=n?('Invitar a '+n):'Invitar';
+  b.disabled=!n;
+  b.style.opacity=n?'':'.5';
+}
+async function capInvitar(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var k=capCfg(), mails=_capMarcados();
+  if(!mails.length) return;
+  var est=document.getElementById('cap-estado');
+  var b=document.getElementById('cap-ok');
+  if(b){ b.disabled=true; b.textContent='Invitando\u2026'; }
+  var ok=[], mal=[];
+  for(var i=0;i<mails.length;i++){
+    var m=mails[i];
+    if(est) est.innerHTML='<span style="color:var(--text3)">Invitando a '+esc(m)
+      +' ('+(i+1)+' de '+mails.length+')\u2026</span>';
+    try{
+      await agLlamar(Object.assign({accion:'agendar', calendarId:k.cal, email:m,
+        inicio:k.inicio, titulo:k.nombre},
+        k.userId?{userId:k.userId}:{}, k.minutos?{minutos:k.minutos}:{}));
+      ok.push(m);
+    }catch(e){ mal.push({m:m, e:(e&&e.message)||''}); }
+  }
+  if(ok.length){
+    // Se guarda por calendario y fecha, y los mails se acumulan: invitar a dos
+    // personas en dos momentos distintos no puede pisar al primero.
+    c.capacitaciones=c.capacitaciones||[];
+    var reg=c.capacitaciones.filter(function(x){
+      return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0];
+    if(!reg){ reg={cal:k.cal, nombre:k.nombre, inicio:k.inicio,
+                   at:new Date().toISOString(), mails:[]};
+              c.capacitaciones.push(reg); }
+    ok.forEach(function(m){ if(reg.mails.indexOf(m)<0) reg.mails.push(m); });
+    save();
+    try{ if(typeof renderTab==='function') renderTab(); }catch(e){}
+    try{ if(S.view==='tickets') showTickets(); }catch(e){}
+  }
+  if(est){
+    est.innerHTML=(ok.length?('<span style="color:var(--accent)">Invitado '+ok.length
+        +' de '+mails.length+'.</span>'):'')
+      +(mal.length?('<div style="color:var(--redx);margin-top:6px">'
+        +mal.map(function(x){ return esc(x.m)+': '+esc(x.e); }).join('<br>')+'</div>'):'');
+  }
+  if(b){ b.disabled=false; b.textContent='Listo'; b.onclick=closeModal; }
+  if(ok.length && !mal.length) toast(ok.length+' invitado'+(ok.length===1?'':'s')
+    +' a '+k.nombre);
+}
+function capIconoHtml(c){
+  if(!capActiva()) return '';
+  var ya=capYaInvitado(c);
+  var sinMail=!capDestinos(c).some(function(d){ return !!d.mail; });
+  var cls='p3kcap'+(ya?' hecho':'')+(sinMail&&!ya?' nomail':'');
+  var click=(sinMail&&!ya) ? '' :
+    ('onclick="event.stopPropagation();capModal('+c.id+')"');
+  return '<span class="'+cls+'" role="button" tabindex="0" title="'+esc(capTitulo(c))+'" '
+    +'aria-label="'+esc(capTitulo(c))+'" '+click+'>'
+    +'<span class="p3kcapb"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" '
+    +'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+    +'aria-hidden="true"><path d="M22 9L12 5 2 9l10 4 10-4z"/>'
+    +'<path d="M6 11v5c0 1 2.7 2.5 6 2.5s6-1.5 6-2.5v-5"/></svg></span></span>';
+}
 function _eqMail(e){
   if(e && typeof e==='object') return String(e.email||'');
   var t=String(e||'').trim();
@@ -39005,7 +39262,7 @@ function p360Html(){
         +'title="'+esc(d.c.name||'')+(d.prod?(' \u00b7 '+esc(d.prod)):'')
         +' \u2014 tocala para ver en que quedo, tocale el nombre para abrir su '
         +'ficha, o arrastrala a otra etapa">'
-      +calBtn+masBtn
+      +calBtn+masBtn+capIconoHtml(d.c)
       // Una tarjeta de prospecto se crea sola desde una llamada: una prueba, un
       // mail mal leido o alguien del equipo abren una que no va. Si no se puede
       // borrar, queda para siempre ocupando una columna. Se corre a la izquierda
