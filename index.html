@@ -35699,6 +35699,15 @@ function p360Mover(clientId, hasta){
 // Que etapa ya tiene su llamada agendada, para cuando, con quien, y si se
 // movio o se cayo. Antes habia que entrar al calendario del cliente a mirar, o
 // tildar la etapa a mano y confiar.
+/* ⚠️  LAS CITAS SALEN SOLO DE LA SUBCUENTA DE LA AGENCIA.
+   Antes, al cliente que tiene subcuenta propia se le leia ademas SU agenda.
+   Eso metia en su ficha las reuniones de su equipo comercial con sus propios
+   leads: Albet tenia trece, todas de su vendedor con gente que nosotros no
+   conocemos, y la tarjeta terminaba anunciando como "proxima reunion" algo que
+   no es nuestro. Lo que nos importa es lo que la agencia agenda CON el cliente,
+   y eso vive siempre en la subcuenta interna.
+   Decidido el 30/09/26. Las que ya estaban guardadas se van solas: cada vuelta
+   rearma `citas` y `citasSinEtapa` con lo que recibe. */
 function _citasDe(c){ return (c && c.citas && typeof c.citas==='object') ? c.citas : {}; }
 function _citaEst(){
   return 'font-size:11px;font-family:var(--font);background:var(--bg3);color:var(--text);'
@@ -35811,75 +35820,24 @@ async function citasBuscar(clientId, callado, agenciaEv){
   if(!c) return null;
   var fn=_lpCalFn();
   var ctx=_citasCtx();
-  // Si el cliente tiene subcuenta propia se usa esa: sus reuniones pueden estar
-  // en su calendario y no en el de la agencia.
-  var g=(c.ghl&&c.ghl.token&&c.ghl.locationId) ? c.ghl : null;
-  var token=g?g.token:ctx.token, location=g?g.locationId:ctx.location;
-  // De cual de las dos subcuentas salio el token: sin esto, un 401 no dice si
-  // hay que revisar la del cliente o la interna de la agencia.
-  var deQuien=g?('la subcuenta de '+(c.name||'este cliente')):'la subcuenta interna';
   var decir=function(t,col){ if(!callado) _citasDecir(clientId,t,col); };
   if(!fn.url){ decir('Falta conectar la funcion de GHL en Supabase.','var(--amberx)'); return null; }
-  if(!token||!location){
+  if(!ctx.token||!ctx.location){
     decir('Falta la subcuenta interna de la agencia en Integraciones.','var(--amberx)'); return null; }
-  // La lista de calendarios se pide una sola vez por cliente y queda guardada:
-  // no cambia seguido y es una llamada de mas en cada vuelta automatica.
-  var cals=(c.ghlCalendarios||[]).map(function(x){ return x.id; });
   try{
-    if(!cals.length){
-      var rc=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
-        +'&accion=calendarios',
-        {method:'POST', headers:{'Content-Type':'application/json'},
-         body:JSON.stringify({token:token, location:location})})
-        .then(function(x){ return x.json(); });
-      if(!rc||!rc.ok){
-        decir('Con el token de '+esc(deQuien)+' \u2192 '+esc((rc&&rc.error)||'sin respuesta'),
-          'var(--redx)');
-        return null;
-      }
-      c.ghlCalendarios=(rc.calendarios||[]).map(function(x){ return {id:x.id, nombre:x.nombre}; });
-      cals=c.ghlCalendarios.map(function(x){ return x.id; });
-      if(!cals.length){ decir('La subcuenta no tiene calendarios.','var(--amberx)'); return null; }
-      save();
-    }
-    decir('Buscando citas...');
-    var r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
-      +'&accion=eventos',
-      {method:'POST', headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({token:token, location:location, calendarios:cals,
-                            ahora:Date.now()})})
-      .then(function(x){ return x.json(); });
-    if(!r||!r.ok){
-      decir('Con el token de '+esc(deQuien)+' \u2192 '+esc((r&&r.error)||'sin respuesta'),
-        'var(--redx)');
-      return null;
-    }
-    var todos=(r.eventos||[]);
+    decir('Buscando citas\u2026');
+    // La agenda ya bajada si quien llama la tiene: en la vuelta automatica se
+    // baja una sola vez para todos.
+    var todos=agenciaEv;
+    if(!todos){ todos=await _citasAgendaAgencia(ctx); }
+    if(!todos){ decir('No pude traer la agenda de la agencia.','var(--redx)'); return null; }
+    todos=todos.slice();
     // Lo que se agendo en el Google Calendar de alguien del equipo no pasa por
     // GHL salvo que este el sync de dos vias, y ese sync ensucia la subcuenta
     // creando un contacto por cada evento personal. Se leen aparte y se suman.
     var gg=await _gcalEventos();
     if(gg.eventos.length) todos=todos.concat(gg.eventos);
     if(gg.aviso) decir(gg.aviso,'var(--amberx)');
-    /* Tener subcuenta propia no quiere decir que TODAS sus reuniones esten
-       ahi. Las de venta y estrategia se agendan en los calendarios de la
-       agencia, y mirando solo su agenda no aparecian nunca: no era que
-       llegaran tarde, era que se buscaban en el lado equivocado.
-       Encontrado el 30/09/26 con Centercheques, cuya reunion del 2/10 estaba
-       en "El Metodo Flowing", de la agencia. Se juntan las dos agendas y se
-       reparte una sola vez, porque `_citasAplicar` rearma `c.citas` de cero
-       con lo que recibe: llamarla dos veces borraria lo de la primera. */
-    if(g){
-      var agEv=agenciaEv;
-      if(!agEv){ try{ agEv=await _citasAgendaAgencia(ctx); }catch(e){ agEv=null; } }
-      if(agEv && agEv.length){
-        var _vistos={};
-        todos.forEach(function(x){ if(x&&x.id) _vistos[String(x.id)]=1; });
-        agEv.forEach(function(x){
-          if(x && x.id && !_vistos[String(x.id)]){ _vistos[String(x.id)]=1; todos.push(x); }
-        });
-      }
-    }
     return _citasAplicar(c, todos, callado, todos.length);
   }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); return null; }
 }
@@ -37649,51 +37607,34 @@ function citasVigilar(){
 async function citasAuto(){
   if(!_lpCalFn().url) return;
   var ctx=_citasCtx();
+  if(!ctx.token || !ctx.location) return;
   var vivos=(DB.clients||[]).filter(function(c){ return !c.archived || esProspecto(c); });
-  var propios=vivos.filter(function(c){ return c.ghl&&c.ghl.token&&c.ghl.locationId; });
-  var deLaAgencia=vivos.filter(function(c){
-    return !(c.ghl&&c.ghl.token&&c.ghl.locationId) && ctx.token && ctx.location; });
-
-  var eventos=null;
-  if(deLaAgencia.length){
-    eventos=await _citasAgendaAgencia(ctx);
-    if(eventos){
-      var _altas=[];
-      deLaAgencia.forEach(function(c){
-        try{
-          var r=_citasAplicar(c, eventos, true, eventos.length);
-          if(r && r.alta) _altas.push(String(c.name||''));
-        }catch(e){}
-      });
-      // Pasar de lead a cliente no es un detalle: entra en la cartera y en las
-      // metricas. Se avisa en vez de que aparezca solo en otra columna.
-      if(_altas.length && typeof toast==='function'){
-        toast(_altas.join(', ')+(_altas.length===1?' paso a cliente':' pasaron a cliente')
-          +': tiene'+(_altas.length===1?'':'n')+' el onboarding agendado');
-      }
-      save();
-      if(typeof renderTab==='function' && S.view==='tickets') showTickets();
-    }
+  if(!vivos.length) return;
+  /* Una sola agenda para todos. Antes esto se partia en dos: los clientes sin
+     subcuenta propia recibian la agenda de la agencia de una, y los que tenian
+     subcuenta se revisaban DE A UNO por vuelta contra la suya. Eso traia a la
+     ficha las reuniones del equipo comercial del cliente con sus propios
+     leads, y ademas hacia que una vuelta completa tardara tantas rondas como
+     clientes con subcuenta hubiera.
+     Ahora las citas salen solo de la subcuenta interna, asi que se baja una
+     vez y se reparte entre todos en la misma vuelta. */
+  var eventos=await _citasAgendaAgencia(ctx);
+  if(!eventos) return;
+  var _altas=[];
+  vivos.forEach(function(c){
+    try{
+      var r=_citasAplicar(c, eventos, true, eventos.length);
+      if(r && r.alta) _altas.push(String(c.name||''));
+    }catch(e){}
+  });
+  // Pasar de lead a cliente no es un detalle: entra en la cartera y en las
+  // metricas. Se avisa en vez de que aparezca solo en otra columna.
+  if(_altas.length && typeof toast==='function'){
+    toast(_altas.join(', ')+(_altas.length===1?' paso a cliente':' pasaron a cliente')
+      +': tiene'+(_altas.length===1?'':'n')+' el onboarding agendado');
   }
-  // El de subcuenta propia que haga mas tiempo que no se revisa. Uno por
-  // vuelta: son pocos y cada uno es una agenda distinta.
-  if(propios.length){
-    /* Se ordena por el ultimo INTENTO, no por la ultima sincronizacion que
-       salio bien. Con `citasAt` -que solo se escribe cuando termina ok- un
-       cliente con el token vencido se quedaba primero para siempre: fallaba,
-       no se estampaba nada, y la vuelta siguiente lo volvia a elegir a el.
-       Los demas no se revisaban nunca.
-       Medido el 30/09/26: Razor Tech y Potential daban 401 y habia clientes
-       sin revisar desde el 5 de septiembre. */
-    propios.sort(function(a,b){
-      return String(a.citasIntento||a.citasAt||'')
-        .localeCompare(String(b.citasIntento||b.citasAt||'')); });
-    var _toca=propios[0];
-    // Se estampa ANTES de llamar: si la llamada tira, igual cedio el turno.
-    _toca.citasIntento=new Date().toISOString();
-    try{ save(); }catch(e){}
-    await citasBuscar(_toca.id, true, eventos);
-  }
+  save();
+  if(typeof renderTab==='function' && S.view==='tickets') showTickets();
 }
 
 // Baja la agenda de la subcuenta interna una sola vez. Devuelve null si algo
