@@ -35688,7 +35688,7 @@ function _citasCtx(){
   var g=function(k){ try{ return (localStorage.getItem(k)||'').trim(); }catch(e){ return ''; } };
   return { token:g('evold-conv-token'), location:g('evold-conv-loc') };
 }
-async function citasBuscar(clientId, callado){
+async function citasBuscar(clientId, callado, agenciaEv){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return null;
   var fn=_lpCalFn();
@@ -35743,6 +35743,25 @@ async function citasBuscar(clientId, callado){
     var gg=await _gcalEventos();
     if(gg.eventos.length) todos=todos.concat(gg.eventos);
     if(gg.aviso) decir(gg.aviso,'var(--amberx)');
+    /* Tener subcuenta propia no quiere decir que TODAS sus reuniones esten
+       ahi. Las de venta y estrategia se agendan en los calendarios de la
+       agencia, y mirando solo su agenda no aparecian nunca: no era que
+       llegaran tarde, era que se buscaban en el lado equivocado.
+       Encontrado el 30/09/26 con Centercheques, cuya reunion del 2/10 estaba
+       en "El Metodo Flowing", de la agencia. Se juntan las dos agendas y se
+       reparte una sola vez, porque `_citasAplicar` rearma `c.citas` de cero
+       con lo que recibe: llamarla dos veces borraria lo de la primera. */
+    if(g){
+      var agEv=agenciaEv;
+      if(!agEv){ try{ agEv=await _citasAgendaAgencia(ctx); }catch(e){ agEv=null; } }
+      if(agEv && agEv.length){
+        var _vistos={};
+        todos.forEach(function(x){ if(x&&x.id) _vistos[String(x.id)]=1; });
+        agEv.forEach(function(x){
+          if(x && x.id && !_vistos[String(x.id)]){ _vistos[String(x.id)]=1; todos.push(x); }
+        });
+      }
+    }
     return _citasAplicar(c, todos, callado, todos.length);
   }catch(e){ decir('Error de red: '+esc(e.message),'var(--redx)'); return null; }
 }
@@ -37517,8 +37536,9 @@ async function citasAuto(){
   var deLaAgencia=vivos.filter(function(c){
     return !(c.ghl&&c.ghl.token&&c.ghl.locationId) && ctx.token && ctx.location; });
 
+  var eventos=null;
   if(deLaAgencia.length){
-    var eventos=await _citasAgendaAgencia(ctx);
+    eventos=await _citasAgendaAgencia(ctx);
     if(eventos){
       var _altas=[];
       deLaAgencia.forEach(function(c){
@@ -37542,7 +37562,7 @@ async function citasAuto(){
   if(propios.length){
     propios.sort(function(a,b){
       return String(a.citasAt||'').localeCompare(String(b.citasAt||'')); });
-    await citasBuscar(propios[0].id, true);
+    await citasBuscar(propios[0].id, true, eventos);
   }
 }
 
