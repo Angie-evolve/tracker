@@ -2956,9 +2956,13 @@ function _clienteDeFila(f){
   return Object.assign({}, f&&f.datos, (f&&f.maquina)||{});
 }
 
+var _sbReintentos=0;
 async function sbSubir(){
   if(!SB.listo) return;
   var pend=[], pendMaq=[];
+  /* Lo que el POST dijo haber guardado y la base no confirmo. No se estampa su
+     huella, asi que el proximo guardado lo vuelve a mandar. */
+  var _noEntraron=[];
   (DB.clients||[]).forEach(function(c){
     var p=_partirCliente(c);
     if(_sbHuellas[c.id]!==_huella(p.datos)) pend.push(c);
@@ -3029,6 +3033,8 @@ async function sbSubir(){
     if(choque.length) _sbAvisarChoque(choque);
     if(!pend.length && !pendMaq.length && !globales.length){ _sbMarcar('ok'); return; }
     if(pend.length){
+      var _antesAt={};
+      pend.forEach(function(c){ _antesAt[String(c.id)]=_sbVisto[String(c.id)]; });
       await sbFetch('clientes', {
         method:'POST',
         headers:{'Prefer':'resolution=merge-duplicates'},
@@ -3037,14 +3043,50 @@ async function sbSubir(){
                   datos:_partirCliente(c).datos, actualizado_por:SB.email};
         }))
       });
-      pend.forEach(function(c){ _sbHuellas[c.id]=_huella(_partirCliente(c).datos); });
-      // Y se vuelve a leer el "actualizado" que quedo: sin esto la proxima
-      // subida confundiria nuestro propio cambio con el de otro y se frenaria.
+      /* ⚠️  NO SE DA POR SUBIDO LO QUE NO SE VOLVIO A LEER.
+         Antes se estampaba la huella apenas el POST resolvia. Si la fila no
+         habia cambiado de verdad, el cliente quedaba marcado como subido
+         contra una nube vieja y no se reintentaba NUNCA: se perdia en
+         silencio, sin error y sin cartel. Pasado dos veces el 30/09/26 -la
+         cita de Quironex y la hora de la capacitacion-.
+         Se mira `datos_at`, que un trigger mueve solo cuando `datos` cambio de
+         verdad. Al que no la movio se le lee el `datos` entero y se comparan
+         las huellas: la lectura cara la paga solo el sospechoso, y evita
+         acusar a uno que entro igual. */
+      var _dudosos=[], _post=null;
       try{
-        var post=await sbFetch('clientes?select=id,datos_at&id=in.('
+        _post=await sbFetch('clientes?select=id,datos_at&id=in.('
           +pend.map(function(c){ return c.id; }).join(',')+')');
-        (post||[]).forEach(function(r){ _sbVisto[String(r.id)]=String(r.datos_at||''); });
-      }catch(e){}
+      }catch(e){ _post=null; }
+      if(_post){
+        var _ahoraAt={};
+        _post.forEach(function(r){ _ahoraAt[String(r.id)]=String(r.datos_at||''); });
+        pend.forEach(function(c){
+          var k=String(c.id), a=_ahoraAt[k];
+          if(a!==undefined && a!==_antesAt[k]){
+            _sbHuellas[c.id]=_huella(_partirCliente(c).datos);
+            _sbVisto[k]=a;
+          }else{ _dudosos.push(c); }
+        });
+      }else{ _dudosos=pend.slice(); }
+      if(_dudosos.length){
+        var _fin=null;
+        try{
+          _fin=await sbFetch('clientes?select=id,datos,datos_at&id=in.('
+            +_dudosos.map(function(c){ return c.id; }).join(',')+')');
+        }catch(e){ _fin=null; }
+        var _mFin={};
+        (_fin||[]).forEach(function(r){ _mFin[String(r.id)]=r; });
+        _dudosos.forEach(function(c){
+          var r=_mFin[String(c.id)], h=_huella(_partirCliente(c).datos);
+          if(r && _huella(r.datos)===h){
+            _sbHuellas[c.id]=h;
+            _sbVisto[String(c.id)]=String(r.datos_at||'');
+            return;
+          }
+          _noEntraron.push(String(c.name||c.id));
+        });
+      }
     }
     /* `maquina` va DESPUES de `datos` y sin guarda anti-pisada, a proposito.
        Son mediciones: el que midio ultimo tiene razon, y frenar una porque
@@ -3066,8 +3108,35 @@ async function sbSubir(){
         headers:{'Prefer':'resolution=merge-duplicates'},
         body:JSON.stringify(globales)
       });
-      globales.forEach(function(g){ _sbHuellas['cfg:'+g.clave]=_huella(g.valor); });
+      // Misma regla que con los clientes. Aca los valores son chicos, asi que
+      // se leen enteros y se comparan las huellas sin rodeos.
+      var _cfgPost=null;
+      try{
+        _cfgPost=await sbFetch('config?select=clave,valor&clave=in.('
+          +globales.map(function(g){
+              return '"'+String(g.clave).replace(/"/g,'')+'"'; }).join(',')+')');
+      }catch(e){ _cfgPost=null; }
+      var _mCfg={};
+      (_cfgPost||[]).forEach(function(r){ _mCfg[r.clave]=_huella(r.valor); });
+      globales.forEach(function(g){
+        var h=_huella(g.valor);
+        if(_cfgPost && _mCfg[g.clave]===h){ _sbHuellas['cfg:'+g.clave]=h; }
+        else _noEntraron.push(String(g.clave));
+      });
     }
+    /* Si algo no se pudo confirmar, no se dice "guardado". Y se reintenta solo
+       un par de veces: el caso tipico es un corte de un segundo, no algo que
+       se arregle machacando. */
+    if(_noEntraron.length){
+      _sbMarcar('falta', _noEntraron.join(', '));
+      if(_sbReintentos<3){
+        _sbReintentos++;
+        clearTimeout(_sbPendiente);
+        _sbPendiente=setTimeout(function(){ sbSubir(); }, 15000);
+      }
+      return;
+    }
+    _sbReintentos=0;
     _sbMarcar('ok');
   }catch(e){
     console.warn('[SB] no se pudo subir:', e.message);
@@ -3080,6 +3149,15 @@ function _sbMarcar(estado, msg){
   if(!el) return;
   if(estado==='ok'){ el.textContent='guardado'; el.style.color='var(--text3)'; }
   else if(estado==='subiendo'){ el.textContent='guardando...'; el.style.color='var(--text3)'; }
+  else if(estado==='falta'){
+    // No es "no pude": es "lo mande y la base no me lo confirmo". Se nombra lo
+    // que quedo afuera, porque "sin sincronizar" a secas no dice que perdiste.
+    el.textContent='no se guardo: '+String(msg||'').split(', ').slice(0,2).join(', ')
+      +(String(msg||'').split(', ').length>2?'\u2026':'');
+    el.style.color='var(--redx)';
+    el.title='Lo mande a la base y no quedo guardado: '+String(msg||'')
+      +'. Se reintenta solo. Si no se va, recarga la pagina.';
+  }
   else { el.textContent='sin sincronizar'; el.style.color='var(--amberx)'; el.title=msg||''; }
 }
 
