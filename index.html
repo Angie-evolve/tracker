@@ -30447,6 +30447,18 @@ function capYaInvitado(c){
   return capInvitados(c).filter(function(x){
     return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0]||null;
 }
+/* Que sesiones de esta capacitacion ya tiene creadas ese mail.
+   Devuelve [] si no tiene ninguna, la lista si tiene algunas, y null cuando el
+   registro es viejo y no guardaba el detalle: ahi no se puede saber cuales
+   entraron, asi que se lo trata como completo antes que crearle todo de nuevo.
+   Existe porque una tanda puede entrar a medias -el 30/09/26 entraron 2 de 4,
+   una cayo por un 525 de Cloudflare y otra por la sesion vencida- y sin esto
+   el mail quedaba marcado como invitado y no habia forma de completar el resto. */
+function capHechasDe(reg, mail){
+  if(!reg || !mail) return [];
+  if(!reg.fechas) return ((reg.mails||[]).indexOf(mail)>=0) ? null : [];
+  return (reg.fechas[mail]||[]).slice();
+}
 function capFechaAr(iso){
   var d=new Date(iso);
   if(isNaN(d.getTime())) return String(iso||'');
@@ -30465,10 +30477,13 @@ function capModal(clientId){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c || !capActiva()) return;
   var k=capCfg(), ya=capYaInvitado(c), dest=capDestinos(c);
-  var yaM=(ya&&ya.mails)||[];
+  var _nSes=capFechas().length;
   var fila=function(d,i){
     var sin=!d.mail;
-    var invitado=d.mail && yaM.indexOf(d.mail)>=0;
+    var _h=capHechasDe(ya, d.mail);
+    // null = registro viejo sin detalle: se respeta como completo.
+    var invitado=!!(d.mail && (_h===null || (_h.length && _h.length>=_nSes)));
+    var _faltan=(d.mail && _h && _h.length && _h.length<_nSes) ? (_nSes-_h.length) : 0;
     return '<label style="display:flex;gap:10px;align-items:center;background:var(--bg3);'
         +'border:1px solid var(--border);border-radius:8px;padding:10px 12px;'
         +(sin||invitado?'opacity:.5;':'cursor:pointer;')+'margin-bottom:7px">'
@@ -30478,7 +30493,10 @@ function capModal(clientId){
       +'<div style="min-width:0;flex:1">'
         +'<div style="font-size:13px;color:var(--text)">'+esc(d.nombre||d.mail)+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3)">'
-        +(sin?'Sin mail en la ficha':(invitado?esc(d.mail)+' \u00b7 ya invitado':esc(d.mail)))
+        +(sin?'Sin mail en la ficha'
+          :(invitado?esc(d.mail)+' \u00b7 ya invitado'
+          :(_faltan?esc(d.mail)+' \u00b7 le faltan '+_faltan+' de '+_nSes+' sesiones'
+          :esc(d.mail))))
         +'</div></div></label>';
   };
   var princ=dest.filter(function(d){ return d.principal; });
@@ -30540,27 +30558,44 @@ async function capInvitar(clientId){
   var est=document.getElementById('cap-estado');
   var b=document.getElementById('cap-ok');
   if(b){ b.disabled=true; }
-  var total=mails.length*fechas.length, hecho=0;
-  var ok={}, mal=[];
-  for(var m=0;m<mails.length;m++){
-    var mail=mails[m];
-    for(var f=0;f<fechas.length;f++){
-      hecho++;
-      if(b) b.textContent='Invitando '+hecho+' de '+total;
-      if(est) est.innerHTML='<span style="color:var(--text3)">'+esc(mail)
-        +' \u00b7 sesion '+(f+1)+' de '+fechas.length+'</span>';
-      try{
-        await agLlamar(Object.assign({accion:'agendar', calendarId:k.cal, email:mail,
-          inicio:fechas[f], titulo:k.nombre},
-          k.userId?{userId:k.userId}:{}, k.minutos?{minutos:k.minutos}:{}));
-        ok[mail]=(ok[mail]||0)+1;
-      }catch(e){
-        mal.push({m:mail, f:fechas[f], e:(e&&e.message)||''});
-        /* Si la PRIMERA sesion de esa persona falla, las otras van a fallar por
-           lo mismo -contacto que no existe, calendario mal configurado- y
-           dejarlas correr son 23 llamadas para llegar al mismo error. */
-        if(f===0) break;
-      }
+  /* Solo lo que falta. Reintentar una tanda que entro a medias tiene que
+     crear las sesiones que faltan y NO repetir las que ya estan. */
+  var _reg0=capYaInvitado(c), _yaTenia={}, trabajo=[];
+  mails.forEach(function(mail){
+    var h=capHechasDe(_reg0, mail);
+    if(h===null) h=[];                 // registro viejo: no se sabe, se rehace
+    _yaTenia[mail]=h.length;
+    fechas.forEach(function(f){ if(h.indexOf(f)<0) trabajo.push({mail:mail, f:f}); });
+  });
+  if(!trabajo.length){
+    if(est) est.innerHTML='<span style="color:var(--text3)">Ya tienen las '
+      +fechas.length+' sesiones creadas.</span>';
+    if(b){ b.disabled=false; b.textContent='Listo'; b.onclick=closeModal; }
+    return;
+  }
+  var total=trabajo.length, hecho=0;
+  var ok={}, okF={}, mal=[], _cortado={};
+  for(var i=0;i<trabajo.length;i++){
+    var mail=trabajo[i].mail, _f=trabajo[i].f;
+    if(_cortado[mail]) continue;
+    hecho++;
+    if(b) b.textContent='Invitando '+hecho+' de '+total;
+    if(est) est.innerHTML='<span style="color:var(--text3)">'+esc(mail)
+      +' \u00b7 sesion '+(_yaTenia[mail]+(ok[mail]||0)+1)+' de '+fechas.length+'</span>';
+    try{
+      await agLlamar(Object.assign({accion:'agendar', calendarId:k.cal, email:mail,
+        inicio:_f, titulo:k.nombre},
+        k.userId?{userId:k.userId}:{}, k.minutos?{minutos:k.minutos}:{}));
+      ok[mail]=(ok[mail]||0)+1;
+      (okF[mail]=okF[mail]||[]).push(_f);
+    }catch(e){
+      mal.push({m:mail, f:_f, e:(e&&e.message)||''});
+      /* Se corta esa persona solo si TODAVIA no entro ninguna suya: ahi el
+         motivo es de ella -contacto que no existe, calendario mal
+         configurado- y seguir son llamadas para llegar al mismo error. Si ya
+         entro alguna, el que fallo es ese turno y vale la pena probar el resto:
+         asi el 30/09/26 entraron la 1 y la 3 aunque cayeron la 2 y la 4. */
+      if(!ok[mail] && !_yaTenia[mail]) _cortado[mail]=1;
     }
   }
   var entraron=Object.keys(ok);
@@ -30569,17 +30604,22 @@ async function capInvitar(clientId){
     var reg=c.capacitaciones.filter(function(x){
       return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0];
     if(!reg){ reg={cal:k.cal, nombre:k.nombre, inicio:k.inicio, sesiones:fechas.length,
-                   at:new Date().toISOString(), mails:[]};
+                   at:new Date().toISOString(), mails:[], fechas:{}};
               c.capacitaciones.push(reg); }
-    entraron.forEach(function(x){ if(reg.mails.indexOf(x)<0) reg.mails.push(x); });
+    reg.fechas=reg.fechas||{};
+    entraron.forEach(function(x){
+      if(reg.mails.indexOf(x)<0) reg.mails.push(x);
+      var l=reg.fechas[x]=reg.fechas[x]||[];
+      (okF[x]||[]).forEach(function(f){ if(l.indexOf(f)<0) l.push(f); });
+    });
     save();
     try{ if(typeof renderTab==='function') renderTab(); }catch(e){}
     try{ if(S.view==='tickets') showTickets(); }catch(e){}
   }
   if(est){
     est.innerHTML=entraron.map(function(x){
-        return '<div style="color:var(--accent)">'+esc(x)+': '+ok[x]+' de '
-          +fechas.length+' sesiones</div>'; }).join('')
+        return '<div style="color:var(--accent)">'+esc(x)+': '
+          +((_yaTenia[x]||0)+ok[x])+' de '+fechas.length+' sesiones</div>'; }).join('')
       +(mal.length?('<div style="color:var(--redx);margin-top:6px">'
         +mal.slice(0,3).map(function(x){
             return esc(x.m)+' \u00b7 '+esc(String(x.f).slice(0,10))+': '+esc(x.e); }).join('<br>')
