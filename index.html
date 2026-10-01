@@ -69639,7 +69639,16 @@ function fathomProxyUrl(){
 // que es el unico lugar donde esa clave puede vivir sin quedar a la vista.
 // Llamar a la funcion que agenda en GHL. Mismo patron que la de invitaciones:
 // la sesion del que llama va en el header y el token de GHL vive del otro lado.
-async function agLlamar(cuerpo){
+/* ⚠️  EL TOKEN SE RENUEVA ANTES DE LLAMAR, igual que en `sbFetch`.
+   Esto no lo hacia, y en una sesion larga el access token quedaba vencido: la
+   funcion contestaba "Hay que iniciar sesion" a mitad de una tanda. Lo que ya
+   se habia creado quedaba creado y el resto se caia, y el mensaje hablaba de
+   la sesion cuando uno estaba mirando el calendario.
+   Medido dos veces: el 30/09/26 se cayo la sesion 4 de la capacitacion y el
+   01/10 la del 16. Ademas se reintenta una sola vez ante un 401, por si el
+   token vence entre el chequeo y la llamada. */
+async function agLlamar(cuerpo, _reintento){
+  if(SB.exp && Date.now()>SB.exp-60000){ try{ await sbRenovar(); }catch(e){} }
   var r;
   try{
     r=await fetch(SB_URL+'/functions/v1/agendar',{
@@ -69649,6 +69658,10 @@ async function agLlamar(cuerpo){
     });
   }catch(e){
     throw new Error('No encontré la función "agendar" en tu Supabase. Falta deployarla.');
+  }
+  if(r.status===401 && !_reintento){
+    var _ok=false; try{ _ok=await sbRenovar(); }catch(e){}
+    if(_ok) return agLlamar(cuerpo, true);
   }
   var d=null; try{ d=await r.json(); }catch(e){}
   if(!r.ok || (d && d.error)){
