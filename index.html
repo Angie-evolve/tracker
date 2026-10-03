@@ -18860,6 +18860,9 @@ function _calEntradas(){
       var d=new Date(x.inicio);
       if(isNaN(d.getTime())) return;
       out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:et,
+        // El id de GHL: es con lo unico que se puede ir a buscar el link de la
+        // reunion, que no viene en la agenda.
+        evId:String(x.id||''),
         titulo:String(x.titulo||et||''), con:String(x.con||''),
         quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
         cal:String(x.calendario||''),
@@ -18870,6 +18873,7 @@ function _calEntradas(){
       var d=new Date(x.inicio);
       if(isNaN(d.getTime())) return;
       out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:'',
+        evId:String(x.id||''),
         titulo:String(x.titulo||''), con:String(x.con||''),
         quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
         cal:String(x.calendario||''),
@@ -18901,11 +18905,119 @@ function calMover(d){
 function calHoy(){ S.calMes=null; showTickets(); }
 var _CAL_MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
                 'septiembre','octubre','noviembre','diciembre'];
+/* Las entradas dibujadas, para que el detalle no tenga que volver a buscarlas.
+   Se pisa en cada repintado del calendario: es cache de una pantalla, no
+   estado que tenga que sobrevivir a nada. */
+var _CAL_EV={}, _CAL_EV_N=0;
+function calCitaAbrir(k, cliId){
+  var e=_CAL_EV[k];
+  if(!e) return;
+  var c=(DB.clients||[]).find(function(x){ return x.id===cliId; });
+  var cuando=(function(){
+    var t=e.at;
+    var D=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+    var M=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+           'septiembre','octubre','noviembre','diciembre'];
+    return D[t.getDay()]+' '+t.getDate()+' de '+M[t.getMonth()]
+      +(e.soloDia?'':(', '+('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2)));
+  })();
+  var fila=function(r,v){
+    if(!v) return '';
+    return '<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<span style="width:84px;flex:none;font-size:11px;color:var(--text3);'
+        +'text-transform:uppercase;letter-spacing:.06em">'+r+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:13px;color:var(--text)">'+v+'</span></div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:480px">'
+      +'<div style="font-size:17px;font-weight:600;color:var(--strong);letter-spacing:-.01em;'
+        +'line-height:1.3">'+esc(e.titulo||e.cli||'Reunión')+'</div>'
+      +(e.estado==='cancelled'
+        ? '<div style="font-size:12.5px;color:var(--redx);margin-top:4px">Cancelada</div>' : '')
+      +'<div style="margin-top:12px">'
+        +fila('Cuándo','<b style="font-weight:600">'+esc(cuando)+'</b>')
+        +fila('Cliente', esc(e.cli||''))
+        +fila('Con', esc(e.con||''))
+        +fila('De nuestro lado', esc(e.quien||''))
+        +fila('Calendario', esc(e.cal||''))
+      +'</div>'
+      +'<div id="cal-link" style="margin-top:12px;font-size:12.5px;color:var(--text3)">'
+        +(e.tipo==='llamada'
+          ? (e.url?('<a href="'+esc(e.url)+'" target="_blank" rel="noopener" '
+              +'class="btn btn-sm" style="text-decoration:none">Ver la grabación</a>')
+            :'Esta es una llamada ya grabada.')
+          : (!e.evId
+              ? 'Esta reunión no tiene id: no hay de dónde sacar el link.'
+              : (String(e.evId).indexOf('g:')===0
+                /* Las que entran por el Google conectado traen id propio y GHL
+                   no las conoce: pedirle a GHL por ellas devuelve 404. Son 2 de
+                   60 hoy; traerles el link significa sumarlo en la funcion de
+                   Google y guardarlo en la cita al sincronizar. */
+                ? 'Esta reunión viene del Google conectado, no de GHL: todavía no '
+                  +'traemos su link. Se abre desde el calendario de Google.'
+                : 'Buscando el link de la reunión…')))
+      +'</div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal();selectClient('+cliId+')">Abrir la ficha</button>'
+        +'<button class="btn btn-primary" onclick="closeModal()">Cerrar</button>'
+      +'</div>'
+    +'</div></div>';
+  if(e.tipo==='cita' && e.evId && String(e.evId).indexOf('g:')!==0) calCitaLink(e.evId);
+}
+/* El link se pide al abrir y no al dibujar el mes: son sesenta citas en
+   pantalla y serian sesenta llamadas a GHL para un link que casi siempre no se
+   usa. Al abrir una, es una sola. */
+async function calCitaLink(evId){
+  var caja=document.getElementById('cal-link');
+  if(!caja) return;
+  try{
+    var r=await agLlamar({accion:'cita', eventId:evId});
+    if(!caja.isConnected) return;
+    if(r.link){
+      caja.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        +'<a href="'+esc(r.link)+'" target="_blank" rel="noopener" class="btn btn-sm btn-primary" '
+          +'style="text-decoration:none">Entrar a la reunión</a>'
+        +'<button class="btn btn-sm" onclick="calCitaCopiar(this,\''
+          +esc(r.link).replace(/'/g,"\\'")+'\')">Copiar link</button>'
+        +'<span style="font-size:11.5px;color:var(--text3);overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">'+esc(r.link)+'</span>'
+        +'</div>';
+    } else if(r.direccion){
+      caja.textContent='Es presencial: '+r.direccion;
+    } else {
+      caja.textContent='Esa cita no tiene link cargado en GHL.';
+    }
+  }catch(err){
+    if(!caja.isConnected) return;
+    caja.innerHTML='<span style="color:var(--amberx)">No pude traer el link: '
+      +esc((err&&err.message)||'')+'</span>';
+  }
+}
+function calCitaCopiar(btn, link){
+  var listo=function(){
+    if(btn){ var t=btn.textContent; btn.textContent='Copiado';
+      setTimeout(function(){ try{ btn.textContent=t; }catch(e){} }, 1600); }
+  };
+  try{
+    navigator.clipboard.writeText(link).then(listo, function(){ prompt('Copialo:', link); });
+  }catch(e){ prompt('Copialo:', link); }
+}
 function _calChip(e){
   var hh=e.soloDia?'':(('0'+e.at.getHours()).slice(-2)+':'+('0'+e.at.getMinutes()).slice(-2));
   var cancel=(e.estado==='cancelled');
   var col=e.lado==='ventas'?'var(--amberx)':(e.lado==='delivery'?'var(--accent)':'var(--text3)');
-  return '<div onclick="selectClient('+e.cliId+')" title="'
+  /* Antes el chip se iba a la ficha del cliente. Lo que uno viene a hacer al
+     calendario es entrar a la reunion o pasarle el link a alguien, y para eso
+     habia que abrir GHL o el Google. Ahora abre el detalle de ESA cita, con el
+     link, y desde ahi se llega a la ficha igual. */
+  /* Una clave por entrada. Antes se guardaba por `evId` en un arreglo y se
+     pasaba `length` de respaldo: con claves de texto `length` nunca sube, asi
+     que el respaldo siempre valia 0 y las llamadas de Fathom -que no tienen
+     evId- no abrian nada. */
+  var _k=e.evId||('x'+(++_CAL_EV_N));
+  _CAL_EV[_k]=e;
+  return '<div onclick="calCitaAbrir(\''+esc(_k).replace(/'/g,"\\'")+'\','+e.cliId+')" title="'
       +esc(e.titulo+(e.quien?(' · '+e.quien):'')+(e.cal?(' · '+e.cal):''))+'" '
       +'style="display:flex;gap:5px;align-items:baseline;cursor:pointer;font-size:10.5px;'
       +'padding:2px 4px;border-radius:4px;border-left:2px solid '+col+';background:var(--bg3);'
@@ -18917,6 +19029,7 @@ function _calChip(e){
     +'</div>';
 }
 function calendarioHtml(){
+  _CAL_EV={}; _CAL_EV_N=0;
   var e=_calEstado();
   var todas=_calEntradas();
   var lista=(e.lado==='todas')?todas:todas.filter(function(x){ return x.lado===e.lado; });
