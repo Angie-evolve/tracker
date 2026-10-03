@@ -979,6 +979,15 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
 .cs-hue.sel{background:var(--accent);border-color:var(--accent);color:var(--on-accent);
   font-weight:600}
 .cs-hue:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Lo que la ocupa. Hasta que su Google quedo conectado esto no se podia
+   mostrar y el cartel decia "sera un evento de su Google que aca no se ve":
+   mandaba a preguntarle a ella. Ahora se ve el titulo y la hora. */
+.cs-ocu{display:block;padding:6px 8px;border-radius:9px;background:var(--bg4);
+  border-left:2px solid var(--amberx);margin-bottom:5px}
+.cs-ocu b{display:block;font-size:10.5px;font-weight:600;color:var(--amberx);
+  font-variant-numeric:tabular-nums;line-height:1.3}
+.cs-ocu span{display:block;font-size:11px;color:var(--text2);line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cs-vacio{font-size:11.5px;color:var(--text3);padding:7px 0;text-align:center}
 .cs-aviso{font-size:12px;color:var(--text2);margin-top:10px;line-height:1.5}
 /* Quien la toma dejo de ser un desplegable: son cuatro personas y la pregunta
@@ -36544,16 +36553,25 @@ function p360Agendar(clientId, elegir){
           ? "{fecha:'cita-fecha',hora:'cita-hora',etapa:'cita-etapa',caja:'cita-huecos'}"
           : "{fecha:'cita-fecha',hora:'cita-hora',et:'"+esc(et).replace(/'/g,"\\'")+"',caja:'cita-huecos'}"))
       +'<input type="hidden" id="cita-con" value="'+esc(c.contacto||c.name||'')+'">'
-      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">'
-        +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
-          +'onchange="citasHuecos('+c.id+',{fecha:\'cita-fecha\',hora:\'cita-hora\','
-          +(elegir?'etapa:\'cita-etapa\'':('et:\''+esc(et).replace(/'/g,"\\'")+'\''))
-          +',caja:\'cita-huecos\'})" style="'+est+'">'
-        +'<input id="cita-hora" type="time" value="09:00" style="'+est+'">'
-      +'</div>'
+      /* ⚠️  UN SOLO LUGAR PARA ELEGIR CUANDO. Antes la fila de fecha y hora
+         estaba ARRIBA de la semana y llamaba a `citasHuecos`, que pinta en el
+         MISMO contenedor: escribir una fecha hacia desaparecer la semana y
+         volver a la lista de un dia. Y mientras tanto los dos decian cosas
+         distintas -el campo en una fecha y la grilla en otra semana- sin que
+         nada dijera cual manda. Ahora la semana es el selector y la fila es
+         el resultado: se llena sola al tocar un horario, y si se escribe una
+         fecha a mano la semana se MUEVE hasta ahi en vez de borrarse. */
       +'<div id="cita-huecos" style="margin-top:14px;line-height:2"></div>'
       +(cal?('<div id="cita-sem-res" style="font-size:12.5px;color:var(--text3);'
-             +'margin-top:12px">Eleg\u00ed un horario.</div>'):'')
+             +'margin-top:12px">Eleg\u00ed un horario de la semana.</div>'):'')
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">'
+        +'<span style="font-size:11px;color:var(--text3)">'
+          +(cal?'o escribila':'Fecha y hora')+'</span>'
+        +'<input id="cita-fecha" type="date" value="'+esc(f0)+'" '
+          +'onchange="citasFechaEscrita('+c.id+')" style="'+est+'">'
+        +'<input id="cita-hora" type="time" value="09:00" '
+          +'onchange="citasHoraEscrita()" style="'+est+'">'
+      +'</div>'
       +'<div id="p3-citas-msg" style="font-size:11.5px;color:var(--text3);min-height:16px;'
         +'margin-top:8px"></div>'
       +(mail?'':('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;'
@@ -36710,18 +36728,20 @@ async function citasQuienCargar(clientId, ids){
        cuatro personas, asi que verlas todas cuesta menos que abrir una lista.
        El valor sigue viviendo en un input con el id de siempre, para que
        _citaQuien() y todo lo que lo lee no se enteren del cambio. */
-    var _pill=function(id, nom, sel){
+    // El mail viaja en la pastilla: es con el que se cruzan los eventos del
+    // Google conectado, que vienen identificados por mail y no por id de GHL.
+    var _pill=function(id, nom, mail, sel){
       return '<button type="button" class="cs-per'+(sel?' sel':'')+'" data-id="'+esc(id)+'" '
         +'onclick="citasQuienElegir(\''+esc(id).replace(/'/g,"\\'")+'\',\''
-        +esc(nom).replace(/'/g,"\\'")+'\')">'
+        +esc(nom).replace(/'/g,"\\'")+'\',\''+esc(mail||'').replace(/'/g,"\\'")+'\')">'
         +'<span class="cs-ini">'+esc(_csIni(nom))+'</span>'+esc(nom)+'</button>';
     };
-    S._quienNom='';
+    S._quienNom=''; S._quienMail='';
     caja.innerHTML='<div class="cs-lbl" style="margin-bottom:8px">Qui\u00e9n la toma</div>'
       +'<input type="hidden" id="cita-quien" value="">'
       +'<div class="cs-pers">'
-      +ps.map(function(x){ return _pill(x.id, x.nombre, false); }).join('')
-      +_pill('', 'Como venga', true)
+      +ps.map(function(x){ return _pill(x.id, x.nombre, x.mail, false); }).join('')
+      +_pill('', 'Como venga', '', true)
       +'</div>';
   }catch(e){
     caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">No pude traer el '
@@ -36998,14 +37018,19 @@ function _isoGhl(d){
 function _csDia(d){
   return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
 }
-function _csLunesDe(f){
+function _csLunesDe(f, suSemana){
   var d=f?new Date(f+'T12:00:00'):new Date();
   if(isNaN(d.getTime())) d=new Date();
   /* El fin de semana cae en la semana SIGUIENTE, no en la que termino. Un
      sabado, 1-getDay() da -5 y abria el lunes anterior: cinco dias que ya
-     pasaron y donde GHL no va a ofrecer nada. */
+     pasaron y donde GHL no va a ofrecer nada.
+     `suSemana` apaga esa regla: sirve para el arranque -donde la fecha es
+     "hoy" y adelantar tiene sentido- pero no cuando alguien ESCRIBIO un
+     sabado, porque mostrarle la semana siguiente deja la fecha que escribio
+     fuera de la grilla, que es justo la ambiguedad que esto viene a sacar. */
   var dow=d.getDay();
-  var corr=(dow===0)?1:((dow===6)?2:(1-dow));
+  var corr=suSemana ? ((dow===0)?-6:(1-dow))
+                    : ((dow===0)?1:((dow===6)?2:(1-dow)));
   d.setDate(d.getDate()+corr);
   return _csDia(d);
 }
@@ -37014,7 +37039,10 @@ function _csDias(lun){
   for(var i=0;i<5;i++){ out.push(_csDia(d)); d.setDate(d.getDate()+1); }
   return out;
 }
-var CS_NOM=['lun','mar','mie','jue','vie'];
+/* Siete y no cinco: la grilla muestra de lunes a viernes, pero una fecha
+   escrita a mano puede caer un sabado, y el resumen la nombra igual. Con
+   cinco, `CS_NOM[(getDay()+6)%7]` daba undefined el fin de semana. */
+var CS_NOM=['lun','mar','mie','jue','vie','sab','dom'];
 var CS_MES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
             'septiembre','octubre','noviembre','diciembre'];
 function _csRotulo(dias){
@@ -37030,6 +37058,17 @@ function _csIni(nombre){
   if(n.indexOf('@')>=0) n=n.split('@')[0];
   var w=n.split(/[\s._-]+/).filter(Boolean);
   return ((w.length>=2)?(w[0][0]+w[1][0]):n.slice(0,2)).toUpperCase();
+}
+/* Los eventos de Google se bajan una vez cada cinco minutos y se reparten:
+   `_gcalEventos` pide una ventana de -7 a +60 dias, asi que la misma respuesta
+   sirve para todas las semanas que se miren en ese rato. Pedirla en cada
+   cambio de semana o de persona serian cuatro llamadas para ver dos dias. */
+var _CS_GCAL={at:0, eventos:null};
+async function _csGcal(){
+  if(_CS_GCAL.eventos && (Date.now()-_CS_GCAL.at)<300000) return _CS_GCAL.eventos;
+  var r=await _gcalEventos();
+  _CS_GCAL={at:Date.now(), eventos:(r&&r.eventos)||[]};
+  return _CS_GCAL.eventos;
 }
 async function citasSemanaCargar(clientId, ids, lunes){
   var caja=document.getElementById(ids.caja);
@@ -37066,6 +37105,29 @@ async function citasSemanaCargar(clientId, ids, lunes){
     });
     dias.forEach(function(d){ pd[d].horas.sort(); });
     S._sem.porDia=pd;
+    /* Lo que la ocupa, del Google conectado. Solo con una persona elegida y
+       solo si su mail tiene cuenta conectada: sin eso no se dibuja nada, que
+       es mejor que dibujar los eventos de otra persona. */
+    S._sem.ocupado={};
+    if(_q && S._quienMail){
+      try{
+        var gg=await _csGcal();
+        (gg||[]).forEach(function(ev){
+          if(!ev || String(ev.estado||'')==='cancelled') return;
+          if(String(ev.deNuestroLado||'').toLowerCase()!==S._quienMail) return;
+          var ini=String(ev.inicio||'');
+          var dia=ini.slice(0,10);
+          if(!pd[dia]) return;
+          S._sem.ocupado[dia]=S._sem.ocupado[dia]||[];
+          S._sem.ocupado[dia].push({
+            hh: (ini.indexOf('T')>0)?ini.slice(11,16):'',
+            hf: (String(ev.fin||'').indexOf('T')>0)?String(ev.fin).slice(11,16):'',
+            titulo: String(ev.titulo||'sin t\u00edtulo')});
+        });
+        Object.keys(S._sem.ocupado).forEach(function(d){
+          S._sem.ocupado[d].sort(function(a,b){ return a.hh.localeCompare(b.hh); }); });
+      }catch(e){}
+    }
     S._huecosCal=S._huecosCal||{};
     S._huecosCal[ids.caja]=cal;
     citasSemanaPintar();
@@ -37073,6 +37135,29 @@ async function citasSemanaCargar(clientId, ids, lunes){
     caja.innerHTML='<span class="cs-aviso" style="color:var(--amberx)">'
       +'No pude traer los horarios de la semana: '+esc((e&&e.message)||'')+'</span>';
   }
+}
+/* Escribir una fecha a mano MUEVE la semana, no la borra. Antes esto llamaba a
+   `citasHuecos`, que pinta la lista de un dia en el mismo contenedor: la
+   grilla desaparecia y quedaban dos selectores diciendo cosas distintas. */
+function citasFechaEscrita(clientId){
+  var s=S._sem||{};
+  if(!s.ids){
+    // Sin semana activa -la etapa no tiene calendario- vale el camino de antes.
+    var ids={fecha:'cita-fecha', hora:'cita-hora', caja:'cita-huecos'};
+    var et=document.getElementById('cita-etapa');
+    if(et) ids.etapa='cita-etapa';
+    return citasHuecos(clientId, ids);
+  }
+  var f=(document.getElementById(s.ids.fecha)||{}).value||'';
+  if(!f) return;
+  var lun=_csLunesDe(f, true);
+  // Ya estamos en esa semana: no se vuelve a pedir, solo se repinta la marca.
+  if(lun===s.lunes) return citasSemanaPintar();
+  citasSemanaCargar(s.clientId, s.ids, lun);
+}
+// La hora escrita a mano no mueve nada; solo se repinta cual queda marcado.
+function citasHoraEscrita(){
+  if(S._sem && S._sem.ids) citasSemanaPintar();
 }
 function citasSemanaPintar(){
   var s=S._sem||{};
@@ -37097,12 +37182,26 @@ function citasSemanaPintar(){
     html+='<div class="cs-dia'+(d===hoy?' hoy':'')+'">'
       +'<div class="cs-dcab"><span class="cs-dnum">'+Number(d.slice(8,10))+'</span>'
       +'<span class="cs-dnom">'+CS_NOM[i]+'</span></div>';
-    if(!g.horas.length){ html+='<div class="cs-vacio">sin huecos</div>'; }
+    /* Huecos y ocupaciones en el mismo orden del dia: separarlos haria leer
+       "sin huecos" arriba y la reunion que lo explica abajo, que es la pregunta
+       y la respuesta en dos lugares distintos. */
+    var _items=g.horas.map(function(hh){ return {o:hh, t:'h', hh:hh}; })
+      .concat(((s.ocupado||{})[d]||[]).map(function(x){
+        return {o:x.hh||'00:00', t:'o', x:x}; }))
+      .sort(function(a,b){ return String(a.o).localeCompare(String(b.o)); });
+    if(!_items.length){ html+='<div class="cs-vacio">sin huecos</div>'; }
     else {
-      g.horas.forEach(function(hh){
-        html+='<button class="cs-hue'+((d===fSel&&hh===hSel)?' sel':'')+'" '
-          +'onclick="citasSemanaElegir(\''+d+'\',\''+hh+'\')">'+hh+'</button>';
+      _items.forEach(function(it){
+        if(it.t==='h'){
+          html+='<button class="cs-hue'+((d===fSel&&it.hh===hSel)?' sel':'')+'" '
+            +'onclick="citasSemanaElegir(\''+d+'\',\''+it.hh+'\')">'+it.hh+'</button>';
+        } else {
+          var _r=it.x.hh ? (it.x.hh+(it.x.hf?(' a '+it.x.hf):'')) : 'todo el d\u00eda';
+          html+='<span class="cs-ocu" title="'+esc(it.x.titulo)+'">'
+            +'<b>'+esc(_r)+'</b><span>'+esc(it.x.titulo)+'</span></span>';
+        }
       });
+      if(!g.horas.length) html+='<div class="cs-vacio">sin huecos</div>';
     }
     html+='</div>';
   });
@@ -37150,9 +37249,20 @@ function _csResumen(){
   var s=S._sem||{}, ids=s.ids||{};
   var f=(document.getElementById(ids.fecha)||{}).value||'';
   var h=(document.getElementById(ids.hora)||{}).value||'';
-  if(!f||!(S._huecos||{})[ids.caja]||(S._huecos[ids.caja]||{}).dia!==f){
-    e.textContent='Elegí un horario.';
+  var _g=(S._huecos||{})[ids.caja];
+  if(!f){
+    e.textContent='Elegí un horario de la semana.';
     e.style.color='var(--text3)';
+    return;
+  }
+  /* Escrito a mano y fuera de los huecos que dio GHL. No se calla: es el caso
+     en el que "Agendar en GHL" va a rebotar con "the slot you have selected is
+     no longer available", y decirlo despues llega tarde. */
+  if(!_g || _g.dia!==f || (_g.horas||[]).indexOf(h)<0){
+    var _d0=new Date(f+'T12:00:00');
+    e.textContent=CS_NOM[(_d0.getDay()+6)%7]+' '+_d0.getDate()+' de '+CS_MES[_d0.getMonth()]
+      +', '+h+' · no es uno de los horarios libres: sirve para "Solo anotar".';
+    e.style.color='var(--amberx)';
     return;
   }
   var d=new Date(f+'T12:00:00');
@@ -37160,10 +37270,11 @@ function _csResumen(){
     +', '+h+(S._quienNom?(', con '+S._quienNom):'');
   e.style.color='var(--text2)';
 }
-function citasQuienElegir(id, nom){
+function citasQuienElegir(id, nom, mail){
   var i=document.getElementById('cita-quien');
   if(i) i.value=String(id||'');
   S._quienNom=String(nom||'');
+  S._quienMail=String(mail||'').trim().toLowerCase();
   var caja=document.getElementById('cita-quien-caja');
   if(caja){
     Array.prototype.forEach.call(caja.querySelectorAll('.cs-per'), function(b){
