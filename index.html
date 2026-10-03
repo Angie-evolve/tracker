@@ -994,6 +994,29 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
   background:var(--bg4);display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;font-weight:600;color:var(--text2);flex:none}
 .cs-per.sel .cs-ini{border-color:var(--accent);color:var(--accent)}
+/* ── Cuando el contacto no existe en GHL ─────────────────────────────────
+   El error era un callejon: la unica salida era "Solo anotar", que deja la
+   reunion sin existir para el cliente. Son dos casos distintos y se arreglan
+   distinto -el mail del tracker esta mal, o el contacto de verdad no esta-,
+   asi que primero se busca por nombre y recien si no aparece nada se ofrece
+   crearlo. El horario elegido no se pierde en el camino. */
+.cr-caja{margin-top:10px;border-radius:14px;padding:13px 15px;
+  background:rgba(240,112,80,.07);border:1px solid rgba(240,112,80,.3)}
+.cr-tit{font-size:13.5px;color:var(--text);line-height:1.5}
+.cr-tit b{color:var(--redx);font-weight:600}
+.cr-lista{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}
+.cr-op{display:inline-flex;align-items:center;gap:9px;padding:6px 14px 6px 6px;
+  border-radius:999px;border:1px solid var(--border2);background:transparent;
+  color:var(--text);font-family:var(--font);font-size:13px;cursor:pointer;text-align:left}
+.cr-op:hover{border-color:var(--accent)}
+.cr-op:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.cr-op.nuevo{border-style:dashed}
+.cr-op small{display:block;font-size:11px;color:var(--text2);
+  font-variant-numeric:tabular-nums}
+.cr-ini{width:26px;height:26px;border-radius:50%;border:1px solid var(--border2);
+  background:var(--bg4);display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:600;color:var(--text2);flex:none}
+.cr-pie{font-size:11.5px;color:var(--text2);margin-top:10px;line-height:1.5}
 .p3kcal{position:absolute;top:11px;right:11px;line-height:1}
 /* Nunca conviven: o hay reunion y va el calendario, o no hay y va el mas. Por
    eso comparten el mismo lugar. */
@@ -37282,7 +37305,110 @@ async function citasAgendarGhl(clientId){
         +'quedo ahi: conviene cancelarla a mano en GHL.'):''))
       ,(_adivinada||_mudada)?'var(--amberx)':'var(--accent)');
   }catch(e){
-    _citasDecir(clientId,'No se agendó: '+esc(e&&e.message||''),'var(--redx)');
+    var _msg=String((e&&e.message)||'');
+    /* "No encontre un contacto con el mail X" no es un error de verdad: es una
+       bifurcacion. Se la trata aparte porque tiene arreglo desde aca. */
+    if(/no encontre un contacto con el mail/i.test(_msg)){
+      citasContactoRescate(clientId, mail);
+      return;
+    }
+    _citasDecir(clientId,'No se agendó: '+esc(_msg),'var(--redx)');
+  }
+}
+/* ── El contacto no existe en GHL ───────────────────────────────────────
+   Dos casos que dan el mismo error y se arreglan distinto:
+   1) Existe con otro mail. Pasa cuando el mail de la ficha tiene un error de
+      tipeo -el caso real fue "gmail.co" por "gmail.com"-. Se busca por nombre
+      y al elegirlo se GUARDA el mail bueno en la ficha, asi la proxima vez
+      no vuelve a preguntar.
+   2) No existe. Pasa con los clientes cargados a mano, que no entraron por
+      campana. Ahi hay que crearlo.
+   El orden importa: crear primero ensuciaria la subcuenta con duplicados, que
+   es justo lo que la funcion `agendar` evita a proposito al no crear sola. */
+async function citasContactoRescate(clientId, mail){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var caja=document.getElementById('p3-citas-msg');
+  if(!caja) return;
+  var _esc=function(t){ return esc(String(t||'')); };
+  caja.style.color='var(--text3)';
+  caja.innerHTML='<div class="cr-caja"><div class="cr-tit">'
+    +'<b>No hay ningún contacto en GHL con '+_esc(mail)+'.</b> '
+    +'Buscando por nombre…</div></div>';
+  // Se prueba con el nombre del cliente y con el de su contacto: cualquiera de
+  // los dos puede ser el que figura en GHL.
+  var _qs=[];
+  [c.name, c.contacto].forEach(function(x){
+    x=String(x||'').trim();
+    if(x.length>=2 && _qs.indexOf(x)<0) _qs.push(x);
+  });
+  var halla=[], visto={};
+  for(var i=0;i<_qs.length;i++){
+    try{
+      var r=await agLlamar({accion:'contactoBuscar', query:_qs[i]});
+      (r.contactos||[]).forEach(function(x){
+        if(!x || !x.mail || visto[x.mail]) return;
+        visto[x.mail]=1; halla.push(x);
+      });
+    }catch(e){}
+  }
+  var ops=halla.slice(0,6).map(function(x){
+    return '<button type="button" class="cr-op" onclick="citasContactoUsar('+c.id+',\''
+      +_esc(x.mail).replace(/'/g,"\\'")+'\')">'
+      +'<span class="cr-ini">'+_esc(_csIni(x.nombre||x.mail))+'</span>'
+      +'<span>'+_esc(x.nombre||x.mail)
+      +'<small>'+_esc(x.mail)+(x.alta?(' · alta '+_esc(String(x.alta).slice(0,10))):'')
+      +'</small></span></button>';
+  }).join('');
+  caja.innerHTML='<div class="cr-caja"><div class="cr-tit">'
+    +'<b>No hay ningún contacto en GHL con '+_esc(mail)+'.</b> '
+    +(halla.length
+      ? ('Busqué por nombre y encontré '+halla.length+':')
+      : 'Busqué por nombre y tampoco aparece nada.')
+    +'</div>'
+    +'<div class="cr-lista">'+ops
+    +'<button type="button" class="cr-op nuevo" onclick="citasContactoCrear('+c.id+')">'
+      +'<span class="cr-ini">+</span><span>'+(halla.length?'Ninguno es':'Crearlo')
+      +'<small>'+_esc(mail)+'</small></span></button>'
+    +'</div>'
+    +'<div class="cr-pie">'
+    +(halla.length
+      ? 'Al elegir uno, su mail queda guardado en la ficha y la cita se agenda sin volver a empezar.'
+      : 'Se crea en GHL con el nombre, el mail y el teléfono de la ficha, y después se agenda.')
+    +'</div></div>';
+}
+// El contacto existia con otro mail: se corrige la ficha y se reintenta. Que se
+// guarde es lo que convierte esto en un arreglo y no en un parche por reunion.
+async function citasContactoUsar(clientId, mail){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  // Se escribe donde la app lo lee: `contactoEmail` le gana a `email`.
+  if(c.contactoEmail) c.contactoEmail=mail; else c.email=mail;
+  save();
+  _citasDecir(clientId,'Mail corregido en la ficha. Agendando…');
+  await citasAgendarGhl(clientId);
+  _citasRepintar();
+}
+async function citasContactoCrear(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var mail=String(c.contactoEmail||c.email||'').trim();
+  var nom=String(c.contacto||c.name||'').trim();
+  var p=nom.split(/\s+/);
+  _citasDecir(clientId,'Creando el contacto en GHL…');
+  try{
+    var r=await agLlamar({accion:'contactoCrear',
+      nombre:p[0]||nom, apellido:p.slice(1).join(' '),
+      email:mail, telefono:String(c.phone||c.telefono||'').trim()});
+    // `yaExistia` quiere decir que alguien lo creo en el medio, o que la
+    // busqueda por nombre no lo trajo. No es un error: se sigue igual.
+    _citasDecir(clientId, r.yaExistia
+      ? 'Ese contacto ya estaba en GHL. Agendando…'
+      : 'Contacto creado en GHL. Agendando…');
+    await citasAgendarGhl(clientId);
+    _citasRepintar();
+  }catch(e){
+    _citasDecir(clientId,'No pude crear el contacto: '+esc((e&&e.message)||''),'var(--redx)');
   }
 }
 function citasAMano(clientId){
