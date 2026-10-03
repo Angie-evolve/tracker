@@ -197,17 +197,108 @@ Deno.serve(async (req: Request) => {
       // Los nombres son un lujo: si la lista de usuarios falla, se devuelven
       // los ids igual en vez de no devolver nada.
       const nombres: Record<string, string> = {};
+      /* El mail NO es un lujo: los eventos del Google conectado vienen
+       * identificados por mail, y sin esto no hay con que cruzar "Angie
+       * Rodriguez" contra su cuenta. Es lo que deja que la app diga QUE la
+       * ocupa cuando GHL contesta que no tiene ningun hueco, en vez de
+       * "sera algo de su Google que aca no se ve". */
+      const correos: Record<string, string> = {};
       const ru = await ghl("/users/?locationId=" + encodeURIComponent(GHL_LOCATION));
       if (ru.ok) {
         ((ru.datos && ru.datos.users) || []).forEach((u: any) => {
           if (u && u.id) {
             nombres[String(u.id)] = String(u.name || u.firstName || u.email || u.id);
+            correos[String(u.id)] = String(u.email || "").trim().toLowerCase();
           }
         });
       }
       return responder({
         ok: true, calendarId, tipo: String(cal.calendarType || ""),
-        personas: miembros.map((id) => ({ id, nombre: nombres[id] || id })),
+        personas: miembros.map((id) => ({
+          id, nombre: nombres[id] || id, mail: correos[id] || "",
+        })),
+      });
+    }
+
+    /* Buscar un contacto por nombre.
+     *
+     * ⚠️  EXISTE PORQUE AGENDAR SE BUSCA POR MAIL Y EL MAIL DEL TRACKER PUEDE
+     *     ESTAR MAL. El caso real: la ficha decia "fransolans99@gmail.co" y en
+     *     GHL estaba "fransolans99@gmail.com". Un caracter, y la unica salida
+     *     que tenia quien agendaba era "Solo anotar", que deja la reunion sin
+     *     existir para el cliente. Buscando por nombre aparece en dos clics.
+     *
+     * Va por la funcion y no desde el navegador a proposito: el token de la
+     * agencia vive SOLO en los secretos de aca. Hacerlo en el navegador
+     * obligaria a repartir esa credencial a cada persona del equipo.
+     */
+    if (accion === "contactoBuscar") {
+      const q = String(body.query || "").trim();
+      if (q.length < 2) return responder({ error: "Falta a quien buscar." }, 400);
+      const r = await ghl("/contacts/search", {
+        method: "POST",
+        body: JSON.stringify({ locationId: GHL_LOCATION, query: q, pageLimit: 20 }),
+      });
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      const lista = (r.datos && r.datos.contacts) || [];
+      return responder({
+        ok: true,
+        contactos: (Array.isArray(lista) ? lista : []).map((c: any) => ({
+          id: String(c.id || ""),
+          nombre: String(c.contactName ||
+            ((c.firstName || "") + " " + (c.lastName || "")).trim() || ""),
+          mail: String(c.email || ""),
+          tel: String(c.phone || ""),
+          alta: String(c.dateAdded || ""),
+        })),
+      });
+    }
+
+    /* Crear el contacto.
+     *
+     * ⚠️  SEPARADA DE `agendar` A PROPOSITO. `buscarContacto` no crea nada, y
+     *     esta bien que no lo haga: si el mail no aparece es mas probable que
+     *     este mal escrito que que el contacto no exista, y crear uno
+     *     duplicado ensucia la subcuenta. Pero cuando de verdad no existe
+     *     -un cliente cargado a mano, que no entro por campana- no habia
+     *     salida. Esta accion es esa salida, y la pide una persona que ya
+     *     miro los candidatos: no se dispara sola desde `agendar`.
+     *
+     * ⚠️  IGUAL CHEQUEA ANTES DE CREAR. Que lo pida una persona no garantiza
+     *     que no exista: puede haberse equivocado al leer la lista. Si ya hay
+     *     uno con ese mail se devuelve ESE, con `yaExistia`, en vez de un
+     *     segundo contacto con el mismo mail.
+     */
+    if (accion === "contactoCrear") {
+      const email = String(body.email || "").trim().toLowerCase();
+      const nombre = String(body.nombre || "").trim();
+      const apellido = String(body.apellido || "").trim();
+      const tel = String(body.telefono || "").trim();
+      if (!email || !/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) {
+        return responder({ error: "Ese mail no tiene forma de mail: " + email }, 400);
+      }
+      if (!nombre) return responder({ error: "Falta el nombre del contacto." }, 400);
+
+      const ya = await buscarContacto(email);
+      if (!("error" in ya)) {
+        return responder({
+          ok: true, yaExistia: true, id: ya.id, nombre: ya.nombre,
+          nota: "Ya habia un contacto con ese mail; se usa ese.",
+        });
+      }
+
+      const cuerpo: Record<string, unknown> = {
+        locationId: GHL_LOCATION, email, firstName: nombre,
+      };
+      if (apellido) cuerpo.lastName = apellido;
+      if (tel) cuerpo.phone = tel;
+      const r = await ghl("/contacts/", { method: "POST", body: JSON.stringify(cuerpo) });
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      const c = (r.datos && (r.datos.contact || r.datos)) || {};
+      return responder({
+        ok: true, yaExistia: false, id: String(c.id || ""),
+        nombre: String(c.contactName ||
+          ((c.firstName || "") + " " + (c.lastName || "")).trim() || nombre),
       });
     }
 
