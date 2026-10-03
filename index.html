@@ -36655,7 +36655,64 @@ async function p360AgendarHacer(clientId, modo){
   if(modo==='ghl') await citasAgendarGhl(clientId);
   else citasAMano(clientId);
   var ahora=JSON.stringify((c.citas||{})[et]||null);
-  if(ahora!==antes){ closeModal(); _citasRepintar(); }
+  if(ahora!==antes){
+    closeModal(); _citasRepintar();
+    // Recien con el popup cerrado: si no, uno pisa al otro.
+    if(modo==='ghl' && S._citaHecha && S._citaHecha.clientId===clientId) citaHechaModal();
+    else if(modo!=='ghl') citaAnotadaAviso(c, et);
+  }
+}
+/* La confirmacion de lo que quedo. No es decoracion: agendar manda una
+   invitacion al cliente, y hasta ahora lo unico que confirmaba que habia
+   salido era que la tarjeta cambiara de color atras. */
+function citaHechaModal(){
+  var d=S._citaHecha; if(!d) return;
+  var c=(DB.clients||[]).find(function(x){ return x.id===d.clientId; });
+  var dia=(function(){
+    var t=new Date(d.inicio);
+    if(isNaN(t.getTime())) return d.fecha||'';
+    var D=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+    var M=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+           'septiembre','octubre','noviembre','diciembre'];
+    return D[t.getDay()]+' '+t.getDate()+' de '+M[t.getMonth()];
+  })();
+  var fila=function(r,v){
+    return '<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<span style="width:92px;flex:none;font-size:11px;color:var(--text3);'
+        +'text-transform:uppercase;letter-spacing:.06em">'+r+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:13px;color:var(--text)">'+v+'</span></div>';
+  };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:460px">'
+      +'<div style="font-size:18px;font-weight:600;color:var(--strong);letter-spacing:-.01em">'
+        +(d.reprogramada?'Reunión reprogramada':'Reunión agendada')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);margin-top:4px">'
+        +'Quedó creada en GHL. El cliente recibe la invitación y los recordatorios.</div>'
+      +'<div style="margin-top:14px">'
+        +fila('Cuándo','<b style="font-weight:600">'+esc(dia)+', '+esc(d.hora)+'</b>')
+        +fila('Con', esc(d.contacto||d.mail||'—')
+          +(d.mail&&d.contacto&&d.contacto!==d.mail
+            ?('<span style="color:var(--text3)"> · '+esc(d.mail)+'</span>'):''))
+        +(d.quien?fila('La toma', esc(d.quien)):'')
+        +fila('Qué', esc((c&&c.name)||'')+' · '+esc(d.etapa))
+        +(d.calendario?fila('Calendario', esc(d.calendario)):'')
+      +'</div>'
+      +(d.nota?('<div style="font-size:11.5px;color:var(--text3);line-height:1.55;'
+        +'margin-top:12px">'+esc(d.nota)+'</div>'):'')
+      +'<div class="modal-footer"><button class="btn btn-primary" onclick="closeModal()">'
+        +'Listo</button></div>'
+    +'</div></div>';
+  S._citaHecha=null;
+}
+// "Solo anotar" cierra igual y tampoco dejaba rastro. Alcanza un toast: no
+// salio nada para afuera, asi que no hay nada que confirmar con tanto detalle.
+function citaAnotadaAviso(c, et){
+  var f=((c&&c.rutaAgenda)||{})[et]||'';
+  if(typeof toast==='function'){
+    toast(et+' anotada'+(f?(' para el '+f):'')+' en el tracker. El cliente no se entera: '
+      +'no hay invitación ni recordatorios.');
+  }
 }
 // El calendario de una tarjeta lleva a cambiarle la fecha a ESA reunion. Antes
 // abria el formulario de cargar a mano con los campos pre-cargados, que creaba
@@ -37488,7 +37545,34 @@ async function citasAgendarGhl(clientId){
           +'</span>')
         : '')
       ,'var(--accent)');
+    /* ⚠️  EL AVISO DE EXITO NO SE ALCANZABA A LEER. `p360AgendarHacer` cierra
+       el popup apenas ve que la cita cambio, y el cartel se va con el: la
+       reunion quedaba creada -con invitacion al cliente- y en pantalla no
+       quedaba nada diciendo con quien ni a que hora. Se guarda lo que entro
+       para mostrarlo en su propio popup, que es lo unico que sobrevive al
+       cierre. */
+    S._citaHecha={
+      clientId:clientId, etapa:et,
+      inicio:(r.inicio||_envio),
+      fecha:c.rutaAgenda[et], hora:_citaHora(r.inicio||_envio),
+      contacto:String(r.contacto||mail||''), mail:mail,
+      quien:String(S._quienNom||''),
+      calendario:(function(){
+        var x=(DB.ghlCalendariosAgencia||[]).filter(function(y){
+          return String(y.id)===String(cal); })[0];
+        return x?String(x.nombre||''):'';
+      })(),
+      reprogramada:!!idViejo,
+      nota:(_adivinada
+        ? ('La que figuraba antes en '+et+' no estaba confirmada: era una suposición de '
+           +'la app, así que no se tocó.')
+        : (_mudada
+          ? ('La reunión que estaba cargada vivía en otro calendario, así que quedó ahí: '
+             +'conviene cancelarla a mano en GHL.')
+          : ''))
+    };
   }catch(e){
+    S._citaHecha=null;
     var _msg=String((e&&e.message)||'');
     /* "No encontre un contacto con el mail X" no es un error de verdad: es una
        bifurcacion. Se la trata aparte porque tiene arreglo desde aca. */
