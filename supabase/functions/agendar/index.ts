@@ -330,6 +330,41 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    /* Una cita concreta, para poder entrar a la reunion desde el tracker.
+     *
+     * ⚠️  EL LINK VIVE EN `address`. GHL guarda ahi la url del Meet -o del Zoom-
+     *     que arma al confirmar el turno. No viene en la agenda que lista los
+     *     eventos, asi que hay que pedir la cita de a una; por eso esto existe
+     *     y no se resolvio sumando un campo a la lista.
+     *
+     * Va por la funcion y no desde el navegador porque el token de la agencia
+     * vive solo en los secretos de aca: si no, solo podria usarlo quien lo
+     * tenga cargado a mano, que es lo contrario de lo que hace falta.
+     */
+    if (accion === "cita") {
+      const id = String(body.eventId || "").trim();
+      if (!id) return responder({ error: "Falta el id de la cita." }, 400);
+      const r = await ghl("/calendars/events/appointments/" + encodeURIComponent(id));
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      const a = (r.datos && (r.datos.event || r.datos.appointment || r.datos)) || {};
+      const dir = String(a.address || "").trim();
+      return responder({
+        ok: true,
+        id: String(a.id || id),
+        titulo: String(a.title || ""),
+        inicio: String(a.startTime || ""),
+        fin: String(a.endTime || ""),
+        estado: String(a.appointmentStatus || a.appoinmentStatus || ""),
+        calendarId: String(a.calendarId || ""),
+        notas: String(a.notes || ""),
+        // Solo si es una url: `address` tambien se usa para direcciones de
+        // verdad -una oficina- y ofrecer "entrar a la reunion" a una calle
+        // seria mentir.
+        link: /^https?:\/\//i.test(dir) ? dir : "",
+        direccion: /^https?:\/\//i.test(dir) ? "" : dir,
+      });
+    }
+
     // Los horarios libres de un calendario para un dia. Los calcula GHL con la
     // disponibilidad configurada -horario de atencion, duracion del turno, lo
     // ya ocupado-, asi que es la misma verdad que ve el cliente en el widget.
