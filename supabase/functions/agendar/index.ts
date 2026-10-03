@@ -100,6 +100,17 @@ async function ghl(ruta: string, init: RequestInit = {}) {
 // por mail y no se crea nada: si no aparece, es mas probable que el mail del
 // tracker este mal que que el contacto no exista, y crear uno duplicado ensucia
 // la subcuenta sin arreglar nada.
+/* Un telefono como lo espera GHL, o nada. Saca todo lo que no sea digito,
+ * incluidas las marcas invisibles que deja copiar y pegar desde WhatsApp, y
+ * deja un solo "+" adelante. Si lo que queda no tiene forma de E.164 devuelve
+ * vacio, que es mejor que mandar algo que voltea la creacion entera. */
+function telE164(v: string): string {
+  let t = String(v || "").replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+  if (!t) return "";
+  if (!t.startsWith("+")) t = "+" + t;
+  return /^\+[1-9]\d{7,14}$/.test(t) ? t : "";
+}
+
 async function buscarContacto(email: string) {
   const r = await ghl(
     "/contacts/?locationId=" + encodeURIComponent(GHL_LOCATION) +
@@ -291,14 +302,31 @@ Deno.serve(async (req: Request) => {
         locationId: GHL_LOCATION, email, firstName: nombre,
       };
       if (apellido) cuerpo.lastName = apellido;
-      if (tel) cuerpo.phone = tel;
-      const r = await ghl("/contacts/", { method: "POST", body: JSON.stringify(cuerpo) });
+      /* ⚠️  EL TELEFONO NO PUEDE VOLTEAR LA CREACION. Los numeros se cargan
+       * copiando y pegando, y vienen con espacios duros, guiones no-ASCII y
+       * hasta marcas invisibles de direccion de texto (U+202A): GHL contesta
+       * 400 "Invalid country calling code" y el contacto no se crea. El
+       * telefono es un adorno para agendar -lo que hace falta es el mail-, asi
+       * que se limpia, y si aun asi no tiene forma de E.164 se manda sin el.
+       */
+      const telLimpio = telE164(tel);
+      if (telLimpio) cuerpo.phone = telLimpio;
+      let r = await ghl("/contacts/", { method: "POST", body: JSON.stringify(cuerpo) });
+      /* Y si GHL igual lo rechaza por el telefono, se reintenta sin el. Crear
+       * el contacto sin telefono es muchisimo mejor que no crearlo. */
+      let sinTel = false;
+      if (!r.ok && cuerpo.phone && /phone|calling code/i.test(r.crudo || "")) {
+        delete cuerpo.phone;
+        sinTel = true;
+        r = await ghl("/contacts/", { method: "POST", body: JSON.stringify(cuerpo) });
+      }
       if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
       const c = (r.datos && (r.datos.contact || r.datos)) || {};
       return responder({
         ok: true, yaExistia: false, id: String(c.id || ""),
         nombre: String(c.contactName ||
           ((c.firstName || "") + " " + (c.lastName || "")).trim() || nombre),
+        sinTelefono: sinTel || (!!tel && !telLimpio),
       });
     }
 
