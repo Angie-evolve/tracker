@@ -1026,6 +1026,19 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
   background:var(--bg4);display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;font-weight:600;color:var(--text2);flex:none}
 .cr-pie{font-size:11.5px;color:var(--text2);margin-top:10px;line-height:1.5}
+/* ── La salud del cliente, en la tarjeta ─────────────────────────────────
+   Una barra de tres tramos -ads, embudo, comercial- sin separacion entre
+   ellos: se lee como UNA cosa, la salud, y no como tres indicadores que hay
+   que interpretar de a uno. Solo aparece en los clientes con campanas
+   activas; en los demas no hay nada que medir y una barra gris seria ruido.
+   Cuatro estados y no tres: un frente sin instrumentar y un frente sano no
+   pueden pintarse igual, y la raya los distingue del gris de "sin muestra". */
+.p3sal{display:flex;height:4px;border-radius:2px;overflow:hidden;margin-top:9px}
+.p3sal span{flex:1;background:#4a4a4a}
+.p3sal span.ok{background:var(--accent)}
+.p3sal span.medio{background:var(--amberx)}
+.p3sal span.mal{background:var(--redx)}
+.p3sal span.falta{background:repeating-linear-gradient(90deg,#4a4a4a 0 3px,transparent 3px 6px)}
 .p3kcal{position:absolute;top:11px;right:11px;line-height:1}
 /* Nunca conviven: o hay reunion y va el calendario, o no hay y va el mas. Por
    eso comparten el mismo lugar. */
@@ -37395,9 +37408,17 @@ async function citasAgendarGhl(clientId){
                         inicio:_envio})
       // `userId` vacio = como antes: la cita entra al calendario y GHL decide
       // quien la toma. Con persona elegida, queda a su nombre.
-      : await agLlamar({accion:'agendar', email:mail, calendarId:cal,
-                        inicio:_envio, userId:_citaQuien(),
-                        titulo:(c.name||'')+' - '+et});
+      /* ⚠️  EL CONTACTO RECIEN CREADO VIAJA POR ID. Buscarlo por mail falla:
+         GHL devuelve 200 al crearlo pero su indice de busqueda tarda, y el
+         reintento inmediato contesta "no encontre un contacto con el mail".
+         Pasa de verdad, y el que lo sufre es el que acaba de apretar "crearlo".
+         Con el id no hay busqueda que esperar. */
+      : await agLlamar(Object.assign(
+          {accion:'agendar', email:mail, calendarId:cal,
+           inicio:_envio, userId:_citaQuien(),
+           titulo:(c.name||'')+' - '+et},
+          (S._contactoNuevo && S._contactoNuevo.mail===mail && S._contactoNuevo.id)
+            ? {contactId:S._contactoNuevo.id} : {}));
     // Se anota como puesta a mano: la decidiste vos, no la adivino nadie, y la
     // proxima sincronizacion no tiene que volver a clasificarla.
     c.citas=c.citas||{};
@@ -37496,6 +37517,8 @@ async function citasContactoUsar(clientId, mail){
   if(!c) return;
   // Se escribe donde la app lo lee: `contactoEmail` le gana a `email`.
   if(c.contactoEmail) c.contactoEmail=mail; else c.email=mail;
+  // Este contacto ya existia y esta indexado: se busca por mail como siempre.
+  S._contactoNuevo=null;
   save();
   _citasDecir(clientId,'Mail corregido en la ficha. Agendando…');
   await citasAgendarGhl(clientId);
@@ -37514,6 +37537,9 @@ async function citasContactoCrear(clientId){
       email:mail, telefono:String(c.phone||c.telefono||'').trim()});
     // `yaExistia` quiere decir que alguien lo creo en el medio, o que la
     // busqueda por nombre no lo trajo. No es un error: se sigue igual.
+    // El id vale mas que el mail hasta que GHL lo indexe: se guarda para que
+    // el agendado que viene enseguida no dependa de la busqueda.
+    S._contactoNuevo=(r && r.id) ? {mail:mail, id:String(r.id)} : null;
     _citasDecir(clientId, r.yaExistia
       ? 'Ese contacto ya estaba en GHL. Agendando…'
       : 'Contacto creado en GHL. Agendando…');
@@ -39490,6 +39516,98 @@ function petBorrar(clientId, etapa, tareaId){
        es otra llamada por cliente.
    Se toma la MAS VIEJA de las activas: es la que contesta "hace cuanto que
    esto viene corriendo". */
+/* ── La salud del cliente ───────────────────────────────────────────────
+   Tres frentes, cuatro estados. El objetivo de cada frente NO es un numero
+   fijo ni el pasado del propio cliente: es la mediana de la cartera medida
+   hoy. Un numero inventado no dice nada y el cliente contra si mismo premia
+   al que siempre estuvo mal.
+
+   ⚠️  SOLO SE COMPARA CONTRA QUIEN TIENE MUESTRA. Meter en la mediana a los
+       que tienen cuatro visitas la arrastra para abajo y despues todos
+       parecen sanos.
+*/
+function _salMediana(xs){
+  var v=xs.filter(function(x){ return isFinite(x); }).sort(function(a,b){ return a-b; });
+  if(!v.length) return null;
+  var m=Math.floor(v.length/2);
+  return (v.length%2) ? v[m] : (v[m-1]+v[m])/2;
+}
+// Al dia / se esta yendo / roto, contra el objetivo. Los cortes son los que
+// quedaron en la maqueta del 23/09.
+function _salEstado(valor, obj){
+  if(!isFinite(valor) || !isFinite(obj) || obj<=0) return 'poca';
+  var r=valor/obj;
+  return (r>=0.9) ? 'ok' : ((r>=0.6) ? 'medio' : 'mal');
+}
+// Las campanas nuestras que estan activas hoy. Las destildadas en Ads &
+// Guiones son del cliente de antes y no las manejamos: contarlas mezcla su
+// historia con la nuestra.
+function _salCamps(c){
+  var al=(typeof getActiveLine==='function')?getActiveLine((c&&c.conversionLines)||[]):null;
+  var fuera=(al&&al.excludedCampaigns)||[];
+  return ((al&&al.metaCampaigns)||[]).filter(function(cp){
+    return fuera.indexOf(cp.id)<0
+      && String(cp.effectiveStatus||cp.status||'').toUpperCase()==='ACTIVE';
+  });
+}
+function _salCtr(c){
+  var imp=0, clk=0;
+  _salCamps(c).forEach(function(cp){
+    var i=Number(cp.impressions), k=Number(cp.clicks);
+    if(isFinite(i)) imp+=i;
+    if(isFinite(k)) clk+=k;
+  });
+  return (imp>=1000) ? (clk/imp) : null;
+}
+function _salOptin(c){
+  var o=((c&&c.lpStats)||{}).optin7||{};
+  return (Number(o.unicas)>=30) ? Number(o.tasa) : null;
+}
+// Las dos medianas, calculadas una vez por repintado del tablero.
+var _SAL_OBJ=null;
+function _salObjetivos(){
+  if(_SAL_OBJ) return _SAL_OBJ;
+  var ctrs=[], tasas=[];
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    var x=_salCtr(c); if(x!==null) ctrs.push(x);
+    var y=_salOptin(c); if(y!==null && isFinite(y)) tasas.push(y);
+  });
+  _SAL_OBJ={ctr:_salMediana(ctrs), optin:_salMediana(tasas)};
+  return _SAL_OBJ;
+}
+/* Devuelve null cuando el cliente no tiene campanas activas: ahi no se dibuja
+   nada. Una barra entera en gris en la mitad de la cartera tapa a las que
+   dicen algo. */
+function _saludDe(c){
+  if(!c || c.archived) return null;
+  if(!_salCamps(c).length) return null;
+  var obj=_salObjetivos();
+  var ctr=_salCtr(c);
+  var ads=(ctr===null) ? 'poca' : _salEstado(ctr, obj.ctr);
+  var emb;
+  if(!((c.lpStats||{}).optin7)) emb='falta';
+  else { var t=_salOptin(c); emb=(t===null)?'poca':_salEstado(t, obj.optin); }
+  /* ⚠️  COMERCIAL TODAVIA NO SE MIDE. La cadena acordada -agenda, asistio,
+     calificado, oferta, cierre- sale del portal y de las oportunidades de
+     GHL, y los clientes recien estan entrando a los portales. Las `citas`
+     del tracker NO sirven: son nuestras reuniones con el cliente, no los
+     leads de el. Se pinta rayado, que es "falta cablear", y no gris, que
+     seria "no hay muestra": son dos problemas distintos. */
+  return {ads:ads, embudo:emb, comercial:'falta'};
+}
+function _saludHtml(c){
+  var s=_saludDe(c);
+  if(!s) return '';
+  var dicen={ok:'al dia', medio:'se esta yendo', mal:'roto',
+             poca:'sin muestra suficiente', falta:'falta cablear'};
+  var t='Ads: '+dicen[s.ads]+' · Embudo: '+dicen[s.embudo]
+    +' · Comercial: '+dicen[s.comercial]
+    +'. Los objetivos son la mediana de la cartera con campanas activas.';
+  return '<div class="p3sal" title="'+esc(t)+'">'
+    +'<span class="'+s.ads+'"></span><span class="'+s.embudo+'"></span>'
+    +'<span class="'+s.comercial+'"></span></div>';
+}
 function _p360DiasCampanas(c){
   var al=(typeof getActiveLine==='function')?getActiveLine((c&&c.conversionLines)||[]):null;
   var camps=(al&&al.metaCampaigns)||[];
@@ -39525,6 +39643,9 @@ function _p360DiasCampanas(c){
 }
 
 function p360Html(){
+  // Se recalculan una vez por repintado: son dos medianas sobre la cartera y
+  // dejarlas cacheadas entre pintadas las dejaria viejas despues de un sync.
+  _SAL_OBJ=null;
   // Los prospectos entran aca y en ningun otro lado: el tablero es
   // justamente donde tienen que verse avanzar.
   var cls=(DB.clients||[]).filter(function(c){
@@ -40031,6 +40152,7 @@ function p360Html(){
         +'</div>'
       +'</div>'
       +lineas
+      +_saludHtml(d.c)
         +'</button>';
   };
   var vacias=cols.filter(function(x){ return !x.cards.length; }).length;
