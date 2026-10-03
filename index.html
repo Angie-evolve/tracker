@@ -36533,6 +36533,46 @@ function _altaPorOnboarding(c){
   c.altaAuto=new Date().toISOString();
   return true;
 }
+/* Cuanto vale el reconocimiento de etapa de una cita, de mejor a peor:
+   puesta a mano, el calendario de GHL o el reparto por orden, el titulo, y
+   al final la adivinada -que no matcheo ninguna palabra clave y entro solo
+   porque su id ya estaba en el cache `citaEtapa`-. */
+function _citaFuerza(o){
+  var r={mano:4, orden:3, calendario:3, titulo:2, adivinada:1};
+  return r[String(o||'')] || 2;
+}
+/* Quien se queda con la etapa cuando dos citas la reclaman.
+
+   ⚠️  MEDIDO EL 03/10/26, y es la razon de este desempate. En la agenda de la
+       agencia hay seis eventos de "Mi stock": la Estrategia de verdad es la de
+       GHL del 8/10 -puesta a mano-, pero un evento del Google llamado "OBD
+       Marcelo", del 29/9 y sin ninguna palabra clave, tambien reclamaba
+       Estrategia. Llegaba despues -las de Google vienen al final- y con otro
+       horario, asi que la guarda vieja, que solo miraba el mismo horario, lo
+       dejaba pasar: en la ficha quedaba una reunion de hace cuatro dias, sin
+       link y marcada adivinada, tapando a la que esta agendada.
+       En Atentamente era peor: una adivinada del 2/10 pisaba la de GHL y, con
+       eso, dejaba de haber una cita de GHL en la etapa, asi que las dos copias
+       de Google del mismo horario tambien pasaban. Una sola adivinada vieja
+       desarmaba la cadena entera.
+
+   Dos reglas, en este orden:
+   1. GHL manda. La copia de Google es un reflejo -GHL crea la reunion alla-,
+      y con su id se pierde el link, el contacto queda reemplazado por el mail
+      de la cuenta, y la cita pasa de confirmada a adivinada. Nunca desplaza a
+      una de GHL, coincida o no el horario.
+   2. Entre dos de la misma procedencia, gana la que se reconocio mejor. Una
+      adivinada no le saca el lugar a una puesta a mano. */
+function _citaGana(vieja, ev, origen){
+  if(!vieja) return true;
+  var vGoogle=String(vieja.id||'').indexOf('g:')===0;
+  var nGoogle=String(ev.id||'').indexOf('g:')===0;
+  if(vGoogle!==nGoogle) return !nGoogle;
+  var fv=_citaFuerza(vieja.como), fn=_citaFuerza(origen);
+  if(fv!==fn) return fn>fv;
+  // Empate parejo: se queda la ultima, que es el orden de siempre.
+  return true;
+}
 function _citasAplicar(c, eventos, callado, totalAgenda){
   // La agenda entera queda en memoria: es lo que permite mostrar las citas que
   // no se pudieron enganchar y asignarlas de un clic, en vez de dejar la
@@ -36610,26 +36650,21 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     }
     _citaFijar(c, ev.id, et, false, _inf.o);
     var ant=previas[et];
+    /* El desempate va ANTES de la rama de canceladas: si no, la copia de
+       Google de una reunion que se cancelo en Google -pero sigue viva en
+       GHL- marcaba la etapa como caida. */
+    if(!_citaGana(c.citas[et], ev, _inf.o)) return;
     if(String(ev.estado||'')==='cancelled'){
       c.citas[et]={estado:'cancelled', inicio:ev.inicio, id:ev.id, con:ev.con,
-                   titulo:ev.titulo, calendario:_citaCalNombre(ev)};
+                   titulo:ev.titulo, calendario:_citaCalNombre(ev),
+                   // De donde salio la etapa, igual que en las vivas: sin esto
+                   // el desempate le adivina una fuerza media y una cancelada
+                   // adivinada le sacaba el lugar a otra mejor reconocida.
+                   como:_inf.o};
       if(c.rutaAgenda) delete c.rutaAgenda[et];
       res.caidas.push(et);
       return;
     }
-    /* ⚠️  UNA REUNION DE GHL APARECE DOS VECES: en GHL y en el Google conectado,
-       porque GHL la crea alla. Son el mismo evento con dos ids distintos, y la
-       agenda las trae a las dos -las de Google al final-, asi que la de Google
-       pisaba a la de GHL.
-       No es cosmetico: con el id de Google se pierde el link de la reunion
-       -GHL no conoce ese id y contesta 404-, el contacto real queda
-       reemplazado por el mail de la cuenta, y una cita que habiamos creado
-       nosotros pasa de "mano" a "titulo", o sea de confirmada a adivinada.
-       Paso de verdad con el Onboarding de Upwize.
-       Con la misma etapa y el mismo horario, gana la de GHL. */
-    var _yaGhl=c.citas[et] && String(c.citas[et].id||'').indexOf('g:')!==0;
-    var _estaEsDeGoogle=String(ev.id||'').indexOf('g:')===0;
-    if(_yaGhl && _estaEsDeGoogle && c.citas[et].inicio===ev.inicio) return;
     // La misma cita con otro horario es una reprogramacion, no una cita nueva.
     var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
     c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
