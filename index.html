@@ -1071,6 +1071,38 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
    activas; en los demas no hay nada que medir y una barra gris seria ruido.
    Cuatro estados y no tres: un frente sin instrumentar y un frente sano no
    pueden pintarse igual, y la raya los distingue del gris de "sin muestra". */
+/* ── La tira de embudo ─────────────────────────────────── */
+.p3emb{display:grid;grid-template-columns:repeat(auto-fill,minmax(236px,1fr));gap:10px}
+.p3embk{background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:12px 13px 11px;min-width:0}
+.p3embn{display:flex;align-items:baseline;gap:7px;margin-bottom:9px}
+.p3embn b{font-size:14px;font-weight:600;color:var(--strong);letter-spacing:-.01em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p3embd{margin-left:auto;font-size:11px;color:var(--text3);flex:none;
+  font-variant-numeric:tabular-nums}
+.p3embp{width:7px;height:7px;border-radius:50%;flex:none;background:var(--text3)}
+.p3embp.ok{background:var(--accent)}
+.p3embp.medio{background:var(--amberx)}
+.p3embp.mal{background:var(--redx)}
+/* Las cuatro barras van pegadas: se leen como un embudo, no como cuatro
+   indicadores sueltos. Rayado = falta cablear, distinto de gris = sin muestra. */
+.p3embb{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:8px}
+.p3embb i{height:3px;border-radius:2px;background:#3a3a3a;display:block}
+.p3embb i.ok{background:var(--accent)}
+.p3embb i.medio{background:var(--amberx)}
+.p3embb i.mal{background:var(--redx)}
+.p3embb i.falta{background:repeating-linear-gradient(90deg,#3a3a3a 0 3px,transparent 3px 6px)}
+.p3embg{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:9px}
+.p3embg span{min-width:0}
+.p3embg b{display:block;font-size:17px;font-weight:600;color:var(--text);
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.p3embg b.medio{color:var(--amberx)}
+.p3embg b.mal{color:var(--redx)}
+.p3embg b.na{color:var(--text3);font-weight:400}
+.p3embg em{display:block;font-size:10px;font-style:normal;color:var(--text3);margin-top:2px}
+.p3embq{font-size:11.5px;line-height:1.45;color:var(--text2)}
+.p3embq.amb{color:var(--amberx)}
+.p3embq.acc{color:var(--accent)}
 .p3sal{display:flex;height:4px;border-radius:2px;overflow:hidden;margin-top:9px}
 .p3sal span{flex:1;background:#4a4a4a}
 .p3sal span.ok{background:var(--accent)}
@@ -40644,6 +40676,218 @@ function _saludHtml(c){
     +'<span class="'+s.ads+'"></span><span class="'+s.embudo+'"></span>'
     +'<span class="'+s.comercial+'"></span></div>';
 }
+/* ── El embudo del cliente, por tramos ────────────────────────────
+
+   ⚠️  MEDIDO EL 03/10/26 ANTES DE DIBUJAR NADA, Y POR ESO EXISTE
+       `embudoEmparejar`. De los doce clientes con campanas al aire, seis
+       leian Meta en "max" -toda la vida de la campana-, tres en 7 dias, dos
+       en 30 y uno en custom. Los 178 leads de Zentenio al lado de los 3 de
+       Teiki no son comparables: no es que a uno le vaya mejor, es que miden
+       periodos distintos.
+       Y la landing estaba peor: ninguno medido en los ultimos 7 dias, nueve
+       entre 8 y 30, Teiki hace 39, Potential hace 40 y Razor Tech nunca.
+       Dividir leads de Meta de hoy por opt-ins de hace 39 dias da una tasa
+       inventada, y de esa tasa salen los carteles de "llegan pero no dejan
+       datos". Primero se empareja, despues se dibuja.
+
+   La ventana queda en 30 dias para todos. Es una decision, no un default:
+   30 es el periodo mas corto en el que una campana de estas junta muestra
+   suficiente, y "max" no sirve para mirar como viene algo -arrastra el
+   arranque para siempre-. */
+var EMBUDO_DIAS=30;
+/* Los leads de las campanas prendidas. `results` es lo que Meta cuenta como
+   resultado del objetivo de la campana; `leads` solo viene en las de
+   formulario. Se usa el que haya. */
+function _embLeads(c){
+  var n=0;
+  (_salCamps(c)||[]).forEach(function(cp){
+    var v=Number(cp.results); if(!isFinite(v)) v=Number(cp.leads);
+    if(isFinite(v)) n+=v;
+  });
+  return n;
+}
+// El opt-in de los mismos 30 dias que mira Meta. Si la landing se midio hace
+// mas de eso, el numero existe pero no cuenta lo de ahora: se devuelve igual
+// y quien lo dibuja decide, con `_embudoLpDias`.
+function _embOptin(c){
+  var o=((c&&c.lpStats)||{}).optin30;
+  return o ? {optins:Number(o.optins)||0, unicas:Number(o.unicas)||0,
+              tasa:Number(o.tasa)} : null;
+}
+/* Los objetivos: la mediana de la cartera medida en el momento, igual que la
+   barra de salud de la tarjeta. Un numero fijo no dice nada y el cliente
+   contra si mismo premia al que siempre estuvo mal. Solo entran a la mediana
+   los que tienen muestra. */
+var _EMB_OBJ=null;
+function _embObjetivos(){
+  if(_EMB_OBJ) return _EMB_OBJ;
+  var ls=[], ts=[];
+  _embudoClientes().forEach(function(c){
+    var l=_embLeads(c); if(l>0) ls.push(l);
+    var o=_embOptin(c);
+    if(o && o.unicas>=30 && isFinite(o.tasa)) ts.push(o.tasa);
+  });
+  _EMB_OBJ={leads:_salMediana(ls), tasa:_salMediana(ts)};
+  return _EMB_OBJ;
+}
+
+// Los que tienen al menos una campana prendida: son los unicos que entran a
+// la tira, y los unicos que esto toca.
+function _embudoClientes(){
+  return (DB.clients||[]).filter(function(c){
+    return !c.archived && (typeof _salCamps==='function') && _salCamps(c).length;
+  });
+}
+async function embudoEmparejar(){
+  var cs=_embudoClientes();
+  if(!cs.length){ if(typeof toast==='function') toast('Ningun cliente tiene campanas al aire.'); return; }
+  var distintas=cs.filter(function(c){
+    var al=getActiveLine(c.conversionLines||[]);
+    return String((al&&al.metaDays)||'')!==String(EMBUDO_DIAS);
+  }).length;
+  if(!confirm('Emparejar la ventana de '+cs.length+' cliente'+(cs.length===1?'':'s')
+      +' con campanas al aire.\n\n'
+      +'• Les pone la ventana de Meta en '+EMBUDO_DIAS+' dias ('+distintas
+      +' la tienen distinta hoy) y vuelve a traer las campanas.\n'
+      +'• Vuelve a medir la landing de cada uno.\n\n'
+      +'Ojo: la ventana es la misma que usan las pantallas de Ads, asi que las '
+      +'que estaban en "max" van a mostrar 30 dias de ahora en mas.\n\n'
+      +'No borra nada y se puede volver a cambiar cliente por cliente.')) return;
+
+  var okM=0, okL=0, falloM=[], falloL=[];
+  for(var i=0;i<cs.length;i++){
+    var c=cs[i];
+    if(typeof toast==='function') toast('Emparejando '+(i+1)+' de '+cs.length+': '+(c.name||''));
+    try{
+      var al=getActiveLine(c.conversionLines||[]);
+      if(al){ al.metaDays=EMBUDO_DIAS; delete al.metaSince; delete al.metaUntil; }
+      save();
+      if(c.metaToken && c.metaAccountId){ await syncMetaAds(c.id, true); okM++; }
+      else falloM.push((c.name||'')+' (sin Meta conectado)');
+    }catch(e){ falloM.push((c.name||'')+': '+((e&&e.message)||'')); }
+    try{
+      if(typeof lpVerificar==='function'){ await lpVerificar(c.id, true); okL++; }
+    }catch(e2){ falloL.push((c.name||'')+': '+((e2&&e2.message)||'')); }
+  }
+  save();
+  if(typeof showTickets==='function') showTickets();
+  /* El resultado se dice entero, aciertos y fallos. Un "listo" a secas sobre
+     doce clientes esconde justo al que no se pudo medir, que es el que
+     despues aparece en gris en la tira sin que se sepa por que. */
+  var msg='Meta: '+okM+' de '+cs.length+'. Landing: '+okL+' de '+cs.length+'.';
+  if(falloM.length) msg+=' Sin Meta: '+falloM.join(', ')+'.';
+  if(falloL.length) msg+=' Sin landing: '+falloL.join(', ')+'.';
+  if(typeof toast==='function') toast(msg);
+}
+// Hace cuanto se midio la landing. null = nunca.
+function _embudoLpDias(c){
+  var at=c&&c.lpStats&&c.lpStats.at?Date.parse(c.lpStats.at):0;
+  if(!at) return null;
+  return Math.floor((Date.now()-at)/86400000);
+}
+/* Una tarjeta por cliente con campanas al aire.
+
+   ⚠️  DOS DE LOS CUATRO TRAMOS NO ESTAN CABLEADOS, Y SE DIBUJAN RAYADOS.
+       "Conversacion" y "Agenda" salen de la subcuenta de GHL del cliente -sus
+       conversaciones y sus oportunidades-, que todavia no se trae. Las citas
+       del tracker NO sirven: son nuestras reuniones con el cliente, no los
+       leads de el. Rayado es "falta cablear"; gris liso es "no hay muestra".
+       Son dos problemas distintos y no pueden pintarse igual.
+
+   Y por eso el cartel de abajo nunca dice "embudo sano": con dos tramos sin
+   medir, eso seria afirmar algo que no se midio. Dice como vienen los dos
+   que si se miden, y nada mas. */
+function _embudoCuadro(c){
+  var obj=_embObjetivos();
+  // Devuelve {dias,cuantas} o {sinFecha,cuantas}, no un numero.
+  var _cmp=(typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
+  var dias=(_cmp && isFinite(_cmp.dias)) ? _cmp.dias : null;
+  var leads=_embLeads(c);
+  var o=_embOptin(c);
+  var lpD=_embudoLpDias(c);
+  var vencida=(lpD===null)||(lpD>EMBUDO_DIAS);
+  var estLeads=(leads>0 && isFinite(obj.leads))
+    ? _salEstado(leads, obj.leads) : 'poca';
+  var estOpt=(!vencida && o && o.unicas>=30 && isFinite(o.tasa) && isFinite(obj.tasa))
+    ? _salEstado(o.tasa, obj.tasa) : 'poca';
+  // El punto del nombre resume los dos tramos medidos: el peor manda.
+  var peor=(estLeads==='mal'||estOpt==='mal') ? 'mal'
+    : ((estLeads==='medio'||estOpt==='medio') ? 'medio'
+      : ((estLeads==='ok'&&estOpt==='ok') ? 'ok' : ''));
+  // El cartel. Primero lo que impide medir, despues el tramo que falla.
+  var q, qc='';
+  if(vencida){
+    q=(lpD===null) ? 'La landing nunca se midio: sin eso no se puede ver si dejan datos.'
+      : ('La landing no se mide hace '+lpD+' d\u00edas: el opt-in no cuenta lo de ahora.');
+    qc=' amb';
+  } else if(estLeads==='mal' || estLeads==='medio'){
+    q='Entran pocos leads.'; qc=' amb';
+  } else if(estOpt==='mal' || estOpt==='medio'){
+    q='Llegan pero no dejan datos.'; qc=' amb';
+  } else if(estLeads==='poca'){
+    q='Todav\u00eda no hay muestra para decir nada.';
+  } else {
+    q='Los dos primeros tramos van bien. Falta cablear conversaci\u00f3n y agenda.';
+    qc=' acc';
+  }
+  var num=function(v, cls, rot){
+    return '<span><b class="'+(v===null?'na':(cls||''))+'">'
+      +(v===null?'\u2014':esc(String(v)))+'</b><em>'+rot+'</em></span>';
+  };
+  return '<div class="p3embk">'
+    +'<div class="p3embn"><span class="p3embp'+(peor?(' '+peor):'')+'"></span>'
+      +'<b>'+esc(c.name||'')+'</b>'
+      +'<span class="p3embd">'+(dias===null?'':(dias+' d'))+'</span></div>'
+    +'<div class="p3embg">'
+      +num(leads, (estLeads==='mal'?'mal':(estLeads==='medio'?'medio':'')), 'Leads')
+      +num(o?o.optins:null, (estOpt==='mal'?'mal':(estOpt==='medio'?'medio':'')), 'Opt-in')
+      +num(null, '', 'Conv.')
+      +num(null, '', 'Agendas')
+    +'</div>'
+    +'<div class="p3embb">'
+      +'<i class="'+(estLeads==='poca'?'':estLeads)+'"></i>'
+      +'<i class="'+(estOpt==='poca'?'':estOpt)+'"></i>'
+      +'<i class="falta"></i><i class="falta"></i>'
+    +'</div>'
+    +'<div class="p3embq'+qc+'">'+q+'</div>'
+  +'</div>';
+}
+function _embudoHtml(){
+  var cs=_embudoClientes();
+  if(!cs.length) return '';
+  _EMB_OBJ=null;   // la mediana se recalcula en cada pintada
+  var desalineados=cs.filter(function(c){
+    var al=getActiveLine(c.conversionLines||[]);
+    return String((al&&al.metaDays)||'')!==String(EMBUDO_DIAS);
+  }).length;
+  var sinMedir=cs.filter(function(c){
+    var d=_embudoLpDias(c); return d===null || d>EMBUDO_DIAS;
+  }).length;
+  return '<div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px">'
+      +'<span style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;'
+        +'color:var(--text3)">Prendidos \u00b7 '+cs.length+'</span>'
+      +'<span style="flex:1"></span>'
+      +'<button class="btn btn-sm" style="font-size:11.5px;padding:3px 11px" '
+        +'onclick="embudoEmparejar()" title="Pone la ventana de Meta en '+EMBUDO_DIAS
+        +' d\u00edas en todos, vuelve a traer las campa\u00f1as y vuelve a medir las '
+        +'landings. Pide confirmaci\u00f3n.">Emparejar la ventana</button>'
+    +'</div>'
+    /* Lo que no se puede comparar se dice ARRIBA, no en cada tarjeta: si no,
+       se lee tarjeta por tarjeta y nunca se entiende que el problema es del
+       conjunto. */
+    +((desalineados||sinMedir)
+      ? ('<div style="font-size:11.5px;color:var(--amberx);line-height:1.5;margin-bottom:10px">'
+        +(desalineados?(desalineados+' de '+cs.length+' leen Meta en otra ventana, '
+          +'as\u00ed que sus leads no se pueden comparar con los dem\u00e1s. '):'')
+        +(sinMedir?(sinMedir+' tienen la landing sin medir o vencida. '):'')
+        +'Emparejar la ventana lo arregla.</div>')
+      : ('<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-bottom:10px">'
+        +'Todos en la misma ventana de '+EMBUDO_DIAS+' d\u00edas. Conversaci\u00f3n y agenda '
+        +'salen rayadas: falta traerlas de la subcuenta del cliente.</div>'))
+    +'<div class="p3emb">'+cs.map(_embudoCuadro).join('')+'</div>'
+  +'</div>';
+}
 function _p360DiasCampanas(c){
   var al=(typeof getActiveLine==='function')?getActiveLine((c&&c.conversionLines)||[]):null;
   var camps=(al&&al.metaCampaigns)||[];
@@ -41271,6 +41515,9 @@ function p360Html(){
     }).join('')
     +'</div></div>'
     +'</div>'
+    // La tira de embudo va DEBAJO de las columnas: la primera pregunta del
+    // panel es en que etapa esta cada uno; como viene el embudo es la segunda.
+    +((vista==='etapas' && typeof _embudoHtml==='function')?_embudoHtml():'')
     // El listado de los que no cayeron en ninguna columna se mudo a la solapa
     // "Datos que faltan": aca abajo era un renglon que se leia como una nota al
     // pie y no como algo que hay que resolver.
