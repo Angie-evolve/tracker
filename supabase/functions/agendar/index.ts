@@ -497,8 +497,21 @@ Deno.serve(async (req: Request) => {
     const t0 = Date.parse(inicio);
     if (isNaN(t0)) return responder({ error: "La fecha no se entiende: " + inicio }, 400);
 
-    const c = await buscarContacto(email);
-    if ("error" in c) return responder({ error: c.error }, 404);
+    /* ⚠️  UN CONTACTO RECIEN CREADO NO ESTA EN EL INDICE DE BUSQUEDA TODAVIA.
+     * Pasa de verdad: `contactoCrear` devolvio 200 con su id, el reintento de
+     * agendar corrio enseguida, y `buscarContacto` por mail contesto que no
+     * existia. Minutos despues el mismo pedido lo encontraba. Buscar por mail
+     * es lo correcto cuando el contacto ya estaba; para el que acabamos de
+     * crear hay algo mejor que buscarlo: su id, que ya lo tenemos.
+     */
+    let contactoId = String(body.contactId || "").trim();
+    let contactoNom = "";
+    if (!contactoId) {
+      const c = await buscarContacto(email);
+      if ("error" in c) return responder({ error: c.error }, 404);
+      contactoId = c.id;
+      contactoNom = c.nombre;
+    }
 
     // Sin endTime a proposito: la duracion es la que tiene configurada el
     // calendario. Mandar una propia hace que GHL rechace con "Selected slot
@@ -510,7 +523,7 @@ Deno.serve(async (req: Request) => {
     const nueva: Record<string, unknown> = {
       calendarId,
       locationId: GHL_LOCATION,
-      contactId: c.id,
+      contactId: contactoId,
       ...(asignado ? { assignedUserId: asignado } : {}),
       // El horario va TAL CUAL lo mando la app, que a su vez es tal cual lo
       // devolvio free-slots. Aca se pasaba por new Date().toISOString(), que lo
@@ -568,7 +581,7 @@ Deno.serve(async (req: Request) => {
               id: e2.id || "",
               inicio: e2.startTime || inicio,
               fin: e2.endTime || "",
-              contacto: c.nombre || email,
+              contacto: contactoNom || email,
               nota: "GHL rechazo el horario que el mismo ofrecia; se creo igual.",
             });
           }
@@ -603,7 +616,7 @@ Deno.serve(async (req: Request) => {
       id: ev.id || "",
       inicio: ev.startTime || new Date(t0).toISOString(),
       fin: ev.endTime || "",
-      contacto: c.nombre || email,
+      contacto: contactoNom || email,
     });
   } catch (e) {
     return responder({ error: String((e as Error).message || e) }, 500);
