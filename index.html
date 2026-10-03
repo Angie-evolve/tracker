@@ -19060,24 +19060,34 @@ function _calDur(e){
   if(f && f>ini) return {min:Math.min(Math.round((f-ini)/60000), 10*60), cierto:true};
   return {min:45, cierto:false};
 }
-// Reparte en columnas las que se pisan, para que ninguna tape a otra.
+/* Reparte en columnas las que se pisan, para que ninguna tape a otra.
+
+   ⚠️  EL ANCHO SE DECIDE POR GRUPO Y NO POR EVENTO. Antes cada uno contaba
+       solo con quien se pisaba el mismo: de tres encadenadas, la del medio se
+       veia al 33% y las de las puntas al 50%, asi que se montaban igual. El
+       grupo es la cadena entera de solapadas -A pisa a B y B pisa a C entran
+       las tres, aunque A y C no se toquen- y todas sus integrantes se dibujan
+       con el mismo ancho.
+
+   `evs` viene ordenado por hora de inicio. */
 function _calColumnas(evs){
-  var fin=[];                       // minuto final de cada columna
-  evs.forEach(function(e){
-    var a=e._m0, b=e._m0+e._dur;
-    var c=0;
-    while(c<fin.length && fin[c]>a) c++;
-    e._col=c; fin[c]=b;
-  });
-  // Cuantas columnas comparte cada grupo de solapadas.
-  evs.forEach(function(e){
-    var n=1;
-    evs.forEach(function(o){
-      if(o===e) return;
-      if(o._m0 < e._m0+e._dur && e._m0 < o._m0+o._dur) n=Math.max(n, o._col+1);
+  var i=0;
+  while(i<evs.length){
+    var grupo=[evs[i]], hasta=evs[i]._m0+evs[i]._dur, j=i+1;
+    while(j<evs.length && evs[j]._m0 < hasta){
+      grupo.push(evs[j]);
+      hasta=Math.max(hasta, evs[j]._m0+evs[j]._dur);
+      j++;
+    }
+    var fin=[];                     // minuto final de cada columna del grupo
+    grupo.forEach(function(e){
+      var c=0;
+      while(c<fin.length && fin[c]>e._m0) c++;
+      e._col=c; fin[c]=e._m0+e._dur;
     });
-    e._cols=Math.max(n, e._col+1);
-  });
+    grupo.forEach(function(e){ e._cols=fin.length; });
+    i=j;
+  }
 }
 function _calBloque(e, anchoPct, izqPct){
   var cancel=(e.estado==='cancelled');
@@ -19086,7 +19096,15 @@ function _calBloque(e, anchoPct, izqPct){
   var para=_calPara(e);
   var k=e.evId||('x'+(++_CAL_EV_N));
   _CAL_EV[k]=e;
-  var alto=Math.max(20, e._dur*_CAL_PX_H/60 - 2);
+  /* ⚠️  EL ALTO MINIMO NO PUEDE PASARSE DE SU PROPIO HORARIO. Con un piso de
+     20px una reunion de quince minutos -que mide once- se comia el arranque de
+     la siguiente, y en la semana de Angie habia dos a las 07:30 y 07:45: la de
+     las 07:45 quedaba tapada por la anterior.
+     Ahora el piso es el alto de un bloque de una linea, y lo que se achica es
+     el contenido: si no entran dos renglones, el nombre va al lado de la hora
+     en vez de abajo. */
+  var alto=Math.max(14, e._dur*_CAL_PX_H/60 - 2);
+  var angosto=(alto<34);
   // `_top` ya viene medido desde la primera hora de la grilla y no desde la
   // medianoche: restarlo aca seria no saber cual es esa primera hora.
   var top=e._top||0;
@@ -19100,11 +19118,17 @@ function _calBloque(e, anchoPct, izqPct){
       +(e._cierto?'background:var(--bg3);'
         :'background:repeating-linear-gradient(135deg,var(--bg3) 0 6px,transparent 6px 12px);')
       +(cancel?'opacity:.45;text-decoration:line-through':'')+'">'
-    +'<div style="font-size:10px;color:var(--text3)">'+hh+'</div>'
-    +'<div style="font-size:11px;color:var(--text);font-weight:500;overflow:hidden;'
-      +'text-overflow:ellipsis;white-space:nowrap">'+esc(e.cli||'')+'</div>'
-    +(alto>=44&&para?('<div style="font-size:10px;color:var(--text2);overflow:hidden;'
-      +'text-overflow:ellipsis;white-space:nowrap">'+esc(para)+'</div>'):'')
+    +(angosto
+      ? ('<div style="display:flex;gap:5px;align-items:baseline;font-size:10px;'
+          +'overflow:hidden;white-space:nowrap">'
+          +'<span style="color:var(--text3);flex:none">'+hh+'</span>'
+          +'<span style="color:var(--text);font-weight:500;overflow:hidden;'
+            +'text-overflow:ellipsis">'+esc(e.cli||'')+'</span></div>')
+      : ('<div style="font-size:10px;color:var(--text3)">'+hh+'</div>'
+        +'<div style="font-size:11px;color:var(--text);font-weight:500;overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(e.cli||'')+'</div>'
+        +(alto>=58&&para?('<div style="font-size:10px;color:var(--text2);overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(para)+'</div>'):'')))
     +'</div>';
 }
 /* `dias` son uno o siete. El mismo dibujo sirve para las dos vistas: lo unico
