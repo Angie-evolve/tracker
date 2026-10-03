@@ -18799,7 +18799,30 @@ function _calEstado(){
   // lista, que es la que se lee de un vistazo en una pantalla angosta.
   var porDefecto='mes';
   try{ if(window.innerWidth && window.innerWidth<760) porDefecto='lista'; }catch(e){}
-  return {mes:S.calMes||null, lado:S.calFiltro||'todas', vista:S.calVista||porDefecto};
+  /* El ancla es un DIA y no un mes, porque semana y dia necesitan saber cual.
+     `calMes` seguia siendo el mes para que las vistas de mes y lista no
+     cambien de comportamiento: con el ancla puesta, el mes es el del ancla. */
+  var anc=S.calAncla?new Date(S.calAncla+'T12:00:00'):null;
+  if(anc && isNaN(anc.getTime())) anc=null;
+  return {ancla:anc, mes:S.calMes||null, lado:S.calFiltro||'todas',
+          vista:S.calVista||porDefecto};
+}
+function _calYmd(d){
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
+// El lunes de la semana de una fecha. Las semanas arrancan en lunes en toda
+// la app, igual que la grilla del mes y la del popup de agendar.
+function _calLunes(d){
+  var x=new Date(d.getFullYear(),d.getMonth(),d.getDate(),12,0,0);
+  x.setDate(x.getDate()-((x.getDay()+6)%7));
+  return x;
+}
+// El dia que se esta mirando, venga de donde venga el estado.
+function _calRef(e){
+  if(e.ancla) return e.ancla;
+  if(e.mes) return new Date(e.mes+'-01T12:00:00');
+  var h=new Date();
+  return new Date(h.getFullYear(),h.getMonth(),h.getDate(),12,0,0);
 }
 // Antes del Onboarding es venta; de ahi en adelante, entrega. La linea la marca
 // la ruta configurada, no una lista escrita a mano: si se renombra una etapa o
@@ -18862,7 +18885,7 @@ function _calEntradas(){
       out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:et,
         // El id de GHL: es con lo unico que se puede ir a buscar el link de la
         // reunion, que no viene en la agenda.
-        evId:String(x.id||''),
+        evId:String(x.id||''), fin:String(x.fin||''),
         titulo:String(x.titulo||et||''), con:String(x.con||''),
         quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
         cal:String(x.calendario||''),
@@ -18873,7 +18896,7 @@ function _calEntradas(){
       var d=new Date(x.inicio);
       if(isNaN(d.getTime())) return;
       out.push({at:d, cli:cn, cliId:c.id, tipo:'cita', etapa:'',
-        evId:String(x.id||''),
+        evId:String(x.id||''), fin:String(x.fin||''),
         titulo:String(x.titulo||''), con:String(x.con||''),
         quien:String(x.deNuestroLado||''), estado:String(x.estado||''),
         cal:String(x.calendario||''),
@@ -18895,14 +18918,26 @@ function _calEntradas(){
 }
 function calFiltro(k){ S.calFiltro=k; showTickets(); }
 function calVista(k){ S.calVista=k; showTickets(); }
+/* Las flechas se mueven en la unidad de lo que estas mirando: un mes en mes
+   y en lista, una semana en semana, un dia en dia. Mover de a un mes mientras
+   mirabas una semana era inutilizable. */
 function calMover(d){
   var e=_calEstado();
-  var base=e.mes?new Date(e.mes+'-01T12:00:00'):new Date();
-  base.setDate(1); base.setMonth(base.getMonth()+d);
+  var base=_calRef(e);
+  if(e.vista==='semana'){ base.setDate(base.getDate()+7*d); }
+  else if(e.vista==='dia'){ base.setDate(base.getDate()+d); }
+  else { base.setDate(1); base.setMonth(base.getMonth()+d); }
+  S.calAncla=_calYmd(base);
   S.calMes=base.getFullYear()+'-'+('0'+(base.getMonth()+1)).slice(-2);
   showTickets();
 }
-function calHoy(){ S.calMes=null; showTickets(); }
+function calHoy(){ S.calMes=null; S.calAncla=null; showTickets(); }
+// Tocar el numero de un dia en el mes o en la semana lo abre entero.
+function calAbrirDia(ymd){
+  S.calAncla=ymd; S.calVista='dia';
+  S.calMes=ymd.slice(0,7);
+  showTickets();
+}
 var _CAL_MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
                 'septiembre','octubre','noviembre','diciembre'];
 /* Las entradas dibujadas, para que el detalle no tenga que volver a buscarlas.
@@ -19008,6 +19043,181 @@ function calCitaCopiar(btn, link){
     navigator.clipboard.writeText(link).then(listo, function(){ prompt('Copialo:', link); });
   }catch(e){ prompt('Copialo:', link); }
 }
+var _CAL_DIAS_L=['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
+/* ── La grilla horaria de semana y dia ─────────────────────────────
+
+   El mes dice QUE dia, no a que hora ni cuanto dura. Para mirar la semana y
+   decidir donde entra algo hace falta ver el hueco, y un hueco solo se ve si
+   las reuniones ocupan el alto que de verdad ocupan.
+
+   El alto sale de `fin`, que la agenda trae y ahora se guarda. Las que quedaron
+   guardadas antes no lo tienen: para esas se asume 45 minutos -el slot tipico-
+   y el bloque se dibuja rayado, para que no parezca un dato que no tenemos.
+*/
+var _CAL_PX_H=46;          // alto de una hora
+function _calDur(e){
+  var ini=e.at.getTime(), f=Date.parse(e.fin||'');
+  if(f && f>ini) return {min:Math.min(Math.round((f-ini)/60000), 10*60), cierto:true};
+  return {min:45, cierto:false};
+}
+// Reparte en columnas las que se pisan, para que ninguna tape a otra.
+function _calColumnas(evs){
+  var fin=[];                       // minuto final de cada columna
+  evs.forEach(function(e){
+    var a=e._m0, b=e._m0+e._dur;
+    var c=0;
+    while(c<fin.length && fin[c]>a) c++;
+    e._col=c; fin[c]=b;
+  });
+  // Cuantas columnas comparte cada grupo de solapadas.
+  evs.forEach(function(e){
+    var n=1;
+    evs.forEach(function(o){
+      if(o===e) return;
+      if(o._m0 < e._m0+e._dur && e._m0 < o._m0+o._dur) n=Math.max(n, o._col+1);
+    });
+    e._cols=Math.max(n, e._col+1);
+  });
+}
+function _calBloque(e, anchoPct, izqPct){
+  var cancel=(e.estado==='cancelled');
+  var col=e.lado==='ventas'?'var(--amberx)':(e.lado==='delivery'?'var(--accent)':'var(--text3)');
+  var hh=('0'+e.at.getHours()).slice(-2)+':'+('0'+e.at.getMinutes()).slice(-2);
+  var para=_calPara(e);
+  var k=e.evId||('x'+(++_CAL_EV_N));
+  _CAL_EV[k]=e;
+  var alto=Math.max(20, e._dur*_CAL_PX_H/60 - 2);
+  // `_top` ya viene medido desde la primera hora de la grilla y no desde la
+  // medianoche: restarlo aca seria no saber cual es esa primera hora.
+  var top=e._top||0;
+  return '<div onclick="calCitaAbrir(\''+esc(k).replace(/'/g,"\\'")+'\','+e.cliId+')" '
+    +'title="'+esc(e.cli+' \u00b7 '+e.titulo+(e.quien?(' \u00b7 la toma '+e.quien):'')
+        +(e._cierto?'':' \u00b7 duracion no registrada'))+'" '
+    +'style="position:absolute;top:'+top.toFixed(1)+'px;height:'+alto.toFixed(1)+'px;'
+      +'left:calc('+izqPct.toFixed(2)+'% + 1px);width:calc('+anchoPct.toFixed(2)+'% - 2px);'
+      +'box-sizing:border-box;cursor:pointer;overflow:hidden;border-radius:5px;'
+      +'border-left:2px solid '+col+';padding:2px 5px;line-height:1.25;'
+      +(e._cierto?'background:var(--bg3);'
+        :'background:repeating-linear-gradient(135deg,var(--bg3) 0 6px,transparent 6px 12px);')
+      +(cancel?'opacity:.45;text-decoration:line-through':'')+'">'
+    +'<div style="font-size:10px;color:var(--text3)">'+hh+'</div>'
+    +'<div style="font-size:11px;color:var(--text);font-weight:500;overflow:hidden;'
+      +'text-overflow:ellipsis;white-space:nowrap">'+esc(e.cli||'')+'</div>'
+    +(alto>=44&&para?('<div style="font-size:10px;color:var(--text2);overflow:hidden;'
+      +'text-overflow:ellipsis;white-space:nowrap">'+esc(para)+'</div>'):'')
+    +'</div>';
+}
+/* `dias` son uno o siete. El mismo dibujo sirve para las dos vistas: lo unico
+   que cambia es cuantas columnas tiene. */
+function _calGrilla(dias, lista, hoy){
+  var porDia={}, sinHora={};
+  dias.forEach(function(d){ porDia[_calYmd(d)]=[]; sinHora[_calYmd(d)]=[]; });
+  lista.forEach(function(x){
+    var k=_calYmd(x.at);
+    if(!(k in porDia)) return;
+    (x.soloDia?sinHora:porDia)[k].push(x);
+  });
+  // El rango de horas sale de lo que hay, pero nunca mas angosto que 8 a 19:
+  // una grilla que arranca a las 14 porque ese dia no habia nada antes se lee
+  // como si la manana no existiera.
+  var h0=8, h1=19;
+  Object.keys(porDia).forEach(function(k){
+    porDia[k].forEach(function(e){
+      var d=_calDur(e);
+      e._dur=d.min; e._cierto=d.cierto;
+      e._m0=e.at.getHours()*60+e.at.getMinutes();
+      h0=Math.min(h0, e.at.getHours());
+      h1=Math.max(h1, Math.ceil((e._m0+e._dur)/60));
+    });
+  });
+  h0=Math.max(0,h0); h1=Math.min(24,Math.max(h1,h0+1));
+  var altoTotal=(h1-h0)*_CAL_PX_H;
+
+  var horas='';
+  for(var h=h0;h<h1;h++){
+    horas+='<div style="height:'+_CAL_PX_H+'px;font-size:10px;color:var(--text3);'
+      +'text-align:right;padding-right:7px;transform:translateY(-6px)">'
+      +('0'+h).slice(-2)+':00</div>';
+  }
+  var cols=dias.map(function(d){
+    var k=_calYmd(d), evs=porDia[k];
+    evs.sort(function(a,b){ return a._m0-b._m0; });
+    _calColumnas(evs);
+    evs.forEach(function(e){ e._top=(e._m0-h0*60)*_CAL_PX_H/60; });
+    var esHoy=(d.toDateString()===hoy.toDateString());
+    var lineas='';
+    for(var h=h0;h<h1;h++){
+      lineas+='<div style="height:'+_CAL_PX_H+'px;border-top:1px solid var(--border)"></div>';
+    }
+    // La raya de la hora actual, solo en el dia de hoy: es lo que dice de un
+    // vistazo que viene despues y que ya paso.
+    var ahora='';
+    if(esHoy){
+      var m=hoy.getHours()*60+hoy.getMinutes()-h0*60;
+      if(m>=0 && m<=altoTotal){
+        ahora='<div style="position:absolute;left:0;right:0;top:'+(m*_CAL_PX_H/60).toFixed(1)+'px;'
+          +'border-top:1px solid var(--accent);pointer-events:none"></div>';
+      }
+    }
+    return '<div style="position:relative;min-width:0;background:'
+        +(esHoy?'rgba(78,207,160,.05)':'transparent')+'">'
+      +'<div style="position:absolute;inset:0">'+lineas+'</div>'
+      +ahora
+      +evs.map(function(e){
+        var w=100/e._cols;
+        return _calBloque(e, w, w*e._col);
+      }).join('')
+      +'</div>';
+  }).join('');
+
+  // Lo grabado de Fathom no tiene hora: va arriba, en su propia franja.
+  var franja='';
+  var haySin=dias.some(function(d){ return sinHora[_calYmd(d)].length; });
+  if(haySin){
+    franja='<div style="display:grid;grid-template-columns:56px repeat('+dias.length+',1fr);'
+        +'gap:0;border-bottom:1px solid var(--border2);padding-bottom:5px;margin-bottom:2px">'
+      +'<div style="font-size:9.5px;color:var(--text3);text-align:right;padding-right:7px;'
+        +'text-transform:uppercase;letter-spacing:.05em">grabadas</div>'
+      +dias.map(function(d){
+        return '<div style="padding:0 2px;min-width:0">'
+          +sinHora[_calYmd(d)].map(_calChip).join('')+'</div>';
+      }).join('')
+    +'</div>';
+  }
+
+  var cab=dias.map(function(d){
+    var esHoy=(d.toDateString()===hoy.toDateString());
+    return '<div onclick="calAbrirDia(\''+_calYmd(d)+'\')" '
+      +'style="cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:.06em;'
+      +'padding:0 0 6px 3px;color:'+(esHoy?'var(--accent)':'var(--text3)')+'">'
+      +_CAL_DIAS_L[d.getDay()].slice(0,3)+' <span style="font-size:12px;'
+      +(esHoy?'color:var(--accent)':'color:var(--text2)')+'">'+d.getDate()+'</span></div>';
+  }).join('');
+
+  return '<div style="overflow-x:auto"><div style="min-width:'+(dias.length>1?'680px':'320px')+'">'
+    +'<div style="display:grid;grid-template-columns:56px repeat('+dias.length+',1fr)">'
+      +'<div></div>'+cab
+    +'</div>'
+    +franja
+    +'<div style="display:grid;grid-template-columns:56px repeat('+dias.length+',1fr);'
+      +'border-top:1px solid var(--border)">'
+      +'<div>'+horas+'</div>'+cols
+    +'</div>'
+  +'</div></div>';
+}
+/* Para que es la reunion: la etapa si la tiene, y si no el titulo sin el
+   nombre del cliente adelante -"Upwize - Onboarding" al lado de "Upwize" es
+   ruido-. Lo usan el chip del mes y el bloque de la semana. */
+function _calPara(e){
+  var p=String(e.etapa||'').trim();
+  if(p) return p;
+  p=String(e.titulo||'').trim();
+  var n0=String(e.cli||'').trim();
+  if(n0 && p.toLowerCase().indexOf(n0.toLowerCase())===0){
+    p=p.slice(n0.length).replace(/^[\s·\-–—<>:]+/,'');
+  }
+  return p;
+}
 function _calChip(e){
   var hh=e.soloDia?'':(('0'+e.at.getHours()).slice(-2)+':'+('0'+e.at.getMinutes()).slice(-2));
   var cancel=(e.estado==='cancelled');
@@ -19023,14 +19233,7 @@ function _calChip(e){
   /* Para que es: la etapa si la tiene -"Onboarding", "Estrategia"- y si no, el
      titulo. Al titulo se le saca el nombre del cliente cuando lo repite al
      principio: "Upwize - Onboarding" al lado de "Upwize" es ruido. */
-  var _para=String(e.etapa||'').trim();
-  if(!_para){
-    _para=String(e.titulo||'').trim();
-    var _n0=String(e.cli||'').trim();
-    if(_n0 && _para.toLowerCase().indexOf(_n0.toLowerCase())===0){
-      _para=_para.slice(_n0.length).replace(/^[\s·\-–—<>:]+/,'');
-    }
-  }
+  var _para=_calPara(e);
   var _k=e.evId||('x'+(++_CAL_EV_N));
   _CAL_EV[_k]=e;
   return '<div onclick="calCitaAbrir(\''+esc(_k).replace(/'/g,"\\'")+'\','+e.cliId+')" title="'
@@ -19054,6 +19257,21 @@ function _calChip(e){
       +'text-overflow:ellipsis;white-space:nowrap">'+esc(_para)+'</span>'):'')
     +'</div>';
 }
+/* Que periodo se esta mirando, en la unidad de la vista. Sin esto la semana
+   del 28 de septiembre al 4 de octubre decia "octubre 2026", que es de las dos
+   mitades la que no estas mirando. */
+function _calTitulo(e, ref, y, m){
+  if(e.vista==='dia'){
+    return _CAL_DIAS_L[ref.getDay()]+' '+ref.getDate()+' de '+_CAL_MESES[m];
+  }
+  if(e.vista==='semana'){
+    var a=_calLunes(ref), b=new Date(a.getFullYear(),a.getMonth(),a.getDate()+6,12);
+    var m3=function(d){ return _CAL_MESES[d.getMonth()].slice(0,3); };
+    return a.getDate()+' '+m3(a)+' \u2013 '+b.getDate()+' '+m3(b)
+      +(a.getFullYear()!==b.getFullYear()?(' '+b.getFullYear()):'');
+  }
+  return _CAL_MESES[m]+' '+y;
+}
 function calendarioHtml(){
   _CAL_EV={}; _CAL_EV_N=0;
   var e=_calEstado();
@@ -19061,7 +19279,7 @@ function calendarioHtml(){
   var lista=(e.lado==='todas')?todas:todas.filter(function(x){ return x.lado===e.lado; });
   var sinClasif=todas.filter(function(x){ return !x.lado; }).length;
   var hoy=new Date();
-  var ref=e.mes?new Date(e.mes+'-01T12:00:00'):new Date(hoy.getFullYear(),hoy.getMonth(),1,12);
+  var ref=_calRef(e);
   var y=ref.getFullYear(), m=ref.getMonth();
 
   var pills=CAL_LADOS.map(function(x){
@@ -19071,7 +19289,8 @@ function calendarioHtml(){
       +'style="font-size:11.5px;padding:3px 11px" onclick="calFiltro(\''+x.k+'\')">'
       +x.l+' <span style="opacity:.6">'+n+'</span></button>';
   }).join('');
-  var vistas=[{k:'mes',l:'Mes'},{k:'lista',l:'Lista'}].map(function(x){
+  var vistas=[{k:'mes',l:'Mes'},{k:'semana',l:'Semana'},{k:'dia',l:'Día'},
+              {k:'lista',l:'Lista'}].map(function(x){
     return '<button class="btn btn-sm'+(e.vista===x.k?' btn-primary':'')+'" '
       +'style="font-size:11.5px;padding:3px 11px" onclick="calVista(\''+x.k+'\')">'+x.l+'</button>';
   }).join('');
@@ -19079,7 +19298,7 @@ function calendarioHtml(){
   var cab='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
     +'<button class="btn btn-sm" style="padding:3px 9px" onclick="calMover(-1)">‹</button>'
     +'<span style="font-size:14px;color:var(--strong);min-width:150px">'
-      +_CAL_MESES[m]+' '+y+'</span>'
+      +_calTitulo(e, ref, y, m)+'</span>'
     +'<button class="btn btn-sm" style="padding:3px 9px" onclick="calMover(1)">›</button>'
     +'<button class="btn btn-sm" style="font-size:11.5px;padding:3px 11px" onclick="calHoy()">Hoy</button>'
     +'<span style="flex:1"></span>'+vistas
@@ -19094,6 +19313,23 @@ function calendarioHtml(){
       +(sinClasif?(' <span style="color:var(--amberx)">'+sinClasif+' sin clasificar: solo '
         +'aparecen en Todas.</span>'):'')
     +'</div>';
+
+  if(e.vista==='semana' || e.vista==='dia'){
+    var dias=[];
+    if(e.vista==='dia'){ dias=[new Date(y,m,ref.getDate(),12)]; }
+    else {
+      var l=_calLunes(ref);
+      for(var w=0;w<7;w++) dias.push(new Date(l.getFullYear(),l.getMonth(),l.getDate()+w,12));
+    }
+    var hayAlgo=lista.some(function(x){
+      return dias.some(function(d){ return d.toDateString()===x.at.toDateString(); }); });
+    return '<div style="background:var(--bg2);border:1px solid var(--border);'
+      +'border-radius:var(--radius-lg);padding:16px">'+cab
+      +(hayAlgo?_calGrilla(dias, lista, hoy)
+        :_torreVacio('Nada agendado',(e.vista==='dia'?'Ese día':'Esa semana')
+          +' no tiene ninguna reunión con ese filtro.'))
+    +'</div>';
+  }
 
   if(e.vista==='lista'){
     // De hoy en adelante primero: lo que viene es lo que se mira.
@@ -19145,7 +19381,8 @@ function calendarioHtml(){
     celdas+='<div style="min-height:86px;padding:5px 6px;border:1px solid var(--border);'
       +'border-radius:6px;background:'+(esHoy?'rgba(78,207,160,.06)':'var(--bg2)')+';'
       +(fuera?'opacity:.4;':'')+'overflow:hidden">'
-      +'<div style="font-size:10.5px;margin-bottom:4px;color:'
+      +'<div onclick="event.stopPropagation();calAbrirDia(\''+k+'\')" '
+        +'style="font-size:10.5px;margin-bottom:4px;cursor:pointer;color:'
         +(esHoy?'var(--accent)':'var(--text3)')+'">'+d.getDate()+'</div>'
       +ev.slice(0,4).map(_calChip).join('')
       +(ev.length>4?('<div style="font-size:10px;color:var(--text3)">+'+(ev.length-4)+' mas</div>'):'')
@@ -36695,6 +36932,10 @@ function _citasAplicar(c, eventos, callado, totalAgenda){
     // La misma cita con otro horario es una reprogramacion, no una cita nueva.
     var movida=!!(ant && ant.id===ev.id && ant.inicio && ant.inicio!==ev.inicio);
     c.citas[et]={id:ev.id, inicio:ev.inicio, estado:ev.estado, con:ev.con,
+                 // Sin el fin, la vista semanal no sabe cuanto dura la reunion
+                 // y todas miden lo mismo: una de quince minutos tapa el hueco
+                 // de una hora. Viene en la agenda, solo habia que guardarlo.
+                 fin:ev.fin||'',
                  deNuestroLado:ev.deNuestroLado, calendario:_citaCalNombre(ev),
                  // El titulo es lo primero que mira el reconocimiento de etapa.
                  // Guardarlo es lo que permite ver, cuando una cita cae en la
