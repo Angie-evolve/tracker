@@ -37079,6 +37079,18 @@ function _csRotulo(dias){
     ? ('Semana del '+a.getDate()+' al '+b.getDate()+' de '+m1)
     : ('Semana del '+a.getDate()+' de '+m1+' al '+b.getDate()+' de '+m2);
 }
+/* ⚠️  LOS TELEFONOS SE CARGAN COPIANDO Y PEGANDO. Vienen con espacios duros,
+   guiones no-ASCII y marcas invisibles de direccion de texto (U+202A), y con
+   eso GHL contesta 400 "Invalid country calling code" y no crea el contacto.
+   Medido: 13 de 31 clientes activos tienen un formato que GHL puede rechazar.
+   Se deja solo digitos con un "+" adelante; si no da E.164, vacio, que la
+   funcion entiende como "creame el contacto sin telefono". */
+function _telE164(v){
+  var t=String(v||'').replace(/[^\d+]/g,'').replace(/(?!^)\+/g,'');
+  if(!t) return '';
+  if(t.charAt(0)!=='+') t='+'+t;
+  return /^\+[1-9]\d{7,14}$/.test(t) ? t : '';
+}
 function _csIni(nombre){
   var n=String(nombre||'').trim();
   if(n.indexOf('@')>=0) n=n.split('@')[0];
@@ -37539,15 +37551,18 @@ async function citasContactoCrear(clientId){
   try{
     var r=await agLlamar({accion:'contactoCrear',
       nombre:p[0]||nom, apellido:p.slice(1).join(' '),
-      email:mail, telefono:String(c.phone||c.telefono||'').trim()});
+      email:mail, telefono:_telE164(c.phone||c.telefono)});
     // `yaExistia` quiere decir que alguien lo creo en el medio, o que la
     // busqueda por nombre no lo trajo. No es un error: se sigue igual.
     // El id vale mas que el mail hasta que GHL lo indexe: se guarda para que
     // el agendado que viene enseguida no dependa de la busqueda.
     S._contactoNuevo=(r && r.id) ? {mail:mail, id:String(r.id)} : null;
-    _citasDecir(clientId, r.yaExistia
+    _citasDecir(clientId, (r.yaExistia
       ? 'Ese contacto ya estaba en GHL. Agendando…'
-      : 'Contacto creado en GHL. Agendando…');
+      : 'Contacto creado en GHL. Agendando…')
+      // Que se haya creado sin telefono no frena nada, pero hay que decirlo:
+      // si no, el contacto queda a medias y nadie se entera.
+      + (r.sinTelefono ? ' (sin teléfono: el de la ficha no tiene formato válido)' : ''));
     await citasAgendarGhl(clientId);
     _citasRepintar();
   }catch(e){
