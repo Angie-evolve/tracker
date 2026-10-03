@@ -70407,7 +70407,17 @@ async function agLlamar(cuerpo, _reintento){
       body:JSON.stringify(cuerpo||{})
     });
   }catch(e){
-    throw new Error('No encontré la función "agendar" en tu Supabase. Falta deployarla.');
+    /* ⚠️  ESTE CATCH NO SIGNIFICA QUE FALTE LA FUNCION. Solo se dispara si el
+       pedido ni llega a salir del navegador: sin internet, una VPN, la red de
+       la oficina, o una extension comiendose la llamada. Si la funcion no
+       estuviera deployada habria RESPUESTA, un 404, y caeria mas abajo.
+       Decia "falta deployarla" y mandaba a quien lo leia a arreglar algo que
+       estaba bien: a Santi le aparecio eso con la funcion desplegada y
+       andando. Un diagnostico inventado cuesta mas que no dar ninguno. */
+    var _m=(e&&e.message)||'';
+    throw new Error('No pude llegar a Supabase: el pedido no salió del navegador. '
+      +'No es que falte la función. Suele ser la conexión, una VPN o una extensión '
+      +'bloqueando la llamada.'+(_m?(' ('+esc(_m)+')'):''));
   }
   if(r.status===401 && !_reintento){
     var _ok=false; try{ _ok=await sbRenovar(); }catch(e){}
@@ -70419,7 +70429,20 @@ async function agLlamar(cuerpo, _reintento){
     // distingue "el hueco se ocupo" de "el formato no le gusta", y sin verlo
     // hay que adivinar cual de las dos es.
     var _dg=d&&d.diagnostico;
-    var _e=new Error((d&&d.error)||('HTTP '+r.status)
+    /* Cada numero dice algo distinto y se arregla distinto. "HTTP 401" pelado
+       hacia pensar en un problema de la funcion cuando lo unico que pasaba era
+       que la sesion se habia vencido. Solo se traduce cuando la funcion NO
+       mando su propio `error`: el suyo siempre explica mejor. */
+    var _porNum='';
+    if(!(d&&d.error)){
+      if(r.status===401) _porNum='Tu sesión venció. Salí y volvé a entrar al tracker.';
+      else if(r.status===403) _porNum='Tu usuario no está habilitado para agendar. '
+        +'Se habilita agregándolo al equipo.';
+      else if(r.status===404) _porNum='No está deployada la función "agendar" en Supabase.';
+      else if(r.status>=500) _porNum='Supabase contestó un error del servidor ('+r.status+').';
+      if(_porNum && d && d.message) _porNum+=' \u2014 '+d.message;
+    }
+    var _e=new Error((d&&d.error)||_porNum||('HTTP '+r.status)
       +(_dg&&_dg.lectura?('\n\n'+_dg.lectura):''));
     if(_dg){
       _e.diagnostico=_dg;
