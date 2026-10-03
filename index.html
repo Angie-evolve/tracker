@@ -40695,16 +40695,34 @@ function _saludHtml(c){
    suficiente, y "max" no sirve para mirar como viene algo -arrastra el
    arranque para siempre-. */
 var EMBUDO_DIAS=30;
-/* Los leads de las campanas prendidas. `results` es lo que Meta cuenta como
-   resultado del objetivo de la campana; `leads` solo viene en las de
-   formulario. Se usa el que haya. */
+/* Los leads de las campanas prendidas.
+
+   ⚠️  `results` NO ES "LEADS": es el resultado DEL OBJETIVO de esa campana, y
+       cada campana puede tener el suyo. Medido el 03/10: los 78 "leads" de
+       PlayWith eran 6 de una campana de Interaccion y 72 de una de Ventas
+       -ninguna busca leads-. Sumarlos y llamarlos leads es inventar un numero
+       y, peor, compararlo con los 178 de Zentenio, que si son leads.
+
+       Entonces se suman SOLO las campanas cuyo objetivo son leads. Si el
+       cliente no tiene ninguna, no hay leads que mostrar y se dice que busca
+       otra cosa, en vez de poner un cero que se lee como que no entra nadie.
+
+   Devuelve {n, hay, otros}: `hay` es si alguna campana busca leads, y `otros`
+   los objetivos de las que no. */
+var _EMB_OBJ_LEADS={OUTCOME_LEADS:1, LEAD_GENERATION:1};
 function _embLeads(c){
-  var n=0;
+  var n=0, hay=false, otros={};
   (_salCamps(c)||[]).forEach(function(cp){
-    var v=Number(cp.results); if(!isFinite(v)) v=Number(cp.leads);
-    if(isFinite(v)) n+=v;
+    var ob=String(cp.objective||'').toUpperCase();
+    if(_EMB_OBJ_LEADS[ob]){
+      hay=true;
+      var v=Number(cp.results); if(!isFinite(v)) v=Number(cp.leads);
+      if(isFinite(v)) n+=v;
+    } else if(ob){
+      otros[String(cp.objetivo||ob)]=1;
+    }
   });
-  return n;
+  return {n:n, hay:hay, otros:Object.keys(otros)};
 }
 // El opt-in de los mismos 30 dias que mira Meta. Si la landing se midio hace
 // mas de eso, el numero existe pero no cuenta lo de ahora: se devuelve igual
@@ -40723,7 +40741,7 @@ function _embObjetivos(){
   if(_EMB_OBJ) return _EMB_OBJ;
   var ls=[], ts=[];
   _embudoClientes().forEach(function(c){
-    var l=_embLeads(c); if(l>0) ls.push(l);
+    var l=_embLeads(c); if(l.hay && l.n>0) ls.push(l.n);
     var o=_embOptin(c);
     if(o && o.unicas>=30 && isFinite(o.tasa)) ts.push(o.tasa);
   });
@@ -40802,11 +40820,11 @@ function _embudoCuadro(c){
   // Devuelve {dias,cuantas} o {sinFecha,cuantas}, no un numero.
   var _cmp=(typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
   var dias=(_cmp && isFinite(_cmp.dias)) ? _cmp.dias : null;
-  var leads=_embLeads(c);
+  var L=_embLeads(c), leads=L.hay?L.n:null;
   var o=_embOptin(c);
   var lpD=_embudoLpDias(c);
   var vencida=(lpD===null)||(lpD>EMBUDO_DIAS);
-  var estLeads=(leads>0 && isFinite(obj.leads))
+  var estLeads=(L.hay && leads>0 && isFinite(obj.leads))
     ? _salEstado(leads, obj.leads) : 'poca';
   var estOpt=(!vencida && o && o.unicas>=30 && isFinite(o.tasa) && isFinite(obj.tasa))
     ? _salEstado(o.tasa, obj.tasa) : 'poca';
@@ -40816,7 +40834,12 @@ function _embudoCuadro(c){
       : ((estLeads==='ok'&&estOpt==='ok') ? 'ok' : ''));
   // El cartel. Primero lo que impide medir, despues el tramo que falla.
   var q, qc='';
-  if(vencida){
+  if(!L.hay){
+    // Ninguna campana busca leads: el tramo no aplica, no es que falle.
+    q='Ninguna campa\u00f1a busca leads'
+      +(L.otros.length?(': est\u00e1'+(L.otros.length===1?'':'n')+' en '
+        +esc(L.otros.join(' y '))):'')+'. Este embudo no aplica.';
+  } else if(vencida){
     q=(lpD===null) ? 'La landing nunca se midio: sin eso no se puede ver si dejan datos.'
       : ('La landing no se mide hace '+lpD+' d\u00edas: el opt-in no cuenta lo de ahora.');
     qc=' amb';
