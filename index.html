@@ -908,6 +908,19 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
 .pet-tag.cli{border-color:rgba(87,207,214,0.45);color:var(--accent2)}
 .pet-tag.av{border-color:var(--amberx);color:var(--amberx)}
 .pet-tag.mal{border-color:var(--redx);color:var(--redx)}
+/* El candado de una tarea bloqueante. Apagado es un boton mas y casi no se ve;
+   prendido tiene que notarse, porque es lo unico de la etapa que no se puede
+   saltear. La fila lleva una barra al costado y no un fondo, para no pelearse
+   con el fondo de "la que sigue". */
+.pet-lock{flex:none;width:26px;height:26px;border-radius:999px;padding:0;cursor:pointer;
+  background:transparent;border:1px solid transparent;color:var(--text3);
+  display:inline-flex;align-items:center;justify-content:center}
+.pet-lock:hover{border-color:var(--border2);color:var(--text2)}
+.pet-lock.on{color:var(--amberx);border-color:rgba(240,168,48,0.45)}
+.pet-lock:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pet-fila.frena{box-shadow:inset 2px 0 0 var(--amberx);border-radius:8px}
+.p3fi-frena{font-size:12.5px;color:var(--amberx);margin-top:6px;
+  display:flex;gap:7px;align-items:flex-start;line-height:1.45}
 /* El desplegable va invisible encima de la pastilla: se ve el chip del diseño
    y lo abre el select nativo, que ya sabe de teclado y de celular. */
 .pet-sel{position:relative;flex:none}
@@ -39053,6 +39066,15 @@ function _p360FichaHtml(c, conAgenda){
         +(act.estado==='tarde'?'atrasada':'en curso')
         +(act.fecha?(' \u00b7 '+act.fecha.toLocaleDateString('es-AR')):'')+'</div>'
       +'<div class="p3fi-falta">Falta '+esc(P360_PIDE[act.l]||'completarla')+'.</div>'
+      /* Lo que frena, por nombre. Una bloqueante sin tildar no es una tarea
+         mas de la lista: es la razon por la que la etapa no se cierra, y hay
+         que verla sin bajar a buscarla. */
+      +(function(){
+        var fr=(typeof _petFrenos==='function')?_petFrenos(c):[];
+        if(!fr.length) return '';
+        return '<div class="p3fi-frena">'+_petLockSvg()
+          +'<span>'+esc(fr.map(function(t){ return t.t; }).join(' \u00b7 '))+'</span></div>';
+      })()
       // Los pasos que quedaron adentro de esta etapa, con su estado.
       +(hijas.length
         ? ('<div class="p3fi-hijas">'
@@ -39541,7 +39563,8 @@ function _petHtml(c){
       var ar=_areaDe(t.r);
       var sig=(t.id===sigId);
       var arg="'"+esc2(e.etapa)+"','"+esc2(t.id)+"'";
-      return '<div class="pet-fila'+(t.ok?' hecha':'')+(sig?' sig':'')+'">'
+      return '<div class="pet-fila'+(t.ok?' hecha':'')+(sig?' sig':'')
+          +((t.b&&!t.ok)?' frena':'')+'">'
         +'<button class="pet-chk'+(t.ok?' ok':'')+(sig?' sig':'')+'" '
           +'title="'+esc(t.ok
               ? ('Tildada'+(t.at?(' el '+new Date(t.at).toLocaleDateString('es-AR')):'')
@@ -39549,6 +39572,7 @@ function _petHtml(c){
               : 'Marcar como hecha')+'" '
           +'onclick="petTildar('+c.id+','+arg+','+(t.ok?'false':'true')+')">\u2713</button>'
         +'<span class="pet-txt">'+esc(t.t)+'</span>'
+        +_petLockBtn(c.id, arg, !!t.b)
         +(sig?'<span class="pet-tag av">la que sigue</span>':'')
         +_petGenPill(c, t)
         // El area: pastilla con el desplegable invisible encima.
@@ -39569,7 +39593,13 @@ function _petHtml(c){
     };
 
     var _atr=_atrasada(i);
-    return '<details'+((abierta||_atr)?' open':'')+' class="pet-et">'
+    /* ⚠️  LAS QUE QUEDARON ATRAS SE LISTAN PLEGADAS. Venian abiertas, y en un
+       cliente al que recien se le cargo la plantilla eso es TODO: nada esta
+       tildado, asi que las cinco etapas anteriores cuentan como atrasadas y la
+       ficha vuelve a ser el acordeon de veinticinco tareas que se saco.
+       Que existen y que vienen atrasadas ya lo dice el renglon con "quedó
+       atrás"; abrirlas es decision de quien mira. La de ahora si abre. */
+    return '<details'+(abierta?' open':'')+' class="pet-et">'
       +'<summary class="pet-eth">'
         +'<span class="pet-fl">\u25b6</span>'
         +'<span style="color:'+(_atr?'var(--amberx)'
@@ -40145,7 +40175,8 @@ function plantillaEtapas(){
     return PLANTILLA_BASE.map(function(e){
       return {etapa:e.etapa, ruta:e.ruta,
               tareas:e.tareas.map(function(t){
-                return Array.isArray(t) ? {t:t[0], r:t[1]||''} : {t:t, r:''}; })};
+                return Array.isArray(t) ? {t:t[0], r:t[1]||'', b:false}
+                   : {t:t, r:'', b:false}; })};
     });
   }
   return v.map(function(e){
@@ -40153,8 +40184,9 @@ function plantillaEtapas(){
             tareas:(e.tareas||[]).map(function(t){
               // Tolera las dos formas: texto suelto o {t,r}. La primera version
               // guardo strings y no vale la pena migrar una config de 6 filas.
-              return (typeof t==='string') ? {t:t, r:''}
-                   : {t:String(t.t||''), r:String(t.r||'')};
+              // `b` es el candado: la tarea no se puede saltear.
+              return (typeof t==='string') ? {t:t, r:'', b:false}
+                   : {t:String(t.t||''), r:String(t.r||''), b:!!t.b};
             })};
   });
 }
@@ -40179,7 +40211,8 @@ function plantillaCargar(clientId, callado){
   c.etapasTareas=plantillaEtapas().map(function(e,i){
     return {etapa:e.etapa, ruta:e.ruta,
             tareas:e.tareas.map(function(t,j){
-              return {id:'t'+base+'-'+i+'-'+j, t:t.t, r:t.r||'', ok:false, at:'', por:''};
+              return {id:'t'+base+'-'+i+'-'+j, t:t.t, r:t.r||'', b:!!t.b,
+                      ok:false, at:'', por:''};
             })};
   });
   c.plantillaAt=new Date().toISOString();
@@ -40237,6 +40270,45 @@ function petResponsable(clientId, etapa, tareaId, mail){
   t.r=String(mail||''); save();
 }
 
+/* ── Tareas bloqueantes ───────────────────────────────────────
+
+   Una etapa tiene tareas que se pueden acomodar y tareas sin las cuales no se
+   avanza -los accesos, la aprobacion del cliente-. El candado marca las
+   segundas: mientras no esten tildadas, son lo que frena, y se nombran arriba
+   de la ficha en vez de quedar en la lista como una mas.
+
+   ⚠️  EL CANDADO NO TILDA NI DESTILDA NADA, Y NO MUEVE DE ETAPA. Marca cual
+       es el freno; dar una etapa por hecha sigue dependiendo de lo de siempre.
+       Un candado que bloquee solo el avance seria una regla nueva decidiendo
+       por su cuenta sobre cobros y reuniones. */
+function petBloquea(clientId, etapa, tareaId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var t=(e.tareas||[]).filter(function(x){ return x.id===tareaId; })[0]; if(!t) return;
+  t.b=!t.b; save(); p360Repintar();
+}
+// Las bloqueantes sin tildar de la etapa en la que esta parado. Las de otras
+// etapas no frenan esta.
+function _petFrenos(c){
+  var eas=petDe(c); if(!eas) return [];
+  var a=(typeof petEtapaActual==='function')?petEtapaActual(c):null;
+  if(!a) return [];
+  return (a.tareas||[]).filter(function(t){ return t.b && !t.ok; });
+}
+function _petLockSvg(){
+  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    +'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    +'<rect x="4" y="11" width="16" height="10" rx="2"/>'
+    +'<path d="M8 11V7a4 4 0 018 0v4"/></svg>';
+}
+function _petLockBtn(clientId, arg, on){
+  return '<button class="pet-lock'+(on?' on':'')+'" aria-pressed="'+(on?'true':'false')+'" '
+    +'title="'+(on?'Bloqueante: sin esto no se avanza. Tocar para sacarle el candado.'
+                 :'Marcarla como bloqueante')+'" '
+    +'onclick="petBloquea('+clientId+','+arg+')">'+_petLockSvg()+'</button>';
+}
+
 /* Agregar una tarea desde la ficha, tenga o no las etapas cargadas.
 
    `petAgregar` pide que el cliente ya tenga sus etapas, y si no las tiene se
@@ -40247,23 +40319,128 @@ function petResponsable(clientId, etapa, tareaId, mail){
 function petAgregarAqui(clientId, etapa){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
   if(!c || !etapa) return;
+  petNuevaModal(clientId, etapa);
+}
+/* Deja al cliente en condiciones de recibir una tarea propia: con sus etapas
+   cargadas y con ESTA etapa existiendo. Devuelve la etapa, o null si la
+   persona no quiso cargar la plantilla. */
+function _petAsegurar(clientId, etapa){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c || !etapa) return null;
   if(!petDe(c)){
     if(!confirm('"'+(c.name||'Este cliente')+'" todav\u00eda no tiene sus etapas.\n\n'
       +'Para agregarle una tarea propia hay que carg\u00e1rselas desde la plantilla. '
       +'No hay nada tildado, as\u00ed que no se pierde nada, y no toca a ning\u00fan '
-      +'otro cliente.')) return;
-    if(!plantillaCargar(clientId, true)) return;
+      +'otro cliente.')) return null;
+    if(!plantillaCargar(clientId, true)) return null;
   }
   var eas=petDe(c)||[];
   /* La etapa de ahora puede no estar en la plantilla: "Diagnostico" es una
      columna del tablero y no una etapa. Se le crea a este cliente, vacia, en
      vez de perder la tarea. */
-  if(!eas.filter(function(x){ return x.etapa===etapa; })[0]){
-    eas.push({etapa:etapa, ruta:etapa, tareas:[]});
-    c.etapasTareas=eas;
-    save();
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0];
+  if(!e){
+    e={etapa:etapa, ruta:etapa, tareas:[]};
+    eas.push(e); c.etapasTareas=eas; save();
   }
-  petAgregar(clientId, etapa);
+  return e;
+}
+/* \u2500\u2500 Nueva tarea \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+   Era un `prompt`, donde solo entra el nombre. Las dos preguntas que de verdad
+   importan al crear una tarea -si es de este cliente o de todos, y si frena la
+   etapa- no tenian donde entrar, asi que la respuesta era siempre la misma por
+   omision: de este cliente y no frena.
+
+   El popup reemplaza a la ficha en `modal-root` -son el mismo lugar- y al
+   cerrarse la vuelve a abrir. */
+function petNuevaModal(clientId, etapa){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var root=document.getElementById('modal-root');
+  if(!c || !root || !etapa) return;
+  var q="'"+esc(String(etapa)).replace(/'/g,"\\'")+"'";
+  var campo='width:100%;box-sizing:border-box;font-family:var(--font);font-size:14px;'
+    +'padding:11px 13px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg2);color:var(--text);margin-top:12px';
+  var opcion='display:flex;gap:10px;align-items:flex-start;padding:10px 12px;'
+    +'border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;margin-top:8px';
+  root.innerHTML=''
+    +'<div class="modal-overlay" onclick="if(event.target===this)petNuevaCerrar('+clientId+')">'
+    +'<div class="modal" style="max-width:470px">'
+      +'<div style="font-size:17px;font-weight:600;color:var(--strong)">Nueva tarea</div>'
+      +'<div style="font-size:12.5px;color:var(--text2);margin-top:4px">En <b style="'
+        +'font-weight:600;color:var(--text)">'+esc(etapa)+'</b>, para '+esc(c.name||'')+'.</div>'
+      +'<label for="pet-n-t" style="position:absolute;left:-9999px">Qu\u00e9 hay que hacer</label>'
+      +'<input id="pet-n-t" type="text" autocomplete="off" placeholder="Qu\u00e9 hay que hacer" '
+        +'style="'+campo+'" onkeydown="if(event.key===\'Enter\')petNuevaGuardar('
+        +clientId+','+q+')">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;'
+        +'color:var(--text3);margin-top:16px">Para qui\u00e9n</div>'
+      +'<label style="'+opcion+'">'
+        +'<input type="radio" name="pet-n-dest" id="pet-n-uno" checked style="margin-top:2px">'
+        +'<span><span style="font-size:13.5px;color:var(--text)">Solo para '
+          +esc(c.name||'este cliente')+'</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'La plantilla no se entera.</span></span></label>'
+      +'<label style="'+opcion+'">'
+        +'<input type="radio" name="pet-n-dest" id="pet-n-todos" style="margin-top:2px">'
+        +'<span><span style="font-size:13.5px;color:var(--text)">Para todos</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'Se suma a la plantilla, as\u00ed la tienen los clientes que se carguen de ahora '
+          +'en adelante. Los que ya la tienen cargada no cambian.</span></span></label>'
+      +'<label style="'+opcion+'">'
+        /* La hoja de estilos de la app le saca la apariencia nativa a los
+           checkbox para dibujar los suyos; aca no hay uno dibujado, asi que
+           sin esto el casillero se vuelve invisible y la opcion no se puede
+           tocar. */
+        +'<input type="checkbox" id="pet-n-bloq" style="margin-top:2px;'
+          +'appearance:auto;-webkit-appearance:checkbox;accent-color:var(--accent);'
+          +'width:14px;height:14px">'
+        +'<span><span style="font-size:13.5px;color:var(--text)">Es bloqueante</span>'
+        +'<span style="display:block;font-size:11.5px;color:var(--text3);margin-top:2px">'
+          +'Sin esto no se avanza. Aparece arriba de la ficha mientras no est\u00e9 '
+          +'tildada.</span></span></label>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="petNuevaCerrar('+clientId+')">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="petNuevaGuardar('+clientId+','+q+')">'
+          +'Agregar</button>'
+      +'</div>'
+    +'</div></div>';
+  try{ var i=document.getElementById('pet-n-t'); if(i) i.focus(); }catch(e){}
+}
+function petNuevaCerrar(clientId){ p360FichaModal(clientId); }
+function petNuevaGuardar(clientId, etapa){
+  var inp=document.getElementById('pet-n-t');
+  var nom=String((inp&&inp.value)||'').trim();
+  if(!nom){ if(inp) inp.focus(); return; }
+  var todos=!!((document.getElementById('pet-n-todos')||{}).checked);
+  var bloq=!!((document.getElementById('pet-n-bloq')||{}).checked);
+  var e=_petAsegurar(clientId, etapa);
+  if(!e){ p360FichaModal(clientId); return; }
+  e.tareas=e.tareas||[];
+  e.tareas.push({id:'t'+Date.now()+'-'+e.tareas.length, t:nom, r:'', b:bloq,
+                 ok:false, at:'', por:''});
+  /* "Para todos" toca la plantilla, que es lo que se copia a los clientes
+     nuevos. A los que ya la tienen cargada NO se les agrega: sus etapas son
+     suyas desde que se cargaron, y meterles una tarea a treinta clientes de
+     una es justo lo que no se puede deshacer. */
+  if(todos){
+    var pl=plantillaEtapas();
+    var pe=pl.filter(function(x){ return x.etapa===etapa; })[0];
+    if(!pe){ pe={etapa:etapa, ruta:etapa, tareas:[]}; pl.push(pe); }
+    pe.tareas=pe.tareas||[];
+    pe.tareas.push({t:nom, r:'', b:bloq});
+    DB.plantillaEtapas=pl;
+  }
+  save();
+  if(typeof toast==='function'){
+    toast(todos
+      ? ('Agregu\u00e9 "'+nom+'" a '+etapa+' y a la plantilla. Los clientes ya cargados '
+         +'no cambian.')
+      : ('Agregu\u00e9 "'+nom+'" a '+etapa+'.'));
+  }
+  p360FichaModal(clientId);
+  try{ if(typeof showTickets==='function' && S.view==='tickets') showTickets(); }catch(err){}
 }
 // Agregar o sacar una tarea A ESTE CLIENTE. La plantilla no se entera.
 function petAgregar(clientId, etapa){
