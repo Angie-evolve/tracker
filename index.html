@@ -40815,96 +40815,133 @@ function _embudoLpDias(c){
    Y por eso el cartel de abajo nunca dice "embudo sano": con dos tramos sin
    medir, eso seria afirmar algo que no se midio. Dice como vienen los dos
    que si se miden, y nada mas. */
+/* ── El CRM del cliente ─────────────────────────────────────
+
+   Medido el 04/10: dieciseis clientes tienen su subcuenta de GHL conectada y
+   las oportunidades sincronizadas, Sygemat incluido -que no tiene Meta-. Cada
+   oportunidad trae etapa, estado, fecha de creacion y de ultimo movimiento.
+
+   ⚠️  SOLO SE USA LO QUE NO HAY QUE INTERPRETAR. Los nombres de etapa los
+       escribe cada cliente en SU pipeline, y en la cartera conviven "No
+       Calificado", "No Califica", "Lead No Calificado" y "Lead no calificado"
+       para la misma idea, igual que "Primera llamada programada", "1ra llamada
+       programada" y "Llamada Agendada". Clasificarlos por parecido es
+       adivinar, y de ahi saldrian los carteles.
+       Lo que SI es universal es el `status` -open, won, lost, abandoned- y la
+       fecha. Con eso alcanza para dos tramos honestos: cuantas entraron al CRM
+       y cuantas de esas cerraron. "Agenda" y "calificado" necesitan que se
+       diga, pipeline por pipeline, que etapa cuenta.
+
+   Las dos cuentas miran la MISMA cohorte: las que entraron en la ventana. Una
+   que entro hace tres meses y cerro ayer no suma, porque entonces el numero de
+   abajo no seria "de estas, cuantas cerraron". */
+function _embGhl(c){
+  var g=c&&c.ghl;
+  if(!g || !Array.isArray(g.opportunities)) return null;
+  var corte=Date.now()-EMBUDO_DIAS*86400000;
+  var n=0, won=0, ultima=0;
+  g.opportunities.forEach(function(o){
+    var t=Date.parse(o.createdAt||'');
+    if(!t) return;
+    if(t>ultima) ultima=t;
+    if(t<corte) return;
+    n++;
+    if(String(o.status||'').toLowerCase()==='won') won++;
+  });
+  return {n:n, won:won, total:g.opportunities.length,
+          ultima:ultima?new Date(ultima):null, sync:g.lastSync||''};
+}
 function _embudoCuadro(c){
-  /* Un cliente en recurrente sin nada al aire entra igual a la tira -si no,
-     al sacar la columna desaparecia del panel-, y la tarjeta dice por que
-     esta vacia. Son dos motivos distintos: no hay campanas prendidas, o ni
-     siquiera hay Meta conectado para saberlo. */
-  if(!((typeof _salCamps==='function')&&_salCamps(c).length)){
-    var sinMeta=!(c.metaToken&&c.metaAccountId);
-    return '<div class="p3embk">'
-      +'<div class="p3embn"><span class="p3embp"></span>'
-        +'<b>'+esc(c.name||'')+'</b>'
-        +'<span class="p3embd">'+(sinMeta?'':'apagada')+'</span></div>'
-      +'<div class="p3embg">'
-        +'<span><b class="na">\u2014</b><em>Leads</em></span>'
-        +'<span><b class="na">\u2014</b><em>Opt-in</em></span>'
-        +'<span><b class="na">\u2014</b><em>Conv.</em></span>'
-        +'<span><b class="na">\u2014</b><em>Agendas</em></span>'
-      +'</div>'
-      +'<div class="p3embb"><i></i><i></i><i class="falta"></i><i class="falta"></i></div>'
-      +'<div class="p3embq">'
-        +(sinMeta?'Sin Meta conectado.':'Sin campa\u00f1as al aire.')+'</div>'
-    +'</div>';
-  }
   var obj=_embObjetivos();
-  // Devuelve {dias,cuantas} o {sinFecha,cuantas}, no un numero.
-  var _cmp=(typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
+  var hayCamp=((typeof _salCamps==='function')&&_salCamps(c).length)?true:false;
+  var sinMeta=!(c.metaToken&&c.metaAccountId);
+  var _cmp=(hayCamp&&typeof _p360DiasCampanas==='function')?_p360DiasCampanas(c):null;
   var dias=(_cmp && isFinite(_cmp.dias)) ? _cmp.dias : null;
-  var L=_embLeads(c), leads=L.hay?L.n:null;
-  var o=_embOptin(c);
-  var lpD=_embudoLpDias(c);
+
+  // Tramo 1: los leads de las campanas que buscan leads.
+  var L=hayCamp?_embLeads(c):{n:0, hay:false, otros:[]};
+  var leads=(hayCamp && L.hay) ? L.n : null;
+  // Tramo 2: el opt-in de la landing, si esta medido dentro de la ventana.
+  var o=_embOptin(c), lpD=_embudoLpDias(c);
   var vencida=(lpD===null)||(lpD>EMBUDO_DIAS);
-  var estLeads=(L.hay && leads>0 && isFinite(obj.leads))
+  var optin=(!vencida && o) ? o.optins : null;
+  // Tramos 3 y 4: el CRM.
+  var g=_embGhl(c);
+  var crm=g?g.n:null, won=g?g.won:null;
+
+  var estLeads=(leads!==null && leads>0 && isFinite(obj.leads))
     ? _salEstado(leads, obj.leads) : 'poca';
   var estOpt=(!vencida && o && o.unicas>=30 && isFinite(o.tasa) && isFinite(obj.tasa))
     ? _salEstado(o.tasa, obj.tasa) : 'poca';
-  // El punto del nombre resume los dos tramos medidos: el peor manda.
-  var peor=(estLeads==='mal'||estOpt==='mal') ? 'mal'
-    : ((estLeads==='medio'||estOpt==='medio') ? 'medio'
-      : ((estLeads==='ok'&&estOpt==='ok') ? 'ok' : ''));
-  // El cartel. Primero lo que impide medir, despues el tramo que falla.
+  var estCrm = !g ? 'falta' : (crm>0 ? 'ok' : ((leads!==null&&leads>0) ? 'mal' : 'poca'));
+  var estWon = !g ? 'falta' : (won>0 ? 'ok' : 'poca');
+
+  // El punto del nombre resume lo que SE PUDO medir; el peor manda.
+  var ests=[estLeads, estOpt, estCrm, estWon].filter(function(e){
+    return e!=='falta' && e!=='poca'; });
+  var peor=(ests.indexOf('mal')>=0) ? 'mal'
+    : ((ests.indexOf('medio')>=0) ? 'medio' : (ests.length?'ok':''));
+
+  /* El cartel. Lo primero que se dice es lo que impide medir; despues el
+     tramo que falla, de arriba hacia abajo. Nunca dice "sano": siempre hay
+     algo sin cablear, y afirmarlo seria afirmar lo que no se midio. */
   var q, qc='';
-  if(!L.hay){
-    // Ninguna campana busca leads: el tramo no aplica, no es que falle.
+  if(!hayCamp && !g){
+    q=sinMeta?'Sin Meta conectado y sin CRM.':'Sin campa\u00f1as al aire y sin CRM.';
+  } else if(!hayCamp){
+    q=(sinMeta?'Sin Meta conectado':'Sin campa\u00f1as al aire')
+      +'. Lo que se ve sale del CRM.';
+  } else if(!L.hay){
     q='Ninguna campa\u00f1a busca leads'
       +(L.otros.length?(': est\u00e1'+(L.otros.length===1?'':'n')+' en '
-        +esc(L.otros.join(' y '))):'')+'. Este embudo no aplica.';
-  } else if(vencida){
-    q=(lpD===null) ? 'La landing nunca se midio: sin eso no se puede ver si dejan datos.'
+        +esc(L.otros.join(' y '))):'')+'.';
+  } else if(g && leads>0 && crm===0){
+    /* Los dos numeros medidos, sin sacar la conclusion: puede ser que los
+       leads no lleguen al CRM, o que caigan en un pipeline que la sync no
+       trae. Decir cual seria adivinar. */
+    q=leads+' leads en Meta y ninguna oportunidad nueva en el CRM'
+      +(g.ultima?(' desde el '+g.ultima.toLocaleDateString('es-AR')):'')+'.';
+    qc=' amb';
+  } else if(vencida && leads!==null){
+    q=(lpD===null) ? 'La landing nunca se midi\u00f3: sin eso no se ve si dejan datos.'
       : ('La landing no se mide hace '+lpD+' d\u00edas: el opt-in no cuenta lo de ahora.');
     qc=' amb';
   } else if(estLeads==='mal' || estLeads==='medio'){
     q='Entran pocos leads.'; qc=' amb';
   } else if(estOpt==='mal' || estOpt==='medio'){
     q='Llegan pero no dejan datos.'; qc=' amb';
-  } else if(estLeads==='poca'){
+  } else if(g && crm>0 && won===0){
+    q='Entran al CRM y todav\u00eda no cerr\u00f3 ninguna.'; qc=' amb';
+  } else if(!ests.length){
     q='Todav\u00eda no hay muestra para decir nada.';
   } else {
-    q='Los dos primeros tramos van bien. Falta cablear conversaci\u00f3n y agenda.';
-    qc=' acc';
+    q='Los tramos que se miden vienen bien.'; qc=' acc';
   }
-  var num=function(v, cls, rot){
-    return '<span><b class="'+(v===null?'na':(cls||''))+'">'
+
+  var num=function(v, est, rot){
+    return '<span><b class="'+(v===null?'na':((est==='mal'||est==='medio')?est:''))+'">'
       +(v===null?'\u2014':esc(String(v)))+'</b><em>'+rot+'</em></span>';
+  };
+  var barra=function(est){
+    return '<i class="'+((est==='poca')?'':est)+'"></i>';
   };
   return '<div class="p3embk">'
     +'<div class="p3embn"><span class="p3embp'+(peor?(' '+peor):'')+'"></span>'
       +'<b>'+esc(c.name||'')+'</b>'
-      +'<span class="p3embd">'+(dias===null?'':(dias+' d'))+'</span></div>'
+      +'<span class="p3embd">'
+        +(dias!==null?(dias+' d'):(hayCamp?'':(sinMeta?'':'apagada')))+'</span></div>'
     +'<div class="p3embg">'
-      +num(leads, (estLeads==='mal'?'mal':(estLeads==='medio'?'medio':'')), 'Leads')
-      +num(o?o.optins:null, (estOpt==='mal'?'mal':(estOpt==='medio'?'medio':'')), 'Opt-in')
-      +num(null, '', 'Conv.')
-      +num(null, '', 'Agendas')
+      +num(leads, estLeads, 'Leads')
+      +num(optin, estOpt, 'Opt-in')
+      +num(crm, estCrm, 'CRM')
+      +num(won, estWon, 'Cerradas')
     +'</div>'
     +'<div class="p3embb">'
-      +'<i class="'+(estLeads==='poca'?'':estLeads)+'"></i>'
-      +'<i class="'+(estOpt==='poca'?'':estOpt)+'"></i>'
-      +'<i class="falta"></i><i class="falta"></i>'
+      +barra(estLeads)+barra(estOpt)+barra(estCrm)+barra(estWon)
     +'</div>'
     +'<div class="p3embq'+qc+'">'+q+'</div>'
   +'</div>';
 }
-/* `lista` son los clientes que el panel esta mostrando: ya pasaron por el
-   filtro de producto, el buscador y la cartera. Sin esto la tira ignoraba los
-   filtros y seguia mostrando los once de siempre con "The Flowing Code"
-   elegido arriba.
-
-   ⚠️  LAS MEDIANAS NO SE FILTRAN. El objetivo de cada tramo es la mediana de
-       la CARTERA, no la del filtro: si se recalculara con lo filtrado, elegir
-       un producto moveria la vara y los mismos clientes cambiarian de color
-       sin que haya pasado nada. */
 function _embudoHtml(lista, todosLista){
   var todos=Array.isArray(todosLista)?todosLista:_embudoClientes();
   var cs=Array.isArray(lista)?lista:todos;
