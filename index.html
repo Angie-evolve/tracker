@@ -1400,6 +1400,21 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
 .empty{text-align:center;padding:48px 24px;color:var(--text3);font-size:13px}
 .empty-icon{font-size:32px;margin-bottom:10px;opacity:0.4}
 
+/* ── La llamada que no viste ───────────────────────────────── */
+.shll{border:1px solid rgba(240,168,48,.3);background:rgba(240,168,48,.05);
+  border-radius:12px;padding:13px 15px;margin-bottom:16px}
+.shll-cab{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:3px}
+.shll-cab b{font-size:13.5px;font-weight:600;color:var(--amberx)}
+.shll-meta{font-size:11.5px;color:var(--text3)}
+.shll-t{font-size:14px;color:var(--strong);font-weight:600;margin:6px 0 2px}
+.shll-r{font-size:12.5px;color:var(--text2);line-height:1.55}
+.shll-c{margin:8px 0 0;padding:0;list-style:none}
+.shll-c li{font-size:12.5px;color:var(--text);line-height:1.5;padding:3px 0 3px 14px;
+  position:relative}
+.shll-c li:before{content:"";position:absolute;left:3px;top:11px;width:4px;height:4px;
+  border-radius:50%;background:var(--amberx)}
+.shll-c li span{color:var(--amberx)}
+.shll-pie{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}
 /* Success Tracker */
 .st-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px}
 .st-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;position:relative;overflow:hidden}
@@ -30557,6 +30572,7 @@ function renderTab(){
     el.innerHTML=`
       <div style="min-height:calc(100vh - 92px);display:flex;flex-direction:column">
         ${successSubNav(c)}
+        ${(typeof _llSinVerHtml==='function')?_llSinVerHtml(c):''}
         <div style="flex:1;display:flex;flex-direction:column">
         <div id="sh-tiempo" style="display:${_shHoja()==='tiempo'?'block':'none'}">
           ${rutaHtml(c)}
@@ -68848,6 +68864,162 @@ function statusPillStyle(s){
 
 // Las tareas del cliente dentro del Success tracker. Usa el mismo renderTaskRow
 // que la pestana Tareas, asi las filas se ven y se comportan igual en los dos lados.
+/* ── La llamada que no viste ──────────────────────────────────
+
+   Criterio, elegido el 04/10: no estuviste si TU MAIL no esta entre los
+   participantes de la reunion.
+
+   ⚠️  SIN LISTA DE PARTICIPANTES NO SE AVISA. De las 198 llamadas guardadas,
+       103 traen `participantes` -un arreglo de mails- y el resto no. En esas
+       no se puede afirmar que no estuviste: decirlo igual seria adivinar, y
+       ademas gastaria el aviso en llamadas viejas. Se callan.
+       Las que grabaste vos tampoco cuentan: si tu mail no figura pero sos
+       quien grabo, estuviste.
+
+   Se muestra UNA, la mas reciente sin ver. Dos avisos apilados dejan de
+   leerse, y lo que no viste de hace un mes no es lo que te frena hoy. */
+function _llMiMail(){
+  try{ return String((window.SB&&SB.email)||'').trim().toLowerCase(); }catch(e){ return ''; }
+}
+function _llFecha(s){
+  var m=String(s||'').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m) return new Date(+m[3], +m[2]-1, +m[1], 12).getTime();
+  var d=Date.parse(s||'');
+  return isFinite(d)?d:0;
+}
+function _llSinVer(c){
+  var yo=_llMiMail(); if(!yo) return null;
+  var cand=null, mejor=0;
+  ((c&&c.fathomCalls)||[]).forEach(function(ll){
+    var p=ll.participantes;
+    if(!Array.isArray(p) || !p.length) return;
+    var estuve=p.some(function(m){ return String(m||'').trim().toLowerCase()===yo; })
+      || String(ll.grabo||'').trim().toLowerCase()===yo;
+    if(estuve) return;
+    if((ll.visto||{})[yo]) return;
+    var t=_llFecha(ll.date);
+    if(t && t>mejor){ mejor=t; cand=ll; }
+  });
+  return cand;
+}
+function llMarcarVisto(clientId, id){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var ll=((c&&c.fathomCalls)||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!ll) return;
+  var yo=_llMiMail(); if(!yo) return;
+  ll.visto=ll.visto||{};
+  ll.visto[yo]=new Date().toISOString();
+  save();
+  if(typeof renderTab==='function') renderTab();
+}
+/* El resumen de lo charlado. Se usa el que ya trae la llamada; cuando no lo
+   tiene -el 81% de las guardadas- se pide una vez y se guarda, asi no se
+   vuelve a gastar en la misma llamada.
+   Lo que se pide aparte del resumen son los COMPROMISOS CON FECHA, que es lo
+   que ella marco: los `actionItems` que ya se guardan son frases sueltas sin
+   cuando ni quien. */
+async function llResumir(clientId, id){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var ll=((c&&c.fathomCalls)||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!ll) return;
+  var t=String(ll.transcript||'');
+  if(t.length<200){ toast('Esa llamada no tiene transcripcion guardada.','amber'); return; }
+  var btn=document.getElementById('shll-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Leyendo\u2026'; }
+  var prompt='Sos un asistente que lee la transcripcion de una reunion de una agencia con '
+    +'su cliente "'+(c.name||'')+'" y le cuenta a alguien del equipo que NO estuvo.\n\n'
+    +'=== TRANSCRIPCION ===\n'+t.slice(0,120000)+'\n\n'
+    +'Devolve SOLO JSON, sin markdown, con esta forma exacta:\n'
+    +'{"acordado":"2 o 3 oraciones con lo que se decidio, en castellano rioplatense",'
+    +'"compromisos":[{"que":"que hay que hacer","quien":"nombre o vacio",'
+    +'"cuando":"la fecha o el plazo TAL CUAL se dijo, o vacio si no se dijo"}]}\n\n'
+    +'Reglas: en "compromisos" va solo lo que alguien se comprometio a hacer, con su fecha '
+    +'si la dijeron. Si no hay fecha, dejala vacia: NO la inventes ni la deduzcas. '
+    +'Si no se acordo nada concreto, devolve "compromisos":[].';
+  try{
+    var apiKey=localStorage.getItem('evold-anthropic-key');
+    var out='';
+    if(apiKey){
+      var r=await fetch('https://api.anthropic.com/v1/messages',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-api-key':apiKey,
+                 'anthropic-version':'2023-06-01',
+                 'anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model:'claude-sonnet-5',max_tokens:1500,
+          messages:[{role:'user',content:prompt}]})
+      });
+      var d=await r.json();
+      if(d.error) throw new Error(d.error.message||'la API no respondio');
+      out=(d.content||[]).filter(function(b){ return b.type==='text'; })
+        .map(function(b){ return b.text; }).join('');
+    } else {
+      // Sin clave, el camino de siempre: copiar y pegar.
+      out=await _iaPedirAMano(prompt, '');
+    }
+    var ini=out.indexOf('{'), fin=out.lastIndexOf('}');
+    if(ini<0||fin<=ini) throw new Error('la respuesta no vino en JSON');
+    var j=JSON.parse(out.slice(ini,fin+1));
+    ll.resumenIA={acordado:String(j.acordado||''),
+                  compromisos:(Array.isArray(j.compromisos)?j.compromisos:[]).slice(0,8),
+                  at:new Date().toISOString()};
+    save();
+    if(typeof renderTab==='function') renderTab();
+  }catch(e){
+    toast('No pude resumirla: '+((e&&e.message)||''),'red');
+    if(btn){ btn.disabled=false; btn.textContent='Resumir'; }
+  }
+}
+function _llSinVerHtml(c){
+  var ll=_llSinVer(c);
+  if(!ll) return '';
+  var yo=_llMiMail();
+  // Con quien fue, sin contarme a mi ni repetir al equipo.
+  var equipo={};
+  ((DB.personas||[])||[]).forEach(function(p){
+    var e=String(p.email||'').trim().toLowerCase(); if(e) equipo[e]=p.nombre||e; });
+  var otros=(ll.participantes||[]).filter(function(m){
+    return String(m||'').trim().toLowerCase()!==yo; })
+    .map(function(m){ var k=String(m).trim().toLowerCase(); return equipo[k]||m; });
+  var R=ll.resumenIA||null;
+  var ai=Array.isArray(ll.actionItems)?ll.actionItems:[];
+  var cuerpo='';
+  if(R && R.acordado){
+    cuerpo='<div class="shll-r">'+esc(R.acordado)+'</div>'
+      +((R.compromisos||[]).length
+        ? ('<ul class="shll-c">'+R.compromisos.map(function(x){
+            return '<li>'+esc(String(x.que||''))
+              +(x.quien?(' \u2014 '+esc(String(x.quien))):'')
+              +(x.cuando?(' <span>'+esc(String(x.cuando))+'</span>'):'')+'</li>';
+          }).join('')+'</ul>')
+        : '<div class="shll-meta" style="margin-top:6px">No se acord\u00f3 nada con fecha.</div>');
+  } else if(String(ll.summary||'').length>40){
+    cuerpo='<div class="shll-r">'+esc(String(ll.summary))+'</div>'
+      +(ai.length?('<ul class="shll-c">'+ai.slice(0,6).map(function(x){
+          return '<li>'+esc(String(x))+'</li>'; }).join('')+'</ul>'):'');
+  } else {
+    cuerpo='<div class="shll-meta">Todav\u00eda no hay resumen de esta llamada.</div>';
+  }
+  return '<div class="shll">'
+    +'<div class="shll-cab"><b>No estuviste en esta llamada</b>'
+      +'<span class="shll-meta">'+esc(String(ll.date||''))
+      +(otros.length?(' \u00b7 con '+esc(otros.slice(0,3).join(', '))):'')
+      +(ll.duration?(' \u00b7 '+esc(String(ll.duration))):'')+'</span></div>'
+    +'<div class="shll-t">'+esc(String(ll.title||'Reuni\u00f3n'))+'</div>'
+    +cuerpo
+    +'<div class="shll-pie">'
+      +(ll.url?('<a href="'+esc(String(ll.url))+'" target="_blank" rel="noopener" '
+        +'class="btn btn-sm" style="text-decoration:none">Ver la llamada</a>'):'')
+      +((!R && typeof llResumir==='function')
+        ? ('<button id="shll-btn" class="btn btn-sm" onclick="llResumir('+c.id+',\''
+           +esc(String(ll.id)).replace(/'/g,"\\'")+'\')">'
+           +(String(ll.summary||'').length>40?'Resumir mejor':'Resumir')+'</button>')
+        : '')
+      +'<span style="flex:1"></span>'
+      +'<button class="btn btn-sm" onclick="llMarcarVisto('+c.id+',\''
+        +esc(String(ll.id)).replace(/'/g,"\\'")+'\')">Marcar visto</button>'
+    +'</div>'
+  +'</div>';
+}
 function successTareasHtml(c){
   var tasks=(c.tasks||[]).filter(function(t){ return !t.deleted&&!t.archivada; });
   var venc=tasks.filter(function(t){ var d=_dueEnd(t.due); return !t.done&&d&&d<new Date(); });
