@@ -10383,6 +10383,109 @@ function llRevisarGuardar(clientId){
 // Resumen de lo que este cliente tiene cargado, al pie de Contexto. Se edita en
 // Material; aca solo se mira, para contestar de un vistazo con que contexto
 // cuenta la IA antes de pedirle algo.
+/* ── El reporte de campaña, embebido ───────────────────────────
+
+   ⚠️  EL ARTIFACT NO SE PUEDE EMBEBER. claude.ai contesta con
+       `x-frame-options: SAMEORIGIN`, asi que un iframe apuntando al artifact
+       lo bloquea el navegador y queda un recuadro vacio. No es un permiso que
+       se pueda pedir.
+
+   Entonces la tarea de la manana sube ADEMAS una copia del HTML a Storage, en
+   el bucket privado `material`, y es esa la que se embebe. El bucket es
+   privado a proposito: el reporte lleva inversion, leads y conversaciones del
+   cliente, y en un bucket publico eso lo ve cualquiera que tenga el link. La
+   app pide una URL firmada en el momento, que dura una hora.
+
+   El iframe va en sandbox SIN `allow-same-origin`: el HTML lo escribe la
+   tarea, corre sus propios scripts -los graficos y el selector de fechas los
+   necesitan- pero en un origen opaco, asi que no alcanza ni la sesion ni el
+   storage de la app. */
+var REP_BUCKET='material';
+function _repEmbedHtml(c){
+  var r=(typeof _repCampana==='function')?_repCampana(c):null;
+  var path=((c&&c.reporteCampana)||{}).storage||'';
+  if(!r && !path) return '';
+  var rot='font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;'
+    +'letter-spacing:0.07em';
+  var cab='<div style="display:flex;align-items:center;justify-content:space-between;'
+      +'gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+    +'<div style="'+rot+'">Reporte de campa\u00f1a</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +(r?('<span style="font-size:10px;color:'
+          +((r.dias===null||r.dias>3)?'var(--amberx)':'var(--text3)')+'">'
+          +(r.at?('del '+r.at.toLocaleDateString('es-AR')):'sin fecha')+'</span>'):'')
+      +(r?('<a href="'+esc(r.url)+'" target="_blank" rel="noopener" class="btn btn-sm" '
+          +'style="font-size:11px;padding:3px 9px;text-decoration:none">Abrir aparte</a>'):'')
+    +'</div>'
+  +'</div>';
+  if(!path){
+    // Hay artifact pero todavia no hay copia para embeber.
+    return '<div style="margin-top:16px">'+cab
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6">'
+      +'Se abre en una pesta\u00f1a. La copia para verlo ac\u00e1 adentro la sube la tarea '
+      +'de la ma\u00f1ana.</div></div>';
+  }
+  return '<div style="margin-top:16px">'+cab
+    +'<div id="rep-emb" data-path="'+esc(path)+'" '
+      +'style="border:1px solid var(--border);border-radius:var(--radius-lg);'
+      +'overflow:hidden;background:var(--bg2);height:70vh;min-height:420px;'
+      +'display:flex;align-items:center;justify-content:center;'
+      +'font-size:12px;color:var(--text3)">Abriendo el reporte\u2026</div>'
+  +'</div>';
+}
+/* La firma se pide despues de dibujar: es una llamada a Storage y no puede
+   trabar el render de la ficha.
+
+   ⚠️  EL IFRAME NO PUEDE APUNTAR A LA URL FIRMADA. Supabase sirve TODO lo de
+       Storage como `text/plain` con `nosniff` -a proposito, para que nadie
+       aloje HTML ahi-, asi que un iframe con esa URL muestra el codigo fuente
+       en vez de la pagina. Comprobado contra el bucket.
+       Entonces se baja el texto y se mete en `srcdoc`. Como efecto bueno, el
+       iframe queda en un origen opaco de verdad.
+
+   Por eso la copia que sube la tarea tiene que ser AUTOCONTENIDA: con
+   `srcdoc` no hay URL base, asi que una imagen con ruta relativa no carga.
+   Las imagenes van como data URI. */
+async function repEmbedCargar(){
+  var caja=document.getElementById('rep-emb');
+  if(!caja || caja.dataset.listo==='1') return;
+  var path=caja.dataset.path||'';
+  if(!path) return;
+  caja.dataset.listo='1';
+  var fallo=function(m){
+    if(!caja.isConnected) return;
+    caja.dataset.listo='';
+    caja.style.display='flex';
+    caja.textContent=m+' Prob\u00e1 con "Abrir aparte".';
+  };
+  try{
+    var r=await fetch(SB_URL+'/storage/v1/object/sign/'+REP_BUCKET+'/'+encodeURI(path),{
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
+                'Content-Type':'application/json' },
+      body:JSON.stringify({expiresIn:3600})
+    });
+    var d=await r.json();
+    var u=d.signedURL||d.signedUrl;
+    if(!r.ok||!u) throw new Error((d&&d.message)||('HTTP '+r.status));
+    var r2=await fetch(SB_URL+'/storage/v1'+u);
+    if(!r2.ok) throw new Error('HTTP '+r2.status+' al bajarlo');
+    var html=await r2.text();
+    if(!caja.isConnected) return;
+    if(html.length<60){ fallo('El reporte guardado est\u00e1 vac\u00edo.'); return; }
+    caja.style.display='block';
+    var f=document.createElement('iframe');
+    f.title='Reporte de campa\u00f1a';
+    f.setAttribute('sandbox','allow-scripts allow-popups allow-popups-to-escape-sandbox');
+    f.style.cssText='width:100%;height:100%;border:0;display:block;background:#080A0F';
+    // `srcdoc` y no `src`: ver el comentario de arriba.
+    f.srcdoc=html;
+    caja.textContent='';
+    caja.appendChild(f);
+  }catch(e){
+    fallo('No pude abrirlo ac\u00e1 adentro: '+((e&&e.message)||'')+'.');
+  }
+}
 function _ctxResumenHtml(c){
   var caja='border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;'
     +'background:var(--bg2)';
@@ -30602,6 +30705,7 @@ function renderTab(){
           ${fathomCallsHTML(c)}
           ${_fathomMapeoHtml(c)}
           ${_ctxResumenHtml(c)}
+          ${(typeof _repEmbedHtml==='function')?_repEmbedHtml(c):''}
         </div>
 
         <div style="height:0.5px;background:var(--border);margin:18px 0 16px"></div>
@@ -30701,6 +30805,9 @@ function renderTab(){
         ${successDock()}
 
       </div>`;
+    // La URL firmada se pide despues de pintar: es una llamada a Storage y no
+    // puede trabar el render de la ficha.
+    try{ if(typeof repEmbedCargar==='function') repEmbedCargar(); }catch(e){}
   }
 
   else if(S.tab==='ads'||S.tab==='embudo'){
