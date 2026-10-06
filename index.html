@@ -10603,13 +10603,30 @@ async function _embSbCargar(caja){
     caja.style.display='flex';
     caja.textContent=m+' Prob\u00e1 con "Abrir aparte".';
   };
-  try{
-    var r=await fetch(SB_URL+'/storage/v1/object/sign/'+REP_BUCKET+'/'+encodeURI(path),{
+  /* ⚠️  EL TOKEN DE SESION VENCE, Y ESTO LO FIRMABA CON EL VENCIDO. Storage
+     contestaba «"exp" claim timestamp check failed» y el recuadro mostraba
+     ese error como si fuera del archivo. `sbFetch` ya renovaba antes de cada
+     llamada y reintentaba una vez; esto no, porque usa `fetch` pelado contra
+     Storage, que no pasa por ahi. Se repite el mismo cuidado. */
+  var firmar=async function(){
+    return await fetch(SB_URL+'/storage/v1/object/sign/'+REP_BUCKET+'/'+encodeURI(path),{
       method:'POST',
       headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB.token,
                 'Content-Type':'application/json' },
       body:JSON.stringify({expiresIn:3600})
     });
+  };
+  try{
+    if(typeof sbRenovar==='function' && SB.exp && Date.now()>SB.exp-60000){
+      try{ await sbRenovar(); }catch(e){}
+    }
+    var r=await firmar();
+    // Un 401 puede llegar igual: el reloj de la maquina corrido, o el token
+    // vencido mientras la pestaña estaba dormida. Se renueva y se prueba una
+    // sola vez mas; dos seria esconder que la sesion ya no sirve.
+    if(r.status===401 && typeof sbRenovar==='function'){
+      if(await sbRenovar()) r=await firmar();
+    }
     var d=await r.json();
     var u=d.signedURL||d.signedUrl;
     if(!r.ok||!u) throw new Error((d&&d.message)||('HTTP '+r.status));
@@ -10628,7 +10645,15 @@ async function _embSbCargar(caja){
     caja.textContent='';
     caja.appendChild(f);
   }catch(e){
-    fallo('No pude abrirlo ac\u00e1 adentro: '+((e&&e.message)||'')+'.');
+    var m=(e&&e.message)||'';
+    /* El mensaje crudo de Storage para una sesion vencida es \u00ab"exp" claim
+       timestamp check failed\u00bb, que no le dice nada a nadie y encima se lee
+       como que el problema es el archivo. */
+    if(/exp.*claim|jwt|expired|401/i.test(m)){
+      fallo('Tu sesi\u00f3n venci\u00f3. Recarg\u00e1 la p\u00e1gina y volv\u00e9 a entrar.');
+      return;
+    }
+    fallo('No pude abrirlo ac\u00e1 adentro: '+m+'.');
   }
 }
 function _ctxResumenHtml(c){
