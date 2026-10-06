@@ -365,6 +365,52 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    /* Cancelar una cita.
+     *
+     * Existe por los DUPLICADOS. El 8/10 Atentamente tenia dos citas identicas
+     * -mismo calendario, mismo horario, las dos confirmadas y con link-, de
+     * cuando agendar mandaba dos veces. GHL las espeja en el Google conectado,
+     * asi que el calendario tambien mostraba dos, y no habia forma de sacar
+     * una sin entrar a GHL a mano.
+     *
+     * CANCELA, NO BORRA. Un DELETE saca la cita de GHL y no avisa a nadie: el
+     * cliente se queda con la invitacion en su calendario y con los
+     * recordatorios programados. Cancelar le manda el aviso y deja la cita en
+     * el historial, que es lo que uno quiere poder mirar despues.
+     *
+     * ⚠️  ESTO LE ESCRIBE AL CLIENTE. Quien lo llama tiene que haberlo
+     *     confirmado: la funcion no puede saber si del otro lado hubo un "si".
+     */
+    if (accion === "cancelar") {
+      const id = String(body.eventId || "").trim();
+      if (!id) return responder({ error: "Falta el id de la cita." }, 400);
+
+      // Se lee primero: cancelar por id a ciegas es la forma de cancelar la
+      // cita equivocada, y la respuesta sirve para decir cual se cancelo.
+      const antes = await ghl("/calendars/events/appointments/" + encodeURIComponent(id));
+      if (!antes.ok) return responder({ error: "GHL " + antes.status + ": " + antes.crudo }, 502);
+      const a = (antes.datos && (antes.datos.event || antes.datos.appointment || antes.datos)) || {};
+      const estado = String(a.appointmentStatus || a.appoinmentStatus || "");
+      if (estado === "cancelled") {
+        return responder({ ok: true, yaEstaba: true, id: String(a.id || id),
+                           titulo: String(a.title || ""), inicio: String(a.startTime || "") });
+      }
+
+      const r = await ghl("/calendars/events/appointments/" + encodeURIComponent(id), {
+        method: "PUT",
+        body: JSON.stringify({ appointmentStatus: "cancelled" }),
+      });
+      if (!r.ok) return responder({ error: "GHL " + r.status + ": " + r.crudo }, 502);
+      return responder({
+        ok: true,
+        yaEstaba: false,
+        id: String(a.id || id),
+        titulo: String(a.title || ""),
+        inicio: String(a.startTime || ""),
+        calendarId: String(a.calendarId || ""),
+      });
+    }
+
     // Los horarios libres de un calendario para un dia. Los calcula GHL con la
     // disponibilidad configurada -horario de atencion, duracion del turno, lo
     // ya ocupado-, asi que es la misma verdad que ve el cliente en el widget.
