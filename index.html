@@ -13291,12 +13291,23 @@ function _capacitacionHtml(){
       +'<div class="form-row"><label class="form-label">Duracion (minutos)</label>'
         +'<input id="cap-min" type="number" min="5" max="480" value="'+(k.minutos||'')+'" placeholder="la del calendario"></div>'
     +'</div>'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">'
       +'<button class="btn btn-sm btn-primary" onclick="capGuardar()">Guardar</button>'
+      /* La app solo sabe de las invitaciones que salieron de aca. Si el evento
+         lo armo alguien a mano en Google -el bootcamp de Martin-, la tarjeta
+         dice "Invitar" de gente que ya esta adentro, y se la vuelve a invitar.
+         Esto lee el evento y marca; no invita a nadie. */
+      +'<button class="btn btn-sm" onclick="capTraerDeGoogle()" '
+        +'title="Lee el evento de Google que se llame igual que la capacitacion y marca '
+        +'como invitados a los clientes cuyo mail ya figure ahi. No invita a nadie.">'
+        +'Traer invitados de Google</button>'
       +'<span style="font-size:11.5px;color:var(--text3)">'
       +(capActiva()?(n+' cliente'+(n===1?'':'s')+' invitado'+(n===1?'':'s')):'Sin configurar: el icono no aparece')
       +'</span>'
-    +'</div></div>';
+    +'</div>'
+    +'<div id="cap-sync-msg" style="font-size:11.5px;color:var(--text3);margin-top:8px;'
+      +'line-height:1.6"></div>'
+  +'</div>';
 }
 // El input datetime-local no entiende el desfasaje: hay que darle la hora local
 // ya resuelta. Y al guardar se rearma CON el desfasaje, porque GHL compara la
@@ -31549,6 +31560,103 @@ function capFechas(){
     out.push((typeof _isoGhl==='function')?_isoGhl(d):d.toISOString());
   }
   return out;
+}
+/* ── Traer de Google quien ya estaba invitado ────────────────────────────
+   La app marca "invitado" solo cuando la invitacion salio DE ACA. El bootcamp
+   lo armo Martin a mano en su Google Calendar, asi que de los siete invitados
+   el tracker reconocia a uno. La tarjeta decia "Invitar" de gente que ya
+   estaba adentro, y ese es el peor estado posible: se vuelve a invitar.
+
+   Esto lee el evento de Google -accion `invitados`, solo lectura- y marca a
+   los clientes cuyos mails ya figuran ahi.
+
+   ⚠️  NO INVITA A NADIE. Solo anota lo que ya pasó. Para sumar gente esta el
+       boton de siempre.
+   ⚠️  SE BUSCA POR TITULO, con el nombre de la capacitacion configurada. Si
+       el evento de Google se llama distinto, no encuentra nada y lo dice: es
+       mejor que marcar de menos sin avisar.
+   ⚠️  EL MAIL TIENE QUE ESTAR EN LA FICHA. Los que no estan en ninguna se
+       listan aparte, porque ahi no hay nada que marcar: falta cargarlos como
+       equipo del cliente que sea. */
+async function capTraerDeGoogle(){
+  var k=capCfg();
+  var est=document.getElementById('cap-sync-msg');
+  var decir=function(t,c){ if(est){ est.innerHTML=t; est.style.color=c||'var(--text3)'; } };
+  if(!capActiva()){ decir('Primero configura la capacitacion.','var(--amberx)'); return; }
+  var fn=_gcalFn();
+  if(!fn.url||!fn.sec){
+    decir('Falta la URL y el secreto de la funcion de Google Calendar, en esta misma '
+      +'pantalla.','var(--amberx)'); return; }
+  var fechas=capFechas();
+  if(!fechas.length){ decir('La capacitacion no tiene fechas.','var(--amberx)'); return; }
+  // Un dia de margen de cada lado: las series de Google y las fechas de la
+  // configuracion no siempre caen en el mismo huso.
+  var d0=new Date(fechas[0]), d1=new Date(fechas[fechas.length-1]);
+  d0.setDate(d0.getDate()-1); d1.setDate(d1.getDate()+2);
+  decir('Buscando en Google…');
+  var r;
+  try{
+    r=await fetch(fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec)
+      +'&accion=invitados',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({titulo:k.nombre, desde:d0.toISOString(), hasta:d1.toISOString()})
+    }).then(function(x){ return x.json(); });
+  }catch(e){ decir('Error de red: '+esc((e&&e.message)||''),'var(--redx)'); return; }
+  if(!r||!r.ok){ decir('Google: '+esc((r&&r.error)||'no contesto'),'var(--redx)'); return; }
+  var evs=r.eventos||[];
+  if(!evs.length){
+    decir('No encontre ningun evento de Google que se llame "'+esc(k.nombre)+'" entre '
+      +'esas fechas.'+((r.fallos||[]).length?(' ('+esc(r.fallos.join(', '))+')'):''),
+      'var(--amberx)');
+    return;
+  }
+  // Todos los mails que aparecen en cualquier sesion de la serie.
+  var enGoogle={};
+  evs.forEach(function(e){ (e.invitados||[]).forEach(function(a){ enGoogle[a.mail]=a; }); });
+
+  var marcados=[], sinFicha=Object.keys(enGoogle);
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    var mios=capDestinos(c).map(function(d){ return String(d.mail||'').toLowerCase(); })
+      .filter(Boolean).filter(function(m){ return !!enGoogle[m]; });
+    if(!mios.length) return;
+    mios.forEach(function(m){
+      var i=sinFicha.indexOf(m); if(i>=0) sinFicha.splice(i,1);
+    });
+    c.capacitaciones=c.capacitaciones||[];
+    var reg=c.capacitaciones.filter(function(x){
+      return String(x.cal||'')===k.cal && String(x.inicio||'')===k.inicio; })[0];
+    if(!reg){
+      reg={cal:k.cal, nombre:k.nombre, inicio:k.inicio, sesiones:fechas.length,
+           at:new Date().toISOString(), mails:[], fechas:{}, deGoogle:true};
+      c.capacitaciones.push(reg);
+    }
+    reg.fechas=reg.fechas||{};
+    var sumo=false;
+    mios.forEach(function(m){
+      if(reg.mails.indexOf(m)<0){ reg.mails.push(m); sumo=true; }
+      /* Se le dan por hechas TODAS las sesiones: en Google la invitacion es a
+         la serie entera, no una por fecha como en GHL. Marcar menos haria que
+         el boton de invitar quisiera completar sesiones que ya existen. */
+      reg.fechas[m]=fechas.slice();
+    });
+    if(sumo) marcados.push(c.name+' ('+mios.join(', ')+')');
+  });
+  if(marcados.length){
+    save();
+    try{ if(typeof renderTab==='function') renderTab(); }catch(e){}
+    try{ if(S.view==='tickets') showTickets(); }catch(e){}
+  }
+  var txt='<b>'+evs.length+'</b> '+(evs.length===1?'sesion':'sesiones')+' en Google, '
+    +'<b>'+Object.keys(enGoogle).length+'</b> invitados.<br>';
+  txt+=marcados.length
+    ? ('Marcados: '+esc(marcados.join(' · '))+'.')
+    : 'Ninguno nuevo para marcar: los que estan en fichas ya figuraban.';
+  if(sinFicha.length){
+    txt+='<br><span style="color:var(--amberx)">Sin ficha, no los puedo colgar de '
+      +'ningun cliente: '+esc(sinFicha.join(', '))+'</span>';
+  }
+  decir(txt, 'var(--text3)');
 }
 function capInvitados(c){ return (c.capacitaciones||[]).slice(); }
 // Lo ya invitado a ESTA capacitacion. Se guarda por calendario y fecha, no por
