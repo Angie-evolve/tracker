@@ -15802,9 +15802,17 @@ async function mpTraer(clientId){
       if(vivo&&ls==='LEARNING_LIMITED') limitados.push(as.name||'conjunto sin nombre');
       if(vivo&&ls==='LEARNING') aprendiendo++;
     });
+    /* El pulso anterior se guarda para comparar el costo por lead dia contra
+       dia en la tarjeta ("el lead bajo de X a Y"). Se queda solo el ultimo
+       pulso de OTRO dia: dos pulsos del mismo dia no son una comparacion. */
+    var _ant=c.metaPulso&&!c.metaPulso.error&&c.metaPulso.at
+      ? (String(c.metaPulso.at).slice(0,10)!==new Date().toISOString().slice(0,10)
+          ? {at:c.metaPulso.at,gasto:c.metaPulso.gasto,resultados:c.metaPulso.resultados}
+          : (c.metaPulso.anterior||null))
+      : (c.metaPulso&&c.metaPulso.anterior)||null;
     c.metaPulso={ at:new Date().toISOString(), gasto:gasto, resultados:resultados,
                   impresiones:impresiones, activos:activos, limitados:limitados,
-                  aprendiendo:aprendiendo, error:'' };
+                  aprendiendo:aprendiendo, error:'', anterior:_ant };
     save();
     return c.metaPulso;
   }catch(e){
@@ -41174,39 +41182,82 @@ function _saludDe(c){
      seria "no hay muestra": son dos problemas distintos. */
   return {ads:ads, embudo:emb, comercial:'falta'};
 }
-/* ── Cuando se movio algo en el embudo, por ultima vez ───────────────────
-   Reemplaza en la tarjeta a la barra de tres tramos. La barra decia tres
-   estados en 4px: habia que pasar el cursor para enterarse de cual estaba
-   mal, asi que de un vistazo no decia nada. Esto si: un embudo que hace once
-   dias que no se mueve es accionable sin tocar nada.
+/* ── La ultima victoria del embudo, en una linea ─────────────────────────
+   Reemplaza a "se movio hoy" (07/10/2026, Angie): esa linea decia que ALGO
+   se toco en el CRM, no que. Esta dice la victoria mas alta de las ultimas
+   48 h, solo con conteo (sin nombres de leads en el tablero), en este orden:
+   cerro > presento oferta > agendo 2da > asistio > agendo > leads nuevos >
+   bajo el costo por lead. Si no hubo nada, "sin novedades hace N d".
 
-   ⚠️  ES `updatedAt`, NO `createdAt`. "Ultimo lead" y "ultimo movimiento" son
-       distintos: un embudo puede no tener leads nuevos y estar trabajandose.
-       Lo que se mira es la oportunidad movida mas recientemente.
+   Como se detecta cada una, con las reglas de stages del cliente
+   (Conversion de ventas > Reglas) y `updatedAt` de la oportunidad:
+   - cerro: status won.
+   - presento / asistio / agendo: la oportunidad esta HOY en un stage de esa
+     regla y se movio en la ventana. Es una aproximacion: no hay historial de
+     stages, asi que una que paso por "agendo" y hoy esta en "asistio" cuenta
+     como asistio, que es la mas alta. Esta bien: es la victoria mas alta.
+   - 2da reunion: el nombre del stage contiene "2da", "segunda" o "2ª".
+   - leads: createdAt en la ventana.
+   - costo: el pulso de Meta de hoy contra el de otro dia (metaPulso.anterior).
 
-   ⚠️  Y EL DATO ES TAN FRESCO COMO EL ULTIMO SYNC DE GHL de ese cliente, que
-       no es automatico para todos. Por eso el titulo dice de cuando es: un
-       "hace 2 d" calculado sobre una bajada de la semana pasada miente. */
+   ⚠️  EL DATO ES TAN FRESCO COMO EL ULTIMO SYNC DE GHL: el titulo lo dice. */
 function _embMovidoHtml(c){
   var g=c&&c.ghl;
   if(!g || !Array.isArray(g.opportunities) || !g.opportunities.length) return '';
-  var ult=0;
+  var rules=(typeof getGhlRules==='function')?getGhlRules(c):{};
+  // Las reglas guardan el nombre del stage tal cual; el recorrido del lead las
+  // compara con `_n` (minusculas, sin acentos, sin espacios de mas). Igual aca.
+  var norm=function(x){ return (typeof _n==='function')?_n(x):String(x||'').toLowerCase().trim(); };
+  var en=function(arr,st){ return !!(arr&&arr.length&&arr.map(norm).indexOf(st)>=0); };
+  var VENT=48*3600000, ahora=Date.now(), ult=0;
+  var n={cerro:0,presento:0,segunda:0,asistio:0,agendo:0,leads:0};
   g.opportunities.forEach(function(o){
-    var t=Date.parse(o.updatedAt||o.dateUpdated||o.lastStatusChangeAt||o.createdAt||'');
-    if(t && t>ult) ult=t;
+    var t=Date.parse(o.updatedAt||o.dateUpdated||o.lastStatusChangeAt||o.createdAt||'')||0;
+    var tc=Date.parse(o.createdAt||'')||0;
+    if(t>ult) ult=t;
+    var st=norm(o.pipelineStage);
+    var hoyMov=(ahora-t)<=VENT, hoyNuevo=(ahora-tc)<=VENT;
+    if(hoyNuevo) n.leads++;
+    if(!hoyMov) return;
+    if(o.status==='won'){ n.cerro++; return; }
+    if(en(rules.presentaciones,st)){ n.presento++; return; }
+    if(/\b(2da|segunda|2ª)\b/.test(st)){ n.segunda++; return; }
+    if(en(rules.asistencias,st)||en(rules.llamadaEnVivo,st)){ n.asistio++; return; }
+    if(en(rules.agendas,st)){ n.agendo++; return; }
   });
-  if(!ult) return '';
-  var d=Math.floor((Date.now()-ult)/86400000);
-  // Los cortes son mios y se cambian en una linea: hasta 3 dias no dice nada,
-  // de 4 a 7 empieza a llamar la atencion, de 8 en adelante hay que mirarlo.
-  var col=(d<=3)?'var(--text3)':((d<=7)?'var(--amberx)':'var(--redx)');
-  var txt=(d===0)?'se movió hoy'
-        :((d===1)?'se movió ayer':('sin moverse hace '+d+' d'));
-  var t='Ultima oportunidad movida en el CRM: '
-    +new Date(ult).toLocaleDateString('es-AR')+'. '
-    +(g.lastSync
-      ? ('Leido de GHL el '+new Date(g.lastSync).toLocaleString('es-AR')+'.')
-      : 'No hay fecha del ultimo sync de GHL, asi que puede estar viejo.');
+  var pl=function(k,s1,sN){ return k===1?s1:sN.replace('N',k); };
+  var txt='', col='var(--accent)';
+  if(n.cerro)         txt=pl(n.cerro,'cerró 1 venta','cerró N ventas');
+  else if(n.presento) txt=pl(n.presento,'presentó 1 oferta','presentó N ofertas');
+  else if(n.segunda)  txt=pl(n.segunda,'agendó 1 segunda reunión','agendó N segundas reuniones');
+  else if(n.asistio)  txt=pl(n.asistio,'1 asistió a la llamada','N asistieron a la llamada');
+  else if(n.agendo)   txt=pl(n.agendo,'agendó 1 llamada','agendó N llamadas');
+  else if(n.leads)    txt=pl(n.leads,'1 lead nuevo','N leads nuevos');
+  else {
+    // Costo por lead: pulso de hoy contra el de otro dia.
+    var p=c.metaPulso, a=p&&p.anterior;
+    if(p&&!p.error&&a&&p.resultados>0&&a.resultados>0){
+      var hoy=p.gasto/p.resultados, ayer=a.gasto/a.resultados;
+      if(ayer>0 && hoy<ayer*0.9){
+        txt='el lead bajó de $'+Math.round(ayer)+' a $'+Math.round(hoy);
+      }
+    }
+  }
+  var t='';
+  if(txt){
+    t='Victoria mas alta de las ultimas 48 h, por las reglas de stages del cliente. '
+      +(g.lastSync?('Leido de GHL el '+new Date(g.lastSync).toLocaleString('es-AR')+'.')
+                 :'No hay fecha del ultimo sync de GHL, asi que puede estar viejo.');
+  } else {
+    if(!ult) return '';
+    var d=Math.floor((ahora-ult)/86400000);
+    col=(d<=3)?'var(--text3)':((d<=7)?'var(--amberx)':'var(--redx)');
+    txt=(d===0)?'sin novedades hoy':((d===1)?'sin novedades desde ayer':('sin novedades hace '+d+' d'));
+    t='Nada que contar en 48 h: ni leads, ni agendas, ni asistencias, ni cierres. '
+      +'Ultima oportunidad movida en el CRM: '+new Date(ult).toLocaleDateString('es-AR')+'. '
+      +(g.lastSync?('Leido de GHL el '+new Date(g.lastSync).toLocaleString('es-AR')+'.')
+                 :'No hay fecha del ultimo sync de GHL, asi que puede estar viejo.');
+  }
   return '<span class="p3klin" style="color:'+col+'" title="'+esc(t)+'">'
     +esc(txt)+'</span>';
 }
