@@ -44166,9 +44166,49 @@ function eqRolEditar(clientId, i){
     }
   });
 }
-function eqAgregar(clientId){
+/* ── Editar y sacar a alguien del equipo ─────────────────────────────────
+   Se podia sumar, ponerle rol y ponerle telefono, pero NO corregir el nombre
+   ni el mail, ni sacarlo. Nullcash tenia a Francisco cargado con
+   "fransolans99@gmail.co" -sin la m- y no habia forma de arreglarlo: ese mail
+   es el que se usa para invitarlo a GHL y al portal, asi que un tipeo dejaba
+   a la persona afuera para siempre.
+   Reusa el mismo modal que `eqAgregar`: es el mismo formulario con los campos
+   llenos, y asi los dos caminos no se van separando con el tiempo. */
+function eqEditar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c || !c.equipo) return;
+  var p=c.equipo[i];
+  if(p===undefined) return;
+  // Los mas viejos se guardaron como texto suelto.
+  if(typeof p!=='object'){ p={nombre:String(p||''), email:''}; c.equipo[i]=p; }
+  eqAgregar(clientId, i);
+}
+function eqBorrar(clientId, i){
+  var c=DB.clients.find(function(x){return x.id===clientId;});
+  if(!c || !c.equipo || c.equipo[i]===undefined) return;
+  var p=c.equipo[i];
+  var quien=(typeof p==='object') ? (p.nombre||p.email||'esta persona') : String(p||'');
+  /* Se avisa de la invitacion porque sacarlo de la ficha NO lo saca de GHL ni
+     del portal: ahi sigue teniendo acceso hasta que alguien se lo quite a
+     mano. Dar por hecho lo contrario seria dejar una puerta abierta creyendo
+     que se cerro. */
+  var inv=(typeof p==='object' && (p.ghlInvitadoAt||p.portalInvitadoAt));
+  if(!confirm('Sacar a '+quien+' del equipo de '+(c.name||'este cliente')+'?\n\n'
+    +(inv ? 'Ojo: ya fue invitado. Esto lo saca de la ficha, pero NO le quita el '
+            +'acceso a GHL ni al portal; eso se hace desde ahi.\n\n' : '')
+    +'No borra ninguna llamada ni conversacion.')) return;
+  c.equipo.splice(i,1);
+  save();
+  if(typeof renderClient==='function') renderClient();
+  else if(typeof renderTab==='function') renderTab();
+}
+function eqAgregar(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
+  // `i` presente = se esta editando a alguien que ya esta.
+  var edita=(i!==undefined && i!==null && c.equipo && c.equipo[i]!==undefined);
+  var p0=edita ? c.equipo[i] : null;
+  var _v=function(k){ return (p0 && typeof p0==='object') ? String(p0[k]||'') : ''; };
   var est='width:100%;box-sizing:border-box;padding:9px 12px;border-radius:var(--radius);'
     +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;'
     +'font-family:inherit;outline:none';
@@ -44179,13 +44219,23 @@ function eqAgregar(clientId){
     '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:670px">'
       +'<div style="font-size:15px;font-weight:600;color:var(--strong);margin-bottom:14px">'
-        +'Sumar a alguien de '+esc(c.name||'este cliente')+'</div>'
+        +(edita?'Editar a ':'Sumar a alguien de ')+esc(edita?(_v('nombre')||_v('email')||'esta persona')
+          :(c.name||'este cliente'))+'</div>'
       +'<div style="'+rot+'">Nombre</div>'
-      +'<input id="eqa-n" style="'+est+'" placeholder="Nombre y apellido">'
+      +'<input id="eqa-n" style="'+est+'" value="'+esc(_v('nombre'))+'" placeholder="Nombre y apellido">'
       +'<div style="'+rot+';margin-top:12px">Mail</div>'
-      +'<input id="eqa-m" style="'+est+'" placeholder="Es lo que se usa para invitarlo a GHL">'
+      +'<input id="eqa-m" style="'+est+'" value="'+esc(_v('email'))+'" '
+        +'placeholder="Es lo que se usa para invitarlo a GHL">'
+      /* El aviso solo al editar a alguien ya invitado: cambiarle el mail aca no
+         cambia a donde le llego la invitacion. */
+      +((edita && p0 && typeof p0==='object' && (p0.ghlInvitadoAt||p0.portalInvitadoAt))
+        ? ('<div style="font-size:11px;color:var(--amberx);margin-top:5px;line-height:1.5">'
+           +'Ya fue invitado con el mail de arriba. Si lo cambias, hay que volver a '
+           +'invitarlo: la invitacion vieja sigue apuntando al anterior.</div>')
+        : '')
       +'<div style="'+rot+';margin-top:12px">Vinculo</div>'
-      +'<input id="eqa-r" style="'+est+'" placeholder="Socio, Manager de ventas...">'
+      +'<input id="eqa-r" style="'+est+'" value="'+esc(_v('rol'))+'" '
+        +'placeholder="Socio, Manager de ventas...">'
       +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'
         +ROLES_SUGERIDOS.split(', ').map(function(x){
           return '<button onclick="document.getElementById(\'eqa-r\').value=this.textContent" '
@@ -44196,21 +44246,35 @@ function eqAgregar(clientId){
       +'</div>'
       +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
         +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-        +'<button class="btn btn-sm btn-primary" onclick="eqAgregarOk('+c.id+')">Sumar</button>'
+        +'<button class="btn btn-sm btn-primary" onclick="eqAgregarOk('+c.id
+          +(edita?(','+i):'')+')">'+(edita?'Guardar':'Sumar')+'</button>'
       +'</div>'
     +'</div></div>';
   var n=document.getElementById('eqa-n'); if(n) n.focus();
 }
-function eqAgregarOk(clientId){
+function eqAgregarOk(clientId, i){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
-  var v=function(i){ return String((document.getElementById(i)||{}).value||'').trim(); };
+  var v=function(id){ return String((document.getElementById(id)||{}).value||'').trim(); };
   var nom=v('eqa-n'), mail=v('eqa-m'), rol=v('eqa-r');
   if(!nom && !mail){ toast('Poné al menos el nombre o el mail'); return; }
   c.equipo=c.equipo||[];
-  var p={ nombre:nom||mail, email:mail };
-  if(rol) p.rol=rol;
-  c.equipo.push(p);
+  var edita=(i!==undefined && i!==null && c.equipo[i]!==undefined);
+  if(edita){
+    var p=c.equipo[i];
+    if(typeof p!=='object'){ p={}; c.equipo[i]=p; }
+    /* Se escribe encima en vez de reemplazar el objeto: el telefono, las
+       fechas de invitacion a GHL y al portal viven ahi y no se tocan desde
+       este formulario. Reemplazarlo las borraba, y entonces los botones de
+       invitar volvian a decir "Invitar" de alguien que ya estaba adentro. */
+    p.nombre=nom||mail;
+    p.email=mail;
+    if(rol) p.rol=rol; else delete p.rol;
+  } else {
+    var nuevo={ nombre:nom||mail, email:mail };
+    if(rol) nuevo.rol=rol;
+    c.equipo.push(nuevo);
+  }
   save(); closeModal();
   if(typeof renderClient==='function') renderClient();
   else if(typeof renderTab==='function') renderTab();
@@ -44606,6 +44670,14 @@ function _fichaHtml(c){
          +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px'
            +(tel?'':';color:var(--amberx)')+'" onclick="eqTelEditar('+c.id+','+i+')">'
            +(tel?'Tel':'+ Tel')+'</button>'
+         // Editar el nombre y el mail, que no se podian tocar desde que existe
+         // la fila. El mail es con lo que se invita: un tipeo dejaba afuera.
+         +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px" '
+           +'title="Corregir el nombre o el mail" '
+           +'onclick="eqEditar('+c.id+','+i+')">Editar</button>'
+         +'<button class="btn btn-sm" style="font-size:10.5px;padding:2px 7px;color:var(--text3)" '
+           +'title="Sacarlo del equipo de este cliente" '
+           +'onclick="eqBorrar('+c.id+','+i+')">×</button>'
        +'</div>';
      }).join('')
      :'<span style="font-size:12.5px;color:var(--text3);margin-top:4px">Sin cargar</span>')
