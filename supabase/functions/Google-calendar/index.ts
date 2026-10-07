@@ -266,6 +266,78 @@ Deno.serve(async (req) => {
     return json({ ok: r.ok });
   }
 
+  /* Quien esta invitado a un evento, con nombre y apellido.
+
+     `eventos` no sirve para esto: `normalizar` se queda con UN invitado -el
+     primero- porque lo que necesita el calendario del tracker es "con quien
+     es la reunion". Para saber quien de nuestros clientes ya esta adentro de
+     una capacitacion hacen falta todos.
+
+     Es de SOLO LECTURA. Deliberadamente no escribe: `invitar` ya existe para
+     sumar gente, y mezclar las dos cosas en una accion hace que un error de
+     tipeo en el titulo termine invitando a quien no era. */
+  if (accion === 'invitados') {
+    const desde = String(cuerpo.desde || '');
+    const hasta = String(cuerpo.hasta || '');
+    const titulo = String(cuerpo.titulo || '').trim().toLowerCase();
+    if (!desde || !hasta) return json({ ok: false, error: 'falta el rango' }, 400);
+
+    let quienes: string[] = [];
+    if (cuerpo.quien) quienes = [String(cuerpo.quien)];
+    else {
+      const r = await fetch(s.url + '/rest/v1/gcal_cuentas?select=quien',
+        { headers: { apikey: s.key, Authorization: 'Bearer ' + s.key } });
+      const filas = r.ok ? await r.json().catch(() => []) : [];
+      quienes = filas.map((x: any) => String(x.quien));
+    }
+    if (!quienes.length) {
+      return json({ ok: true, eventos: [], fallos: ['no hay cuentas conectadas'] });
+    }
+
+    const out: any[] = [], fallos: string[] = [];
+    for (const q of quienes) {
+      const tk = await accessToken(q);
+      if (!tk.ok) { fallos.push(tk.error || q); continue; }
+      const p = new URLSearchParams({
+        timeMin: desde, timeMax: hasta,
+        singleEvents: 'true', orderBy: 'startTime', maxResults: '250',
+      });
+      const r = await fetch(CAL + '?' + p.toString(),
+        { headers: { Authorization: 'Bearer ' + tk.token } });
+      const txt = await r.text();
+      if (!r.ok) { fallos.push('Google ' + r.status + ' en ' + q); continue; }
+      let d: any = {};
+      try { d = JSON.parse(txt); } catch (_e) { fallos.push('respuesta rara en ' + q); continue; }
+
+      for (const ev of (d.items || [])) {
+        if (ev.status === 'cancelled') continue;
+        const t = String(ev.summary || '');
+        // Sin titulo vienen todos; con titulo, los que lo contienen. Es
+        // `includes` y no igualdad porque las series suelen llevar sufijos.
+        if (titulo && t.toLowerCase().indexOf(titulo) < 0) continue;
+        out.push({
+          eventId: String(ev.id || ''),
+          titulo: t,
+          inicio: String((ev.start && (ev.start.dateTime || ev.start.date)) || ''),
+          agenda: q,
+          // `self` es la cuenta conectada y `resource` son las salas: ninguno
+          // de los dos es una persona invitada.
+          invitados: (ev.attendees || [])
+            .filter((a: any) => !a.resource)
+            .map((a: any) => ({
+              mail: String(a.email || '').trim().toLowerCase(),
+              nombre: String(a.displayName || ''),
+              respuesta: String(a.responseStatus || ''),
+              organiza: !!a.organizer,
+            }))
+            .filter((a: any) => a.mail),
+        });
+      }
+    }
+    out.sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)));
+    return json({ ok: true, eventos: out, fallos });
+  }
+
   if (accion === 'eventos') {
     const desde = String(cuerpo.desde || '');
     const hasta = String(cuerpo.hasta || '');
