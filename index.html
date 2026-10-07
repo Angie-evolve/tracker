@@ -3446,12 +3446,33 @@ async function sbSubir(){
     if(pendMaq.length){
       // Mismo cuidado que arriba: si `maquina` se cae, la configuracion tiene
       // que subir igual. Acá va en un solo pedido porque `maquina` es chica.
+      /* ⚠️  NO PISAR LO QUE ESCRIBIO OTRO EN `maquina` (07/10/2026). `oferta`
+         y `reporteCampana` los escriben funciones de la base desde el chat, y
+         esta pestaña no se entera: subia su copia vieja entera y los borraba.
+         Pasó tres veces en un dia (Juan Argüello, Sanando, Nullcash). Entonces
+         se baja lo que hay en la nube y se fusiona DEBAJO de lo local: lo que
+         esta pestaña cambio gana, y lo que no toco se conserva. */
+      var _maqNube={};
+      try{
+        var _idsM=pendMaq.map(function(c){ return c.id; }).join(',');
+        var _filas=await sbFetch('clientes?select=id,maquina&id=in.('+_idsM+')');
+        (_filas||[]).forEach(function(f){ _maqNube[String(f.id)]=(f&&f.maquina)||{}; });
+      }catch(e){ _maqNube=null; }
       try{
         await sbFetch('clientes', {
           method:'POST',
           headers:{'Prefer':'resolution=merge-duplicates'},
           body:JSON.stringify(pendMaq.map(function(c){
-            return {id:c.id, maquina:_partirCliente(c).maquina};
+            var local=_partirCliente(c).maquina;
+            var nube=(_maqNube&&_maqNube[String(c.id)])||{};
+            var fusion=Object.assign({}, nube);
+            Object.keys(local).forEach(function(k){
+              if(local[k]!==undefined && local[k]!==null) fusion[k]=local[k];
+            });
+            // y que la memoria quede igual a lo que se subio, para no volver
+            // a mandar una version sin esas claves en el proximo guardado
+            Object.keys(fusion).forEach(function(k){ if(c[k]===undefined) c[k]=fusion[k]; });
+            return {id:c.id, maquina:fusion};
           }))
         });
         pendMaq.forEach(function(c){ _sbHuellasMaq[c.id]=_huella(_partirCliente(c).maquina); });
