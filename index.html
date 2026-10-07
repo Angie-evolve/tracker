@@ -3356,14 +3356,33 @@ async function sbSubir(){
     if(pend.length){
       var _antesAt={};
       pend.forEach(function(c){ _antesAt[String(c.id)]=_sbVisto[String(c.id)]; });
-      await sbFetch('clientes', {
-        method:'POST',
-        headers:{'Prefer':'resolution=merge-duplicates'},
-        body:JSON.stringify(pend.map(function(c){
-          return {id:c.id, nombre:c.name||'',
-                  datos:_partirCliente(c).datos, actualizado_por:SB.email};
-        }))
-      });
+      /* ⚠️  DE A UNO, Y SIN DEJAR QUE UNO TUMBE A TODOS.
+
+         `datos` lleva adentro las llamadas de Fathom y las oportunidades de
+         GHL: un cliente solo pesa varios MB. Siete en el mismo POST hicieron
+         "canceling statement due to statement timeout" (500 de PostgREST).
+
+         Y lo caro no fue perder esa subida: el `await` tiraba, `sbSubir`
+         cortaba ahi, y NUNCA llegaba a subir `globales`. La lista de etapas
+         vive ahi. Angie borro la misma columna cinco veces, el guardado local
+         anduvo las cinco, y ninguna llego a la nube porque el lote de
+         clientes reventaba antes. Desde afuera se veia como si el borrado no
+         funcionara.
+
+         Ahora cada cliente va en su propio pedido y el que falla no frena a
+         los que siguen: queda sin estampar y cae en `_dudosos`, que es el
+         camino que ya existia para reintentarlo. */
+      for(var _ic=0;_ic<pend.length;_ic++){
+        var _c=pend[_ic];
+        try{
+          await sbFetch('clientes', {
+            method:'POST',
+            headers:{'Prefer':'resolution=merge-duplicates'},
+            body:JSON.stringify([{id:_c.id, nombre:_c.name||'',
+                    datos:_partirCliente(_c).datos, actualizado_por:SB.email}])
+          });
+        }catch(e){ /* lo agarra la verificacion de abajo */ }
+      }
       /* ⚠️  NO SE DA POR SUBIDO LO QUE NO SE VOLVIO A LEER.
          Antes se estampaba la huella apenas el POST resolvia. Si la fila no
          habia cambiado de verdad, el cliente quedaba marcado como subido
@@ -3414,21 +3433,32 @@ async function sbSubir(){
        otra sesion midio primero seria guardar la lectura vieja. Tampoco toca
        `actualizado_por`: nadie la escribio, la escribio un latido. */
     if(pendMaq.length){
-      await sbFetch('clientes', {
-        method:'POST',
-        headers:{'Prefer':'resolution=merge-duplicates'},
-        body:JSON.stringify(pendMaq.map(function(c){
-          return {id:c.id, maquina:_partirCliente(c).maquina};
-        }))
-      });
-      pendMaq.forEach(function(c){ _sbHuellasMaq[c.id]=_huella(_partirCliente(c).maquina); });
+      // Mismo cuidado que arriba: si `maquina` se cae, la configuracion tiene
+      // que subir igual. Acá va en un solo pedido porque `maquina` es chica.
+      try{
+        await sbFetch('clientes', {
+          method:'POST',
+          headers:{'Prefer':'resolution=merge-duplicates'},
+          body:JSON.stringify(pendMaq.map(function(c){
+            return {id:c.id, maquina:_partirCliente(c).maquina};
+          }))
+        });
+        pendMaq.forEach(function(c){ _sbHuellasMaq[c.id]=_huella(_partirCliente(c).maquina); });
+      }catch(e){
+        pendMaq.forEach(function(c){ _noEntraron.push(String(c.name||c.id)+' (medidas)'); });
+      }
     }
     if(globales.length){
-      await sbFetch('config', {
-        method:'POST',
-        headers:{'Prefer':'resolution=merge-duplicates'},
-        body:JSON.stringify(globales)
-      });
+      /* Y esto tampoco puede tumbar al resto. Va envuelto porque es lo ULTIMO
+         de la cadena: si tira, el `catch` de afuera marca error y se reintenta
+         entero, pero lo de arriba ya entro. */
+      try{
+        await sbFetch('config', {
+          method:'POST',
+          headers:{'Prefer':'resolution=merge-duplicates'},
+          body:JSON.stringify(globales)
+        });
+      }catch(e){ /* la verificacion de abajo lo manda a `_noEntraron` */ }
       // Misma regla que con los clientes. Aca los valores son chicos, asi que
       // se leen enteros y se comparan las huellas sin rodeos.
       var _cfgPost=null;
