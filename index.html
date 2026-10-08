@@ -41892,9 +41892,18 @@ function dashboardHtml(){
   var _abrir=function(c){ return 'selectClient('+c.id+')'; };
 
   // ── KPIs ──
-  var gasto=0, regs=0, conGasto=0;
+  // La inversion viene en la moneda de cada cuenta de Meta (Ojapo y
+  // Centercheques facturan en ARS). Se pasa a USD con la tasa manual del
+  // cliente; una cuenta en otra moneda sin tasa no se suma y se dice.
+  var gasto=0, regs=0, conGasto=0, sinTasa=[];
   cls.forEach(function(c){
-    try{ var M=computeAlarmMetrics(c)||{}; if(M.adSpent){ gasto+=M.adSpent; conGasto++; } if(M.registros) regs+=M.registros; }catch(e){}
+    try{
+      var M=computeAlarmMetrics(c)||{}; if(M.registros) regs+=M.registros;
+      if(!M.adSpent) return;
+      var m=c.metaCurrency||'';
+      if(m && m!=='USD' && !(typeof fxActiva==='function' && fxActiva(c))){ sinTasa.push(c.name); return; }
+      gasto+=(typeof aUsd==='function')?aUsd(c, M.adSpent):M.adSpent; conGasto++;
+    }catch(e){}
   });
   var leads=0, ventas=0, vendiendo=0;
   cls.forEach(function(c){
@@ -41904,10 +41913,20 @@ function dashboardHtml(){
     var v=0;
     ops.forEach(function(o){
       var tc=new Date(o.createdAt||o.dateAdded||0).getTime(); if(tc>=desde) leads++;
-      var esG=(o.status==='won')||(gan.length&&gan.indexOf(String(o.pipelineStage||'').toLowerCase())>=0);
-      var tu=new Date(o.updatedAt||o.createdAt||0).getTime();
-      if(esG && tu>=desde) v++;
     });
+    // Ganadas: las que el sync vio pasar a GANADO en el periodo (lo mismo que
+    // cuenta la actividad). updatedAt de la oportunidad no sirve: GHL lo pisa
+    // con cualquier edicion y a veces no lo manda.
+    var chs=(c.ghl&&c.ghl._changes)||[];
+    if(chs.length){
+      chs.forEach(function(ch){ if(ch.kind==='ganado' && _actTs(ch.at||ch.ts) && _actTs(ch.at||ch.ts).getTime()>=desde) v++; });
+    } else {
+      ops.forEach(function(o){
+        var esG=(o.status==='won')||(gan.length&&gan.indexOf(String(o.pipelineStage||'').toLowerCase())>=0);
+        var tu=new Date(o.updatedAt||o.createdAt||0).getTime();
+        if(esG && tu>=desde) v++;
+      });
+    }
     if(v){ ventas+=v; vendiendo++; }
   });
   var nuevos=cls.filter(function(c){ var t=new Date(c.altaAt||c.createdAt||0).getTime(); return t&&t>=desde; });
@@ -41915,7 +41934,8 @@ function dashboardHtml(){
 
   var kpis='<div style="display:flex;flex-wrap:wrap;gap:16px">'
     +'<div class="card kpi"><div class="lbl">Inversión en pauta</div><div class="kv">'+money(gasto)+'</div>'
-      +'<div class="ks">'+conGasto+' cuenta'+(conGasto===1?'':'s')+' con gasto · ventana móvil de 7 días de Meta</div></div>'
+      +'<div class="ks">USD · '+conGasto+' cuenta'+(conGasto===1?'':'s')+' con gasto · ventana móvil de 7 días de Meta'
+        +(sinTasa.length?'<br><span style="color:#FF8A4C">'+esc(sinTasa.join(', '))+': en otra moneda sin tasa cargada, no suma'+(sinTasa.length===1?'':'n')+'</span>':'')+'</div></div>'
     +'<div class="card kpi"><div class="lbl">Leads generados</div><div class="kv">'+leads+'</div>'
       +'<div class="ks">'+(cpl?('costo por lead promedio '+money(cpl)+' · '):'')+'registros en GHL · '+perTxt+'</div></div>'
     +'<div class="card kpi" style="background:#C8FF47;color:#0A0C11"><div class="lbl" style="color:#0A0C11">Ventas cerradas</div><div class="kv">'+ventas+'</div>'
@@ -41929,16 +41949,18 @@ function dashboardHtml(){
   var porCli={}, orden=[];
   feed.forEach(function(i){ if(!porCli[i.clientId]){ porCli[i.clientId]={n:i.cliente, id:i.clientId, items:[]}; orden.push(porCli[i.clientId]); } porCli[i.clientId].items.push(i); });
   orden.sort(function(a,b){ return b.items.length-a.items.length; });
-  var kindCls=function(k){ return k==='venta'?'win':k==='lead'?'new':k==='agenda'?'ag':k==='llamada'?'miss':'out'; };
-  var cnt={}; feed.forEach(function(i){ cnt[i.kind]=(cnt[i.kind]||0)+1; });
-  var chips=[['venta','win','ventas'],['lead','new','leads nuevos'],['agenda','ag','agendas'],['llamada','miss','llamadas'],['stage','out','cambios de etapa'],['tarea','out','tareas']]
+  // 'venta' junta ganadas y perdidas en el feed; aca se separan por el texto.
+  var kindDe=function(i){ return i.kind==='venta'?(/GANADO/.test(i.text||'')?'ganada':'perdida'):i.kind; };
+  var kindCls=function(k){ return k==='ganada'?'win':k==='lead'?'new':k==='agenda'?'ag':k==='llamada'?'miss':'out'; };
+  var cnt={}; feed.forEach(function(i){ var k=kindDe(i); cnt[k]=(cnt[k]||0)+1; });
+  var chips=[['ganada','win','ventas'],['lead','new','leads nuevos'],['agenda','ag','agendas'],['llamada','miss','llamadas'],['perdida','out','perdidos'],['stage','out','cambios de etapa'],['tarea','out','tareas']]
     .filter(function(x){ return cnt[x[0]]; })
     .map(function(x){ return '<div class="chip"><span class="d s '+x[1]+'"></span>'+cnt[x[0]]+' '+x[2]+'</div>'; }).join('');
   var span=ahora-desde;
   var lanes=orden.slice(0,10).map(function(g,ix){
     var dots=g.items.map(function(i){
       var pct=Math.max(0,Math.min(100,(i.ts-desde)/span*100));
-      return '<span class="d '+kindCls(i.kind)+'" style="left:'+pct.toFixed(1)+'%" title="'+esc(i.text||'')+'"></span>';
+      return '<span class="d '+kindCls(kindDe(i))+'" style="left:'+pct.toFixed(1)+'%" title="'+esc(i.text||'')+'"></span>';
     }).join('');
     return '<div class="lane"'+(ix===Math.min(orden.length,10)-1?' style="border-bottom:1px solid #1E222B"':'')+'>'
       +'<div class="name" style="cursor:pointer" onclick="selectClient('+g.id+')"><span>'+esc(g.n)+'</span><span class="n">'+g.items.length+'</span></div>'
