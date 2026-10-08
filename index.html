@@ -31953,12 +31953,34 @@ async function capInvitar(clientId){
   /* Solo lo que falta. Reintentar una tanda que entro a medias tiene que
      crear las sesiones que faltan y NO repetir las que ya estan. */
   var _reg0=capYaInvitado(c), _yaTenia={}, trabajo=[];
+  /* ⚠️  LAS SESIONES QUE YA PASARON NO SE INTENTAN. La capacitacion de
+     octubre arrancaba el 2/10 y se seguia invitando el 8/10: la del 2 rebotaba
+     siempre ("the slot you have selected is no longer available") y el error
+     tapaba que las otras tres si entraban. Alguien que se suma tarde se suma
+     a lo que queda. Se compara con un margen de 10 minutos: una sesion que
+     esta por empezar tampoco se puede agendar. */
+  var _ahora=Date.now()+10*60000, _pasadas=fechas.filter(function(f){
+    var t=Date.parse(f); return !isNaN(t) && t<_ahora; });
   mails.forEach(function(mail){
     var h=capHechasDe(_reg0, mail);
     if(h===null) h=[];                 // registro viejo: no se sabe, se rehace
     _yaTenia[mail]=h.length;
-    fechas.forEach(function(f){ if(h.indexOf(f)<0) trabajo.push({mail:mail, f:f}); });
+    fechas.forEach(function(f){
+      if(h.indexOf(f)>=0 || _pasadas.indexOf(f)>=0) return;
+      trabajo.push({mail:mail, f:f});
+    });
   });
+  if(_pasadas.length && est){
+    est.innerHTML='<span style="color:var(--text3)">'+_pasadas.length
+      +(_pasadas.length===1?' sesion ya paso y no se agenda.':' sesiones ya pasaron y no se agendan.')
+      +' Se invita a las que quedan.</span>';
+  }
+  if(!trabajo.length && _pasadas.length===fechas.length){
+    if(est) est.innerHTML='<span style="color:var(--amberx)">Todas las sesiones de esta '
+      +'capacitacion ya pasaron. Configura la proxima en Configuracion de agencia.</span>';
+    if(b){ b.disabled=false; b.textContent='Listo'; b.onclick=closeModal; }
+    return;
+  }
   if(!trabajo.length){
     if(est) est.innerHTML='<span style="color:var(--text3)">Ya tienen las '
       +fechas.length+' sesiones creadas.</span>';
@@ -32009,9 +32031,21 @@ async function capInvitar(clientId){
     try{ if(S.view==='tickets') showTickets(); }catch(e){}
   }
   if(est){
+    /* Las que ya pasaron se descuentan del total: "3 de 4" se leia como que
+       una habia fallado, cuando en realidad no se podia agendar. */
+    var _quedan=fechas.length-_pasadas.length;
+    // Lo que ya tenia, contando solo las sesiones que todavia no pasaron: si
+    // no, alguien con la del 2/10 hecha salia "4 de 3".
+    var _vigentes=function(x){
+      var h=capHechasDe(_reg0, x)||[];
+      return h.filter(function(f){ return _pasadas.indexOf(f)<0; }).length;
+    };
     est.innerHTML=entraron.map(function(x){
         return '<div style="color:var(--accent)">'+esc(x)+': '
-          +((_yaTenia[x]||0)+ok[x])+' de '+fechas.length+' sesiones</div>'; }).join('')
+          +(_vigentes(x)+ok[x])+' de '+_quedan+' sesiones'
+          +((_quedan<fechas.length)?('<span style="color:var(--text3)"> · '
+            +(fechas.length-_quedan)+' ya '+((fechas.length-_quedan)===1?'paso':'pasaron')
+            +'</span>'):'')+'</div>'; }).join('')
       +(mal.length?('<div style="color:var(--redx);margin-top:6px">'
         +mal.slice(0,3).map(function(x){
             return esc(x.m)+' \u00b7 '+esc(String(x.f).slice(0,10))+': '+esc(x.e); }).join('<br>')
@@ -73367,11 +73401,14 @@ async function agLlamar(cuerpo, _reintento){
       else if(r.status>=500) _porNum='Supabase contestó un error del servidor ('+r.status+').';
       if(_porNum && d && d.message) _porNum+=' \u2014 '+d.message;
     }
-    var _e=new Error((d&&d.error)||_porNum||('HTTP '+r.status)
-      +(_dg&&_dg.lectura?('\n\n'+_dg.lectura):''));
+    /* La lectura del diagnostico se pega UNA vez. La funcion ya la mete en su
+       propio `error`, y aca se volvia a sumar: el cartel decia "lo tomo
+       alguien lo tomo alguien". Se agrega solo si todavia no esta. */
+    var _e=new Error((d&&d.error)||_porNum||('HTTP '+r.status));
     if(_dg){
       _e.diagnostico=_dg;
-      _e.message=String(_e.message)+(_dg.lectura?('\n\n'+_dg.lectura):'');
+      if(_dg.lectura && String(_e.message).indexOf(_dg.lectura)<0)
+        _e.message=String(_e.message)+'\n\n'+_dg.lectura;
       try{ console.warn('[agendar] diagnostico', _dg); }catch(e2){}
     }
     throw _e;
