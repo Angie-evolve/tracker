@@ -150,17 +150,26 @@ async function diagnosticarHueco(calendarId: string, inicio: string) {
     // instante pero no la cadena, lo que molesta es el formato.
     const exacto = slots.includes(inicio);
     const mismoInstante = slots.some((x) => Date.parse(x) === t);
+    /* ⚠️  UNA FECHA PASADA NUNCA ESTA ENTRE LOS LIBRES, y eso no es que "lo
+       tomo alguien". La capacitacion de octubre arrancaba el 2/10 y se seguia
+       invitando el 8/10: la sesion del 2 rebotaba y el cartel decia que otro
+       la habia ocupado. Era mentira, y mandaba a buscar a alguien que no
+       existia. Se mira primero si ya paso. */
+    const yaPaso = Number.isFinite(t) && t < Date.now();
     return {
       mandamos: inicio,
       huecos: slots.slice(0, 12),
       total: slots.length,
       coincide_exacto: exacto,
       coincide_el_instante: mismoInstante,
-      lectura: exacto
-        ? "el hueco sigue libre y lo mandamos igual: el rechazo es de GHL por otra cosa"
-        : (mismoInstante
-          ? "el instante esta libre pero la cadena no coincide: es el formato"
-          : "ese horario ya no esta entre los libres: lo tomo alguien"),
+      ya_paso: yaPaso,
+      lectura: yaPaso
+        ? "esa fecha ya paso: GHL no deja agendar en el pasado"
+        : (exacto
+          ? "el hueco sigue libre y lo mandamos igual: el rechazo es de GHL por otra cosa"
+          : (mismoInstante
+            ? "el instante esta libre pero la cadena no coincide: es el formato"
+            : "ese horario ya no esta entre los libres: lo tomo alguien")),
     };
   } catch (e) {
     return { nota: String((e as Error).message || e) };
