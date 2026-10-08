@@ -39847,6 +39847,16 @@ function plTareaNombre(i,j,v){
   delete p[i].tareas[j].nueva; p[i].tareas[j].t=v; _plSet(p);
 }
 function plTareaResp(i,j,v){ var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return; p[i].tareas[j].r=String(v||''); _plSet(p); }
+/* El mensaje de una tarea tipo "enviar X": queda escrito una vez en la plantilla
+   y en la tarjeta de cada cliente aparece "Copiar mensaje", para que el CSM lo
+   pegue en WhatsApp. Admite {nombre} (contacto), {empresa} y {csm}, que se
+   reemplazan al copiar (Angie, 07/10/2026). */
+function plTareaMsg(i,j,v){ var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return; p[i].tareas[j].m=String(v||''); DB.plantillaEtapas=p; save(); }
+function plTareaMsgToggle(i,j){
+  var el=document.getElementById('pl-msg-'+i+'-'+j); if(!el) return;
+  var abre=(el.style.display==='none'); el.style.display=abre?'block':'none';
+  if(abre){ var ta=el.querySelector('textarea'); if(ta) ta.focus(); }
+}
 function plTareaBorrar(i,j){ var p=plantillaEtapas(); if(!p[i]||!p[i].tareas[j])return; p[i].tareas.splice(j,1); _plSet(p); }
 /* "+ tarea" abre una fila vacia en la lista, con el cursor adentro: se escribe
    ahi mismo y Enter o salir del campo la guarda. Antes abria el prompt() del
@@ -40072,9 +40082,23 @@ function _rutaTareasHtml(sel, e, inp){
             +'outline:none;max-width:120px">'
             +_areaOpciones(t.r)
           +'</select>'
+          +'<span role="button" tabindex="0" onclick="plTareaMsgToggle('+i+','+j+')" '
+            +'title="'+(t.m?'Tiene un mensaje para copiar; tocá para editarlo':'Dejar escrito el mensaje que se manda en esta tarea')+'" '
+            +'style="flex:none;cursor:pointer;font-size:10.5px;padding:2px 5px;border-radius:var(--radius);'
+            +'border:1px solid var(--border2);color:'+(t.m?'var(--accent)':'var(--text3)')+'">'
+            +(t.m?'\u2709 mensaje':'+ mensaje')+'</span>'
           +'<span role="button" tabindex="0" onclick="plTareaBorrar('+i+','+j+')" '
             +'title="Borrar de la plantilla" style="flex:none;cursor:pointer;'
             +'color:var(--text3);font-size:12px;padding:2px 3px">\u00d7</span>'
+        +'</div>'
+        +'<div id="pl-msg-'+i+'-'+j+'" style="display:none;padding:2px 0 8px 2px">'
+          +'<textarea rows="4" onchange="plTareaMsg('+i+','+j+',this.value)" '
+            +'placeholder="El mensaje tal cual se manda. Podés usar {nombre}, {empresa} y {csm}." '
+            +'style="width:100%;box-sizing:border-box;font-size:11.5px;line-height:1.45;background:var(--bg3);'
+            +'border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);'
+            +'font-family:var(--font);outline:none;padding:6px 8px;resize:vertical">'+esc(t.m||'')+'</textarea>'
+          +'<div style="font-size:10px;color:var(--text3);margin-top:3px">En la tarjeta de cada cliente aparece '
+            +'\u00abCopiar mensaje\u00bb con los nombres ya puestos. Los clientes que ya tienen la plantilla cargada tambi\u00e9n lo ven.</div>'
         +'</div>';
       }).join('')
     +'<div style="display:flex;justify-content:space-between;gap:10px;margin-top:7px;'
@@ -40244,6 +40268,10 @@ function _petHtml(c){
       if(t.b) meta.push('<span class="amb">bloqueante</span>');
       if(sig) meta.push('<span class="amb">la que sigue</span>');
       var _g=_petGenPill(c, t); if(_g) meta.push(_g);
+      if(_petMsgDe(c, e, t)) meta.push('<span class="tocar" role="button" tabindex="0" '
+        +'title="Copia el mensaje con los nombres puestos, para pegarlo en WhatsApp" '
+        +'onclick="event.stopPropagation();petCopiarMsg('+c.id+','+arg+')" style="color:var(--accent)">'
+        +'\u2709 Copiar mensaje</span>');
       if(t.ok) meta.push('<span>hecha'
         +(t.at?(' el '+esc(new Date(t.at).toLocaleDateString('es-AR'))):'')
         +(t.por?(' por '+esc(t.por)):'')+'</span>');
@@ -40856,8 +40884,9 @@ function plantillaEtapas(){
               // Tolera las dos formas: texto suelto o {t,r}. La primera version
               // guardo strings y no vale la pena migrar una config de 6 filas.
               // `b` es el candado: la tarea no se puede saltear.
-              return (typeof t==='string') ? {t:t, r:'', b:false}
-                   : {t:String(t.t||''), r:String(t.r||''), b:!!t.b};
+              // `m` es el mensaje listo para copiar (las tareas tipo "enviar X").
+              return (typeof t==='string') ? {t:t, r:'', b:false, m:''}
+                   : {t:String(t.t||''), r:String(t.r||''), b:!!t.b, m:String(t.m||'')};
             })};
   });
 }
@@ -40882,7 +40911,7 @@ function plantillaCargar(clientId, callado){
   c.etapasTareas=plantillaEtapas().map(function(e,i){
     return {etapa:e.etapa, ruta:e.ruta,
             tareas:e.tareas.map(function(t,j){
-              return {id:'t'+base+'-'+i+'-'+j, t:t.t, r:t.r||'', b:!!t.b,
+              return {id:'t'+base+'-'+i+'-'+j, t:t.t, r:t.r||'', b:!!t.b, m:t.m||'',
                       ok:false, at:'', por:''};
             })};
   });
@@ -41144,6 +41173,33 @@ function petAgregar(clientId, etapa){
   e.tareas.push({id:'t'+Date.now()+'-'+e.tareas.length, t:nom, r:'', ok:false, at:'', por:''});
   save();
   p360Repintar();
+}
+/* El mensaje de una tarea: el de la copia del cliente, o si no tiene, el que
+   diga la plantilla para la tarea con el mismo nombre. Asi un mensaje escrito
+   hoy les sirve a los clientes que ya tenian las etapas cargadas. */
+function _petMsgDe(c, e, t){
+  if(t && t.m) return t.m;
+  var pe=plantillaEtapas().filter(function(x){ return x.etapa===e.etapa; })[0];
+  var pt=pe && (pe.tareas||[]).filter(function(x){ return _p360Norm(x.t)===_p360Norm(t.t||''); })[0];
+  return (pt && pt.m) || '';
+}
+function petCopiarMsg(clientId, etapa, tareaId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  var eas=petDe(c); if(!eas) return;
+  var e=eas.filter(function(x){ return x.etapa===etapa; })[0]; if(!e) return;
+  var t=(e.tareas||[]).filter(function(x){ return x.id===tareaId; })[0]; if(!t) return;
+  var nombre=String(c.contacto||'').trim().split(/\s+/)[0]||'';
+  // {csm}: quien esta usando la app (el que copia es el que manda); su nombre
+  // sale de Personas por el mail, o del mail si no esta cargado.
+  var mail=String((SB&&SB.email)||'').toLowerCase();
+  var per=(DB.personas||[]).filter(function(x){ return String((x||{}).email||'').toLowerCase()===mail; })[0];
+  var csm=String((per&&(per.nombre||per.name))||mail.split('@')[0]||'').trim().split(/\s+/)[0]||'';
+  var txt=_petMsgDe(c, e, t)
+    .replace(/\{nombre\}/gi, nombre).replace(/\{empresa\}/gi, String(c.name||''))
+    .replace(/\{csm\}/gi, csm);
+  var listo=function(){ if(typeof toast==='function') toast('Mensaje copiado. Pegalo en WhatsApp.'); };
+  try{ navigator.clipboard.writeText(txt).then(listo, function(){ prompt('Copialo:', txt); }); }
+  catch(err){ prompt('Copialo:', txt); }
 }
 function petBorrar(clientId, etapa, tareaId){
   var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
