@@ -3279,6 +3279,11 @@ var CLAVES_MAQUINA=['citasAt','citasIntento','metaPulso','metaPulsoAt',
                            memoria del navegador, que nunca lo vio.
                            Ver supabase/migraciones/029. */
                     'reporteCampana',
+                    /* Los cambios que propone la rutina de campañas, para
+                       decidir en el Dashboard (migracion 034). Cumple el
+                       filtro: la corrida siguiente los vuelve a escribir. Las
+                       decisiones NO: viven en `datos.cambiosDecisiones`. */
+                    'cambiosPropuestos',
                     /* En que parte quedo el dataset de oferta. Lo escribe el
                        que lo arma, desde el chat (migracion 030).
                        ⚠️  ESTA NO CUMPLE EL FILTRO DE ARRIBA: si una pestaña
@@ -41941,12 +41946,22 @@ function dashCambiosPendientes(){
   var out=[];
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
+    // 1. Los de las revisiones del cliente ("que cambiarias").
     (c.revisiones||[]).forEach(function(r){
       if(typeof rvItemsMejora!=='function') return;
       rvItemsMejora(r).forEach(function(it){
         if(it.estado!=='pendiente') return;
-        out.push({c:c, r:r, it:it, ts:new Date(r.creadoAt||r.periodo||0).getTime()||0});
+        out.push({c:c, origen:'revision', r:r, it:it, ts:new Date(r.creadoAt||r.periodo||0).getTime()||0});
       });
+    });
+    // 2. Los de la rutina de campañas (maquina.cambiosPropuestos). La decision
+    //    se guarda aparte, por id, asi sobrevive a que la rutina reescriba la lista.
+    var cp=c.cambiosPropuestos||{}, dec=c.cambiosDecisiones||{};
+    var ts=new Date(cp.at||0).getTime()||0;
+    (cp.items||[]).forEach(function(it){
+      if(!it||!it.id||!it.texto) return;
+      if(dec[it.id] && dec[it.id].estado && dec[it.id].estado!=='pendiente') return;
+      out.push({c:c, origen:'rutina', it:it, ts:ts});
     });
   });
   out.sort(function(a,b){ return b.ts-a.ts; });
@@ -41956,6 +41971,27 @@ function dashCrearTicket(cid, rid, iid){
   rvCrearTareaDeCambio(cid, rid, iid);      // crea la tarea con ticket y repinta
 }
 function dashDescartar(cid, rid, iid){ rvDescartarCambio(cid, rid, iid); }
+// Los de la rutina: misma tarea que crea la revision, pero la decision queda en
+// `datos.cambiosDecisiones[id]`, que es lo que sube la app.
+function dashRutinaDecidir(cid, iid, que){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
+  var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; if(!it) return;
+  c.cambiosDecisiones=c.cambiosDecisiones||{};
+  var d={estado:que, at:new Date().toISOString(), por:(typeof SB==='object'&&SB.email)?SB.email:''};
+  if(que==='tarea'){
+    var venc=new Date(); venc.setDate(venc.getDate()+7);
+    var t={ id:Date.now()+Math.floor(Math.random()*1000),
+      text:it.texto+(it.porque?(' \u2014 '+it.porque):''),
+      responsible:(typeof responsableDe==='function')?(responsableDe(c)||''):'',
+      done:false, source:'Rutina de campañas', due:rvISO(venc),
+      delegated:true, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp() };
+    c.tasks=c.tasks||[]; c.tasks.unshift(t); d.taskId=t.id;
+    if(typeof toast==='function') toast('Tarea '+t.ticket+' creada en '+c.name);
+  }
+  c.cambiosDecisiones[iid]=d;
+  save(); showTickets();
+}
 
 function dashboardHtml(){
   // 0 = hoy; con `||7` el cero caia en 7 dias y el boton Hoy no hacia nada.
@@ -42132,16 +42168,22 @@ function dashboardHtml(){
         if(!pend.length) return '<div class="ks" style="border-top:1px solid #1E222B;padding-top:16px">No hay cambios propuestos sin decidir.</div>';
         var max=S.dashCambiosTodos?pend.length:8;
         return '<div style="border-top:1px solid #1E222B;padding-top:20px;display:flex;flex-direction:column;gap:10px">'
-          +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px"><div class="h">'+pend.length+' cambio'+(pend.length===1?'':'s')+' propuesto'+(pend.length===1?'':'s')+' sin decidir</div><div class="lbl">de las revisiones</div></div>'
+          +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px"><div class="h">'+pend.length+' cambio'+(pend.length===1?'':'s')+' propuesto'+(pend.length===1?'':'s')+' sin decidir</div><div class="lbl">rutina y revisiones</div></div>'
           +pend.slice(0,max).map(function(x){
-              var args=x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\'';
+              var rut=(x.origen==='rutina');
+              var crear=rut ? 'dashRutinaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'tarea\')'
+                            : 'dashCrearTicket('+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
+              var desc=rut ? 'dashRutinaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'descartado\')'
+                           : 'dashDescartar('+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
               var cuando=x.ts?new Date(x.ts).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'';
               return '<div class="row" style="align-items:flex-start;padding:10px 0">'
-                +'<div style="flex:1;min-width:0"><div style="font-weight:500;cursor:pointer" onclick="selectClient('+x.c.id+')">'+esc(x.c.name)+(cuando?' <span class="ks mono">· '+cuando+'</span>':'')+'</div>'
-                  +'<div style="color:#C9CED8;font-size:14px;line-height:1.5;margin-top:2px">'+esc(x.it.texto)+'</div></div>'
+                +'<div style="flex:1;min-width:0"><div style="font-weight:500;cursor:pointer" onclick="selectClient('+x.c.id+')">'+esc(x.c.name)
+                  +' <span class="ks mono">· '+(rut?'rutina':'revisión')+(cuando?' · '+cuando:'')+'</span></div>'
+                  +'<div style="color:#C9CED8;font-size:14px;line-height:1.5;margin-top:2px">'+esc(x.it.texto)+'</div>'
+                  +(x.it.porque?'<div class="ks" style="margin-top:2px">'+esc(x.it.porque)+'</div>':'')+'</div>'
                 +'<div style="display:flex;gap:8px;flex:none">'
-                  +'<a class="cta" style="min-height:36px;padding:0 16px;font-size:13px" onclick="dashCrearTicket('+args+')">Crear ticket</a>'
-                  +'<span class="pill" onclick="dashDescartar('+args+')" title="No se hace; queda registrado como descartado">Descartar</span>'
+                  +'<a class="cta" style="min-height:36px;padding:0 16px;font-size:13px" onclick="'+crear+'">Crear ticket</a>'
+                  +'<span class="pill" onclick="'+desc+'" title="No se hace; queda registrado como descartado">Descartar</span>'
                 +'</div></div>';
             }).join('')
           +(pend.length>8?'<a href="javascript:void(0)" style="font-size:13px" onclick="S.dashCambiosTodos=!S.dashCambiosTodos;showTickets()">'+(S.dashCambiosTodos?'Ver menos':'Ver los '+pend.length)+'</a>':'')
