@@ -73785,7 +73785,7 @@ function fathomProxyUrl(){
    Medido dos veces: el 30/09/26 se cayo la sesion 4 de la capacitacion y el
    01/10 la del 16. Ademas se reintenta una sola vez ante un 401, por si el
    token vence entre el chequeo y la llamada. */
-async function agLlamar(cuerpo, _reintento){
+async function agLlamar(cuerpo, _reintento, _n429){
   if(SB.exp && Date.now()>SB.exp-60000){ try{ await sbRenovar(); }catch(e){} }
   var r;
   try{
@@ -73833,6 +73833,25 @@ async function agLlamar(cuerpo, _reintento){
     /* La lectura del diagnostico se pega UNA vez. La funcion ya la mete en su
        propio `error`, y aca se volvia a sumar: el cartel decia "lo tomo
        alguien lo tomo alguien". Se agrega solo si todavia no esta. */
+    /* ⚠️  UN 429 DE GHL NO ES UN ERROR DE ESTA PANTALLA. La agencia entera usa
+       la misma subcuenta -el latido de citas, los barridos, las rutinas- y
+       cuando se juntan GHL frena un rato. El popup de agendar pide equipo y
+       horarios casi a la vez y era el primero en comerse el freno: decia "No
+       pude traer el equipo: GHL 429" y dejaba a quien agendaba sin elegir a
+       nadie. Se reintenta solo, esperando cada vez mas, y SOLO en las
+       consultas: crear o mover una cita no se repite a ciegas. */
+    var _msg429=String((d&&d.error)||'');
+    var _soloLee={personas:1, huecos:1, ping:1, cita:1, contactoBuscar:1};
+    if((r.status===429 || /\b429\b|Too Many Requests/i.test(_msg429))
+       && _soloLee[String((cuerpo||{}).accion||'')]){
+      var _n=(_n429||0);
+      if(_n<3){
+        await new Promise(function(ok){ setTimeout(ok, 1500*Math.pow(2,_n)); });
+        return agLlamar(cuerpo, _reintento, _n+1);
+      }
+      throw new Error('GHL está recibiendo demasiados pedidos juntos y frenó este. '
+        +'Lo reintenté 3 veces. Esperá un minuto y volvé a abrir esta ventana.');
+    }
     var _e=new Error((d&&d.error)||_porNum||('HTTP '+r.status));
     if(_dg){
       _e.diagnostico=_dg;
