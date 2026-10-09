@@ -38037,6 +38037,7 @@ function p360Agendar(clientId, elegir){
           +'<input id="cita-hora" type="time" value="09:00" '
             +'onchange="citasHoraEscrita()" style="'+est+'">'
         +'</div>'))
+      +(mail?_citaEquipoCaja(c):'')
       +'<div id="p3-citas-msg" style="font-size:11.5px;color:var(--text3);min-height:16px;'
         +'margin-top:8px"></div>'
       +(mail?'':('<div style="font-size:11.5px;color:var(--amberx);line-height:1.55;'
@@ -38112,6 +38113,8 @@ function citaHechaModal(){
         +(d.quien?fila('La toma', esc(d.quien)):'')
         +fila('Qué', esc((c&&c.name)||'')+' · '+esc(d.etapa))
         +(d.calendario?fila('Calendario', esc(d.calendario)):'')
+        +(d.equipo?fila('Su equipo', d.equipo.ok?esc(d.equipo.texto)
+            :('<span style="color:var(--amberx)">'+esc(d.equipo.texto)+'</span>')):'')
       +'</div>'
       +(d.nota?('<div style="font-size:11.5px;color:var(--text3);line-height:1.55;'
         +'margin-top:12px">'+esc(d.nota)+'</div>'):'')
@@ -39219,6 +39222,88 @@ async function citasReprogramar(clientId, etapa){
     di('No se pudo: '+esc(e&&e.message||''),'var(--redx)');
   }
 }
+/* El equipo del cliente, invitado a la misma reunion.
+   GHL invita a UN contacto por cita: el de la ficha. El resto de su equipo -el
+   socio, la que lleva la operacion- se enteraba solo si el contacto le
+   reenviaba la invitacion. Ahora se los suma como invitados del evento de
+   Google que GHL crea en la agenda de quien la toma: les llega la invitacion
+   de verdad y el cambio de horario les llega solo si despues se reprograma.
+   Van tildados por defecto y a la vista, para que se pueda sacar a alguien
+   antes de mandar. */
+function _citaEquipoCaja(c){
+  var eq=capDestinos(c).filter(function(d){ return !d.principal && d.mail; });
+  if(!eq.length) return '';
+  return '<div id="cita-eq" style="margin-top:14px">'
+    +'<div class="cs-lbl" style="margin-bottom:6px">También se invita a su equipo</div>'
+    +eq.map(function(d){
+      return '<label style="display:flex;gap:8px;align-items:center;font-size:12px;'
+        +'color:var(--text2);margin:3px 0;cursor:pointer">'
+        +'<input type="checkbox" class="cita-eq-m" value="'+esc(d.mail)+'" checked>'
+        +esc(d.nombre||d.mail)
+        +(d.nombre&&d.nombre!==d.mail?('<span style="color:var(--text3)">· '+esc(d.mail)+'</span>'):'')
+        +'</label>';
+    }).join('')
+    +'<div style="font-size:10.5px;color:var(--text3);margin-top:4px">Les llega la invitación '
+      +'de Google a la misma reunión. Destildá a quien no tenga que estar.</div>'
+  +'</div>';
+}
+function _citaEquipoMarcados(){
+  return Array.prototype.map.call(document.querySelectorAll('.cita-eq-m:checked'),
+    function(i){ return String(i.value||'').trim(); }).filter(Boolean);
+}
+/* ⚠️  LA COPIA DE GOOGLE TARDA. GHL contesta que la cita quedo y recien
+   despues la escribe en el Google de quien la toma, asi que se la busca unas
+   veces antes de rendirse. Se la reconoce por el horario exacto y por tener
+   al contacto del cliente adentro; y si aparece en mas de una agenda -la de
+   un invitado del equipo tambien la ve-, se usa la de quien la ORGANIZA:
+   sumar invitados desde la copia de un invitado no llega a nadie. */
+async function _citaInvitarEquipo(c, inicio, mails){
+  if(!mails.length) return null;
+  var aMano=' Invitalos a mano: '+mails.join(', ')+'.';
+  var fn=_gcalFn();
+  if(!fn.url||!fn.sec) return {ok:false, texto:'No se invitó al equipo: falta conectar '
+    +'Google Calendar en Integraciones.'+aMano};
+  var t=Date.parse(inicio);
+  if(isNaN(t)) return {ok:false, texto:'No se invitó al equipo: la hora no se entiende.'+aMano};
+  var base=fn.url+(fn.url.indexOf('?')>=0?'&':'?')+'s='+encodeURIComponent(fn.sec);
+  var post=function(acc, cuerpo){
+    return fetch(base+'&accion='+acc, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(cuerpo)})
+      .then(function(x){ return x.json(); });
+  };
+  var mailC=String(c.contactoEmail||c.email||'').trim().toLowerCase();
+  var nom=String(c.name||'').trim().toLowerCase();
+  var ev=null, ultimoError='';
+  for(var i=0;i<5 && !ev;i++){
+    if(i) await new Promise(function(ok){ setTimeout(ok, 4000); });
+    var r=null;
+    try{
+      r=await post('invitados', {desde:new Date(t-60000).toISOString(),
+                                 hasta:new Date(t+60000).toISOString()});
+    }catch(e){ ultimoError=(e&&e.message)||''; continue; }
+    if(!r||!r.ok){ ultimoError=(r&&r.error)||'sin respuesta'; continue; }
+    var cands=(r.eventos||[]).filter(function(e){
+      var ti=Date.parse(e.inicio||''); return !isNaN(ti) && Math.abs(ti-t)<60000; });
+    var conCliente=cands.filter(function(e){
+      return (e.invitados||[]).some(function(a){ return a.mail===mailC; })
+        || (nom && String(e.titulo||'').toLowerCase().indexOf(nom)>=0); });
+    ev=conCliente.filter(function(e){
+        return (e.invitados||[]).some(function(a){
+          return a.organiza && a.mail===String(e.agenda||'').toLowerCase(); }); })[0]
+      || conCliente[0] || null;
+  }
+  if(!ev) return {ok:false, texto:'No encontré la reunión en Google para sumar al equipo'
+    +(ultimoError?(' ('+ultimoError+')'):': GHL todavía no la copió a la agenda de quien la toma.')
+    +aMano};
+  var ri=null;
+  try{ ri=await post('invitar', {quien:ev.agenda, eventId:ev.eventId, mails:mails}); }
+  catch(e){ ri={ok:false, error:(e&&e.message)||''}; }
+  if(!ri||!ri.ok) return {ok:false, texto:'Google no dejó sumar al equipo: '
+    +((ri&&ri.error)||'sin respuesta')+'.'+aMano};
+  return {ok:true, texto:(ri.sumados||[]).length
+    ? ('Invitados en Google: '+ri.sumados.join(', ')+'.')
+    : 'Ya estaban invitados.'};
+}
 async function citasAgendarGhl(clientId){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
@@ -39303,6 +39388,14 @@ async function citasAgendarGhl(clientId){
     _citaFijar(c, c.citas[et].id, et, true);
     save();
     _citasRepintar();
+    // Despues de guardar: si Google tarda o falla, la cita ya esta anotada.
+    var _eqM=_citaEquipoMarcados(), _eqR=null;
+    if(_eqM.length){
+      _citasDecir(clientId, 'Agendada. Invitando a su equipo en Google\u2026');
+      try{ _eqR=await _citaInvitarEquipo(c, r.inicio||_envio, _eqM); }
+      catch(e){ _eqR={ok:false, texto:'No se pudo invitar al equipo: '+((e&&e.message)||'')
+        +'. Invitalos a mano: '+_eqM.join(', ')+'.'}; }
+    }
     /* Una reunion que entro bien no puede leerse igual que un problema. Antes
        arrancaba con la etapa y, cuando habia una aclaracion, pintaba todo en
        ambar: Angie leyo "Onboarding agendada... era una suposicion" y pregunto
@@ -39339,6 +39432,7 @@ async function citasAgendarGhl(clientId){
         return x?String(x.nombre||''):'';
       })(),
       reprogramada:!!idViejo,
+      equipo:_eqR,
       nota:(_adivinada
         ? ('La que figuraba antes en '+et+' no estaba confirmada: era una suposición de '
            +'la app, así que no se tocó.')
