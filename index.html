@@ -25158,6 +25158,13 @@ function rvGenerarTareas(){
     var per=reg.periodo;
     c.tasks=c.tasks||[];
     if(rvTareaDe(c, per)) return;             // ya esta cargada
+    /* ⚠️  UNA ELIMINADA TAMBIEN CUENTA. `rvTareaDe` no mira las eliminadas -y
+       esta bien para cerrarlas-, pero aca eso hacia que eliminar una revision
+       todavia sin responder no sirviera de nada: al abrir el tracker volvia
+       con otro numero. El 12/10/26 volvieron 36 despues de una limpieza. Si
+       alguien la elimino, decidio que esa semana no se revisa. */
+    if(c.tasks.some(function(t){ return t && t.deleted && t.revision
+         && t.revision.periodo===per; })) return;
     var hoyISO=rvISO(new Date());
     var venc=new Date(); venc.setDate(venc.getDate()+rvGraciaDias());
     var resp=(typeof responsableDe==='function')?(responsableDe(c)||''):'';
@@ -25172,7 +25179,23 @@ function rvGenerarTareas(){
     });
     creadas++;
   });
-  if(creadas) save();
+  /* Las que ya volvieron: una revision abierta, creada sola, de una semana
+     que alguien ya habia eliminado -y despues de eliminarla-, es la copia que
+     dejaba el error de arriba. Se elimina igual que la original. */
+  var limpias=0, ahora=new Date().toISOString();
+  (DB.clients||[]).forEach(function(c){
+    var l=c.tasks||[];
+    l.forEach(function(t){
+      if(!t || t.deleted || t.done || !t.revision || t.source!=='Revision') return;
+      var orig=l.filter(function(x){ return x!==t && x && x.deleted && x.revision
+        && x.revision.periodo===t.revision.periodo; })[0];
+      if(!orig) return;
+      if(String(t.delegatedAt||'')<String(orig.deletedAt||'')) return;
+      t.deleted=true; t.deletedAt=ahora; t.motivoBorrado='copia de una revision ya eliminada';
+      limpias++;
+    });
+  });
+  if(creadas||limpias) save();
   return creadas;
 }
 
