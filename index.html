@@ -1762,6 +1762,14 @@ body.light .modal{box-shadow:0 20px 60px rgba(30,28,25,0.16)}
 body.light .btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 /* --- Tablero de tareas agrupado (rediseno) --- */
 .tk-grp-head{display:flex;align-items:center;gap:8px;padding:16px 4px 7px}
+.p3fi-tk{margin:12px 0 4px;padding-top:10px;border-top:1px solid var(--border)}
+.p3fi-tkt{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.p3fi-tkf{display:flex;gap:10px;align-items:flex-start;padding:5px 0;cursor:pointer}
+.p3fi-tkf input{margin-top:1px}
+.p3fi-tkx{flex:1;min-width:0;font-size:12px;color:var(--text);line-height:1.4}
+.p3fi-tkm{display:block;font-size:10.5px;color:var(--text3)}
+.p3fi-tkn{font-size:10px;color:var(--text3);font-variant-numeric:tabular-nums;flex:none}
+.tkc-cli{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text2);padding:3px 0;cursor:pointer}
 /* Con caja, a diferencia del resto de las casillas de la app, que son solo la
    tilde: en una lista para elegir varias, la casilla vacia tiene que verse,
    si no nadie sabe que se puede tocar. La tilde es la de siempre. */
@@ -15647,7 +15655,8 @@ function _tkSelBarra(list){
   S._tkSelVisibles=keys;
   var n=keys.filter(function(k){ return sel[k]; }).length;
   if(!S._tkSelModo){
-    return '<div style="display:flex;justify-content:flex-end;margin:-6px 0 8px">'
+    return '<div style="display:flex;justify-content:flex-end;gap:8px;margin:-6px 0 8px">'
+      +'<button class="btn btn-sm" onclick="tkCargaModal()">Cargar varios</button>'
       +'<button class="btn btn-sm" onclick="tkSelModo(true)">Seleccionar</button></div>';
   }
   var todas=keys.length && n===keys.length;
@@ -15663,6 +15672,96 @@ function _tkSelBarra(list){
       +'onclick="tkSelEliminar()">Eliminar'+(n?(' '+n):'')+'</button>'
     +'<button class="btn btn-sm" onclick="tkSelModo(false)">Listo</button>'
   +'</div>';
+}
+/* Varios tickets de una, para uno o varios clientes. Lo que se arma en una
+   llamada o en un chat -"a estos tres les falta esto"- llegaba como lista y
+   habia que cargarlo de a uno: seis pendientes por tres clientes son dieciocho
+   formularios. Un renglon es un ticket, y se repite en cada cliente tildado. */
+function tkCargaModal(){
+  var cls=(DB.clients||[]).filter(function(c){ return c && !c.archived; })
+    .slice().sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var est='width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-size:12.5px';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px;width:94%">'
+      +'<div class="modal-title">Cargar varios tickets</div>'
+      +'<div class="modal-sub">Un ticket por renglón. Si elegís varios clientes, '
+        +'cada uno recibe la lista entera.</div>'
+      +'<textarea id="tkc-txt" rows="7" style="'+est+';margin-top:12px;resize:vertical" '
+        +'placeholder="Que compren la suscripción de WhatsApp&#10;Accesos a su Business Manager" '
+        +'oninput="tkCargaContar()"></textarea>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px">'
+        +'<div><div class="cs-lbl" style="margin-bottom:6px">Clientes</div>'
+          +'<input id="tkc-busca" placeholder="Buscar…" style="'+est+';margin-bottom:6px" '
+            +'oninput="tkCargaFiltrar(this.value)">'
+          +'<div id="tkc-lista" style="max-height:190px;overflow:auto">'
+          +cls.map(function(c){
+            return '<label class="tkc-cli" data-n="'+esc(String(c.name||'').toLowerCase())+'">'
+              +'<input type="checkbox" class="tkc-c" value="'+c.id+'" onchange="tkCargaContar()">'
+              +esc(c.name||'')+'</label>';
+          }).join('')
+          +'</div></div>'
+        +'<div><div class="cs-lbl" style="margin-bottom:6px">Quien lo tiene que hacer</div>'
+          +'<select id="tkc-resp" style="'+est+'">'
+            +'<option value="__cliente">El cliente (lo seguimos nosotros)</option>'
+            +(typeof personas==='function'?personas():[]).map(function(p){
+              var n=String(p.nombre||p.email||'');
+              return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('')
+          +'</select>'
+          +'<div style="font-size:10.5px;color:var(--text3);margin-top:6px;line-height:1.5">'
+            +'Si es del cliente, el ticket queda a nombre de su contacto y la Torre lo '
+            +'marca como «Seguir a».</div></div>'
+      +'</div>'
+      +'<div id="tkc-msg" style="font-size:11.5px;color:var(--text3);margin-top:10px;min-height:16px"></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" id="tkc-ok" onclick="tkCargaHacer()" disabled>Crear tickets</button>'
+      +'</div>'
+    +'</div></div>';
+}
+function _tkCargaLineas(){
+  return String((document.getElementById('tkc-txt')||{}).value||'').split(/\n+/)
+    .map(function(l){ return l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/,'').trim(); })
+    .filter(Boolean);
+}
+function _tkCargaClientes(){
+  return Array.prototype.map.call(document.querySelectorAll('.tkc-c:checked'),
+    function(i){ return String(i.value); });
+}
+function tkCargaContar(){
+  var n=_tkCargaLineas().length, k=_tkCargaClientes().length;
+  var b=document.getElementById('tkc-ok'), m=document.getElementById('tkc-msg');
+  if(b){ b.disabled=!(n&&k); b.textContent=(n&&k)?('Crear '+(n*k)+' ticket'+(n*k===1?'':'s')):'Crear tickets'; }
+  if(m) m.textContent=(n&&k)?(n+' renglón'+(n===1?'':'es')+' × '+k+' cliente'+(k===1?'':'s')):'';
+}
+function tkCargaFiltrar(q){
+  q=String(q||'').toLowerCase().trim();
+  Array.prototype.forEach.call(document.querySelectorAll('#tkc-lista .tkc-cli'), function(l){
+    l.style.display=(!q || String(l.getAttribute('data-n')||'').indexOf(q)>=0)?'':'none'; });
+}
+function tkCargaHacer(){
+  var lineas=_tkCargaLineas(), ids=_tkCargaClientes();
+  if(!lineas.length || !ids.length) return;
+  var resp=String((document.getElementById('tkc-resp')||{}).value||'__cliente');
+  var ahora=new Date().toISOString(), base=Date.now(), k=0, n=0;
+  ids.forEach(function(id){
+    var c=(DB.clients||[]).find(function(x){ return String(x.id)===id; });
+    if(!c) return;
+    c.tasks=c.tasks||[];
+    // Al final de la lista del cliente, en el orden en que se pegaron: unshift
+    // de a uno los daria vuelta.
+    lineas.forEach(function(txt){
+      var delCliente=(resp==='__cliente');
+      c.tasks.push({id:base+(k++), text:txt,
+        responsible:delCliente?String(c.contacto||c.name||'Cliente'):resp,
+        due:'', done:false, source:'Manual', delegated:true, delegatedAt:ahora,
+        ownerCliente:delCliente, ticket:'#'+nextTicketFromApp()});
+      n++;
+    });
+  });
+  save(); closeModal(); showTickets();
+  toast(n+' ticket'+(n===1?'':'s')+' cargado'+(n===1?'':'s')+' en '+ids.length+' cliente'+(ids.length===1?'':'s'));
 }
 function tkSelModo(on){
   S._tkSelModo=!!on;
@@ -40531,6 +40630,7 @@ function _p360FichaHtml(c, conAgenda){
     +'</div>'
     +'<div class="p3fi-cuerpo">'
       +_petHtml(c)
+      +_p360TicketsHtml(c)
       +'<details class="p3fi-ruta"><summary title="La etapa la marcan las llamadas '
         +'de Fathom. Las que no son llamada se tildan a mano. &quot;Mover aca&quot; da '
         +'por hechas las anteriores y destilda las de adelante.">Toda la ruta</summary>'
@@ -40552,6 +40652,38 @@ function _p360FichaHtml(c, conAgenda){
           +'Archivar</button>'))
     +'</div>'
   +'</div>';
+}
+/* Los tickets abiertos del cliente, adentro del popup. Vivian solo en la
+   Torre, agrupados por cliente entre todos los demas: para saber que le
+   faltaba a uno habia que salir del tablero e ir a buscarlo. Son los mismos
+   tickets, no una copia: tildarlo aca lo cierra en la Torre. */
+function _p360TicketsHtml(c){
+  var ts=(c.tasks||[]).filter(function(t){
+    return t && t.delegated && !t.done && !t.deleted && !t.archivada; });
+  if(!ts.length) return '';
+  var ahora=new Date();
+  return '<div class="p3fi-tk">'
+    +'<div class="p3fi-tkt">Tickets abiertos · '+ts.length+'</div>'
+    +ts.map(function(t){
+      var d=(typeof _dueEnd==='function')?_dueEnd(t.due):null;
+      var venc=d&&d<ahora;
+      return '<label class="p3fi-tkf">'
+        +'<input type="checkbox" onchange="p360TicketHecho('+c.id+','+t.id+')" '
+          +'aria-label="Marcar como hecho">'
+        +'<span class="p3fi-tkx">'+esc(t.text||'')
+          +'<span class="p3fi-tkm">'
+            +(t.ownerCliente?('seguir a '+esc(t.responsible||'el cliente'))
+              :esc(personaNombre(t.responsible||'')))
+            +(venc?' · <span style="color:var(--redx)">vencido</span>':'')
+          +'</span></span>'
+        +'<span class="p3fi-tkn">'+esc(t.ticket||'')+'</span>'
+      +'</label>';
+    }).join('')
+  +'</div>';
+}
+function p360TicketHecho(clientId, taskId){
+  toggleTask(clientId, taskId, true);
+  try{ p360Repintar(); }catch(e){}
 }
 // Las iniciales de una persona, para el circulito del responsable.
 function _petIni(mail){
