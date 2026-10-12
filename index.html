@@ -1762,6 +1762,17 @@ body.light .modal{box-shadow:0 20px 60px rgba(30,28,25,0.16)}
 body.light .btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 /* --- Tablero de tareas agrupado (rediseno) --- */
 .tk-grp-head{display:flex;align-items:center;gap:8px;padding:16px 4px 7px}
+/* Con caja, a diferencia del resto de las casillas de la app, que son solo la
+   tilde: en una lista para elegir varias, la casilla vacia tiene que verse,
+   si no nadie sabe que se puede tocar. La tilde es la de siempre. */
+input[type=checkbox].tk-selbox{width:16px;height:16px;border:1.5px solid var(--text3);border-radius:4px}
+input[type=checkbox].tk-selbox:hover:not(:disabled){border-color:var(--text)}
+input[type=checkbox].tk-selbox:checked{border-color:var(--accent);background:rgba(200,255,71,.12)}
+input[type=checkbox].tk-selbox::after{left:4px;top:0}
+.tk-row.tk-sel{background:var(--bg3)}
+.tk-selbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--text2);
+  background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-md);
+  padding:8px 12px;margin:-4px 0 10px}
 .tk-grp-name{font-size:12.5px;font-weight:500;color:var(--strong);cursor:pointer}
 .tk-grp-count{font-size:11px;color:var(--text3)}
 .tk-grp-body{padding-left:8px;border-left:2px solid var(--border);margin-left:3px}
@@ -3387,6 +3398,10 @@ var CLAVES_MAQUINA=['citasAt','citasIntento','metaPulso','metaPulsoAt',
                            no a veces. Lo que se gana es que la app la lea al
                            bajar y la devuelva al subir en vez de pisarla. */
                     'oferta'];
+/* De esas, las que escriben funciones de la base desde el chat o la tarea de
+   la mañana, y que la app solo lee. Al subir `maquina` gana lo de la nube:
+   ver la fusion en el guardado. */
+var CLAVES_DE_LA_BASE={reporteCampana:1, cambiosPropuestos:1, oferta:1};
 
 // El cliente, partido en las dos columnas. En memoria sigue siendo un objeto
 // solo: el resto de la app lee `c.metaPulso` como siempre y no se entera.
@@ -3582,11 +3597,22 @@ async function sbSubir(){
             var nube=(_maqNube&&_maqNube[String(c.id)])||{};
             var fusion=Object.assign({}, nube);
             Object.keys(local).forEach(function(k){
+              /* ⚠️  LAS QUE ESCRIBE LA BASE LAS GANA LA NUBE (12/10/2026).
+                 La fusion de arriba no alcanzaba: lo local ganaba en TODA
+                 clave que la pestaña tuviera en memoria, aunque nunca la
+                 hubiera tocado. Cada latido de medidas subia el
+                 `reporteCampana` y los `cambiosPropuestos` que la pestaña
+                 bajo al abrir, encima de los que la tarea de la mañana
+                 acababa de escribir: el 12/10 se perdieron dos veces en el
+                 dia. La app solo las lee, asi que si la nube tiene valor,
+                 ese es el bueno. */
+              if(CLAVES_DE_LA_BASE[k] && nube[k]!==undefined && nube[k]!==null) return;
               if(local[k]!==undefined && local[k]!==null) fusion[k]=local[k];
             });
             // y que la memoria quede igual a lo que se subio, para no volver
             // a mandar una version sin esas claves en el proximo guardado
-            Object.keys(fusion).forEach(function(k){ if(c[k]===undefined) c[k]=fusion[k]; });
+            Object.keys(fusion).forEach(function(k){
+              if(c[k]===undefined || CLAVES_DE_LA_BASE[k]) c[k]=fusion[k]; });
             return {id:c.id, maquina:fusion};
           }))
         });
@@ -15610,6 +15636,69 @@ function ticketCambiarResp(cid,tid){
   var nuevo=prompt('Responsable (Angie, Ashy, o nombre del cliente):', t.responsible||'Ashy');
   if(nuevo!=null && nuevo.trim()){ t.responsible=nuevo.trim(); save(); showTickets(); }
 }
+/* Seleccionar varias y eliminarlas de una. La torre junta revisiones de
+   informe viejas -una por semana y por cliente- y sacarlas de a una con el
+   menu de tres puntos eran veinte clics para limpiar una pantalla.
+   Elimina IGUAL que de a una: las marca como eliminadas, no las borra. Quedan
+   en "Eliminadas", siguen contando y se pueden restaurar. */
+function _tkSelBarra(list){
+  var sel=S._tkSel||{};
+  var keys=(list||[]).map(function(r){ return r.c.id+':'+r.t.id; });
+  S._tkSelVisibles=keys;
+  var n=keys.filter(function(k){ return sel[k]; }).length;
+  if(!S._tkSelModo){
+    return '<div style="display:flex;justify-content:flex-end;margin:-6px 0 8px">'
+      +'<button class="btn btn-sm" onclick="tkSelModo(true)">Seleccionar</button></div>';
+  }
+  var todas=keys.length && n===keys.length;
+  return '<div class="tk-selbar">'
+    +'<label style="display:flex;align-items:center;gap:7px;cursor:pointer">'
+      +'<input type="checkbox" class="tk-selbox" '+(todas?'checked ':'')
+        +'onclick="tkSelVarias(S._tkSelVisibles.join(\',\'),this.checked)">'
+      +'Todas las de esta vista ('+keys.length+')</label>'
+    +'<span style="color:var(--text3)">'+n+' seleccionada'+(n===1?'':'s')+'</span>'
+    +'<span style="flex:1"></span>'
+    +'<button class="btn btn-sm" '+(n?'':'disabled ')
+      +'style="'+(n?'border-color:var(--redx);color:var(--redx)':'opacity:.5')+'" '
+      +'onclick="tkSelEliminar()">Eliminar'+(n?(' '+n):'')+'</button>'
+    +'<button class="btn btn-sm" onclick="tkSelModo(false)">Listo</button>'
+  +'</div>';
+}
+function tkSelModo(on){
+  S._tkSelModo=!!on;
+  if(!on) S._tkSel={};
+  showTickets();
+}
+function tkSelUna(k, on){
+  S._tkSel=S._tkSel||{};
+  if(on) S._tkSel[k]=1; else delete S._tkSel[k];
+  showTickets();
+}
+function tkSelVarias(lista, on){
+  S._tkSel=S._tkSel||{};
+  String(lista||'').split(',').filter(Boolean).forEach(function(k){
+    if(on) S._tkSel[k]=1; else delete S._tkSel[k]; });
+  showTickets();
+}
+function tkSelEliminar(){
+  var sel=S._tkSel||{};
+  // Solo las que estan a la vista: una que quedo tildada y despues se escondio
+  // con un filtro no se elimina sin que se la vea.
+  var keys=(S._tkSelVisibles||[]).filter(function(k){ return sel[k]; });
+  if(!keys.length) return;
+  if(!confirm('Eliminar '+keys.length+' tarea'+(keys.length===1?'':'s')
+    +'? Quedan registradas en "Eliminadas" y las podes restaurar.')) return;
+  var ahora=new Date().toISOString(), n=0;
+  keys.forEach(function(k){
+    var p=k.split(':');
+    var c=DB.clients.find(function(x){ return String(x.id)===p[0]; });
+    var t=c&&(c.tasks||[]).find(function(x){ return String(x.id)===p[1]; });
+    if(t && !t.deleted){ t.deleted=true; t.deletedAt=ahora; n++; }
+  });
+  S._tkSel={}; S._tkSelModo=false;
+  save(); showTickets();
+  toast(n+' tarea'+(n===1?'':'s')+' eliminada'+(n===1?'':'s')+' - quedan registradas');
+}
 function ticketEliminar(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
@@ -20369,8 +20458,12 @@ function showTickets(){
     chip='<span class=\"tk-col-estado\" style=\"position:relative\">'
       +'<span class=\"tk-chip tk-chip-estado\" onclick=\"event.stopPropagation();ticketEstadoMenu('+c.id+','+t.id+',this)\" style=\"'+_chipStyle+';cursor:pointer\">'+_chipLabel+' &#9662;</span>'
       +'</span>';
-    return '<div class=\"tk-row'+(t.done?' done':'')+'\" '
-      +(t.done?'':'draggable=\"true\" ondragstart=\"ticketDragStart('+_i+')\" ondragover=\"ticketDragOver(event)\" ondrop=\"ticketDrop(event,'+_i+')\" ')+'>'
+    var _selK=c.id+':'+t.id;
+    return '<div class=\"tk-row'+(t.done?' done':'')+(S._tkSelModo&&S._tkSel&&S._tkSel[_selK]?' tk-sel':'')+'\" '
+      +(t.done||S._tkSelModo?'':'draggable=\"true\" ondragstart=\"ticketDragStart('+_i+')\" ondragover=\"ticketDragOver(event)\" ondrop=\"ticketDrop(event,'+_i+')\" ')+'>'
+      +(S._tkSelModo?('<input type=\"checkbox\" class=\"tk-selbox\" aria-label=\"Seleccionar esta tarea\" '
+        +((S._tkSel||{})[_selK]?'checked ':'')
+        +'onclick=\"event.stopPropagation();tkSelUna(\''+_selK+'\',this.checked)\">'):'')
       +'<span class=\"tk-check\" onclick=\"toggleTask('+c.id+','+t.id+','+(t.done?'false':'true')+')\" role=\"checkbox\" aria-checked=\"'+(t.done?'true':'false')+'\">'+_check+'</span>'
       +'<div style=\"flex:1;min-width:0\">'
       +'<div class=\"tk-txt\">'+seguir+esc(t.text||'')+'</div>'
@@ -20428,7 +20521,12 @@ function showTickets(){
   const rowsHtml=grupos.map(function(g){
     const abiertasG=g.rows.filter(function(r){return !r.t.done;}).length;
     const vencG=g.rows.some(function(r){const dd=endOfDue(r.t);return !r.t.done&&dd&&dd<now;});
+    var _gKeys=g.rows.map(function(r){ return r.c.id+':'+r.t.id; });
+    var _gTodas=_gKeys.length && _gKeys.every(function(k){ return (S._tkSel||{})[k]; });
     return '<div class=\"tk-grp-head\">'
+      +(S._tkSelModo?('<input type=\"checkbox\" class=\"tk-selbox\" aria-label=\"Seleccionar las de '+esc(g.c.name)+'\" '
+        +(_gTodas?'checked ':'')
+        +'onclick=\"tkSelVarias(\''+_gKeys.join(',')+'\',this.checked)\">'):'')
       +'<span class=\"tk-grp-name\" onclick=\"selectClient('+g.c.id+');S.tab=\'tareas\';renderClient()\">'+esc(g.c.name)+'</span>'
       +'<span class=\"tk-grp-count\">'+g.rows.length+' tarea'+(g.rows.length===1?'':'s')+'</span>'
       +(vencG?'<span style=\"width:7px;height:7px;border-radius:50%;background:var(--redx)\" title=\"tiene vencida\"></span>':'')
@@ -20627,7 +20725,7 @@ function showTickets(){
     +(tkVista()==='pipe'
       ? tkPipeHtml(list)
       : (_avisoResp + (list.length
-      ?'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px 16px 16px">'+rowsHtml+elimHtml+'</div>'
+      ?(_tkSelBarra(list)+'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px 16px 16px">'+rowsHtml+elimHtml+'</div>')
       :'<div style="padding:44px 20px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-lg)">'
         +'<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Sin tickets '+(filter!=='todos'?'en este filtro':'todavia')+'</div>'
         +'<div style="font-size:11.5px;color:var(--text3);max-width:460px;margin:0 auto">Los tickets se crean al delegar una tarea desde la pestana Tareas de un cliente (boton Delegar): se numeran, se mandan por mail a tu colaboradora y quedan aca para el seguimiento.</div>'
