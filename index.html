@@ -15787,32 +15787,91 @@ function tkSelEliminar(){
   if(!keys.length) return;
   if(!confirm('Eliminar '+keys.length+' tarea'+(keys.length===1?'':'s')
     +'? Quedan registradas en "Eliminadas" y las podes restaurar.')) return;
-  var ahora=new Date().toISOString(), n=0;
+  var ahora=new Date().toISOString(), cambios=[];
   keys.forEach(function(k){
     var p=k.split(':');
-    var c=DB.clients.find(function(x){ return String(x.id)===p[0]; });
-    var t=c&&(c.tasks||[]).find(function(x){ return String(x.id)===p[1]; });
-    if(t && !t.deleted){ t.deleted=true; t.deletedAt=ahora; n++; }
+    cambios.push({cid:p[0], tid:p[1], campos:{deleted:true, deletedAt:ahora}});
   });
   S._tkSel={}; S._tkSelModo=false;
-  save(); showTickets();
-  toast(n+' tarea'+(n===1?'':'s')+' eliminada'+(n===1?'':'s')+' - quedan registradas');
+  toast('Eliminando '+cambios.length+'\u2026');
+  _tkGuardarCampos(cambios).then(function(mal){
+    showTickets();
+    if(!mal.length) toast(cambios.length+' tarea'+(cambios.length===1?'':'s')+' eliminada'
+      +(cambios.length===1?'':'s')+' - quedan registradas');
+  });
+}
+/* ⚠️  ELIMINAR UN TICKET NO PUEDE DEPENDER DE GUARDAR EL CLIENTE ENTERO.
+   `datos` de un cliente lleva tambien sus oportunidades de GHL y sus llamadas,
+   que otra sesion abierta actualiza sola. Si eso pasaba entre que abriste el
+   tracker y eliminaste, `sbSubir` veia la nube cambiada y -con razon, para no
+   pisar a nadie- no subia ese cliente: un cartel que se va solo, y al recargar
+   los tickets volvian. Paso el 12/10/26 con Razor Tech, Teiki, DblandIT,
+   Potential y Zentenio despues de una limpieza de 80 tickets.
+   Aca se trae la version de la nube de cada cliente tocado, se le aplica solo
+   el cambio de esos tickets, y se sube esa. Lo que el otro cambio se queda, y
+   esta copia adopta su version. */
+async function _tkGuardarCampos(cambios){
+  var porCli={};
+  (cambios||[]).forEach(function(x){
+    (porCli[String(x.cid)]=porCli[String(x.cid)]||[]).push(x); });
+  var mal=[];
+  for(var cid in porCli){
+    var i=(DB.clients||[]).findIndex(function(x){ return String(x.id)===cid; });
+    if(i<0) continue;
+    var c=DB.clients[i];
+    try{
+      if(!SB.listo) throw new Error('sin nube');
+      var r0=await sbFetch('clientes?select=datos_at&id=eq.'+encodeURIComponent(cid));
+      // Nadie lo toco desde que lo bajamos: esta copia es la mas nueva, y puede
+      // traer otra edicion sin subir de este cliente. Va por el guardado de siempre.
+      if(r0&&r0[0]&&String(r0[0].datos_at||'')===String(_sbVisto[cid]||'')) throw new Error('local');
+      var r=await sbFetch('clientes?select=datos,datos_at&id=eq.'+encodeURIComponent(cid));
+      if(!r||!r[0]||!r[0].datos) throw new Error('no esta en la nube');
+      var d=r[0].datos;
+      d.tasks=d.tasks||[];
+      porCli[cid].forEach(function(x){
+        var t=d.tasks.find(function(y){ return String(y.id)===String(x.tid); });
+        if(!t) return;
+        Object.keys(x.campos).forEach(function(k){
+          if(x.campos[k]===undefined) delete t[k]; else t[k]=x.campos[k]; });
+      });
+      await sbFetch('clientes', {method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify([{id:c.id, nombre:c.name||'', datos:d, actualizado_por:SB.email}])});
+      var r2=await sbFetch('clientes?select=datos_at&id=eq.'+encodeURIComponent(cid));
+      // Esta copia pasa a ser la de la nube: si no, el proximo guardado la
+      // compararia contra una version vieja y volveria a chocar.
+      DB.clients[i]=Object.assign({}, d, _partirCliente(c).maquina);
+      _sbHuellas[c.id]=_huella(d);
+      if(r2&&r2[0]) _sbVisto[cid]=String(r2[0].datos_at||'');
+    }catch(e){
+      if(String((e&&e.message)||'')!=='local') mal.push(String(c.name||cid));
+      // Se aplica a esta copia y lo sube el guardado normal.
+      porCli[cid].forEach(function(x){
+        var t=(c.tasks||[]).find(function(y){ return String(y.id)===String(x.tid); });
+        if(!t) return;
+        Object.keys(x.campos).forEach(function(k){
+          if(x.campos[k]===undefined) delete t[k]; else t[k]=x.campos[k]; });
+      });
+    }
+  }
+  save();
+  if(mal.length) toast('No llegó a la nube en '+mal.join(', ')+'. Recargá y volvé a intentarlo.','amber');
+  return mal;
 }
 function ticketEliminar(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
   if(!confirm('Eliminar esta tarea? Queda registrada y podes restaurarla.')) return;
   // Borrado con registro: no se saca del array, se marca. Sigue contando.
-  t.deleted=true; t.deletedAt=new Date().toISOString();
-  save(); showTickets();
-  toast('Tarea eliminada - queda registrada');
+  _tkGuardarCampos([{cid:cid, tid:tid, campos:{deleted:true, deletedAt:new Date().toISOString()}}])
+    .then(function(mal){ showTickets(); if(!mal.length) toast('Tarea eliminada - queda registrada'); });
 }
 function ticketRestaurar(cid,tid){
   var c=DB.clients.find(function(x){return x.id===cid;});
   var t=c&&c.tasks.find(function(x){return x.id===tid;}); if(!t) return;
-  delete t.deleted; delete t.deletedAt;
-  save(); showTickets();
-  toast('Tarea restaurada');
+  _tkGuardarCampos([{cid:cid, tid:tid, campos:{deleted:undefined, deletedAt:undefined}}])
+    .then(function(mal){ showTickets(); if(!mal.length) toast('Tarea restaurada'); });
 }
 
 function openTicketsCustomRange(){
