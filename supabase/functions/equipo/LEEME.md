@@ -35,7 +35,7 @@ lo recibe y no tiene donde elegir su contrasena.
 
 Supabase -> Authentication -> URL Configuration:
 
-- **Site URL**: `https://angie-evolve.github.io/tracker/`
+- **Site URL**: `https://the-flowing-code.github.io/tracker-OS/`
 - **Redirect URLs**: agregar esa misma, y `http://localhost:8731/**` si vas a
   probar desde tu copia local.
 
