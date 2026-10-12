@@ -15745,23 +15745,37 @@ function tkCargaHacer(){
   if(!lineas.length || !ids.length) return;
   var resp=String((document.getElementById('tkc-resp')||{}).value||'__cliente');
   var ahora=new Date().toISOString(), base=Date.now(), k=0, n=0;
+  // Los numeros se reparten antes, todos juntos: si se calcularan adentro de
+  // cada cliente, dos clientes podrian sacar el mismo.
+  var sig=nextTicketFromApp(), aplicar={};
   ids.forEach(function(id){
     var c=(DB.clients||[]).find(function(x){ return String(x.id)===id; });
     if(!c) return;
-    c.tasks=c.tasks||[];
-    // Al final de la lista del cliente, en el orden en que se pegaron: unshift
-    // de a uno los daria vuelta.
-    lineas.forEach(function(txt){
-      var delCliente=(resp==='__cliente');
-      c.tasks.push({id:base+(k++), text:txt,
+    var delCliente=(resp==='__cliente');
+    var nuevas=lineas.map(function(txt){
+      n++;
+      return {id:base+(k++), text:txt,
         responsible:delCliente?String(c.contacto||c.name||'Cliente'):resp,
         due:'', done:false, source:'Manual', delegated:true, delegatedAt:ahora,
-        ownerCliente:delCliente, ticket:'#'+nextTicketFromApp()});
-      n++;
+        ownerCliente:delCliente, ticket:'#'+(sig++)};
     });
+    // Al final de la lista del cliente, en el orden en que se pegaron.
+    aplicar[id]=function(d){
+      d.tasks=d.tasks||[];
+      nuevas.forEach(function(t){
+        if(!d.tasks.some(function(y){ return String(y.id)===String(t.id); }))
+          d.tasks.push(JSON.parse(JSON.stringify(t)));
+      });
+    };
   });
-  save(); closeModal(); showTickets();
-  toast(n+' ticket'+(n===1?'':'s')+' cargado'+(n===1?'':'s')+' en '+ids.length+' cliente'+(ids.length===1?'':'s'));
+  try{ localStorage.setItem('evold-last-ticket', String(sig-1)); }catch(e){}
+  closeModal();
+  toast('Cargando '+n+' ticket'+(n===1?'':'s')+'\u2026');
+  _cliEditarEnNube(aplicar).then(function(mal){
+    showTickets();
+    if(!mal.length) toast(n+' ticket'+(n===1?'':'s')+' cargado'+(n===1?'':'s')+' en '
+      +ids.length+' cliente'+(ids.length===1?'':'s'));
+  });
 }
 function tkSelModo(on){
   S._tkSelModo=!!on;
@@ -15814,8 +15828,28 @@ async function _tkGuardarCampos(cambios){
   var porCli={};
   (cambios||[]).forEach(function(x){
     (porCli[String(x.cid)]=porCli[String(x.cid)]||[]).push(x); });
+  var aplicar={};
+  Object.keys(porCli).forEach(function(cid){
+    aplicar[cid]=function(d){
+      d.tasks=d.tasks||[];
+      porCli[cid].forEach(function(x){
+        var t=d.tasks.find(function(y){ return String(y.id)===String(x.tid); });
+        if(!t) return;
+        Object.keys(x.campos).forEach(function(k){
+          if(x.campos[k]===undefined) delete t[k]; else t[k]=x.campos[k]; });
+      });
+    };
+  });
+  return _cliEditarEnNube(aplicar);
+}
+/* El cambio se describe como una funcion que edita los `datos` de un cliente,
+   y se le aplica a la copia que corresponda: a la local si nadie toco ese
+   cliente desde que lo bajamos, o a la de la nube si otra sesion lo guardo en
+   el medio. Asi un cambio chico -eliminar un ticket, sumar seis- nunca queda
+   rechazado por el guardado de otra persona. */
+async function _cliEditarEnNube(aplicar){
   var mal=[];
-  for(var cid in porCli){
+  for(var cid in aplicar){
     var i=(DB.clients||[]).findIndex(function(x){ return String(x.id)===cid; });
     if(i<0) continue;
     var c=DB.clients[i];
@@ -15828,13 +15862,7 @@ async function _tkGuardarCampos(cambios){
       var r=await sbFetch('clientes?select=datos,datos_at&id=eq.'+encodeURIComponent(cid));
       if(!r||!r[0]||!r[0].datos) throw new Error('no esta en la nube');
       var d=r[0].datos;
-      d.tasks=d.tasks||[];
-      porCli[cid].forEach(function(x){
-        var t=d.tasks.find(function(y){ return String(y.id)===String(x.tid); });
-        if(!t) return;
-        Object.keys(x.campos).forEach(function(k){
-          if(x.campos[k]===undefined) delete t[k]; else t[k]=x.campos[k]; });
-      });
+      aplicar[cid](d);
       await sbFetch('clientes', {method:'POST',
         headers:{'Prefer':'resolution=merge-duplicates'},
         body:JSON.stringify([{id:c.id, nombre:c.name||'', datos:d, actualizado_por:SB.email}])});
@@ -15847,12 +15875,7 @@ async function _tkGuardarCampos(cambios){
     }catch(e){
       if(String((e&&e.message)||'')!=='local') mal.push(String(c.name||cid));
       // Se aplica a esta copia y lo sube el guardado normal.
-      porCli[cid].forEach(function(x){
-        var t=(c.tasks||[]).find(function(y){ return String(y.id)===String(x.tid); });
-        if(!t) return;
-        Object.keys(x.campos).forEach(function(k){
-          if(x.campos[k]===undefined) delete t[k]; else t[k]=x.campos[k]; });
-      });
+      aplicar[cid](c);
     }
   }
   save();
