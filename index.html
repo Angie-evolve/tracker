@@ -1305,6 +1305,15 @@ details[open]>.pet-eth .pet-fl{transform:rotate(90deg)}
   background:var(--bg4);display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;font-weight:600;color:var(--text2);flex:none}
 .cr-pie{font-size:11.5px;color:var(--text2);margin-top:10px;line-height:1.5}
+/* El contacto ya quedo creado: mismo marco que el rescate, en verde, porque
+   salio bien y lo que importa es ver CON QUE MAIL quedo. */
+.cr-caja.ok{background:rgba(200,255,71,.06);border-color:rgba(200,255,71,.35)}
+.cr-caja.ok .cr-tit b{color:var(--accent)}
+.cr-datos{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin-top:10px;font-size:13px}
+.cr-datos span{color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
+.cr-datos b{color:var(--text);font-weight:500;word-break:break-word}
+.ch-link{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ch-link a{color:var(--accent);word-break:break-all}
 /* ── La salud del cliente, en la tarjeta ─────────────────────────────────
    Una barra de tres tramos -ads, embudo, comercial- sin separacion entre
    ellos: se lee como UNA cosa, la salud, y no como tres indicadores que hay
@@ -38653,13 +38662,70 @@ function citaHechaModal(){
         +(d.calendario?fila('Calendario', esc(d.calendario)):'')
         +(d.equipo?fila('Su equipo', d.equipo.ok?esc(d.equipo.texto)
             :('<span style="color:var(--amberx)">'+esc(d.equipo.texto)+'</span>')):'')
+        +(d.contactoCreado?fila('Contacto', '<span style="color:var(--accent)">Creado ahora en GHL</span>'
+            +' con '+esc(d.mail)):'')
+        // El link es lo que se le pega al cliente en el mensaje de confirmacion:
+        // antes habia que ir a GHL a buscarlo.
+        +fila('Link', '<span id="ch-link" class="ch-link">'
+            +(d.id?'<span style="color:var(--text3)">Buscando el link…</span>'
+                  :'<span style="color:var(--text3)">No tengo el id de la reunión para traerlo.</span>')
+            +'</span>')
       +'</div>'
       +(d.nota?('<div style="font-size:11.5px;color:var(--text3);line-height:1.55;'
         +'margin-top:12px">'+esc(d.nota)+'</div>'):'')
-      +'<div class="modal-footer"><button class="btn btn-primary" onclick="closeModal()">'
-        +'Listo</button></div>'
+      +'<div class="modal-footer">'
+        +'<button class="btn" id="ch-copiar-msg" onclick="citaHechaCopiar(\'msg\')" disabled>Copiar mensaje</button>'
+        +'<button class="btn" id="ch-copiar-link" onclick="citaHechaCopiar(\'link\')" disabled>Copiar link</button>'
+        +'<button class="btn btn-primary" id="ch-listo" onclick="closeModal()">Listo</button></div>'
     +'</div></div>';
+  S._citaHechaUlt={d:d, dia:dia, c:c, link:''};
   S._citaHecha=null;
+  S._contactoCreado=null;
+  if(d.id) _citaHechaLink(d.id);
+}
+/* GHL arma el Meet unos segundos despues de crear la cita: si se pide en el
+   mismo instante puede venir vacio. Se reintenta un par de veces antes de
+   decir que no esta. */
+async function _citaHechaLink(id){
+  var link='';
+  for(var i=0;i<4 && !link;i++){
+    if(i) await new Promise(function(ok){ setTimeout(ok, 2500); });
+    try{
+      var r=await agLlamar({accion:'cita', eventId:id});
+      link=String((r&&r.link)||'');
+    }catch(e){}
+  }
+  var u=S._citaHechaUlt; var e=document.getElementById('ch-link');
+  if(!u||!e) return;
+  u.link=link;
+  if(!link){
+    e.innerHTML='<span style="color:var(--amberx)">GHL no devolvió un link de videollamada. '
+      +'Si el calendario tiene Meet o Zoom, está en la cita en GHL.</span>';
+    var bm=document.getElementById('ch-copiar-msg'); if(bm) bm.disabled=false;
+    return;
+  }
+  e.innerHTML='<a href="'+esc(link)+'" target="_blank" rel="noopener">'+esc(link)+'</a>';
+  ['ch-copiar-msg','ch-copiar-link'].forEach(function(x){
+    var b=document.getElementById(x); if(b){ b.disabled=false; } });
+  var bl=document.getElementById('ch-copiar-link'); if(bl) bl.className='btn btn-primary';
+  // Un solo boton fuerte: con link, lo que sigue es copiarlo.
+  var bk=document.getElementById('ch-listo'); if(bk) bk.className='btn';
+}
+function _citaHechaMensaje(){
+  var u=S._citaHechaUlt||{}; var d=u.d||{};
+  return '¡Listo! Quedó agendada la reunión '+(d.etapa?('de '+d.etapa+' '):'')
+    +'para el '+(u.dia||d.fecha||'')+' a las '+(d.hora||'')+' (hora de Argentina).'
+    +(u.link?('\nEste es el link para entrar: '+u.link):'');
+}
+function citaHechaCopiar(que){
+  var u=S._citaHechaUlt||{};
+  var t=(que==='link')?String(u.link||''):_citaHechaMensaje();
+  if(!t){ toast('Todavía no tengo el link.','amber'); return; }
+  try{
+    navigator.clipboard.writeText(t).then(function(){
+      toast(que==='link'?'Link copiado.':'Mensaje copiado.');
+    }, function(){ toast('No pude copiar: seleccionalo a mano.','amber'); });
+  }catch(e){ toast('No pude copiar: seleccionalo a mano.','amber'); }
 }
 // "Solo anotar" cierra igual y tampoco dejaba rastro. Alcanza un toast: no
 // salio nada para afuera, asi que no hay nada que confirmar con tanto detalle.
@@ -39996,6 +40062,9 @@ async function citasAgendarGhl(clientId){
       inicio:(r.inicio||_envio),
       fecha:c.rutaAgenda[et], hora:_citaHora(r.inicio||_envio),
       contacto:String(r.contacto||mail||''), mail:mail,
+      id:String(r.id||''),
+      contactoCreado:!!(S._contactoCreado && S._contactoCreado.mail===mail
+                        && !S._contactoCreado.yaExistia),
       quien:String(S._quienNom||''),
       calendario:(function(){
         var x=(DB.ghlCalendariosAgencia||[]).filter(function(y){
@@ -40121,15 +40190,34 @@ async function citasContactoCrear(clientId){
     // El id vale mas que el mail hasta que GHL lo indexe: se guarda para que
     // el agendado que viene enseguida no dependa de la busqueda.
     S._contactoNuevo=(r && r.id) ? {mail:mail, id:String(r.id)} : null;
-    // Mismo motivo que arriba: crear el contacto no es agendar la reunion.
-    _citasDecir(clientId, 'Listo: '+(r.yaExistia
-      ? 'ese contacto ya estaba en GHL'
-      : 'contacto creado en GHL')
-      // Que se haya creado sin telefono no frena nada, pero hay que decirlo:
-      // si no, el contacto queda a medias y nadie se entera.
-      + (r.sinTelefono ? ' (sin teléfono: el de la ficha no tiene formato válido)' : '')
-      + '. Ahora sí, tocá "Agendar en GHL".','var(--accent)');
+    /* ⚠️  ESTO TIENE QUE VERSE. Era una linea chica abajo del popup y Santi no
+       se enteraba de que se habia creado un contacto, ni con que mail: si el
+       mail de la ficha tenia un error, el contacto nacia con el error y nadie
+       lo veia. Ahora es una caja con los datos con los que quedo, y se lleva
+       a la vista. Mismo motivo que arriba: crear el contacto no es agendar. */
+    S._contactoCreado={mail:mail, nombre:nom, yaExistia:!!r.yaExistia,
+      sinTelefono:!!r.sinTelefono, tel:String(c.phone||c.telefono||'')};
     _citasRepintar();
+    var _cj=document.getElementById('p3-citas-msg');
+    if(_cj){
+      _cj.style.color='var(--text3)';
+      _cj.innerHTML='<div class="cr-caja ok" role="status"><div class="cr-tit"><b>'
+        +(r.yaExistia?'Ese contacto ya estaba en GHL.':'Contacto creado en GHL.')+'</b> '
+        +'Revisá que el mail esté bien: es a donde le llegan la invitación y los recordatorios.</div>'
+        +'<div class="cr-datos">'
+          +'<span>Nombre</span><b>'+esc(nom||'—')+'</b>'
+          +'<span>Mail</span><b>'+esc(mail)+'</b>'
+          +'<span>Teléfono</span><b>'+(r.sinTelefono
+            ? '<span style="color:var(--amberx);text-transform:none;letter-spacing:0;font-size:13px">'
+              +'sin teléfono: el de la ficha no tiene formato válido</span>'
+            : esc(String(c.phone||c.telefono||'—')))+'</b>'
+        +'</div>'
+        +'<div class="cr-pie">Ahora sí, tocá <b style="color:var(--text)">Agendar en GHL</b>. '
+          +'Si el mail está mal, corregilo en la ficha antes.</div></div>';
+      try{ _cj.scrollIntoView({block:'nearest', behavior:'smooth'}); }catch(e){}
+    }
+    toast(r.yaExistia?'Ese contacto ya estaba en GHL: '+mail
+                     :'Contacto creado en GHL con '+mail);
   }catch(e){
     _citasDecir(clientId,'No pude crear el contacto: '+esc((e&&e.message)||''),'var(--redx)');
   }
