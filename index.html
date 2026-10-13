@@ -13347,7 +13347,7 @@ async function generarPedir(){
     generarModal(); return;
   }
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey){ st.estado='No hay clave de Anthropic cargada.'; generarModal(); return; }
+  if(!apiKey && !iaPorOtroLado()){ st.estado='No hay clave de Anthropic cargada.'; generarModal(); return; }
   st.estado='Generando…'; st.salida=''; generarModal();
   if(material.length>30000) material=material.slice(0,30000)+'\n[...cortado]';
   try{
@@ -14498,11 +14498,11 @@ function integracionesAppHtml(){
         // conviene decirlo antes de que alguien lo prenda esperando magia.
         +'Copias el prompt, lo pegas en claude.ai y traes la respuesta de vuelta, a mano. '
         +'Sirve cuando no hay saldo de API: el analisis lo hace tu suscripcion. '
-        +'Con esto apagado igual te lo ofrece, pero recien cuando la API falla.'
+        +'Con esto apagado igual te lo ofrece cuando la API falla, o siempre si no hay clave cargada.'
         +'</span></span></div>',
       detail:iaPuenteOn()?'Por el puente, con la suscripcion'
         :(iaSinApi()?'Todo a mano, sin gastar API'
-        :(anth?('...'+String(anth).slice(-6)):'Sin clave')),
+        :(anth?('...'+String(anth).slice(-6)):'Sin clave: va por copiar y pegar')),
       action:'pedirClaveAnthropic()', actionLabel:anth?'Cambiar clave':'Cargar clave'}),
 
     (function(){
@@ -34035,7 +34035,7 @@ async function uploadContract(clientId, inputEl){
   reader.onload=ev=>{
     const base64=ev.target.result.split(',')[1];
     const key=localStorage.getItem('evold-anthropic-key')||'';
-    if(!key){
+    if(!key && !iaPorOtroLado()){
       openAnthropicKeyModal();
       // Store file data temporarily so user can retry after entering key
       if(c.contract) c.contract._pendingFile={base64,name:f.name,type:f.type};
@@ -34182,7 +34182,7 @@ async function extractContractWithAI(clientId, file, driveUrl, texto){
   if(!c) return;
   // Check API key FIRST before anything
   const anthropicKey = localStorage.getItem('evold-anthropic-key')||'';
-  if(!anthropicKey){
+  if(!anthropicKey && !iaPorOtroLado()){
     openAnthropicKeyModal();
     // After modal closes, user must re-upload - clear the analyzing state
     if(c.contract) { c.contract._analyzing=false; }
@@ -46863,8 +46863,15 @@ function iaPuenteOn(){ try{ return localStorage.getItem('evold-ia-puente')==='1'
 // la suscripcion. Pedirla igual antes de intentar cortaba en seco analisis que
 // si podian correr, y era lo que dejaba al asistente pidiendo una clave que no
 // hacia falta.
+// Sin clave cargada en este navegador, el camino es copiar y pegar: el analisis
+// lo hace la suscripcion. Antes se abria el cartel de la clave y cortaba ahi, y
+// la mudanza del sitio lo hizo pasar en todos lados: la clave y el modo sin API
+// quedaron guardados en la direccion vieja.
+function iaSinClave(){
+  try{ return !String(localStorage.getItem('evold-anthropic-key')||'').trim(); }catch(e){ return true; }
+}
 function iaPorOtroLado(){
-  try{ return iaPuenteOn()||iaSinApi(); }catch(e){ return false; }
+  try{ return iaPuenteOn()||iaSinApi()||iaSinClave(); }catch(e){ return false; }
 }
 function iaPuenteSet(v){
   try{ localStorage.setItem('evold-ia-puente', v?'1':'0'); }catch(e){}
@@ -47026,6 +47033,10 @@ function _iaPromptDe(opts){
     }).filter(Boolean);
     var t=partes.join('\n\n');
     if(String(sys||'').trim()) t=sys.trim()+'\n\n'+t;
+    // Un PDF no entra en el portapapeles: hay que adjuntarlo del otro lado.
+    if((b.messages||[]).some(function(m){ return Array.isArray(m.content)
+        && m.content.some(function(x){ return x&&x.type==='document'; }); }))
+      t='[Adjuntá el PDF en claude.ai junto con este pedido: lo que sigue se lee de ahí.]\n\n'+t;
     if((b.tools||[]).some(function(x){ return /web_search|web_fetch/.test(x.type||''); }))
       t='[Para esto hace falta navegar: prendé la busqueda web en el chat.]\n\n'+t;
     return t;
@@ -47062,7 +47073,8 @@ function _iaPedirAMano(prompt, motivo){
         +'<div class="modal-title">Hacelo afuera</div>'
         +'<div class="modal-sub">'
           +(motivo?('La API no respondio: '+esc(motivo)+'. ')
-                  :'Estas en modo sin API. ')
+                  :(iaSinClave()?'Va por tu suscripcion de Claude: este navegador no tiene clave de API. '
+                                :'Estas en modo sin API. '))
           +'Copia el prompt, pegalo en claude.ai y trae la respuesta. Se guarda igual que si '
           +'lo hubiera hecho la app.</div>'
         +'<div style="display:flex;align-items:center;gap:9px;margin:14px 0 6px;flex-wrap:wrap">'
@@ -47129,7 +47141,7 @@ function iaPuenteCancelar(){
     var prompt=_iaPromptDe(opts);
     // El puente primero: si esta prendido, ni se intenta la API.
     if(iaPuenteOn()) return _iaPorPuente(prompt);
-    if(iaSinApi()) return _iaPedirAMano(prompt);
+    if(iaSinApi()||iaSinClave()) return _iaPedirAMano(prompt);
     return orig(url, opts).then(function(r){
       if(r.ok) return r;
       // El catch va SOLO sobre la lectura del cuerpo. Envolviendo tambien el
@@ -47334,7 +47346,7 @@ async function redactarContrato(clientId){
   var mod=contratoModelo();
   if(!mod){ decir('Falta el contrato modelo. Cargalo una vez en Configuracion de agencia.','var(--amberx)'); return; }
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey){ openAnthropicKeyModal(); return; }
+  if(!apiKey && !iaPorOtroLado()){ openAnthropicKeyModal(); return; }
 
   var acor=_acordadoParaContrato(c);
   // Sin lo acordado el borrador saldria con un hueco en cada numero. Mejor
@@ -55764,7 +55776,7 @@ async function guionDesdeLlamadas(id){
   var l=_formLlamadas();
   var elegidas=idx.map(function(i){ return l[i]; }).filter(Boolean);
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey && !iaSinApi()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
+  if(!apiKey && !iaPorOtroLado()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
   abrirGuion(id);
   var e=document.getElementById('guion-estado');
   var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
@@ -55998,7 +56010,7 @@ async function formDesdeLlamadas(id){
   var l=_formLlamadas();
   var elegidas=idx.map(function(i){ return l[i]; }).filter(Boolean);
   var apiKey=localStorage.getItem('evold-anthropic-key');
-  if(!apiKey && !iaSinApi()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
+  if(!apiKey && !iaPorOtroLado()){ toast('Falta la clave de Anthropic en Integraciones.','amber'); return; }
   abrirForm(id);
   var e=document.getElementById('form-estado');
   var decir=function(t,col){ if(e){ e.innerHTML=t; e.style.color=col||'var(--text3)'; } };
@@ -60914,7 +60926,7 @@ async function onbMercado(clientId){
   // la busqueda web prendida. Si no esta, el que contesta no falla: escribe por
   // que no pudo, y eso se guardaba como si fuera la investigacion. No se
   // bloquea, se avisa antes y se controla el resultado despues.
-  if(iaPuenteOn()||iaSinApi()){
+  if(iaPuenteOn()||iaSinApi()||iaSinClave()){
     toast(iaPuenteOn()
       ? 'Por el puente: tiene que estar corriendo con WebSearch y WebFetch habilitados.'
       : 'Acordate de prender la busqueda web en el chat antes de pegar el prompt.', 'amber');
@@ -60974,7 +60986,7 @@ async function onbMercado(clientId){
         +(iaPuenteOn()
           ? ' Si dice que no tiene permiso para navegar, al puente le falta correr con '
             +'--allowedTools WebSearch,WebFetch.'
-          : (iaSinApi()
+          : ((iaSinApi()||iaSinClave())
             ? ' Si dice que no tiene permiso para navegar, faltó prender la busqueda web '
               +'en el chat antes de pegar el prompt.' : ''))};
       onbModal(clientId);
@@ -65874,7 +65886,7 @@ async function generateCallReport(clientId){
   const c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   const anthropicKey = localStorage.getItem('evold-anthropic-key')||'';
-  if(!anthropicKey){ openAnthropicKeyModal(); return; }
+  if(!anthropicKey && !iaPorOtroLado()){ openAnthropicKeyModal(); return; }
 
   const ctx = buildReportContext(c);
   toast('Generando reporte con IA...');
