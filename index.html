@@ -600,6 +600,24 @@ input[type=checkbox].sw:checked::after{transform:translateX(13px);background:var
 .hdr-ico span{font-size:11px}
 .hdr-ico:hover{background:var(--bg2)}
 .hdr-ico.on{background:var(--bg2)}
+
+/* Panel Cliente editable (12/10/2026): lapiz en cada dato, + en las listas. */
+.gd-fila{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius);cursor:pointer}
+.gd-fila:hover{background:var(--bg3)}
+.gd-fila.gd-edit{display:block;cursor:default;background:var(--bg3);border:1px solid var(--border2);margin:2px 0}
+.gd-fila.gd-miembro{cursor:default;padding:6px 10px}
+.gd-fila>div:first-child{flex:1}
+.gd-lapiz{opacity:0;font-size:12px;color:var(--text3);transition:opacity .12s}
+.gd-fila:hover .gd-lapiz{opacity:1}
+.gd-sec{display:flex;align-items:center;justify-content:space-between;padding:6px 10px 4px}
+.gd-mas{width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;
+  color:var(--text2);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-family:var(--font);transition:background .12s,color .12s,border-color .12s}
+.gd-mas:hover,.gd-mas.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.gd-acc{display:flex;gap:2px;opacity:.35;transition:opacity .12s}
+.gd-miembro:hover .gd-acc{opacity:1}
+.gd-ib{background:none;border:0;color:var(--text2);cursor:pointer;font-size:14px;padding:3px 6px;border-radius:6px;font-family:var(--font)}
+.gd-ib:hover{background:var(--bg4);color:var(--text)}
 .mas-op-s{font-size:10.5px;color:var(--text3);line-height:1.5;margin-top:2px}
 .as-vacio{color:var(--text3);font-size:12px;line-height:1.65}
 .as-ej{display:block;width:100%;text-align:left;background:transparent;color:var(--text2);
@@ -63923,6 +63941,8 @@ function _masMenu(){
     e.addEventListener('click', function(ev){ ev.stopPropagation(); });
     document.body.appendChild(e);
   }
+  // El panel Cliente lo ensancha y lo hace scrollear; los demas menus vuelven al de siempre.
+  e.style.width=''; e.style.maxHeight=''; e.style.overflowY='';
   return e;
 }
 function masCerrar(){
@@ -64040,105 +64060,296 @@ function _portalCuentaTxt(c, P){
   }).join('<br>') };
 }
 
-function genteAbrir(clientId, btn){
-  var c=DB.clients.find(function(x){return x.id===clientId;});
-  if(!c) return;
-  var e=_masMenu();
-  var op=function(fn, t, sub){
-    return '<div onclick="masCerrar();'+fn+'" class="mas-op">'
-      +'<div class="mas-op-t">'+t+'</div>'
-      +(sub?('<div class="mas-op-s">'+sub+'</div>'):'')
-    +'</div>';
-  };
-  var falta=function(v, txt){ return v?esc(String(v)):('<span style="color:var(--amberx)">'
-    +(txt||'sin cargar')+'</span>'); };
-  // Las mismas filas de la ficha y en el mismo orden: si estan en dos lados,
-  // que no haya que traducir cual es cual.
-  var h=[
-    ['name',    'Nombre',        c.name],
-    ['contacto','Contacto',      c.contacto],
-    ['email',   'Email',         c.email],
-    ['phone',   'Telefono',      c.phone],
-    ['industry','Industria',     c.industry],
-    ['web',     'Sitio web',     c.web],
-    ['locid',   'Subcuenta GHL', (c.ghl&&c.ghl.locationId)]
-  ].map(function(x){
-    return op('fichaEditar('+c.id+',\''+x[0]+'\')', x[1], falta(x[2]));
-  }).join('');
+/* ── Panel Cliente, editable en el lugar ─────────────────────────────────
+   Antes cada fila cerraba el menu y abria un modal distinto, y el equipo solo
+   sabia agregar. Ahora todo se edita aca mismo, sin salir del menu: un lapiz
+   en cada dato, y un "+" en lo que es una lista (equipo, portal). Angie,
+   12/10/2026. Lo que se guarda pasa por las mismas funciones de siempre. */
+var _GD_CAMPOS=[['name','Nombre'],['contacto','Contacto'],['email','Email'],
+                ['phone','Telefono'],['industry','Industria'],['web','Sitio web'],
+                ['locid','Subcuenta GHL']];
+function _gdSt(){ return (S._gd=S._gd||{ed:null, portal:false}); }
+function _gdCli(id){ return DB.clients.find(function(x){return x.id===id;}); }
+var _GD_INP='width:100%;box-sizing:border-box;padding:7px 10px;border-radius:var(--radius);'
+  +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;'
+  +'font-family:var(--font);outline:none';
+function _gdFalta(v, txt){
+  return v ? esc(String(v)) : ('<span style="color:var(--amberx)">'+(txt||'sin cargar')+'</span>');
+}
+// Fila con lapiz. `corto` se muestra cuando no se esta editando.
+function _gdFila(id, key, titulo, valorHtml, editorHtml){
+  var st=_gdSt();
+  if(st.ed===key){
+    return '<div class="gd-fila gd-edit"><div class="mas-op-t">'+titulo+'</div>'+editorHtml+'</div>';
+  }
+  return '<div class="gd-fila" onclick="gdEd('+id+',\''+key+'\')">'
+    +'<div style="min-width:0"><div class="mas-op-t">'+titulo+'</div>'
+    +'<div class="mas-op-s">'+valorHtml+'</div></div>'
+    +'<span class="gd-lapiz" aria-hidden="true">✎</span></div>';
+}
+function _gdAcc(okFn, cancelFn){
+  return '<div style="display:flex;gap:6px;margin-top:7px;justify-content:flex-end">'
+    +'<button class="btn btn-sm" onclick="'+cancelFn+'">Cancelar</button>'
+    +'<button class="btn btn-sm btn-primary" onclick="'+okFn+'">Guardar</button></div>';
+}
+function gdRender(id){
+  var c=_gdCli(id); var e=document.getElementById('mas-menu');
+  if(!c||!e) return;
+  var st=_gdSt(), h='';
+  // 1. datos de texto: un campo, un input, Enter guarda y Esc cancela
+  _GD_CAMPOS.forEach(function(x){
+    var k=x[0], v=(k==='locid')?((c.ghl&&c.ghl.locationId)||''):(c[k]||'');
+    var ayuda=(k==='phone')?'Con codigo de pais (+54 9 11 ...)':(k==='locid')?'Pegá el ID o la URL de la subcuenta'
+      :(k==='web')?'El sitio institucional':'';
+    h+=_gdFila(id,k,x[1],_gdFalta(v),
+      '<input id="gd-in" style="'+_GD_INP+';margin-top:6px" value="'+esc(v)+'" '
+        +'onkeydown="if(event.key===\'Enter\')gdTxtOk('+id+',\''+k+'\');'
+        +'if(event.key===\'Escape\')gdEd('+id+',null)">'
+      +(ayuda?'<div class="mas-op-s">'+ayuda+'</div>':'')
+      +_gdAcc('gdTxtOk('+id+',\''+k+'\')','gdEd('+id+',null)'));
+  });
   h+='<div class="mas-sep"></div>';
-  // Los dos que faltaban en este menu. El producto se elige en la ficha -ahi
-  // esta la lista- y el responsable no tenia donde ponerse en ninguna parte.
-  /* ⚠️  EL RESPONSABLE VIVE EN `owner`. Esta fila leia `c.responsable`, un
-     segundo campo que escribia solo su propio modal: 29 de 31 clientes activos
-     tienen `owner` y solo 3 tienen `responsable`, asi que la ficha decia "sin
-     asignar" en 26 clientes que si tenian duenio. El tablero, el filtro "los
-     mios" y el reparto del Mirador siempre miraron `owner` -`responsableDe`-,
-     y eso es lo que manda. */
-  h+=(function(){
-    var _r=responsableDe(c);
-    return op('fichaResponsable('+c.id+')','Responsable',
-      _r ? esc(_respNombre(_r))
-         : '<span style="color:var(--amberx)">sin asignar</span>');
-  })();
-  h+=op('materialModal('+c.id+',\'sh-producto\')','Producto',
-        (function(){
-          var pr=(typeof _p360Prod==='function')?_p360Prod(c):(c.producto||'');
-          return pr ? esc(pr) : '<span style="color:var(--amberx)">sin definir</span>';
-        })());
-  h+=op('closerModal('+c.id+')','Cerro',
-        (function(){
-          var cl=_closerDe(c);
-          if(!cl && !c.setter) return '<span style="color:var(--amberx)">sin closer ni setter'
-            +'</span>';
-          var nom=function(m){
-            var p=(DB.personas||[]).filter(function(x){
-              return String(x.email||'').toLowerCase()===String(m||'').toLowerCase(); })[0];
-            return esc((p&&p.nombre)||m||''); };
-          return [cl?('closer '+nom(cl)):'', c.setter?('setter '+nom(c.setter)):'']
-            .filter(Boolean).join(' · ');
-        })());
-  // El contrato no entra al menu como formulario: sus campos tienen id por
-  // cliente y renderizarlos dos veces los duplica. El menu lleva hasta el.
-  h+=op('irAlContrato('+c.id+')','Contrato',
-        (function(){
-          var ct=c.contract||{};
-          if(ct.driveUrl) return esc(ct.fileName||'vinculado desde Drive');
-          if(ct.fileName) return esc(ct.fileName)+' \u00b7 sin vincular a Drive';
-          return '<span style="color:var(--amberx)">sin vincular</span>';
-        })());
-  h+=op('eqAgregar('+c.id+')','Equipo',
-        (c.equipo||[]).length
-          ? ((c.equipo||[]).map(function(q){ return esc(_eqNombre(q)); }).join(', '))
-          : '<span style="color:var(--amberx)">sin cargar</span>');
-
-  // El portal. Se dibuja con lo que haya y se completa cuando llega la
-  // respuesta: el menu no puede esperar a la red para abrirse.
-  var _pc=_pcDe(c.id);
-  var _pcv=_portalCuentaTxt(c, _pc);
-  h+='<div id="gente-portal">'
-    + op(_pcv.accion || 'void 0', 'Portal', _pcv.txt)
-    + '</div>';
-
-  e.innerHTML=h;
-  if(!_pc.listo && !_pc.cargando){
-    portalCuentasCargar(c.id).then(function(P){
-      var caja=document.getElementById('gente-portal');
-      if(!caja) return;                       // se cerro el menu mientras tanto
-      var v=_portalCuentaTxt(c, P);
-      caja.innerHTML=op(v.accion || 'void 0', 'Portal', v.txt);
+  // 2. responsable
+  var resp=responsableDe(c)||'';
+  var gente=(DB.personas||[]).filter(function(p){ return p&&p.email; });
+  h+=_gdFila(id,'resp','Responsable',
+    resp?esc(_respNombre(resp)):'<span style="color:var(--amberx)">sin asignar</span>',
+    '<select id="gd-sel" style="'+_GD_INP+';margin-top:6px" onchange="gdRespOk('+id+',this.value)">'
+      +'<option value="">Sin responsable</option>'
+      +gente.map(function(p){ return '<option value="'+esc(p.email)+'"'
+        +(String(resp).toLowerCase()===String(p.email).toLowerCase()?' selected':'')+'>'
+        +esc(p.nombre||p.email)+'</option>'; }).join('')
+      +'</select>'+_gdAcc('gdEd('+id+',null)','gdEd('+id+',null)').replace('Guardar','Listo'));
+  // 3. producto
+  var pr=(typeof _p360Prod==='function')?_p360Prod(c):(c.producto||'');
+  h+=_gdFila(id,'prod','Producto',
+    pr?esc(pr):'<span style="color:var(--amberx)">sin definir</span>',
+    '<select style="'+_GD_INP+';margin-top:6px" onchange="gdProdOk('+id+',this.value)">'
+      +'<option value="">Sin producto</option>'
+      +productos().map(function(p){ return '<option value="'+esc(p.id)+'"'
+        +((c.productoId===p.id||(!c.productoId&&String(c.producto||'')===p.nombre))?' selected':'')+'>'
+        +esc(p.nombre)+'</option>'; }).join('')
+      +'</select>'+_gdAcc('gdEd('+id+',null)','gdEd('+id+',null)').replace('Guardar','Listo'));
+  // 4. closer y setter
+  var cl=_closerDe(c);
+  var _nom=function(m){
+    var p=(DB.personas||[]).filter(function(x){
+      return String(x.email||'').toLowerCase()===String(m||'').toLowerCase(); })[0];
+    return esc((p&&p.nombre)||m||''); };
+  var opts=function(sel){ return gente.map(function(p){ return '<option value="'+esc(p.email)+'"'
+    +(String(sel||'').toLowerCase()===String(p.email).toLowerCase()?' selected':'')+'>'
+    +esc(p.nombre||p.email)+(p.comision?(' · '+p.comision+'%'):'')+'</option>'; }).join(''); };
+  h+=_gdFila(id,'cerro','Cerro',
+    (!cl&&!c.setter)?'<span style="color:var(--amberx)">sin closer ni setter</span>'
+      :[cl?('closer '+_nom(cl)):'', c.setter?('setter '+_nom(c.setter)):''].filter(Boolean).join(' · '),
+    '<div class="mas-op-s" style="margin-top:6px">Closer</div>'
+    +'<select style="'+_GD_INP+'" onchange="gdCerroOk('+id+',\'closer\',this.value)">'
+      +'<option value="">Derivarlo de las llamadas</option>'+opts(c.closer)+'</select>'
+    +'<div class="mas-op-s" style="margin-top:8px">Setter</div>'
+    +'<select style="'+_GD_INP+'" onchange="gdCerroOk('+id+',\'setter\',this.value)">'
+      +'<option value="">Sin setter</option>'+opts(c.setter)+'</select>'
+    +_gdAcc('gdEd('+id+',null)','gdEd('+id+',null)').replace('Guardar','Listo'));
+  // 5. contrato
+  var ct=c.contract||{};
+  h+=_gdFila(id,'contrato','Contrato',
+    ct.driveUrl?esc(ct.fileName||'vinculado desde Drive')
+      :(ct.fileName?(esc(ct.fileName)+' · sin vincular a Drive')
+        :'<span style="color:var(--amberx)">sin vincular</span>'),
+    '<input id="gd-in" style="'+_GD_INP+';margin-top:6px" value="'+esc(ct.driveUrl||'')+'" '
+      +'placeholder="Link de Drive del contrato" '
+      +'onkeydown="if(event.key===\'Enter\')gdContratoOk('+id+')">'
+    +'<div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">'
+      +'<button class="btn btn-sm" onclick="masCerrar();irAlContrato('+id+')">Abrir el contrato</button>'
+      +(ct.driveUrl?'<button class="btn btn-sm" onclick="gdContratoIA('+id+')" '
+        +'title="Lee el contrato y carga las condiciones">Leer con IA</button>':'')
+      +'<span style="flex:1"></span>'
+      +'<button class="btn btn-sm" onclick="gdEd('+id+',null)">Cancelar</button>'
+      +'<button class="btn btn-sm btn-primary" onclick="gdContratoOk('+id+')">Guardar</button></div>');
+  h+='<div class="mas-sep"></div>';
+  // 6. equipo: lista con lapiz y equis por persona, y un + para sumar
+  var eq=c.equipo||[];
+  h+='<div class="gd-sec"><div class="mas-op-t">Equipo'
+    +(eq.length?(' <span style="color:var(--text3);font-weight:400">· '+eq.length+'</span>'):'')+'</div>'
+    +'<button class="gd-mas'+(st.ed==='eq:new'?' on':'')+'" onclick="gdEd('+id+',\'eq:new\')" '
+      +'title="Sumar a alguien del cliente">+</button></div>';
+  var eqForm=function(i, p){
+    p=(p&&typeof p==='object')?p:{};
+    return '<div class="gd-fila gd-edit" style="margin-top:4px">'
+      +'<input id="gd-en" style="'+_GD_INP+'" value="'+esc(p.nombre||'')+'" placeholder="Nombre y apellido">'
+      +'<input id="gd-em" style="'+_GD_INP+';margin-top:6px" value="'+esc(p.email||'')+'" '
+        +'placeholder="Mail (para invitarlo a GHL y al portal)">'
+      +'<input id="gd-er" list="gd-roles" style="'+_GD_INP+';margin-top:6px" value="'+esc(p.rol||'')+'" '
+        +'placeholder="Vinculo: socio, manager de ventas...">'
+      +'<datalist id="gd-roles">'+String(typeof ROLES_SUGERIDOS==='string'?ROLES_SUGERIDOS:'')
+        .split(', ').filter(Boolean).map(function(r){ return '<option value="'+esc(r)+'">'; }).join('')+'</datalist>'
+      +_gdAcc('gdEqOk('+id+','+i+')','gdEd('+id+',null)').replace('Guardar', i<0?'Sumar':'Guardar')+'</div>';
+  };
+  if(st.ed==='eq:new') h+=eqForm(-1,null);
+  if(!eq.length && st.ed!=='eq:new'){
+    h+='<div class="mas-op-s" style="padding:2px 10px 6px"><span style="color:var(--amberx)">sin cargar</span> · tocá el + para sumar a alguien</div>';
+  }
+  eq.forEach(function(q,i){
+    if(st.ed==='eq:'+i){ h+=eqForm(i,q); return; }
+    var m=_eqMail(q), r=(q&&typeof q==='object')?String(q.rol||''):'';
+    h+='<div class="gd-fila gd-miembro"><div style="min-width:0">'
+      +'<div class="mas-op-t">'+esc(_eqNombre(q)||m||'(sin nombre)')+'</div>'
+      +'<div class="mas-op-s">'+[r?esc(r):'', m?esc(m):'<span style="color:var(--amberx)">sin mail</span>']
+        .filter(Boolean).join(' · ')+'</div></div>'
+      +'<span class="gd-acc"><button class="gd-ib" onclick="gdEd('+id+',\'eq:'+i+'\')" title="Editar">✎</button>'
+      +'<button class="gd-ib" onclick="gdEqDel('+id+','+i+')" title="Sacar del equipo">×</button></span></div>';
+  });
+  h+='<div class="mas-sep"></div>';
+  // 7. portal: cuentas que ya entran y un + para invitar a alguien mas
+  var P=_pcDe(id);
+  var cuentas='';
+  if(!P.listo) cuentas='<span style="color:var(--text3)">consultando…</span>';
+  else if(P.error==='sin sesion') cuentas='<span style="color:var(--text3)">sin sincronizar</span>';
+  else if(P.error) cuentas='<span style="color:var(--redx)">'+esc(P.error)+'</span>';
+  else if(!P.filas.length) cuentas='<span style="color:var(--amberx)">sin cuenta</span>';
+  else cuentas=P.filas.map(function(f){
+    return esc(f.email)+' · '+(f.ultimo_acceso
+      ?('entró '+esc(_vtHaceTxt(_horasDesde(f.ultimo_acceso))))
+      :'<span style="color:var(--amberx)">nunca entró</span>');
+  }).join('<br>');
+  h+='<div class="gd-sec"><div><div class="mas-op-t">Portal</div><div class="mas-op-s">'+cuentas+'</div></div>'
+    +'<button class="gd-mas'+(st.portal?' on':'')+'" onclick="gdPortalToggle('+id+')" '
+      +'title="Invitar a alguien al portal">+</button></div>';
+  if(st.portal){
+    var tienen={}; (P.filas||[]).forEach(function(f){ tienen[String(f.email||'').toLowerCase()]=1; });
+    var cand=[];
+    if(c.email && !tienen[String(c.email).toLowerCase()])
+      cand.push({i:-1, nom:c.contacto||c.name||c.email, mail:c.email, rol:'contacto principal'});
+    eq.forEach(function(q,i){
+      var m=_eqMail(q);
+      if(m && !tienen[m.toLowerCase()]) cand.push({i:i, nom:_eqNombre(q)||m, mail:m,
+        rol:(q&&typeof q==='object'&&q.rol)?q.rol:'equipo'});
     });
+    h+='<div class="gd-fila gd-edit" style="margin-top:4px">'
+      +(cand.length
+        ? '<div class="mas-op-s" style="margin-bottom:6px">Elegí a quién crearle la cuenta:</div>'
+          +cand.map(function(x){ return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">'
+            +'<div style="flex:1;min-width:0"><div class="mas-op-t">'+esc(x.nom)+'</div>'
+            +'<div class="mas-op-s">'+esc(x.rol)+' · '+esc(x.mail)+'</div></div>'
+            +'<button class="btn btn-sm btn-primary" onclick="gdPortalInv('+id+','+x.i+')">Invitar</button></div>'; }).join('')
+        : '<div class="mas-op-s">Todos los que tienen mail ya tienen cuenta. Sumá a alguien al equipo con su mail y vuelve a aparecer acá.</div>')
+      +'</div>';
+  }
+  e.innerHTML=h;
+  var f=document.getElementById('gd-in')||document.getElementById('gd-en');
+  if(f && st.ed){ f.focus(); try{ f.select&&f.select(); }catch(x){} }
+}
+function gdEd(id, key){
+  var st=_gdSt(); st.ed=(key&&st.ed!==key)?key:null;
+  if(key==='eq:new'||key===null) {}
+  gdRender(id);
+}
+function gdTxtOk(id, campo){
+  var v=String((document.getElementById('gd-in')||{}).value||'');
+  if(campo==='name' && !v.trim()){ toast('El nombre no puede quedar vacio'); return; }
+  _fichaGuardar(id, campo, v);
+  _gdSt().ed=null; gdRender(id);
+}
+function gdRespOk(id, v){
+  asignarCliente(id, String(v||''));
+  _gdSt().ed=null; gdRender(id);
+}
+function gdProdOk(id, prodId){
+  var c=_gdCli(id); if(!c) return;
+  var p=prodId?_prodPorId(prodId):null;
+  if(p){
+    c.productoId=p.id; c.producto=p.nombre;
+    var v=_prodActual(p);
+    c.productoVersion=v?{id:v.id, n:(p.versiones||[]).length, fecha:v.fecha||''}:null;
+  } else { c.productoId=''; c.producto=''; c.productoVersion=null; }
+  save();
+  if(typeof renderClient==='function') renderClient();
+  _gdSt().ed=null; gdRender(id);
+}
+function gdCerroOk(id, quien, v){
+  var c=_gdCli(id); if(!c) return;
+  v=String(v||'').trim();
+  if(v) c[quien]=v; else delete c[quien];
+  save();
+  if(typeof renderClient==='function') renderClient();
+  gdRender(id);
+}
+function gdContratoOk(id){
+  var c=_gdCli(id); if(!c) return;
+  var url=String((document.getElementById('gd-in')||{}).value||'').trim();
+  c.contract=c.contract||{};
+  if(url){ c.contract.driveUrl=url; c.contract.fileName=c.contract.fileName||'Contrato (Drive)'; }
+  else { c.contract.driveUrl=null; }
+  save();
+  if(typeof renderClient==='function') renderClient();
+  _gdSt().ed=null; gdRender(id);
+}
+function gdContratoIA(id){
+  var c=_gdCli(id); if(!c||!(c.contract||{}).driveUrl) return;
+  extractContractWithAI(id, null, c.contract.driveUrl);
+}
+function gdEqOk(id, i){
+  var c=_gdCli(id); if(!c) return;
+  var v=function(k){ return String((document.getElementById(k)||{}).value||'').trim(); };
+  var nom=v('gd-en'), mail=v('gd-em'), rol=v('gd-er');
+  if(!nom && !mail){ toast('Poné al menos el nombre o el mail'); return; }
+  c.equipo=c.equipo||[];
+  if(i>=0 && c.equipo[i]!==undefined){
+    var p=c.equipo[i];
+    if(typeof p!=='object'){ p={}; c.equipo[i]=p; }
+    // Se escribe encima: el telefono y las fechas de invitacion viven ahi.
+    p.nombre=nom||mail; p.email=mail;
+    if(rol) p.rol=rol; else delete p.rol;
+  } else {
+    var n={nombre:nom||mail, email:mail}; if(rol) n.rol=rol;
+    c.equipo.push(n);
+  }
+  save();
+  if(typeof renderClient==='function') renderClient();
+  _gdSt().ed=null; gdRender(id);
+}
+function gdEqDel(id, i){
+  eqBorrar(id, i);                       // pregunta antes y avisa si ya estaba invitado
+  setTimeout(function(){ _gdSt().ed=null; gdRender(id); }, 60);
+}
+function gdPortalToggle(id){
+  var st=_gdSt(); st.portal=!st.portal; st.ed=null; gdRender(id);
+}
+function gdPortalInv(id, i){
+  var r=portalInvitar(id, i);
+  if(r&&r.then) r.then(function(){ gdRender(id); });
+}
+function genteAbrir(clientId, btn){
+  var c=_gdCli(clientId);
+  if(!c) return;
+  S._gd={ed:null, portal:false};
+  var e=_masMenu();
+  e.style.width='340px';
+  e.style.maxHeight='calc(100vh - 90px)';
+  e.style.overflowY='auto';
+  gdRender(clientId);
+  var P=_pcDe(c.id);
+  if(!P.listo && !P.cargando){
+    portalCuentasCargar(c.id).then(function(){ gdRender(c.id); });
   }
   e.style.display='block';
   document.querySelectorAll('.hdr-ico.on').forEach(function(b){ b.classList.remove('on'); });
   if(btn&&btn.classList) btn.classList.add('on');
   setTimeout(function(){ document.addEventListener('click', masCerrar, {once:true}); }, 0);
-  window.addEventListener('scroll', masCerrar, {once:true, capture:true});
+  // El menu ahora scrollea por dentro: el scroll de adentro no lo tiene que cerrar.
+  var _sc=function(ev){
+    var t=ev&&ev.target;
+    if(t && t.closest && t.closest('#mas-menu')){
+      window.addEventListener('scroll', _sc, {once:true, capture:true}); return;
+    }
+    masCerrar();
+  };
+  window.addEventListener('scroll', _sc, {once:true, capture:true});
   window.addEventListener('resize', masCerrar, {once:true});
   var r=btn.getBoundingClientRect();
-  var alto=e.offsetHeight||220;
+  var alto=Math.min(e.offsetHeight||520, window.innerHeight-90);
   var abajo=(window.innerHeight-r.bottom);
-  e.style.left=Math.max(8, Math.min(r.right-260, window.innerWidth-268))+'px';
-  e.style.top=(abajo>alto+12 ? (r.bottom+6) : Math.max(8, r.top-alto-6))+'px';
+  e.style.left=Math.max(8, Math.min(r.right-340, window.innerWidth-348))+'px';
+  e.style.top=(abajo>alto+12 ? (r.bottom+6) : Math.max(8, window.innerHeight-alto-12))+'px';
 }
 // Abre el material del cliente ya bajado en el contrato.
 function irAlContrato(clientId){
