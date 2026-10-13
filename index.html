@@ -9364,6 +9364,7 @@ async function fathomWebhookSync(silent){
       _llDuracionesDe(c);
       (c.fathomCalls||[]).forEach(function(cl){ if(cl._cid===c.id) _fathomUpsertMilestone(c,cl); });
       _fathomSortMilestones(c);
+      queHaceAuto(c);
     });
     save();
     /* ⚠️  HAY QUE ESPERAR LA SUBIDA ANTES DE MARCARLAS PROCESADAS.
@@ -11138,6 +11139,34 @@ function _ctxResumenHtml(c){
      pantalla para sumar uno o para leer el que ya estaba. Las dos cosas ya
      existen -`docPegarModal` sin indice crea, con indice abre-, solo faltaba
      engancharlas. */
+  /* El dataset de oferta vive en Documentos (Angie, 13/10/2026): ya no se
+     incrusta en la ficha. Son dos filas que salen de `c.oferta`, la de equipo y
+     la vista para el cliente; abren el artifact, que es privado. */
+  var ofDoc='';
+  (function(){
+    var o=c.oferta||null; if(!o||!o.texto) return;
+    var okU=function(u){ return (typeof u==='string'
+      && /^https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]{6,64}$/.test(u))?u:''; };
+    var u=okU(o.url), uc=okU(o.urlCliente);
+    var fila=function(tit, sub, link, copia){
+      return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;'
+          +'border-bottom:1px solid var(--border)">'
+        +punto(true,'Dataset de oferta')
+        +'<span style="flex:1;min-width:0;font-size:12.5px;color:var(--text);overflow:hidden;'
+          +'text-overflow:ellipsis;white-space:nowrap">'+esc(tit)
+          +'<span style="color:var(--text3)"> \u00b7 '+esc(sub)+'</span></span>'
+        +(link?('<a href="'+esc(link)+'" target="_blank" rel="noopener" class="btn btn-sm" '
+          +'style="flex:none;font-size:10.5px;padding:2px 8px;text-decoration:none">Abrir</a>'):'')
+        +(copia?('<button type="button" class="btn btn-sm" style="flex:none;font-size:10.5px;padding:2px 8px" '
+          +'title="Copia el link de la vista para el cliente (sin lo interno)" '
+          +'onclick="(navigator.clipboard&&navigator.clipboard.writeText(\''+esc(copia)+'\'));'
+          +'if(typeof toast===\'function\')toast(\'Link de la vista cliente copiado\')">Copiar link</button>'):'')
+      +'</div>';
+    };
+    ofDoc=fila('Dataset de oferta', o.texto, u, '')
+      +(uc?fila('Dataset de oferta, vista cliente', 'sin lo interno', uc, uc):'');
+  })();
+
   var der=bloque('Documentos',
     '<span style="display:flex;gap:6px;align-items:center;flex:none">'
     +(ds.length?('<span style="font-size:10.5px;color:var(--text3)">'+ds.length+'</span>'):'')
@@ -11148,7 +11177,7 @@ function _ctxResumenHtml(c){
       +'onclick="event.stopPropagation();docPegarModal('+c.id+')" '
       +'title="Pegar un documento">+</button>'
     +'</span>',
-    ds.length
+    ofDoc+(ds.length
       ? ds.map(function(d, _i){
           // Los archivados no entran en ningun analisis, asi que no pueden
           // decir "leido": era la unica etiqueta y afirmaba lo contrario.
@@ -11176,7 +11205,7 @@ function _ctxResumenHtml(c){
                 +'rgba(200,255,71,.3);border-radius:99px;padding:0 8px">leido</span>'))
           +'</button>';
         }).join('')
-      : vacio('Ninguno. Toc\u00e1 + para pegar uno, o Subir para cargar un archivo.'));
+      : (ofDoc?'':vacio('Ninguno. Toc\u00e1 + para pegar uno, o Subir para cargar un archivo.'))));
 
   // Que el cliente nos dio accesos es de las cosas que hay que ver sin abrir
   // nada: cambia si se puede trabajar o si hay que ir a pedirlos. Se listan las
@@ -21062,7 +21091,6 @@ function showTickets(){
          avisos del cliente, y volver a mostrarlo es sumarlo de nuevo aca. */
       ? ((_tkAlarmasHtml()||_torreVacio('Alarmas de clientes','Ningun cliente esta fuera de benchmark ahora.'))
          +mpPanelHtml()
-         +incompletosHtml()
          +rvPanelHtml())
       :((soloCartera()&&_torre!=='calendario'&&_torre!=='dashboard')?p360Html()
       :(_torre==='estaticos'?estaticosHtml()
@@ -31639,7 +31667,6 @@ function renderTab(){
           ${fathomCallsHTML(c)}
           ${_fathomMapeoHtml(c)}
           ${_ctxResumenHtml(c)}
-          ${(typeof _ofertaEmbedHtml==='function')?_ofertaEmbedHtml(c):''}
           ${(typeof _repEmbedHtml==='function')?_repEmbedHtml(c):''}
         </div>
 
@@ -33687,6 +33714,7 @@ async function createClient(){
   try{ plantillaCargar(nuevoId, true); }
   catch(e){ console.error('no pude cargar la plantilla de etapas:', e); }
   save();
+  try{ queHaceAuto(DB.clients.find(function(x){ return x.id===nuevoId; })); }catch(e){}
   closeModal();renderSidebar();showOverview();
   toast((ghlLoc&&ghlLoc.id) ? 'Cliente y subcuenta creados OK' : 'Cliente creado OK');
   // Recien aca, con el cliente ya guardado. Si la invitacion falla, portalInvitar
@@ -35950,7 +35978,23 @@ function queHaceGuardar(clientId){
   save();
   renderTab();
 }
-async function queHaceLeer(clientId){
+/* Se escribe solo (Angie, 13/10/2026): al dar de alta al cliente o cuando entra
+   su primera llamada, sin que nadie toque un boton. Una vez por sesion y por
+   cliente; sin clave o sin material no hace nada y no avisa. */
+function queHaceAuto(c){
+  try{
+    if(!c || _queHace(c)) return;
+    S._qhAuto=S._qhAuto||{};
+    if(S._qhAuto[c.id]) return;
+    var k=localStorage.getItem('evold-anthropic-key');
+    if(!k && !(typeof iaPorOtroLado==='function' && iaPorOtroLado())) return;
+    var m=_llamadasParaIA(c);
+    if(!m || !m.items || !m.items.length) return;
+    S._qhAuto[c.id]=1;
+    queHaceLeer(c.id, true).catch(function(){});
+  }catch(e){}
+}
+async function queHaceLeer(clientId, silencioso){
   var c=DB.clients.find(function(x){return x.id===clientId;});
   if(!c) return;
   var apiKey=localStorage.getItem('evold-anthropic-key');
@@ -35960,6 +36004,7 @@ async function queHaceLeer(clientId){
   // y el cartel de estado no existe. Sin este respaldo, "falta la clave" o "no
   // hay llamadas" no se veian en ningun lado.
   var decir=function(t,col){
+    if(silencioso) return;
     if(e){ e.textContent=t; e.style.color=col||'var(--text3)'; return; }
     if(typeof toast==='function') toast(t, (col==='var(--amberx)')?'amber':null);
   };
