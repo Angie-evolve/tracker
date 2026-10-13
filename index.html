@@ -65173,6 +65173,17 @@ function tlCard(o){
   if(document.body) arrancar(); else document.addEventListener('DOMContentLoaded', arrancar);
 })();
 
+// Los tickets de un cliente: las tareas con numero, abiertas o hechas.
+function _ticketsDe(c){
+  return (c.tasks||[]).filter(function(t){
+    return t && t.ticket && String(t.ticket).trim() && !t.deleted && !t.archivada;
+  });
+}
+function _tsTicket(t){
+  var d=Date.parse(t.delegatedAt||''); if(!isNaN(d)) return d;
+  if(+t.id>1e12) return +t.id;
+  d=Date.parse(t.due||''); return isNaN(d)?0:d;
+}
 function fathomCallsHTML(c){
   const calls = c.fathomCalls||[];
   const _dup=_fathomDuplicadas(c);
@@ -65194,6 +65205,8 @@ function fathomCallsHTML(c){
       +'<div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.55">Se sincronizan solas, pero solo las que pasaron desde que se conecto Fathom. Si son anteriores, traelas del historial.</div>'
       +btnAgregar
       +'</div>'
+      +_ticketsDe(c).sort(function(a,b){ return _tsTicket(b)-_tsTicket(a); })
+        .map(function(t){ return '<div style="margin-top:8px">'+renderTaskRow(t, c.id, 'tl')+'</div>'; }).join('')
       +sug
       +citasProximasHtml(c);
   }
@@ -65224,9 +65237,17 @@ function fathomCallsHTML(c){
   // cambiar un display, no volver a construir la lista.
   // Con cuatro o mas, las llamadas van en una rueda que gira sin fin (Angie,
   // 12/10/2026); con menos, la lista de siempre.
-  var _rueda = calls.length>=4;
-  var _cards = '';
-  calls.forEach(function(cl, _i){
+  /* Llamadas y tickets del cliente en una sola linea de tiempo, de la mas
+     reciente a la mas vieja (Angie, 13/10/2026). */
+  var _tsTxt=function(txt){
+    var m=String(txt||'').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if(m) return new Date(+m[3],+m[2]-1,+m[1]).getTime();
+    var d=Date.parse(String(txt||'')); return isNaN(d)?0:d;
+  };
+  var _items=[];
+  var _callsOrd=calls.map(function(x,k){ return {x:x,k:k,t:_tsTxt(x.date)}; })
+    .sort(function(a,b){ return (b.t-a.t)||(a.k-b.k); }).map(function(o){ return o.x; });
+  _callsOrd.forEach(function(cl, _i){
     var sat = cl.sentiment==='satisfecho';
     const linkedOpp = opps.find(function(o){return o.id===cl.linkedOppId;});
     const isSqlLinked = linkedOpp && linkedOpp._sql;
@@ -65261,22 +65282,34 @@ function fathomCallsHTML(c){
       +((cl.transcript&&(S._fcTrAbiertos||{})[cl.id])
         ?('<div class="fc-res" style="max-height:340px;overflow:auto;white-space:pre-wrap;font-size:11.5px;line-height:1.6">'
           +esc(cl.transcript)+'</div>'):'');
-    _cards += tlCard({
+    _items.push({t:_tsTxt(cl.date), h: tlCard({
       tipo:'call', etiqueta:'Llamada',
       fecha: esc(cl.date||'')+(cl.duration?(' · '+esc(cl.duration)):''),
       titulo: esc(cl.title||'Llamada'),
       chips: chips, acciones: acc, cuerpo: cuerpo, abierta: abierta,
-      toggle: "tlToggle("+c.id+",'"+cl.id+"',"+(_i===0?'true':'false')+")",
-      oculta: !_rueda && _i>=3
-    });
+      toggle: "tlToggle("+c.id+",'"+cl.id+"',"+(_i===0?'true':'false')+")"
+    }) });
   });
+  _ticketsDe(c).forEach(function(t){ _items.push({t:_tsTicket(t), h:renderTaskRow(t, c.id, 'tl')}); });
+  _items.sort(function(a,b){ return b.t-a.t; });
+  var _n=_items.length;
+  var _rueda = _n>=4;
+  var _cards = _items.map(function(it, i){
+    // Sin rueda, las que pasan de 3 arrancan ocultas; el boton las muestra.
+    return (!_rueda && i>=3)
+      ? it.h.replace('<div class="tl ', '<div data-callx="1" style="display:none" class="tl ')
+      : it.h;
+  }).join('');
+  var _nT=_n-calls.length;
   html += _rueda
-    ? ('<div class="tl-rueda-ayuda">'+calls.length+' llamadas \u00b7 deslizá para recorrerlas, vuelve al principio solo</div>'
+    ? ('<div class="tl-rueda-ayuda">'+calls.length+' llamada'+(calls.length===1?'':'s')
+       +(_nT?(' y '+_nT+' ticket'+(_nT===1?'':'s')):'')
+       +' \u00b7 deslizá para recorrerlas, vuelve al principio solo</div>'
        +'<div class="tl-rueda" id="rueda-'+c.id+'"><div class="tl-rueda-in">'+_cards+'</div></div>')
     : _cards;
-  if(!_rueda && calls.length>3){
+  if(!_rueda && _n>3){
     html += '<button class="btn btn-sm" id="fc-ver" onclick="verTodasLasLlamadas(this)" '
-      +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(calls.length-3)+'</button>';
+      +'style="font-size:11px;padding:3px 9px;margin-top:2px">Ver las otras '+(_n-3)+'</button>';
   }
   // Solo si hay algo que completar y de donde sacarlo.
   var _recuperables=calls.filter(function(cl){
