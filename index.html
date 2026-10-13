@@ -38595,7 +38595,9 @@ function p360Agendar(clientId, elegir){
   var _ids=elegir
     ? {fecha:'cita-fecha', hora:'cita-hora', etapa:'cita-etapa', caja:'cita-huecos'}
     : {fecha:'cita-fecha', hora:'cita-hora', et:et, caja:'cita-huecos'};
-  if(cal){ citasSemanaCargar(c.id, _ids); citasQuienCargar(c.id, _ids); }
+  // Quien primero: marca que se esta esperando la eleccion antes de que la
+  // semana se pinte, y la semana muestra el aviso en vez de los horarios.
+  if(cal){ citasQuienCargar(c.id, _ids); citasSemanaCargar(c.id, _ids); }
 }
 // Se cierra sola cuando la cita quedo: mirar si aparecio es mas confiable que
 // confiar en que la funcion de abajo no fallo en el medio.
@@ -39139,13 +39141,25 @@ async function citasQuienCargar(clientId, ids){
   if(!caja) return;
   var et=ids.et || (document.getElementById('cita-etapa')||{}).value||'';
   var cal=_citaCalElegido(et);
+  /* ⚠️  SIN ELEGIR QUIEN, NO HAY HORARIOS. Arrancaba en "Como venga" y la
+     semana mostraba los huecos de cualquiera del equipo: Santi agendo Upwize
+     el jueves a las 16, que Angie tenia ocupado, y GHL se la asigno a Martin
+     sin que nadie lo eligiera. Mientras esto carga o nadie eligio, la semana
+     muestra el aviso. */
+  S._quienElegido=false;
+  S._quienPend=!!cal;
+  var _destrabar=function(){
+    S._quienPend=false; S._quienElegido=true;
+    var sm=S._sem||{};
+    if(sm.ids&&sm.ids.caja==='cita-huecos') citasSemanaCargar(sm.clientId, sm.ids, sm.lunes);
+  };
   if(!cal){ caja.innerHTML=''; return; }
   caja.innerHTML='<span style="font-size:10.5px;color:var(--text3)">Buscando al equipo\u2026</span>';
   try{
     var r=await agLlamar({accion:'personas', calendarId:cal});
     var ps=(r&&r.personas)||[];
     // Con una sola persona no hay nada que elegir: el desplegable seria ruido.
-    if(ps.length<2){ caja.innerHTML=''; return; }
+    if(ps.length<2){ caja.innerHTML=''; _destrabar(); return; }
     /* Pastillas y no un desplegable: es la primera pregunta del popup y son
        cuatro personas, asi que verlas todas cuesta menos que abrir una lista.
        El valor sigue viviendo en un input con el id de siempre, para que
@@ -39163,11 +39177,16 @@ async function citasQuienCargar(clientId, ids){
       +'<input type="hidden" id="cita-quien" value="">'
       +'<div class="cs-pers">'
       +ps.map(function(x){ return _pill(x.id, x.nombre, x.mail, false); }).join('')
-      +_pill('', 'Como venga', '', true)
-      +'</div>';
+      +_pill('', 'Como venga', '', false)
+      +'</div>'
+      +'<div id="cita-quien-nota" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5"></div>';
+    S._quienPend=false;
+    var sm=S._sem||{};
+    if(sm.ids&&sm.ids.caja==='cita-huecos') citasSemanaCargar(sm.clientId, sm.ids, sm.lunes);
   }catch(e){
     caja.innerHTML='<span style="font-size:10.5px;color:var(--amberx)">No pude traer el '
       +'equipo de ese calendario: '+esc((e&&e.message)||'')+'</span>';
+    _destrabar();
   }
 }
 
@@ -39515,6 +39534,13 @@ async function citasSemanaCargar(clientId, ids, lunes){
   var lun=lunes||_csLunesDe((document.getElementById(ids.fecha)||{}).value||'');
   var dias=_csDias(lun);
   S._sem={clientId:clientId, ids:ids, lunes:lun, dias:dias, porDia:{}};
+  if(ids.caja==='cita-huecos' && (S._quienPend
+      || (document.getElementById('cita-quien') && !S._quienElegido))){
+    caja.innerHTML='<span class="cs-aviso">'+(S._quienPend
+      ? 'Buscando quién puede tomarla…'
+      : 'Elegí quién la toma para ver sus horarios.')+'</span>';
+    return;
+  }
   caja.innerHTML='<span class="cs-aviso">Buscando los horarios de la semana…</span>';
   var _q=_citaQuien();
   try{
@@ -39700,6 +39726,10 @@ function _csResumen(){
 function citasQuienElegir(id, nom, mail){
   var i=document.getElementById('cita-quien');
   if(i) i.value=String(id||'');
+  S._quienElegido=true;
+  var nt=document.getElementById('cita-quien-nota');
+  if(nt) nt.textContent=id ? ''
+    : 'GHL se la asigna a quien esté libre en ese horario: puede quedar a nombre de cualquiera del equipo.';
   S._quienNom=String(nom||'');
   S._quienMail=String(mail||'').trim().toLowerCase();
   var caja=document.getElementById('cita-quien-caja');
@@ -39847,6 +39877,11 @@ async function citasAgendarGhl(clientId){
   var h=(document.getElementById('cita-hora')||{}).value||'';
   var et=(document.getElementById('cita-etapa')||{}).value||'';
   if(!f||!et){ _citasDecir(clientId,'Falta la fecha y la etapa.','var(--amberx)'); return; }
+  // Sin elegir quien la toma no se agenda: "Como venga" tiene que ser una
+  // decision, no lo que queda si nadie toco nada.
+  if(document.getElementById('cita-quien') && !S._quienElegido){
+    _citasDecir(clientId,'Elegí quién la toma antes de agendar.','var(--amberx)'); return;
+  }
   var mail=String(c.contactoEmail||c.email||'').trim();
   if(!mail){
     _citasDecir(clientId,'Este cliente no tiene mail en la ficha, y es con eso que se '
