@@ -21143,7 +21143,7 @@ function showTickets(){
       /* El panel de revisiones ("Pendientes de esta semana") se saco del Mirador
          el 13/10/26: los informes los arman las rutinas de reporte. `rvPanelHtml`
          queda definida. */
-      ? (mpPanelHtml())
+      ? (mpPanelHtml()+rtHistorialHtml())
       :((soloCartera()&&_torre!=='calendario'&&_torre!=='dashboard')?p360Html()
       :(_torre==='estaticos'?estaticosHtml()
       :(_torre==='editor'?editorIaHtml()
@@ -25912,6 +25912,111 @@ function rvFilaRespondida(c, r, chip){
           +'</div>';
 }
 
+/* ── Historial de reportes / rutinas (Angie, 14/10/2026) ───────────────────
+   Como el "Historial por semana" de los informes, pero de las corridas del
+   reporte de campañas de cada mañana: cuándo corrió, cuánto tardó, si salió, y
+   lo más importante que encontró. Lo escribe la propia rutina al terminar en
+   Storage (material/reportes/historial.json); el tracker solo lo lee. */
+function _rtHistCargar(){
+  if(S._rtHist&&S._rtHist.cargando) return;
+  S._rtHist={cargando:true, lista:(S._rtHist&&S._rtHist.lista)||null};
+  (async function(){
+    try{
+      if(typeof sbRenovar==='function' && SB.exp && Date.now()>SB.exp-60000){ try{ await sbRenovar(); }catch(e){} }
+      var r=await fetch(SB_URL+'/storage/v1/object/sign/'+REP_BUCKET+'/reportes/historial.json',{method:'POST',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB.token,'Content-Type':'application/json'},
+        body:JSON.stringify({expiresIn:300})});
+      var d=await r.json(); var u=d.signedURL||d.signedUrl;
+      if(!r.ok||!u) throw new Error((d&&d.message)||('HTTP '+r.status));
+      var r2=await fetch(SB_URL+'/storage/v1'+u);
+      if(!r2.ok) throw new Error('HTTP '+r2.status);
+      var l=await r2.json();
+      S._rtHist={lista:Array.isArray(l)?l:[], at:Date.now()};
+    }catch(e){ S._rtHist={lista:[], error:(e&&e.message)||'no se pudo leer'}; }
+    var caja=document.getElementById('rt-hist'); if(caja) caja.outerHTML=rtHistorialHtml();
+  })();
+}
+function rtHistToggle(k){
+  S._rtHistAb=S._rtHistAb||{}; S._rtHistAb[k]=!S._rtHistAb[k];
+  var caja=document.getElementById('rt-hist'); if(caja) caja.outerHTML=rtHistorialHtml();
+}
+function rtHistorialHtml(){
+  var H=S._rtHist;
+  // Una vez por hora como mucho: la rutina escribe una vez por dia.
+  if(!H || (!H.cargando && Date.now()-(H.at||0)>3600000 && !H.error)) _rtHistCargar();
+  H=S._rtHist||{};
+  var caja=function(dentro){
+    return '<div id="rt-hist" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);'
+      +'padding:14px 16px;margin-top:14px">'+dentro+'</div>';
+  };
+  var lista=H.lista||[];
+  var titulo='<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px">'
+    +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Historial de reportes</span>'
+    +(lista.length?'<span style="font-size:11px;color:var(--text3)">'+lista.length+' corrida'+(lista.length===1?'':'s')+'</span>':'')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">'
+      +'Cada mañana corre el reporte de campañas de todos los clientes. Acá queda cada corrida: cuándo, cuánto tardó, '
+      +'si salió y lo más importante que encontró. '
+      +'<a href="https://claude.ai/artifact/F1J8citMuggCdQ8T95w996" target="_blank" rel="noopener" '
+        +'style="color:var(--accent);text-decoration:none">Abrir el resumen de hoy</a></div>';
+  if(!H.lista && H.cargando) return caja(titulo+'<div style="padding:18px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">Cargando…</div>');
+  if(H.error) return caja(titulo+'<div style="padding:18px 6px;font-size:12px;color:var(--amberx);border-top:1px solid var(--border)">'
+    +'No pude leer el historial: '+esc(H.error)+'</div>');
+  if(!lista.length) return caja(titulo+'<div style="padding:18px 6px;font-size:12px;color:var(--text3);border-top:1px solid var(--border)">Todavía no hay corridas anotadas.</div>');
+  var D=['dom','lun','mar','mié','jue','vie','sáb'];
+  var fdia=function(iso){ var d=new Date(iso); return D[d.getDay()]+' '+d.getDate()+'/'+(d.getMonth()+1); };
+  var fhora=function(iso){ var d=new Date(iso); return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); };
+  var dur=function(m){ if(m==null) return ''; return m<60?(m+' min'):(Math.floor(m/60)+' h'+(m%60?(' '+m%60+' min'):'')); };
+  var semanas={}, orden=[];
+  lista.forEach(function(x){
+    var k=(typeof _rvLunesDe==='function')?_rvLunesDe(x.inicio):String(x.inicio).slice(0,10);
+    if(!semanas[k]){ semanas[k]=[]; orden.push(k); }
+    semanas[k].push(x);
+  });
+  S._rtHistAb=S._rtHistAb||{};
+  var semAct=(typeof rvSemanaActual==='function')?rvSemanaActual():'';
+  var num=function(v,color){ return '<span style="font-size:12px;color:'+color+';font-weight:600">'+v+'</span>'; };
+  var html=orden.slice(0,26).map(function(k,ix){
+    var g=semanas[k];
+    // La semana en curso arranca abierta: es la que se mira.
+    var ab=(S._rtHistAb[k]===undefined)?(k===semAct||ix===0):!!S._rtHistAb[k];
+    var ok=g.filter(function(x){ return x.estado==='ok'; }).length, mal=g.length-ok;
+    var ms=g.map(function(x){ return x.minutos; }).filter(function(m){ return m!=null; });
+    var prom=ms.length?Math.round(ms.reduce(function(a,b){return a+b;},0)/ms.length):null;
+    return '<div style="border-top:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:center;gap:12px;padding:11px 6px;cursor:pointer" onclick="rtHistToggle(\''+k+'\')">'
+        +'<span style="font-size:9px;color:var(--text3);display:inline-block;transform:rotate('+(ab?'90':'0')+'deg);transition:transform .15s">&#9654;</span>'
+        +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;color:var(--strong)">'
+          +((typeof rvSemanaTexto==='function')?rvSemanaTexto(k):esc(k))
+          +(k===semAct?' <span style="font-size:10px;color:var(--accent)">&middot; en curso</span>':'')+'</div>'
+          +(prom!=null?'<div style="font-size:10.5px;color:var(--text3);margin-top:2px">tardó '+dur(prom)+' en promedio</div>':'')+'</div>'
+        +'<div style="display:flex;gap:14px;align-items:baseline;flex-shrink:0">'
+          +'<span style="font-size:10.5px;color:var(--text3)">'+num(ok,'var(--accent)')+' salieron</span>'
+          +(mal?'<span style="font-size:10.5px;color:var(--text3)">'+num(mal,'var(--redx)')+' fallaron</span>':'')
+        +'</div></div>'
+      +(ab?('<div style="padding:2px 6px 12px 14px">'+g.map(function(x){
+          var kk='c:'+x.inicio, abierta=!!S._rtHistAb[kk];
+          return '<div style="border-top:1px solid var(--border);padding:8px 0">'
+            +'<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;cursor:pointer" onclick="rtHistToggle(\''+kk+'\')">'
+              +'<span style="font-size:12px;color:var(--text);min-width:92px">'+esc(fdia(x.inicio))+' · '+esc(fhora(x.inicio))+'</span>'
+              +'<span style="font-size:10.5px;padding:1px 8px;border-radius:20px;'
+                +(x.estado==='ok'?'background:rgba(200,255,71,.12);color:var(--accent)">salió':'background:rgba(240,96,60,.12);color:var(--redx)">falló')+'</span>'
+              +(x.minutos!=null?'<span style="font-size:11px;color:var(--text3)">'+dur(x.minutos)+'</span>':'')
+              +(x.clientes?'<span style="font-size:11px;color:var(--text3)">'+x.clientes+' reportes</span>':'')
+              +(x.propuestos?'<span style="font-size:11px;color:var(--text3)">'+x.propuestos+' cambios propuestos</span>':'')
+              +'<span style="flex:1;min-width:120px;font-size:11.5px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                +esc(String(x.motivo||x.texto||'').split('\n')[0])+'</span>'
+            +'</div>'
+            +(abierta?('<div style="font-size:12px;color:var(--text2);line-height:1.65;white-space:pre-wrap;margin:8px 0 2px;'
+                +'padding:10px 12px;background:var(--bg3);border-radius:var(--radius)">'+esc(x.texto||'')
+                +(x.motivo?'\n\n'+esc(x.motivo):'')+'</div>'
+              +(x.resumenUrl&&/^https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+$/.test(x.resumenUrl)
+                ?'<a href="'+esc(x.resumenUrl)+'" target="_blank" rel="noopener" style="font-size:11.5px;color:var(--accent);text-decoration:none">Abrir el resumen</a>':'')):'')
+          +'</div>';
+        }).join('')+'</div>'):'')
+    +'</div>';
+  }).join('');
+  return caja(titulo+html);
+}
 function rvPanelHtml(){
   var chip=function(txt, color, bg){
     return '<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:'+bg+';color:'+color+'">'+txt+'</span>';
