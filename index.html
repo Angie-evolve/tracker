@@ -15755,6 +15755,10 @@ function toggleTicketMenu(cid,tid,btn){
     +'<div class="tk-menu-item" onclick="comModal('+cid+','+tid+')"><i class="ti ti-message"></i>Comentarios'
       +(_comLista(t).length?(' <span style="color:var(--text3)">('+_comLista(t).length+')</span>'):'')+'</div>'
     +'<div class="tk-menu-item" onclick="ticketEditarModal('+cid+','+tid+')"><i class="ti ti-edit"></i>Editar tarea</div>'
+    +(t.recurrente
+      ? '<div class="tk-menu-item" onclick="tkRecurrenteQuitar('+cid+','+tid+')"><i class="ti ti-repeat-off"></i>Dejar de repetir'
+        +' <span style="color:var(--text3)">('+esc(tkRecTexto(t.recurrente))+')</span></div>'
+      : '<div class="tk-menu-item" onclick="tkRecurrenteModal('+cid+','+tid+')"><i class="ti ti-repeat"></i>Hacer recurrente</div>')
     +'<div class="tk-menu-item" onclick="ticketArchivar('+cid+','+tid+')"><i class="ti ti-archive"></i>'
       +(t.archivada?'Desarchivar':'Archivar &mdash; no la vamos a hacer')+'</div>'
     +'<div class="tk-menu-item" style="color:var(--redx)" onclick="ticketEliminar('+cid+','+tid+')"><i class="ti ti-trash"></i>Eliminar</div>';
@@ -15765,6 +15769,109 @@ function toggleTicketMenu(cid,tid,btn){
     });
   },0);
 }
+/* ── Tickets recurrentes (Angie, 14/10/2026) ───────────────────────────────
+   Una tarea que se repite (el reporte del lunes, revisar la cuenta cada mes)
+   se marca una vez. Cuando se la marca hecha, se crea la siguiente con otro
+   numero de ticket y el vencimiento corrido un periodo; la hecha queda como
+   historial. "Dejar de repetir" saca la marca y no crea mas.
+   `recurrente`: {cada:'semana'|'quincena'|'mes'|'dias', n, desde}. */
+function tkRecTexto(r){
+  if(!r) return '';
+  if(r.cada==='semana') return 'cada semana';
+  if(r.cada==='quincena') return 'cada 2 semanas';
+  if(r.cada==='mes') return 'cada mes';
+  var n=parseInt(r.n,10)||1; return 'cada '+n+' día'+(n===1?'':'s');
+}
+function _tkRecSumar(d, r){
+  var x=new Date(d.getTime());
+  if(r.cada==='semana') x.setDate(x.getDate()+7);
+  else if(r.cada==='quincena') x.setDate(x.getDate()+14);
+  else if(r.cada==='mes') x.setMonth(x.getMonth()+1);
+  else x.setDate(x.getDate()+Math.max(1,parseInt(r.n,10)||1));
+  return x;
+}
+function tkRecurrenteModal(cid, tid){
+  document.querySelectorAll('.tk-menu').forEach(function(m){ m.remove(); });
+  var c=(DB.clients||[]).find(function(x){ return x.id===cid; });
+  var t=c&&(c.tasks||[]).find(function(x){ return x.id===tid; }); if(!t) return;
+  var est='box-sizing:border-box;font-size:13px;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-family:var(--font)';
+  var op=function(v,l){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:var(--text);cursor:pointer">'
+    +'<input type="radio" name="tkr-cada" value="'+v+'"'+(v==='semana'?' checked':'')+'>'+l+'</label>'; };
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:460px">'
+      +'<div class="modal-title">Hacer recurrente</div>'
+      +'<div class="modal-sub" style="line-height:1.5">'+esc(t.ticket||'')+' · '+esc(String(t.text||'').slice(0,140))+'</div>'
+      +'<div style="margin-top:12px">'+op('semana','Cada semana')+op('quincena','Cada 2 semanas')+op('mes','Cada mes')
+        +'<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:var(--text);cursor:pointer">'
+          +'<input type="radio" name="tkr-cada" value="dias">Cada <input id="tkr-n" type="number" min="1" max="365" value="3" '
+          +'style="'+est+';width:64px" onfocus="document.querySelector(\'input[name=tkr-cada][value=dias]\').checked=true"> días</label>'
+      +'</div>'
+      +'<div style="font-size:11.5px;color:var(--text3);line-height:1.55;margin-top:8px">Cuando la marques hecha, se crea la '
+        +'siguiente con otro número de ticket y el vencimiento corrido. La hecha queda en el historial.</div>'
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="tkRecurrenteGuardar('+cid+','+tid+')">Guardar</button></div>'
+    +'</div></div>';
+}
+function tkRecurrenteGuardar(cid, tid){
+  var cada=String((document.querySelector('input[name="tkr-cada"]:checked')||{}).value||'semana');
+  var n=Math.max(1,Math.min(365,parseInt((document.getElementById('tkr-n')||{}).value,10)||1));
+  var r={cada:cada, desde:new Date().toISOString()}; if(cada==='dias') r.n=n;
+  closeModal();
+  _tkGuardarCampos([{cid:cid, tid:tid, campos:{recurrente:r}}]).then(function(mal){
+    showTickets(); if(!mal.length) toast('Tarea recurrente: '+tkRecTexto(r)+'.');
+  });
+}
+function tkRecurrenteQuitar(cid, tid){
+  document.querySelectorAll('.tk-menu').forEach(function(m){ m.remove(); });
+  _tkGuardarCampos([{cid:cid, tid:tid, campos:{recurrente:undefined}}]).then(function(mal){
+    showTickets(); if(!mal.length) toast('Ya no se repite. La tarea queda como está.');
+  });
+}
+// Las hechas que repiten y todavia no tienen la siguiente. Se mira cada vez que
+// se abre Tickets: no importa por cual de los caminos se marco hecha.
+function tkRecurrentesSiguientes(){
+  // Mientras se guarda la tanda anterior no se arma otra: showTickets se llama
+  // seguido y crearia la misma siguiente dos veces.
+  if(S._tkRecEnCurso) return 0;
+  var aplicar={}, n=0, ahora=new Date(), hoy=new Date(); hoy.setHours(0,0,0,0);
+  (DB.clients||[]).forEach(function(c){
+    if(c.archived) return;
+    (c.tasks||[]).forEach(function(t){
+      if(!t||!t.recurrente||!t.done||t.deleted||t.recurrenteSigue) return;
+      // Si otra pestaña ya la creo, no se duplica.
+      if((c.tasks||[]).some(function(y){ return y&&String(y.recurrenteDe)===String(t.id); })) return;
+      var base=_dueEnd(t.due)||(t.doneAt?new Date(t.doneAt):ahora);
+      var due=_tkRecSumar(base, t.recurrente), guarda=0;
+      while(due<hoy && guarda++<400) due=_tkRecSumar(due, t.recurrente);
+      var nt={id:Date.now()+Math.floor(Math.random()*100000)+n, text:t.text, responsible:t.responsible||'',
+        done:false, source:t.source||'Manual', due:rvISO(due), delegated:true, delegatedAt:ahora.toISOString(),
+        ticket:'#'+nextTicketFromApp(), recurrente:JSON.parse(JSON.stringify(t.recurrente)), recurrenteDe:t.id};
+      ['prioridad','priority','ownerCliente','sop','links'].forEach(function(k){ if(t[k]!==undefined) nt[k]=JSON.parse(JSON.stringify(t[k])); });
+      n++;
+      var cid=String(c.id), tidV=t.id;
+      var prev=aplicar[cid];
+      aplicar[cid]=function(d){
+        if(prev) prev(d);
+        d.tasks=d.tasks||[];
+        if(d.tasks.some(function(y){ return y&&String(y.recurrenteDe)===String(tidV); })) return;
+        d.tasks.unshift(JSON.parse(JSON.stringify(nt)));
+        var o=d.tasks.find(function(y){ return y&&String(y.id)===String(tidV); });
+        if(o) o.recurrenteSigue=nt.id;
+      };
+    });
+  });
+  if(!n) return 0;
+  S._tkRecEnCurso=true;
+  _cliEditarEnNube(aplicar).then(function(mal){
+    S._tkRecEnCurso=false;
+    if(!mal.length) toast(n+' tarea'+(n===1?'':'s')+' recurrente'+(n===1?'':'s')+': ya está la siguiente.');
+    if(S.view==='tickets') setTimeout(showTickets, 50);
+  });
+  return n;
+}
+
 // Archivar no es borrar ni completar: la tarea se guarda con su historial pero
 // sale de los pendientes y de las metricas. Sirve para lo que se decidio no hacer.
 function ticketArchivar(cid,tid){
@@ -20702,6 +20809,7 @@ function ticketNivelMenu(clientId, taskId, el){
 
 
 function showTickets(){
+  try{ tkRecurrentesSiguientes(); }catch(e){ console.warn('[recurrentes]', e); }
   if(S.tkTab==='clientes') S.tkTab='tareas';
   // La vista se normaliza ACA y no solo en irTorre: entrando de cero, o con una
   // posicion guardada, S.torreVista arranca en 'mirador' y ese bloque se dibuja
@@ -20887,6 +20995,8 @@ function showTickets(){
     else if(t.estado==='proceso'&&t.procesoAt){ meta='en proceso &middot; <span style=\"color:var(--bluex,#378add)\">'+_tkProcTexto(t)+'</span>'; }
     else if(t.estado&&ST){ meta=ST.label.toLowerCase()+(t.delegatedAt?(' &middot; '+_tkDias(new Date(t.delegatedAt),now)+' d'):''); }
     else { meta=(t.delegatedAt?('abierta '+_tkDias(new Date(t.delegatedAt),now)+' d'):'abierta'); }
+    if(t.recurrente) meta+=' &middot; <span style=\"color:var(--accent2,#47FFC8)\" title=\"Al marcarla hecha se crea la siguiente\">&#8635; '
+      +esc(tkRecTexto(t.recurrente))+'</span>';
     var _esc=_tkEscala(t);
     if(_esc.n && !t.done){
       meta+=' &middot; <span style=\"color:'+(_esc.n>1?'var(--redx)':'var(--amberx)')+'\">'
