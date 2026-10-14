@@ -6771,6 +6771,16 @@ function _overviewMetricsHtml(_ovDonde, _ovProd){
     +_ovCard('Con cierres &middot; 30d', paraEscalar.length, paraEscalar.map(function(cl){
         var n=_cierresDe(cl,DIAS_CIERRE); return _nom(cl, n+' cierre'+(n===1?'':'s')); }),
              'Cerraron al menos una oportunidad en los ultimos 30 dias.', 'var(--accent)', 'rgba(200,255,71,0.08)', 'rgba(200,255,71,0.2)')
+    // Vino del Dashboard (Angie, 14/10/2026): quien entro a la cartera es una
+    // pregunta de la cartera, no de la operacion del dia.
+    +(function(){
+        var hace30=Date.now()-30*86400000;
+        var nuevos=activos.filter(function(cl){ var t=new Date(cl.altaAt||cl.createdAt||0).getTime(); return t&&t>=hace30; })
+          .sort(function(a,b){ return new Date(b.altaAt||b.createdAt||0)-new Date(a.altaAt||a.createdAt||0); });
+        return _ovCard('Clientes nuevos &middot; 30d', nuevos.length, nuevos.map(function(cl){
+            var d=new Date(cl.altaAt||cl.createdAt||0); return _nom(cl, 'alta '+d.getDate()+'/'+(d.getMonth()+1)); }),
+          'Los que se dieron de alta en los ultimos 30 dias.');
+      })()
     +'</div>';
 }
 
@@ -44190,6 +44200,24 @@ function dashboardHtml(){
   var feed=buildActivityFeed({limit:2000, desde:new Date(desde)});
   var _agIds={}; feed.forEach(function(i){ if(i.kind==='agenda') _agIds[String(i.clientId)]=1; });
   var conAgendas=conGhl.filter(function(c){ return _agIds[String(c.id)]; });
+  /* Sin movimiento y con alarmas no son lo mismo (Angie, 14/10/2026): sin
+     movimiento es que en el pipeline no paso nada -ni leads, ni agendas, ni
+     llamadas, ni etapas; las tareas nuestras no cuentan-; con alarmas es que
+     algun numero esta fuera del benchmark del nicho. Un cliente puede estar
+     quieto y sin alarma (pausado a proposito) o moviendose y con alarma (entran
+     leads pero carisimos). */
+  var _movIds={}; feed.forEach(function(i){ if(i.kind!=='tarea') _movIds[String(i.clientId)]=1; });
+  var sinMov=conGhl.filter(function(c){ return !_movIds[String(c.id)]; });
+  var _alDisp=[];
+  if(typeof alarmStatus==='function') cls.forEach(function(c){
+    try{
+      var st=alarmStatus(c); if(!st||!st.breached) return;
+      var vis=(st.detalle||[]).filter(function(d){ return !alarmaRevisada(c,d.rid); });
+      if(vis.length) _alDisp.push({c:c, crit:vis.filter(_alEsCritica).length});
+    }catch(e){}
+  });
+  _alDisp.sort(function(a,b){ return b.crit-a.crit; });
+  var _alCrit=_alDisp.filter(function(x){ return x.crit; }).length;
   var _sin=function(lista){ var f=conGhl.filter(function(c){ return lista.indexOf(c)<0; });
     return f.length?('sin: '+esc(f.slice(0,4).map(function(c){ return c.name; }).join(', '))+(f.length>4?' y '+(f.length-4)+' más':'')):'todos'; };
 
@@ -44207,8 +44235,13 @@ function dashboardHtml(){
     +'<div class="card kpi"><div class="lbl">Clientes con agendas</div><div class="kv">'+conAgendas.length
         +'<span style="font-size:15px;color:var(--text3);font-weight:500"> de '+conGhl.length+'</span></div>'
       +'<div class="ks">con GHL conectado · '+perTxt+' · '+_sin(conAgendas)+'</div></div>'
-    +'<div class="card kpi"><div class="lbl">Clientes nuevos</div><div class="kv">'+nuevos.length+'</div>'
-      +'<div class="ks">'+(nuevos.length?esc(nuevos.slice(0,3).map(function(c){return c.name;}).join(', '))+(nuevos.length>3?' y '+(nuevos.length-3)+' más':'')+' · ':'')+cls.length+' clientes activos</div></div>'
+    +'<div class="card kpi"><div class="lbl">Clientes sin movimiento</div><div class="kv"'+(sinMov.length?' style="color:#FF8A4C"':'')+'>'+sinMov.length
+        +'<span style="font-size:15px;color:var(--text3);font-weight:500"> de '+conGhl.length+'</span></div>'
+      +'<div class="ks">ni leads, ni agendas, ni llamadas, ni cambios de etapa · '+perTxt
+        +(sinMov.length?(' · '+esc(sinMov.slice(0,4).map(function(c){ return c.name; }).join(', '))+(sinMov.length>4?' y '+(sinMov.length-4)+' más':'')):'')+'</div></div>'
+    +'<div class="card kpi"><div class="lbl">Clientes con alarmas</div><div class="kv"'+(_alCrit?' style="color:#FF8A4C"':'')+'>'+_alDisp.length+'</div>'
+      +'<div class="ks">'+(_alCrit?(_alCrit+' con críticas · '):'')+'fuera de benchmark, sin revisar'
+        +(_alDisp.length?(' · '+esc(_alDisp.slice(0,4).map(function(x){ return x.c.name; }).join(', '))+(_alDisp.length>4?' y '+(_alDisp.length-4)+' más':'')):'')+'</div></div>'
     +'</div>';
 
   // ── Actividad por cliente, en el tiempo ── (el feed se armo arriba)
