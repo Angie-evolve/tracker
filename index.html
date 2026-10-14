@@ -3592,6 +3592,11 @@ var CLAVES_MAQUINA=['citasAt','citasIntento','metaPulso','metaPulsoAt',
                        filtro: la corrida siguiente los vuelve a escribir. Las
                        decisiones NO: viven en `datos.cambiosDecisiones`. */
                     'cambiosPropuestos',
+                    /* Los cambios de la cuenta que detecta la rutina (Meta y
+                       GHL), uno por linea de conversion (migracion 035).
+                       Cumple el filtro: se reconstruyen del historial. Los que
+                       carga una persona van en `datos.cambiosManuales`. */
+                    'cambiosDetectados',
                     /* En que parte quedo el dataset de oferta. Lo escribe el
                        que lo arma, desde el chat (migracion 030).
                        ⚠️  ESTA NO CUMPLE EL FILTRO DE ARRIBA: si una pestaña
@@ -11321,8 +11326,27 @@ function _ctxResumenHtml(c){
     : '';
   var cuenta=function(n){ return n?('<span style="font-size:10.5px;color:var(--amberx);border:1px solid '
     +'rgba(224,168,60,.35);border-radius:99px;padding:0 7px">'+n+'</span>'):''; };
+  /* Cada cambio abre una linea de conversion en el reporte. La rutina detecta
+     los de Meta y GHL; lo que no se ve en ningun sistema se carga aca. */
+  var _cTodos=((c.cambiosDetectados&&c.cambiosDetectados.items)||[])
+    .concat(Array.isArray(c.cambiosManuales)?c.cambiosManuales:[])
+    .filter(function(x){ return x&&x.fecha; })
+    .sort(function(a,b){ return String(b.fecha).localeCompare(String(a.fecha)); });
+  var _cUlt=_cTodos[0];
+  var _cFila='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:7px 0;'
+      +'border-bottom:1px solid var(--border)">'
+    +'<span style="flex:1;min-width:180px;font-size:12px;color:var(--text2);line-height:1.5">'
+      +(_cUlt
+        ? ('<b style="font-weight:500;color:var(--text)">'+_cTodos.length+' cambio'+(_cTodos.length===1?'':'s')
+           +'</b> en la cuenta. El último, '+esc(String(_cUlt.fecha).slice(8,10)+'/'+String(_cUlt.fecha).slice(5,7))
+           +': '+esc(String(_cUlt.texto||'').slice(0,90))
+           +(_cUlt.lado==='cliente'?' <span style="color:var(--amberx)">· lo hizo el cliente</span>':''))
+        : 'Sin cambios registrados todavía.')
+    +'</span>'
+    +'<button class="btn btn-sm" style="font-size:11px;padding:3px 10px" onclick="cambioRegistrarModal('+c.id+')">'
+      +'Registrar cambio</button></div>';
   var embB=bloque('Embudos y landings', cuenta(filasE.length),
-    _rcFila+(filasE.length?filasE.join('')
+    _rcFila+_cFila+(filasE.length?filasE.join('')
       :vacio('Ninguno todav\u00eda. Aparece cuando se publica la landing o se carga el embudo.')));
   var creB=bloque('Creativos', cuenta(ads.length),
     (filasC.length?filasC.join('')
@@ -43260,6 +43284,66 @@ function reporteCompartir(id){
     return;
   }
   copiar();
+}
+/* Registrar a mano un cambio que ningun sistema ve: el guion de la llamada, quien
+   llama, el precio, un filtro nuevo de calificacion. Abre una linea de
+   conversion en el reporte de la mañana igual que uno detectado. */
+var CAMBIO_TIPOS=[['anuncios','Anuncios'],['presupuesto','Presupuesto'],['publico','Público'],
+  ['optimizacion','Optimización'],['landing','Landing o embudo'],['formulario','Formulario'],
+  ['automatizacion','Automatización o mensajes'],['pipeline','Pipeline'],
+  ['calificacion','Calificación'],['otro','Otro (llamada, precio, proceso)']];
+function cambioRegistrarModal(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var ahora=new Date(); ahora.setMinutes(ahora.getMinutes()-ahora.getTimezoneOffset());
+  var est='width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:var(--radius);'
+    +'border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font)';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">Registrar un cambio · '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub">Abre una línea de conversión nueva en el reporte. Los cambios de Meta y GHL '
+        +'se detectan solos: esto es para lo que no se ve en ningún sistema.</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">'
+        +'<label style="font-size:11px;color:var(--text3)">Cuándo<input id="cr-fecha" type="datetime-local" '
+          +'value="'+ahora.toISOString().slice(0,16)+'" style="'+est+';margin-top:4px;color-scheme:dark"></label>'
+        +'<label style="font-size:11px;color:var(--text3)">Qué tipo<select id="cr-tipo" style="'+est+';margin-top:4px">'
+          +CAMBIO_TIPOS.map(function(t){ return '<option value="'+t[0]+'"'+(t[0]==='otro'?' selected':'')+'>'+t[1]+'</option>'; }).join('')
+        +'</select></label>'
+      +'</div>'
+      +'<label style="display:block;font-size:11px;color:var(--text3);margin-top:10px">Qué cambió'
+        +'<input id="cr-texto" maxlength="200" placeholder="Ej: el closer abre la llamada por el problema, no por la oferta" '
+        +'style="'+est+';margin-top:4px"></label>'
+      +'<div style="display:flex;gap:16px;margin-top:12px;font-size:13px;color:var(--text2)">'
+        +'<label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="cr-lado" value="equipo" checked>Lo hicimos nosotros</label>'
+        +'<label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="cr-lado" value="cliente">Lo hizo el cliente</label>'
+      +'</div>'
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="cambioRegistrar('+c.id+')">Registrar</button></div>'
+    +'</div></div>';
+  setTimeout(function(){ var t=document.getElementById('cr-texto'); if(t) t.focus(); },50);
+}
+function cambioRegistrar(clientId){
+  var c=(DB.clients||[]).find(function(x){ return x.id===clientId; });
+  if(!c) return;
+  var txt=String((document.getElementById('cr-texto')||{}).value||'').trim();
+  if(!txt){ toast('Escribí qué cambió.','amber'); return; }
+  var f=String((document.getElementById('cr-fecha')||{}).value||'');
+  var d=f?new Date(f):new Date();
+  if(isNaN(d.getTime())){ toast('La fecha no se entiende.','amber'); return; }
+  // Con el desfase de Argentina, como los que escribe la rutina: asi se ordenan juntos.
+  var off=-d.getTimezoneOffset(), sg=off>=0?'+':'-', ao=Math.abs(off);
+  var iso=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)
+    +'T'+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)
+    +sg+('0'+Math.floor(ao/60)).slice(-2)+':'+('0'+(ao%60)).slice(-2);
+  var lado=(document.querySelector('input[name="cr-lado"]:checked')||{}).value==='cliente'?'cliente':'equipo';
+  if(!Array.isArray(c.cambiosManuales)) c.cambiosManuales=[];
+  c.cambiosManuales.push({id:'man:'+Date.now(), fecha:iso,
+    tipo:String((document.getElementById('cr-tipo')||{}).value||'otro'),
+    texto:txt.slice(0,200), quien:String((SB&&SB.email)||''), lado:lado, fuente:'manual'});
+  save(); closeModal();
+  toast('Cambio registrado. El reporte de mañana abre una línea nueva desde esa fecha.');
+  if(typeof renderTab==='function') renderTab();
 }
 function embReporte(id){
   var c=(DB.clients||[]).find(function(x){ return x.id===+id; });
