@@ -21280,6 +21280,7 @@ function showTickets(){
       :(_torre==='calendario'?calendarioHtml()
       :(_torre==='actividad'?_actividadHtml():(''
     +rvAprobacionesHtml()
+    +agPanelHtml()
     +dashCambiosHtml(false)
     +progresoHtml
     // El periodo tambien se esconde detras del embudo: son cinco botones que se
@@ -43933,8 +43934,10 @@ function dashCambiosHtml(enTarjeta){
                   +' <span class="ks mono">· '+({llamada:'llamada',rutina:'rutina',etapa:'etapa',revision:'revisión'}[tipoDe(x)]||'')+(cuando?' · '+cuando:'')+'</span></div>'
                   +'<div style="color:var(--text2);font-size:12.5px;line-height:1.5;margin-top:2px">'+esc(x.it.texto)+'</div>'
                   +(x.it.porque?'<div class="ks" style="margin-top:2px">'+esc(x.it.porque)+'</div>':'')+'</div>'
-                +'<div style="display:flex;gap:8px;flex:none">'
+                +'<div style="display:flex;gap:8px;flex:none;flex-wrap:wrap;justify-content:flex-end">'
                   +'<a class="cta" onclick="'+crear+'">Crear ticket</a>'
+                  +'<span class="pill" onclick="dashAgenteMandar(\''+x.origen+'\','+x.c.id+',\''+esc(String((x.r&&x.r.id)||''))+'\',\''+esc(String(x.it.id))+'\')" '
+                    +'title="El agente lo prepara (lee Meta y GHL, no toca nada) y lo hacemos juntos cuando lo apruebes">Mandar al agente</span>'
                   +'<span class="pill" onclick="'+desc+'" title="No se hace; queda registrado como descartado">Descartar</span>'
                 +'</div></div>';
             }).join('')
@@ -43945,6 +43948,100 @@ function dashCambiosHtml(enTarjeta){
   if(!dashCambiosPendientes().length) return '';
   return DASH_CSS+'<div class="dsh" style="margin-bottom:20px"><div class="card">'
     +_h.replace('border-top:1px solid #1E222B;padding-top:20px;','')+'</div></div>';
+}
+/* ── Mandar al agente (Angie, 14/10/2026) ─────────────────────────────────
+   El pedido va a la tabla agente_pedidos (migracion 039). Una rutina lo
+   PREPARA leyendo Meta y GHL, sin tocar nada, y deja el plan. Cuando una
+   persona toca "Hacelo", queda aprobado y se ejecuta en una conversacion con
+   Claude con ella presente. Nada se ejecuta solo. */
+async function dashAgenteMandar(origen, cid, rid, iid){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
+  var texto='', porque='';
+  if(origen==='etapa'){ var te=_etapaTareaDe(c,iid); texto=te?('['+te.e.etapa+'] '+te.t.t):''; porque=te?('Etapa «'+te.e.etapa+'»'):''; }
+  else if(origen==='rutina'){ var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; texto=it?it.texto:''; porque=it?(it.porque||''):''; }
+  else { var r=rvLista(c).find(function(x){ return x.id===rid; }); var it2=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===iid; }):null; texto=it2?it2.texto:''; porque='Revisión'; }
+  if(!texto){ toast('No encontré ese cambio.','amber'); return; }
+  try{
+    var d=await sbFetch('agente_pedidos',{method:'POST',headers:{'Prefer':'return=representation'},
+      body:JSON.stringify({cliente_id:Number(c.id), cambio_id:String(iid), texto:String(texto).slice(0,400),
+        porque:String(porque||'').slice(0,800), pedido_por:(SB&&SB.email)||''})});
+    var pid=d&&d[0]&&d[0].id;
+    var dec={estado:'agente', pedidoId:pid||null, at:new Date().toISOString(), por:(SB&&SB.email)||''};
+    if(origen==='revision'){
+      var r2=rvLista(c).find(function(x){ return x.id===rid; });
+      var it3=r2?_rvAsegurarItems(c,r2).find(function(x){ return x.id===iid; }):null;
+      if(it3){ it3.estado='agente'; it3.pedidoId=pid||null; }
+    } else { c.cambiosDecisiones=c.cambiosDecisiones||{}; c.cambiosDecisiones[iid]=dec; }
+    save();
+    S._agPed=null;
+    toast('Mandado al agente. Lo prepara en la próxima vuelta y te queda para aprobar en Tickets.');
+    showTickets();
+  }catch(e){ toast('No pude mandarlo: '+((e&&e.message)||''),'red'); }
+}
+function _agCargar(){
+  if(S._agCargando) return;
+  S._agCargando=true;
+  (async function(){
+    try{
+      var desde=new Date(Date.now()-7*86400000).toISOString();
+      var l=await sbFetch('agente_pedidos?select=*&or=(estado.in.(pendiente,preparado,aprobado,fallo),actualizado_at.gte.'+desde+')&order=creado_at.desc&limit=60');
+      S._agPed={lista:Array.isArray(l)?l:[], at:Date.now()};
+    }catch(e){ S._agPed={lista:[], error:(e&&e.message)||'', at:Date.now()}; }
+    S._agCargando=false;
+    var caja=document.getElementById('ag-panel'); if(caja) caja.outerHTML=agPanelHtml();
+  })();
+}
+async function agDecidir(id, estado){
+  try{
+    await sbFetch('agente_pedidos?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},
+      body:JSON.stringify(estado==='aprobado'?{estado:'aprobado', ok_por:(SB&&SB.email)||'', ok_at:new Date().toISOString()}:{estado:estado})});
+    toast(estado==='aprobado'?'Aprobado. Decile a Claude «hacé los pedidos aprobados» y lo hace con vos.':'Cancelado.');
+    S._agPed=null; showTickets();
+  }catch(e){ toast('No pude guardarlo: '+((e&&e.message)||''),'red'); }
+}
+function agAbrir(id){ S._agAb=S._agAb||{}; S._agAb[id]=!S._agAb[id]; var caja=document.getElementById('ag-panel'); if(caja) caja.outerHTML=agPanelHtml(); }
+function agPanelHtml(){
+  if(!SB||!SB.listo) return '';
+  var P=S._agPed;
+  if(!P || (Date.now()-(P.at||0))>120000) _agCargar();
+  P=S._agPed||{};
+  var l=P.lista||[];
+  if(!l.length) return '<div id="ag-panel"></div>';
+  var ESTADO={pendiente:['lo está preparando','var(--text3)','var(--bg3)'],
+    preparado:['listo para aprobar','var(--accent)','rgba(200,255,71,.12)'],
+    aprobado:['aprobado · se hace en la próxima conversación','#47FFC8','rgba(71,255,200,.1)'],
+    hecho:['hecho','var(--text2)','var(--bg3)'], fallo:['no se pudo','var(--redx)','rgba(240,96,60,.12)'],
+    cancelado:['cancelado','var(--text3)','var(--bg3)']};
+  S._agAb=S._agAb||{};
+  var listos=l.filter(function(x){ return x.estado==='preparado'; }).length;
+  return '<div id="ag-panel" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px">'
+      +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Pedidos al agente</span>'
+      +'<span style="font-size:11px;color:var(--text3)">'+(listos?(listos+' listo'+(listos===1?'':'s')+' para aprobar'):'')+'</span></div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">El agente los prepara leyendo Meta y GHL, sin tocar nada. '
+      +'Cuando aprobás uno, lo hace Claude en una conversación con vos: decile «hacé los pedidos aprobados».</div>'
+    +l.map(function(x){
+      var c=(DB.clients||[]).find(function(y){ return String(y.id)===String(x.cliente_id); });
+      var e=ESTADO[x.estado]||[x.estado,'var(--text3)','var(--bg3)'];
+      var ab=!!S._agAb[x.id], det=x.propuesta||x.resultado||'';
+      return '<div style="border-top:1px solid var(--border);padding:10px 0">'
+        +'<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
+          +'<div style="flex:1;min-width:220px">'
+            +'<div style="font-size:12.5px;color:var(--strong);font-weight:500">'+esc((c&&c.name)||('cliente '+x.cliente_id))
+              +' <span style="font-size:10.5px;padding:1px 8px;border-radius:20px;background:'+e[2]+';color:'+e[1]+';font-weight:400">'+esc(e[0])+'</span></div>'
+            +'<div style="font-size:12.5px;color:var(--text2);line-height:1.5;margin-top:3px">'+esc(x.texto)+'</div>'
+            +(det?('<a href="javascript:void(0)" onclick="agAbrir('+x.id+')" style="font-size:11.5px;color:var(--accent);text-decoration:none">'
+              +(ab?'Ocultar':(x.propuesta&&x.estado!=='hecho'?'Ver el plan':'Ver el resultado'))+'</a>'):'')
+          +'</div>'
+          +'<div style="display:flex;gap:6px;flex:none">'
+            +(x.estado==='preparado'?'<button class="btn btn-sm btn-primary" onclick="agDecidir('+x.id+',\'aprobado\')">Hacelo</button>':'')
+            +((x.estado==='pendiente'||x.estado==='preparado'||x.estado==='aprobado')?'<button class="btn btn-sm" onclick="agDecidir('+x.id+',\'cancelado\')">Cancelar</button>':'')
+          +'</div></div>'
+        +(ab&&det?('<div style="font-size:12px;color:var(--text2);line-height:1.65;white-space:pre-wrap;margin-top:8px;padding:10px 12px;'
+          +'background:var(--bg3);border-radius:var(--radius)">'+esc(det)+'</div>'):'')
+      +'</div>';
+    }).join('')
+  +'</div>';
 }
 function dashboardHtml(){
   // 0 = hoy; con `||7` el cero caia en 7 dias y el boton Hoy no hacia nada.
