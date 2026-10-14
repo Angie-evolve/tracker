@@ -25542,7 +25542,7 @@ function _rvAsegurarItems(c, r){
   return r.mejora.items;
 }
 
-function rvCrearTareaDeCambio(clientId, revId, itemId){
+function rvCrearTareaDeCambio(clientId, revId, itemId, resp, due){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(clientId); });
   if(!c) return;
   var r=rvLista(c).find(function(x){ return x.id===revId; });
@@ -25554,8 +25554,8 @@ function rvCrearTareaDeCambio(clientId, revId, itemId){
   var t={
     id:Date.now()+Math.floor(Math.random()*1000),
     text:it.texto,
-    responsible:(typeof responsableDe==='function')?(responsableDe(c)||''):'',
-    done:false, source:'Revision', due:rvISO(venc),
+    responsible:(resp!=null)?String(resp):((typeof responsableDe==='function')?(responsableDe(c)||''):''),
+    done:false, source:'Revision', due:due||rvISO(venc),
     delegated:true, delegatedAt:new Date().toISOString(),
     ticket:'#'+nextTicketFromApp()
   };
@@ -43626,13 +43626,71 @@ function dashCambiosPendientes(){
   out.sort(function(a,b){ return b.ts-a.ts; });
   return out;
 }
-function dashCrearTicket(cid, rid, iid){
-  rvCrearTareaDeCambio(cid, rid, iid);      // crea la tarea con ticket y repinta
+function dashCrearTicket(cid, rid, iid, resp, due){
+  rvCrearTareaDeCambio(cid, rid, iid, resp, due);      // crea la tarea con ticket y repinta
+}
+/* "Crear ticket" pregunta a quien va (Angie, 14/10/2026). Antes iba siempre al
+   responsable del cliente, y lo que sale de la rutina muchas veces es de otra
+   persona: el que pauta, el que atiende el WhatsApp, el que arma la landing.
+   Arranca marcado el responsable del cliente, asi que si es el, es un clic. */
+function dashTicketModal(origen, cid, rid, iid){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
+  var texto='';
+  if(origen==='rutina'){
+    var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0];
+    texto=it?it.texto:'';
+  } else {
+    var r=rvLista(c).find(function(x){ return x.id===rid; });
+    var it2=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===iid; }):null;
+    texto=it2?it2.texto:'';
+  }
+  var gente=(DB.personas||[]).filter(function(x){ return x && x.email; });
+  var actual=String(responsableDe(c)||'').toLowerCase();
+  S._dashTk={origen:origen, cid:cid, rid:rid, iid:iid,
+             resp:(gente.some(function(x){ return x.email.toLowerCase()===actual; })?actual:'')};
+  var venc=new Date(); venc.setDate(venc.getDate()+7);
+  var est='box-sizing:border-box;font-size:13px;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-family:var(--font);color-scheme:dark';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+      +'<div class="modal-title">Crear ticket · '+esc(c.name||'')+'</div>'
+      +'<div class="modal-sub" style="line-height:1.55">'+esc(texto)+'</div>'
+      +'<div class="cs-lbl" style="margin:14px 0 8px">A quién va</div>'
+      +'<div class="cs-pers" id="dtk-gente">'
+        +gente.map(function(x){
+          var m=x.email.toLowerCase(), nom=x.nombre||x.email;
+          return '<button type="button" class="cs-per'+(m===S._dashTk.resp?' sel':'')+'" data-m="'+esc(m)+'" '
+            +'onclick="dashTicketQuien(\''+esc(m).replace(/'/g,"\\'")+'\')">'
+            +'<span class="cs-ini">'+esc(_csIni(nom))+'</span>'+esc(nom)
+            +(m===actual?' <span style="color:var(--text3);font-size:11px">· responsable</span>':'')+'</button>';
+        }).join('')
+        +'<button type="button" class="cs-per'+(S._dashTk.resp?'':' sel')+'" data-m="" onclick="dashTicketQuien(\'\')">'
+          +'<span class="cs-ini">–</span>Sin asignar</button>'
+      +'</div>'
+      +'<label style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:12px;color:var(--text3)">Vence'
+        +'<input type="date" id="dtk-due" value="'+rvISO(venc)+'" style="'+est+'"></label>'
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="dashTicketCrear()">Crear ticket</button></div>'
+    +'</div></div>';
+}
+function dashTicketQuien(m){
+  if(!S._dashTk) return;
+  S._dashTk.resp=String(m||'');
+  document.querySelectorAll('#dtk-gente .cs-per').forEach(function(b){
+    b.classList.toggle('sel', String(b.getAttribute('data-m')||'')===S._dashTk.resp); });
+}
+function dashTicketCrear(){
+  var k=S._dashTk; if(!k) return;
+  var due=String((document.getElementById('dtk-due')||{}).value||'');
+  closeModal(); S._dashTk=null;
+  if(k.origen==='rutina') dashRutinaDecidir(k.cid, k.iid, 'tarea', k.resp, due);
+  else dashCrearTicket(k.cid, k.rid, k.iid, k.resp, due);
 }
 function dashDescartar(cid, rid, iid){ rvDescartarCambio(cid, rid, iid); }
 // Los de la rutina: misma tarea que crea la revision, pero la decision queda en
 // `datos.cambiosDecisiones[id]`, que es lo que sube la app.
-function dashRutinaDecidir(cid, iid, que){
+function dashRutinaDecidir(cid, iid, que, resp, due){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
   var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; if(!it) return;
   c.cambiosDecisiones=c.cambiosDecisiones||{};
@@ -43641,8 +43699,8 @@ function dashRutinaDecidir(cid, iid, que){
     var venc=new Date(); venc.setDate(venc.getDate()+7);
     var t={ id:Date.now()+Math.floor(Math.random()*1000),
       text:it.texto+(it.porque?(' \u2014 '+it.porque):''),
-      responsible:(typeof responsableDe==='function')?(responsableDe(c)||''):'',
-      done:false, source:'Rutina de campañas', due:rvISO(venc),
+      responsible:(resp!=null)?String(resp):((typeof responsableDe==='function')?(responsableDe(c)||''):''),
+      done:false, source:'Rutina de campañas', due:due||rvISO(venc),
       delegated:true, delegatedAt:new Date().toISOString(),
       ticket:'#'+nextTicketFromApp() };
     c.tasks=c.tasks||[]; c.tasks.unshift(t); d.taskId=t.id;
@@ -43820,8 +43878,8 @@ function dashboardHtml(){
           +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px"><div class="h">'+pend.length+' cambio'+(pend.length===1?'':'s')+' propuesto'+(pend.length===1?'':'s')+' sin decidir</div><div class="lbl">rutina y revisiones</div></div>'
           +pend.slice(0,max).map(function(x){
               var rut=(x.origen==='rutina');
-              var crear=rut ? 'dashRutinaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'tarea\')'
-                            : 'dashCrearTicket('+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
+              var crear=rut ? 'dashTicketModal(\'rutina\','+x.c.id+',\'\',\''+esc(String(x.it.id))+'\')'
+                            : 'dashTicketModal(\'revision\','+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
               var desc=rut ? 'dashRutinaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'descartado\')'
                            : 'dashDescartar('+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
               var cuando=x.ts?new Date(x.ts).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'';
