@@ -20817,6 +20817,7 @@ function ticketNivelMenu(clientId, taskId, el){
 
 function showTickets(){
   try{ tkRecurrentesSiguientes(); }catch(e){ console.warn('[recurrentes]', e); }
+  try{ tkEtapasSync(); }catch(e){ console.warn('[etapas]', e); }
   if(S.tkTab==='clientes') S.tkTab='tareas';
   // La vista se normaliza ACA y no solo en irTorre: entrando de cero, o con una
   // posicion guardada, S.torreVista arranca en 'mirador' y ese bloque se dibuja
@@ -43744,8 +43745,24 @@ function dashCambiosPendientes(){
     (cp.items||[]).forEach(function(it){
       if(!it||!it.id||!it.texto) return;
       if(dec[it.id] && dec[it.id].estado && dec[it.id].estado!=='pendiente') return;
-      out.push({c:c, origen:'rutina', it:it, ts:ts});
+      // Los pendientes de llamadas viven en la misma lista que los de la rutina
+      // (id "llamada-..."): se deciden igual, solo cambia la etiqueta.
+      out.push({c:c, origen:'rutina', tipo:(String(it.id).indexOf('llamada-')===0?'llamada':'rutina'), it:it, ts:ts});
     });
+    /* 3. Las tareas de la etapa en la que esta parado el cliente en el Panel
+       360 (Angie, 14/10/2026): asi se ve que falta armar la landing, la
+       estrategia o el dataset sin entrar a cada ficha. Al crear el ticket y
+       marcarlo hecho, la tarea de la etapa se tilda sola. */
+    if(!(typeof esAgencia==='function'&&esAgencia(c)) && !(typeof esProspecto==='function'&&esProspecto(c))){
+      var _ea=(typeof petEtapaActual==='function')?petEtapaActual(c):null;
+      ((_ea&&_ea.tareas)||[]).forEach(function(t){
+        if(!t||t.ok||!t.t) return;
+        var iid='etapa-'+t.id;
+        if(dec[iid] && dec[iid].estado && dec[iid].estado!=='pendiente') return;
+        out.push({c:c, origen:'etapa', tipo:'etapa', etapa:_ea.etapa, tarea:t,
+          it:{id:iid, texto:t.t, porque:'Etapa «'+_ea.etapa+'»'+(t.b?' · sin esto no se avanza':'')}, ts:0});
+      });
+    }
   });
   out.sort(function(a,b){ return b.ts-a.ts; });
   return out;
@@ -43759,8 +43776,12 @@ function dashCrearTicket(cid, rid, iid, resp, due){
    Arranca marcado el responsable del cliente, asi que si es el, es un clic. */
 function dashTicketModal(origen, cid, rid, iid){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
-  var texto='';
-  if(origen==='rutina'){
+  var texto='', _respEtapa='';
+  if(origen==='etapa'){
+    var _te=_etapaTareaDe(c, iid);
+    texto=_te?('['+_te.e.etapa+'] '+_te.t.t):'';
+    _respEtapa=_te?String(_te.t.r||'').toLowerCase():'';
+  } else if(origen==='rutina'){
     var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0];
     texto=it?it.texto:'';
   } else {
@@ -43770,8 +43791,10 @@ function dashTicketModal(origen, cid, rid, iid){
   }
   var gente=(DB.personas||[]).filter(function(x){ return x && x.email; });
   var actual=String(responsableDe(c)||'').toLowerCase();
+  // En una tarea de etapa manda el responsable que trae la plantilla, si es del equipo.
+  var _pre=(_respEtapa && gente.some(function(x){ return x.email.toLowerCase()===_respEtapa; }))?_respEtapa:actual;
   S._dashTk={origen:origen, cid:cid, rid:rid, iid:iid,
-             resp:(gente.some(function(x){ return x.email.toLowerCase()===actual; })?actual:'')};
+             resp:(gente.some(function(x){ return x.email.toLowerCase()===_pre; })?_pre:'')};
   var venc=new Date(); venc.setDate(venc.getDate()+7);
   var est='box-sizing:border-box;font-size:13px;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
     +'background:var(--bg3);color:var(--text);font-family:var(--font);color-scheme:dark';
@@ -43809,7 +43832,49 @@ function dashTicketCrear(){
   var due=String((document.getElementById('dtk-due')||{}).value||'');
   closeModal(); S._dashTk=null;
   if(k.origen==='rutina') dashRutinaDecidir(k.cid, k.iid, 'tarea', k.resp, due);
+  else if(k.origen==='etapa') dashEtapaDecidir(k.cid, k.iid, 'tarea', k.resp, due);
   else dashCrearTicket(k.cid, k.rid, k.iid, k.resp, due);
+}
+// La tarea de etapa que corresponde a un id "etapa-<id de la tarea>".
+function _etapaTareaDe(c, iid){
+  var tid=String(iid||'').replace(/^etapa-/,'');
+  var eas=(typeof petDe==='function')?(petDe(c)||[]):[];
+  for(var i=0;i<eas.length;i++){
+    var t=(eas[i].tareas||[]).filter(function(x){ return String(x.id)===tid; })[0];
+    if(t) return {e:eas[i], t:t};
+  }
+  return null;
+}
+function dashEtapaDecidir(cid, iid, que, resp, due){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
+  var te=_etapaTareaDe(c, iid); if(!te) return;
+  c.cambiosDecisiones=c.cambiosDecisiones||{};
+  var d={estado:que, at:new Date().toISOString(), por:(typeof SB==='object'&&SB.email)?SB.email:''};
+  if(que==='tarea'){
+    var venc=new Date(); venc.setDate(venc.getDate()+7);
+    var t={ id:Date.now()+Math.floor(Math.random()*1000), text:'['+te.e.etapa+'] '+te.t.t,
+      responsible:(resp!=null)?String(resp):(te.t.r||responsableDe(c)||''),
+      done:false, source:'Etapa', due:due||rvISO(venc), delegated:true, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp(), etapaTarea:{etapa:te.e.etapa, id:te.t.id} };
+    c.tasks=c.tasks||[]; c.tasks.unshift(t); d.taskId=t.id;
+    if(typeof toast==='function') toast('Tarea '+t.ticket+' creada en '+c.name+'. Al marcarla hecha, se tilda en la etapa.');
+  }
+  c.cambiosDecisiones[iid]=d;
+  save(); showTickets();
+}
+// Un ticket que salio de una tarea de etapa y se marco hecho tilda esa tarea.
+function tkEtapasSync(){
+  var n=0;
+  (DB.clients||[]).forEach(function(c){
+    (c.tasks||[]).forEach(function(t){
+      if(!t||!t.done||t.deleted||!t.etapaTarea) return;
+      var te=_etapaTareaDe(c, 'etapa-'+t.etapaTarea.id);
+      if(!te||te.t.ok) return;
+      te.t.ok=true; te.t.at=t.doneAt||new Date().toISOString(); te.t.por=(SB&&SB.email)||''; n++;
+    });
+  });
+  if(n) save();
+  return n;
 }
 function dashDescartar(cid, rid, iid){ rvDescartarCambio(cid, rid, iid); }
 // Los de la rutina: misma tarea que crea la revision, pero la decision queda en
@@ -43841,21 +43906,31 @@ function dashRutinaDecidir(cid, iid, que, resp, due){
    en su propia tarjeta, con los estilos del Dashboard. */
 function dashCambiosHtml(enTarjeta){
   var _h=(function(){
-        var pend=dashCambiosPendientes();
-        if(!pend.length) return '<div class="ks" style="border-top:1px solid #1E222B;padding-top:16px">No hay cambios propuestos sin decidir.</div>';
+        var todos=dashCambiosPendientes();
+        if(!todos.length) return '<div class="ks" style="border-top:1px solid #1E222B;padding-top:16px">No hay cambios propuestos sin decidir.</div>';
+        var F=S.dashCambiosFiltro||'todos';
+        var tipoDe=function(x){ return x.tipo||(x.origen==='revision'?'revision':'rutina'); };
+        var pend=todos.filter(function(x){ return F==='todos' || tipoDe(x)===F; });
+        var cuenta=function(k){ return todos.filter(function(x){ return tipoDe(x)===k; }).length; };
+        var chip=function(k,l){ var n=(k==='todos')?todos.length:cuenta(k); if(k!=='todos'&&!n) return '';
+          return '<span class="pill" style="'+(F===k?'background:var(--accent);color:var(--on-accent)':'')+'" '
+            +'onclick="S.dashCambiosFiltro=\''+k+'\';showTickets()">'+l+' <b>'+n+'</b></span>'; };
         var max=S.dashCambiosTodos?pend.length:8;
         return '<div style="border-top:1px solid #1E222B;padding-top:20px;display:flex;flex-direction:column;gap:10px">'
-          +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px"><div class="h">'+pend.length+' cambio'+(pend.length===1?'':'s')+' propuesto'+(pend.length===1?'':'s')+' sin decidir</div><div class="lbl">rutina y revisiones</div></div>'
+          +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap"><div class="h">'+todos.length+' cambio'+(todos.length===1?'':'s')+' propuesto'+(todos.length===1?'':'s')+' sin decidir</div>'
+            +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+chip('todos','Todos')+chip('llamada','Llamadas')+chip('rutina','Rutina')+chip('etapa','Etapas')+chip('revision','Revisiones')+'</div></div>'
           +pend.slice(0,max).map(function(x){
-              var rut=(x.origen==='rutina');
+              var rut=(x.origen==='rutina'), eta=(x.origen==='etapa');
               var crear=rut ? 'dashTicketModal(\'rutina\','+x.c.id+',\'\',\''+esc(String(x.it.id))+'\')'
+                       : eta ? 'dashTicketModal(\'etapa\','+x.c.id+',\'\',\''+esc(String(x.it.id))+'\')'
                             : 'dashTicketModal(\'revision\','+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
               var desc=rut ? 'dashRutinaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'descartado\')'
+                       : eta ? 'dashEtapaDecidir('+x.c.id+',\''+esc(String(x.it.id))+'\',\'descartado\')'
                            : 'dashDescartar('+x.c.id+',\''+esc(String(x.r.id))+'\',\''+esc(String(x.it.id))+'\')';
               var cuando=x.ts?new Date(x.ts).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}):'';
               return '<div class="row" style="align-items:flex-start;padding:10px 0">'
                 +'<div style="flex:1;min-width:0"><div style="font-weight:500;cursor:pointer" onclick="selectClient('+x.c.id+')">'+esc(x.c.name)
-                  +' <span class="ks mono">· '+(rut?'rutina':'revisión')+(cuando?' · '+cuando:'')+'</span></div>'
+                  +' <span class="ks mono">· '+({llamada:'llamada',rutina:'rutina',etapa:'etapa',revision:'revisión'}[tipoDe(x)]||'')+(cuando?' · '+cuando:'')+'</span></div>'
                   +'<div style="color:var(--text2);font-size:12.5px;line-height:1.5;margin-top:2px">'+esc(x.it.texto)+'</div>'
                   +(x.it.porque?'<div class="ks" style="margin-top:2px">'+esc(x.it.porque)+'</div>':'')+'</div>'
                 +'<div style="display:flex;gap:8px;flex:none">'
