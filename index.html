@@ -21054,7 +21054,7 @@ function showTickets(){
         +'onclick=\"event.stopPropagation();tkSelUna(\''+_selK+'\',this.checked)\">'):'')
       +'<span class=\"tk-check\" onclick=\"toggleTask('+c.id+','+t.id+','+(t.done?'false':'true')+')\" role=\"checkbox\" aria-checked=\"'+(t.done?'true':'false')+'\">'+_check+'</span>'
       +'<div style=\"flex:1;min-width:0\">'
-      +'<div class=\"tk-txt\">'+seguir+esc(t.text||'')+'</div>'
+      +'<div class=\"tk-txt\" style=\"cursor:text\" title=\"Tocá para editar\" onclick=\"if(!S._tkSelModo){event.stopPropagation();ticketEditarModal('+c.id+','+t.id+')}\">'+seguir+esc(t.text||'')+'</div>'
       +'<div style=\"font-size:11px;color:var(--text3);margin-top:2px\">'+esc(personaNombre(t.responsible||'Ashy'))+' &middot; '+_tkOrigen(t).toLowerCase()+' &middot; '+meta
       +((t.estado==='revision'&&t.aprobador)?' &middot; <span style=\"color:var(--amberx)\">revisa '+esc(personaNombre(t.aprobador))+'</span>':'')
       +'</div>'
@@ -43748,7 +43748,7 @@ function dashCambiosPendientes(){
       if(dec[it.id] && dec[it.id].estado && dec[it.id].estado!=='pendiente') return;
       // Los pendientes de llamadas viven en la misma lista que los de la rutina
       // (id "llamada-..."): se deciden igual, solo cambia la etiqueta.
-      out.push({c:c, origen:'rutina', tipo:(String(it.id).indexOf('llamada-')===0?'llamada':'rutina'), it:it, ts:ts});
+      out.push({c:c, origen:'rutina', tipo:(String(it.id).indexOf('llamada-')===0?'llamada':'rutina'), it:_propEditada(c, it), ts:ts});
     });
     /* 3. Las tareas de la etapa en la que esta parado el cliente en el Panel
        360 (Angie, 14/10/2026): asi se ve que falta armar la landing, la
@@ -43761,12 +43761,70 @@ function dashCambiosPendientes(){
         var iid='etapa-'+t.id;
         if(dec[iid] && dec[iid].estado && dec[iid].estado!=='pendiente') return;
         out.push({c:c, origen:'etapa', tipo:'etapa', etapa:_ea.etapa, tarea:t,
-          it:{id:iid, texto:t.t, porque:'Etapa «'+_ea.etapa+'»'+(t.b?' · sin esto no se avanza':'')}, ts:0});
+          it:_propEditada(c, {id:iid, texto:t.t, porque:'Etapa «'+_ea.etapa+'»'+(t.b?' · sin esto no se avanza':'')}), ts:0});
       });
     }
   });
   out.sort(function(a,b){ return b.ts-a.ts; });
   return out;
+}
+/* Editar una propuesta antes de decidirla (Angie, 14/10/2026). Las de la
+   rutina y las de llamadas las reescribe una maquina todos los dias: lo
+   editado se guarda aparte, en datos.cambiosEditados[id], y se usa en lugar
+   del texto original al mostrar, al crear el ticket y al mandar al agente.
+   Las de revisiones se editan en el propio item. */
+function _propEditada(c, it){
+  var e=((c&&c.cambiosEditados)||{})[it&&it.id];
+  if(!e) return it;
+  return Object.assign({}, it, {texto:e.texto||it.texto, porque:(e.porque!=null?e.porque:it.porque), editado:true});
+}
+function propEditarModal(origen, cid, rid, iid){
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
+  var it=null;
+  if(origen==='rutina') it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0];
+  else if(origen==='etapa'){ var te=_etapaTareaDe(c,iid); if(te) it={id:iid, texto:te.t.t, porque:'Etapa «'+te.e.etapa+'»'}; }
+  else { var r=rvLista(c).find(function(x){ return x.id===rid; }); it=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===iid; }):null; }
+  if(!it) return;
+  var v=(origen==='revision')?it:_propEditada(c,it);
+  S._propEd={origen:origen, cid:cid, rid:rid, iid:iid};
+  var est='width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border2);'
+    +'background:var(--bg3);color:var(--text);font-family:var(--font);resize:vertical;line-height:1.5';
+  document.getElementById('modal-root').innerHTML=
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:620px">'
+      +'<div class="modal-title">Editar la propuesta · '+esc(c.name||'')+'</div>'
+      +'<label style="display:block;font-size:11px;color:var(--text3);margin-top:12px">Qué hay que hacer'
+        +'<textarea id="ped-texto" rows="3" maxlength="300" style="'+est+';margin-top:4px">'+esc(v.texto||'')+'</textarea></label>'
+      +'<label style="display:block;font-size:11px;color:var(--text3);margin-top:10px">Por qué / de dónde sale'
+        +'<textarea id="ped-porque" rows="3" maxlength="600" style="'+est+';margin-top:4px">'+esc(v.porque||'')+'</textarea></label>'
+      +((origen!=='revision'&&v.editado)?'<div style="font-size:11px;color:var(--text3);margin-top:8px">Está editada. '
+        +'<a href="javascript:void(0)" onclick="propEditarVolver()" style="color:var(--accent);text-decoration:none">Volver al texto original</a></div>':'')
+      +'<div class="modal-footer"><button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-primary" onclick="propEditarGuardar()">Guardar</button></div>'
+    +'</div></div>';
+  setTimeout(function(){ var t=document.getElementById('ped-texto'); if(t) t.focus(); },50);
+}
+function propEditarGuardar(){
+  var k=S._propEd; if(!k) return;
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(k.cid); }); if(!c) return;
+  var tx=String((document.getElementById('ped-texto')||{}).value||'').trim();
+  var pq=String((document.getElementById('ped-porque')||{}).value||'').trim();
+  if(!tx){ toast('El texto no puede quedar vacío.','amber'); return; }
+  if(k.origen==='revision'){
+    var r=rvLista(c).find(function(x){ return x.id===k.rid; });
+    var it=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===k.iid; }):null;
+    if(it){ it.texto=tx; if(pq) it.porque=pq; }
+  } else {
+    c.cambiosEditados=c.cambiosEditados||{};
+    c.cambiosEditados[k.iid]={texto:tx, porque:pq, at:new Date().toISOString(), por:(SB&&SB.email)||''};
+  }
+  save(); closeModal(); S._propEd=null; toast('Propuesta editada.'); showTickets();
+}
+function propEditarVolver(){
+  var k=S._propEd; if(!k) return;
+  var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(k.cid); });
+  if(c&&c.cambiosEditados){ delete c.cambiosEditados[k.iid]; save(); }
+  closeModal(); S._propEd=null; showTickets();
 }
 function dashCrearTicket(cid, rid, iid, resp, due){
   rvCrearTareaDeCambio(cid, rid, iid, resp, due);      // crea la tarea con ticket y repinta
@@ -43780,11 +43838,11 @@ function dashTicketModal(origen, cid, rid, iid){
   var texto='', _respEtapa='';
   if(origen==='etapa'){
     var _te=_etapaTareaDe(c, iid);
-    texto=_te?('['+_te.e.etapa+'] '+_te.t.t):'';
+    texto=_te?('['+_te.e.etapa+'] '+_propEditada(c,{id:iid,texto:_te.t.t}).texto):'';
     _respEtapa=_te?String(_te.t.r||'').toLowerCase():'';
   } else if(origen==='rutina'){
     var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0];
-    texto=it?it.texto:'';
+    texto=it?_propEditada(c,it).texto:'';
   } else {
     var r=rvLista(c).find(function(x){ return x.id===rid; });
     var it2=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===iid; }):null;
@@ -43853,7 +43911,7 @@ function dashEtapaDecidir(cid, iid, que, resp, due){
   var d={estado:que, at:new Date().toISOString(), por:(typeof SB==='object'&&SB.email)?SB.email:''};
   if(que==='tarea'){
     var venc=new Date(); venc.setDate(venc.getDate()+7);
-    var t={ id:Date.now()+Math.floor(Math.random()*1000), text:'['+te.e.etapa+'] '+te.t.t,
+    var t={ id:Date.now()+Math.floor(Math.random()*1000), text:'['+te.e.etapa+'] '+_propEditada(c,{id:iid,texto:te.t.t}).texto,
       responsible:(resp!=null)?String(resp):(te.t.r||responsableDe(c)||''),
       done:false, source:'Etapa', due:due||rvISO(venc), delegated:true, delegatedAt:new Date().toISOString(),
       ticket:'#'+nextTicketFromApp(), etapaTarea:{etapa:te.e.etapa, id:te.t.id} };
@@ -43883,6 +43941,7 @@ function dashDescartar(cid, rid, iid){ rvDescartarCambio(cid, rid, iid); }
 function dashRutinaDecidir(cid, iid, que, resp, due){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
   var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; if(!it) return;
+  it=_propEditada(c, it);
   c.cambiosDecisiones=c.cambiosDecisiones||{};
   var d={estado:que, at:new Date().toISOString(), por:(typeof SB==='object'&&SB.email)?SB.email:''};
   if(que==='tarea'){
@@ -43936,6 +43995,7 @@ function dashCambiosHtml(enTarjeta){
                   +(x.it.porque?'<div class="ks" style="margin-top:2px">'+esc(x.it.porque)+'</div>':'')+'</div>'
                 +'<div style="display:flex;gap:8px;flex:none;flex-wrap:wrap;justify-content:flex-end">'
                   +'<a class="cta" onclick="'+crear+'">Crear ticket</a>'
+                  +'<span class="pill" onclick="propEditarModal(\''+x.origen+'\','+x.c.id+',\''+esc(String((x.r&&x.r.id)||''))+'\',\''+esc(String(x.it.id))+'\')" title="Mejorar la redacción antes de decidir">Editar</span>'
                   +'<span class="pill" onclick="dashAgenteMandar(\''+x.origen+'\','+x.c.id+',\''+esc(String((x.r&&x.r.id)||''))+'\',\''+esc(String(x.it.id))+'\')" '
                     +'title="El agente lo prepara (lee Meta y GHL, no toca nada) y lo hacemos juntos cuando lo apruebes">Mandar al agente</span>'
                   +'<span class="pill" onclick="'+desc+'" title="No se hace; queda registrado como descartado">Descartar</span>'
@@ -43957,8 +44017,8 @@ function dashCambiosHtml(enTarjeta){
 async function dashAgenteMandar(origen, cid, rid, iid){
   var c=(DB.clients||[]).find(function(x){ return String(x.id)===String(cid); }); if(!c) return;
   var texto='', porque='';
-  if(origen==='etapa'){ var te=_etapaTareaDe(c,iid); texto=te?('['+te.e.etapa+'] '+te.t.t):''; porque=te?('Etapa «'+te.e.etapa+'»'):''; }
-  else if(origen==='rutina'){ var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; texto=it?it.texto:''; porque=it?(it.porque||''):''; }
+  if(origen==='etapa'){ var te=_etapaTareaDe(c,iid); var _pe=te?_propEditada(c,{id:iid,texto:te.t.t,porque:'Etapa «'+te.e.etapa+'»'}):null; texto=_pe?('['+te.e.etapa+'] '+_pe.texto):''; porque=_pe?_pe.porque:''; }
+  else if(origen==='rutina'){ var it=((c.cambiosPropuestos||{}).items||[]).filter(function(x){ return x.id===iid; })[0]; var _pr=it?_propEditada(c,it):null; texto=_pr?_pr.texto:''; porque=_pr?(_pr.porque||''):''; }
   else { var r=rvLista(c).find(function(x){ return x.id===rid; }); var it2=r?_rvAsegurarItems(c,r).find(function(x){ return x.id===iid; }):null; texto=it2?it2.texto:''; porque='Revisión'; }
   if(!texto){ toast('No encontré ese cambio.','amber'); return; }
   try{
