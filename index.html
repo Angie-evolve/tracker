@@ -44155,15 +44155,17 @@ function dashboardHtml(){
       gasto+=(typeof aUsd==='function')?aUsd(c, M.adSpent):M.adSpent; conGasto++;
     }catch(e){}
   });
-  var leads=0, ventas=0, vendiendo=0;
+  var leads=0, ventas=0, vendiendo=0, conLeads=[], conGhl=[];
   cls.forEach(function(c){
     var ops=(c.ghl&&c.ghl.opportunities)||[]; if(!ops.length) return;
+    conGhl.push(c);
     var rules=(typeof getGhlRules==='function')?getGhlRules(c):{};
     var gan=(rules.ganado||[]).map(function(x){ return String(x).toLowerCase(); });
-    var v=0;
+    var v=0, l=0;
     ops.forEach(function(o){
-      var tc=new Date(o.createdAt||o.dateAdded||0).getTime(); if(tc>=desde) leads++;
+      var tc=new Date(o.createdAt||o.dateAdded||0).getTime(); if(tc>=desde){ leads++; l++; }
     });
+    if(l) conLeads.push(c);
     // Ganadas: las que el sync vio pasar a GANADO en el periodo (lo mismo que
     // cuenta la actividad). updatedAt de la oportunidad no sirve: GHL lo pisa
     // con cualquier edicion y a veces no lo manda.
@@ -44181,6 +44183,15 @@ function dashboardHtml(){
   });
   var nuevos=cls.filter(function(c){ var t=new Date(c.altaAt||c.createdAt||0).getTime(); return t&&t>=desde; });
   var cpl=leads&&gasto?gasto/leads:null;
+  /* Cuantos clientes reciben leads y cuantos agendas en el periodo (Angie,
+     14/10/2026): el total de leads no dice si entran en todos o en dos. Las
+     agendas salen de la misma actividad que dibuja la grilla de abajo. Se
+     cuenta sobre los que tienen GHL conectado: sin eso no hay como saberlo. */
+  var feed=buildActivityFeed({limit:2000, desde:new Date(desde)});
+  var _agIds={}; feed.forEach(function(i){ if(i.kind==='agenda') _agIds[String(i.clientId)]=1; });
+  var conAgendas=conGhl.filter(function(c){ return _agIds[String(c.id)]; });
+  var _sin=function(lista){ var f=conGhl.filter(function(c){ return lista.indexOf(c)<0; });
+    return f.length?('sin: '+esc(f.slice(0,4).map(function(c){ return c.name; }).join(', '))+(f.length>4?' y '+(f.length-4)+' más':'')):'todos'; };
 
   var kpis='<div style="display:flex;flex-wrap:wrap;gap:16px">'
     +'<div class="card kpi"><div class="lbl">Inversión en pauta</div><div class="kv">'+money(gasto)+'</div>'
@@ -44190,12 +44201,17 @@ function dashboardHtml(){
       +'<div class="ks">'+(cpl?('costo por lead promedio '+money(cpl)+' · '):'')+'registros en GHL · '+perTxt+'</div></div>'
     +'<div class="card kpi" style="background:#C8FF47;color:#0A0C11"><div class="lbl" style="color:#0A0C11">Ventas cerradas</div><div class="kv">'+ventas+'</div>'
       +'<div class="ks" style="color:#0A0C11">'+vendiendo+' cliente'+(vendiendo===1?'':'s')+' vendiendo de '+cls.length+' activos · '+perTxt+'</div></div>'
+    +'<div class="card kpi"><div class="lbl">Clientes recibiendo leads</div><div class="kv">'+conLeads.length
+        +'<span style="font-size:15px;color:var(--text3);font-weight:500"> de '+conGhl.length+'</span></div>'
+      +'<div class="ks">con GHL conectado · '+perTxt+' · '+_sin(conLeads)+'</div></div>'
+    +'<div class="card kpi"><div class="lbl">Clientes con agendas</div><div class="kv">'+conAgendas.length
+        +'<span style="font-size:15px;color:var(--text3);font-weight:500"> de '+conGhl.length+'</span></div>'
+      +'<div class="ks">con GHL conectado · '+perTxt+' · '+_sin(conAgendas)+'</div></div>'
     +'<div class="card kpi"><div class="lbl">Clientes nuevos</div><div class="kv">'+nuevos.length+'</div>'
       +'<div class="ks">'+(nuevos.length?esc(nuevos.slice(0,3).map(function(c){return c.name;}).join(', '))+(nuevos.length>3?' y '+(nuevos.length-3)+' más':'')+' · ':'')+cls.length+' clientes activos</div></div>'
     +'</div>';
 
-  // ── Actividad por cliente, en el tiempo ──
-  var feed=buildActivityFeed({limit:2000, desde:new Date(desde)});
+  // ── Actividad por cliente, en el tiempo ── (el feed se armo arriba)
   var porCli={}, orden=[];
   feed.forEach(function(i){ if(!porCli[i.clientId]){ porCli[i.clientId]={n:i.cliente, id:i.clientId, items:[]}; orden.push(porCli[i.clientId]); } porCli[i.clientId].items.push(i); });
   orden.sort(function(a,b){ return b.items.length-a.items.length; });
