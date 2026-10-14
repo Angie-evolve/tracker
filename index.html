@@ -43743,6 +43743,7 @@ function dashCambiosPendientes(){
   (DB.clients||[]).forEach(function(c){
     if(c.archived) return;
     if(soloCartera() && !esDeMiCartera(c)) return;
+    if(S._dashIds && S.torreVista==='dashboard' && !S._dashIds[String(c.id)]) return;
     // 1. Los de las revisiones del cliente ("que cambiarias").
     (c.revisiones||[]).forEach(function(r){
       if(typeof rvItemsMejora!=='function') return;
@@ -44149,6 +44150,18 @@ function dashboardHtml(){
   var cls=activeClients();
   // Quien tiene solo su cartera ve los numeros de sus clientes, no los de todos.
   if(soloCartera()) cls=cls.filter(esDeMiCartera);
+  /* Filtros por producto y por responsable (Angie, 14/10/2026). Todo el
+     Dashboard cuenta sobre los clientes filtrados: tarjetas, actividad,
+     alarmas, pulso de Meta y cambios propuestos. */
+  var _fProd=S.dashProd||'', _fResp=S.dashResp||'';
+  if(_fProd) cls=cls.filter(function(c){ var p=_p360Prod(c); return _fProd==='__sin'?!p:p===_fProd; });
+  if(_fResp) cls=cls.filter(function(c){
+    var r=String(responsableDe(c)||'');
+    var m=(typeof _respMail==='function')?String(_respMail(r)||r):r;
+    return _fResp==='__sin' ? !r : m.toLowerCase()===_fResp.toLowerCase();
+  });
+  var _clsIds={}; cls.forEach(function(c){ _clsIds[String(c.id)]=1; });
+  S._dashIds=(_fProd||_fResp)?_clsIds:null;
   var _abrir=function(c){ return 'selectClient('+c.id+')'; };
 
   // ── KPIs ──
@@ -44197,7 +44210,8 @@ function dashboardHtml(){
      14/10/2026): el total de leads no dice si entran en todos o en dos. Las
      agendas salen de la misma actividad que dibuja la grilla de abajo. Se
      cuenta sobre los que tienen GHL conectado: sin eso no hay como saberlo. */
-  var feed=buildActivityFeed({limit:2000, desde:new Date(desde)});
+  var feed=buildActivityFeed({limit:2000, desde:new Date(desde)})
+    .filter(function(i){ return !S._dashIds || _clsIds[String(i.clientId)]; });
   var _agIds={}; feed.forEach(function(i){ if(i.kind==='agenda') _agIds[String(i.clientId)]=1; });
   var conAgendas=conGhl.filter(function(c){ return _agIds[String(c.id)]; });
   /* Sin movimiento y con alarmas no son lo mismo (Angie, 14/10/2026): sin
@@ -44312,7 +44326,7 @@ function dashboardHtml(){
 
   // ── Pulso de Meta ──
   var mp=[], mpTotal=0;
-  if(typeof mpClientes==='function') mpClientes().forEach(function(c){
+  if(typeof mpClientes==='function') mpClientes().filter(function(c){ return !S._dashIds || _clsIds[String(c.id)]; }).forEach(function(c){
     var d=mpDiagnostico(c); if(!d||d.nivel==='info') return;
     var p=c.metaPulso||{};
     var gastoSin=(p.gasto&&!p.resultados)?p.gasto:0; mpTotal+=gastoSin;
@@ -44342,10 +44356,25 @@ function dashboardHtml(){
     +'</div>';
 
   var seg=function(d,l){ return '<button class="seg'+(dias===d?' on':'')+'" onclick="dashPeriodo('+d+')">'+l+'</button>'; };
+  var _selSt='font:inherit;font-size:12.5px;padding:6px 10px;border-radius:999px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);cursor:pointer';
+  var _prods=(typeof productos==='function'?productos():[]).map(function(x){ return x.nombre; }).filter(Boolean);
+  var _gente=(DB.personas||[]).filter(function(x){ return x&&x.email; });
+  var filtros=(soloCartera()?'':
+      '<select aria-label="Filtrar por producto" style="'+_selSt+(_fProd?';border-color:var(--accent)':'')+'" onchange="S.dashProd=this.value;showTickets()">'
+        +'<option value="">Todos los productos</option>'
+        +_prods.map(function(n){ return '<option value="'+esc(n)+'"'+(_fProd===n?' selected':'')+'>'+esc(n)+'</option>'; }).join('')
+        +'<option value="__sin"'+(_fProd==='__sin'?' selected':'')+'>Sin producto</option></select>'
+      +'<select aria-label="Filtrar por responsable" style="'+_selSt+(_fResp?';border-color:var(--accent)':'')+'" onchange="S.dashResp=this.value;showTickets()">'
+        +'<option value="">Todos los responsables</option>'
+        +_gente.map(function(x){ return '<option value="'+esc(x.email)+'"'+(_fResp.toLowerCase()===x.email.toLowerCase()?' selected':'')+'>'+esc(x.nombre||x.email)+'</option>'; }).join('')
+        +'<option value="__sin"'+(_fResp==='__sin'?' selected':'')+'>Sin responsable</option></select>'
+      +((_fProd||_fResp)?'<a href="javascript:void(0)" style="font-size:12px;color:var(--accent);text-decoration:none" onclick="S.dashProd=\'\';S.dashResp=\'\';showTickets()">Sacar filtros</a>':''));
   return DASH_CSS+'<div class="dsh"><div style="display:flex;flex-direction:column;gap:14px">'
     +'<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;padding-bottom:8px">'
-      +'<div style="color:var(--text3);font-size:12px">'+(soloCartera()?'Tus clientes en una pantalla.':'Toda la agencia en una pantalla.')+'</div>'
-      +'<div style="display:flex;background:#12151C;border-radius:999px;padding:4px">'+seg(0,'Hoy')+seg(7,'7 días')+seg(30,'30 días')+'</div>'
+      +'<div style="color:var(--text3);font-size:12px">'+((_fProd||_fResp)?(cls.length+' cliente'+(cls.length===1?'':'s')+' con este filtro.')
+        :(soloCartera()?'Tus clientes en una pantalla.':'Toda la agencia en una pantalla.'))+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">'+filtros
+        +'<div style="display:flex;background:#12151C;border-radius:999px;padding:4px">'+seg(0,'Hoy')+seg(7,'7 días')+seg(30,'30 días')+'</div></div>'
     +'</div>'
     +kpis+actividad
     +'<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:stretch">'+alarmas+pulso+'</div>'
