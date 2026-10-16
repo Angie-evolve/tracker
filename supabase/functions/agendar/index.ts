@@ -443,10 +443,12 @@ Deno.serve(async (req: Request) => {
       // crear una nueva en el correcto.
       const eventId = String(body.eventId || "").trim();
       let citaCalendarId = "";
+      let citaAsignado = "";
       if (eventId) {
         const ra = await ghl("/calendars/events/appointments/" + encodeURIComponent(eventId));
         const ap = (ra.datos && (ra.datos.event || ra.datos.appointment || ra.datos)) || {};
         citaCalendarId = String(ap.calendarId || "").trim();
+        citaAsignado = String(ap.assignedUserId || "").trim();
         // Sin calendario de etapa, el de la cita es mejor que nada.
         if (!calendarId && citaCalendarId) calendarId = citaCalendarId;
       }
@@ -465,7 +467,12 @@ Deno.serve(async (req: Request) => {
        *     conectado-, que es justo lo que no se puede ver creando un
        *     calendario nuevo a mano.
        */
-      const userId = String(body.userId || "").trim();
+      /* Al mover una cita, `reprogramar` la deja a nombre de quien ya la tenia:
+       * los huecos tienen que ser los de esa persona. Sin esto se ofrecian
+       * horarios libres para otro del equipo, incluido el de la propia
+       * reunion (Santi, 16/10/2026, Sanando). Solo si es del mismo calendario. */
+      const userId = String(body.userId || "").trim() ||
+        ((citaAsignado && (!citaCalendarId || citaCalendarId === calendarId)) ? citaAsignado : "");
       const qs = "?startDate=" + desde + "&endDate=" + hasta;
       const r = await ghl(
         "/calendars/" + encodeURIComponent(calendarId) + "/free-slots" + qs +
