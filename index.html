@@ -40361,7 +40361,13 @@ async function _citaInvitarEquipo(c, inicio, mails){
   };
   var mailC=String(c.contactoEmail||c.email||'').trim().toLowerCase();
   var nom=String(c.name||'').trim().toLowerCase();
-  var ev=null, ultimoError='';
+  var ev=null, ultimoError='', soloInvitado=null;
+  /* La copia de un INVITADO no sirve (Santi, 16/10/2026: decia «Invitados en
+     Google» y Diego no aparecia en la reunion). Google acepta el cambio en esa
+     copia y no se lo manda a nadie. Es copia de invitado cuando la cuenta de esa
+     agenda figura entre los invitados sin ser quien organiza. */
+  var esCopiaInvitado=function(e){ var ag=String(e.agenda||'').toLowerCase();
+    return (e.invitados||[]).some(function(a){ return a.mail===ag && !a.organiza; }); };
   for(var i=0;i<5 && !ev;i++){
     if(i) await new Promise(function(ok){ setTimeout(ok, 4000); });
     var r=null;
@@ -40378,7 +40384,13 @@ async function _citaInvitarEquipo(c, inicio, mails){
     ev=conCliente.filter(function(e){
         return (e.invitados||[]).some(function(a){
           return a.organiza && a.mail===String(e.agenda||'').toLowerCase(); }); })[0]
-      || conCliente[0] || null;
+      || conCliente.filter(function(e){ return !esCopiaInvitado(e); })[0] || null;
+    if(!ev && conCliente.length) soloInvitado=conCliente[0];
+  }
+  if(!ev && soloInvitado){
+    var org=((soloInvitado.invitados||[]).filter(function(a){ return a.organiza; })[0]||{}).mail;
+    return {ok:false, texto:'No se invitó al equipo: la reunión la organiza '+(org||'otra agenda')
+      +', que no está conectada en Integraciones. Desde la copia de un invitado Google no le avisa a nadie.'+aMano};
   }
   if(!ev) return {ok:false, texto:'No encontré la reunión en Google para sumar al equipo'
     +(ultimoError?(' ('+ultimoError+')'):': GHL todavía no la copió a la agenda de quien la toma.')
@@ -40388,6 +40400,17 @@ async function _citaInvitarEquipo(c, inicio, mails){
   catch(e){ ri={ok:false, error:(e&&e.message)||''}; }
   if(!ri||!ri.ok) return {ok:false, texto:'Google no dejó sumar al equipo: '
     +((ri&&ri.error)||'sin respuesta')+'.'+aMano};
+  // Se vuelve a leer la reunion: que Google conteste ok no prueba que quedaron.
+  var faltan=[];
+  try{
+    var rv=await post('invitados', {quien:ev.agenda, desde:new Date(t-60000).toISOString(),
+                                    hasta:new Date(t+60000).toISOString()});
+    var ev2=((rv&&rv.eventos)||[]).filter(function(e){ return e.eventId===ev.eventId; })[0];
+    if(ev2){ var hay={}; (ev2.invitados||[]).forEach(function(a){ hay[a.mail]=1; });
+      faltan=mails.filter(function(m){ return !hay[String(m).toLowerCase()]; }); }
+  }catch(e){}
+  if(faltan.length) return {ok:false, texto:'Google dijo que sí, pero en la reunión no aparecen: '
+    +faltan.join(', ')+'. Invitalos a mano desde el Google Calendar de '+ev.agenda+'.'};
   return {ok:true, texto:(ri.sumados||[]).length
     ? ('Invitados en Google: '+ri.sumados.join(', ')+'.')
     : 'Ya estaban invitados.'};
