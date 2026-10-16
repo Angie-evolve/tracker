@@ -44116,10 +44116,11 @@ function _agTicketsSync(lista){
   if(cambio) save();
 }
 async function agDecidir(id, estado){
+  var x=((S._agPed&&S._agPed.lista)||[]).filter(function(y){ return String(y.id)===String(id); })[0];
   try{
     await sbFetch('agente_pedidos?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},
       body:JSON.stringify(estado==='aprobado'?{estado:'aprobado', ok_por:(SB&&SB.email)||'', ok_at:new Date().toISOString()}:{estado:estado})});
-    toast(estado==='aprobado'?'Aprobado. Decile a Claude «hacé los pedidos aprobados» y lo hace con vos.':'Cancelado.');
+    toast(estado==='aprobado'?(_agEsSistema(x)?'Aprobado. El agente lo hace en la próxima vuelta de la mañana.':'Aprobado. Decile a Claude «hacé los pedidos aprobados» y lo hace con vos.'):'Cancelado.');
     S._agPed=null; showTickets();
   }catch(e){ toast('No pude guardarlo: '+((e&&e.message)||''),'red'); }
 }
@@ -44136,24 +44137,30 @@ function agPanelHtml(){
     aprobado:['aprobado · se hace en la próxima conversación','#47FFC8','rgba(71,255,200,.1)'],
     hecho:['hecho','var(--text2)','var(--bg3)'], fallo:['no se pudo','var(--redx)','rgba(240,96,60,.12)'],
     cancelado:['cancelado','var(--text3)','var(--bg3)']};
+  var ESTADO_SIS={pendiente:['lo revisa mañana a la mañana','var(--text3)','var(--bg3)'],
+    aprobado:['aprobado · el agente lo hace en la próxima vuelta','#47FFC8','rgba(71,255,200,.1)']};
   S._agAb=S._agAb||{};
   var listos=l.filter(function(x){ return x.estado==='preparado'; }).length;
   return '<div id="ag-panel" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:20px">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px">'
       +'<span style="font-size:13px;font-weight:500;color:var(--strong)">Pedidos al agente</span>'
       +'<span style="font-size:11px;color:var(--text3)">'+(listos?(listos+' listo'+(listos===1?'':'s')+' para aprobar'):'')+'</span></div>'
-    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">El agente los prepara leyendo Meta y GHL, sin tocar nada. '
-      +'Cuando aprobás uno, lo hace Claude en una conversación con vos: decile «hacé los pedidos aprobados».</div>'
+    +'<div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-bottom:4px">Los de clientes: el agente los prepara leyendo Meta y GHL, sin tocar nada, '
+      +'y cuando aprobás uno lo hace Claude con vos («hacé los pedidos aprobados»). Los de <b>Evolve OS</b> son cambios a la app: '
+      +'los revisa contra el código cada mañana y los aprobados los hace solo en la vuelta siguiente.</div>'
     +l.map(function(x){
       var c=(DB.clients||[]).find(function(y){ return String(y.id)===String(x.cliente_id); });
-      var e=ESTADO[x.estado]||[x.estado,'var(--text3)','var(--bg3)'];
+      var sis=_agEsSistema(x);
+      var e=(sis&&ESTADO_SIS[x.estado])||ESTADO[x.estado]||[x.estado,'var(--text3)','var(--bg3)'];
+      var quien=sis?('Evolve OS · '+((typeof _respNombre==='function'&&_respNombre(x.pedido_por))||String(x.pedido_por||'').split('@')[0]||'sin firma')):((c&&c.name)||('cliente '+x.cliente_id));
       var ab=!!S._agAb[x.id], det=x.propuesta||x.resultado||'';
       return '<div style="border-top:1px solid var(--border);padding:10px 0">'
         +'<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
           +'<div style="flex:1;min-width:220px">'
-            +'<div style="font-size:12.5px;color:var(--strong);font-weight:500">'+esc((c&&c.name)||('cliente '+x.cliente_id))
+            +'<div style="font-size:12.5px;color:var(--strong);font-weight:500">'+esc(quien)
               +' <span style="font-size:10.5px;padding:1px 8px;border-radius:20px;background:'+e[2]+';color:'+e[1]+';font-weight:400">'+esc(e[0])+'</span></div>'
             +'<div style="font-size:12.5px;color:var(--text2);line-height:1.5;margin-top:3px">'+esc(x.texto)+'</div>'
+            +(sis&&x.porque?'<div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:2px;white-space:pre-wrap">'+esc(x.porque)+'</div>':'')
             +(det?('<a href="javascript:void(0)" onclick="agAbrir('+x.id+')" style="font-size:11.5px;color:var(--accent);text-decoration:none">'
               +(ab?'Ocultar':(x.propuesta&&x.estado!=='hecho'?'Ver el plan':'Ver el resultado'))+'</a>'):'')
           +'</div>'
@@ -75577,38 +75584,91 @@ function openNewTicketModal(){
     +'<div style="font-size:11.5px;color:var(--text3);margin-bottom:14px">Pod&eacute;s <b>solo crearla</b> (queda en el tablero) o <b>crearla y delegarla</b>: Claude redacta el mail con el template, crea el borrador en Gmail de Angie y el evento del deadline en el calendario.</div>'
     +'<div style="display:flex;flex-direction:column;gap:10px">'
     +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Destino</div>'
-    +'<select id="nt-client" class="btn btn-sm" style="width:100%;text-align:left;padding:8px 11px">'
+    +'<select id="nt-client" class="btn btn-sm" style="width:100%;text-align:left;padding:8px 11px" onchange="_ntDestinoCambio()">'
+    // Arriba de todo: un pedido para la app no es una tarea de nadie del equipo,
+    // va a la cola del agente (Angie, 16/10/2026, para que Santi proponga cambios).
+    +'<option value="sistema">Evolve OS &mdash; un cambio o un error en la app</option>'
     // Primera y separada: una tarea interna no es "un cliente mas", y ponerla
     // en la lista alfabetica la escondia entre doce nombres.
-    +'<option value="agencia">Evolve &mdash; tarea interna, sin cliente</option>'
+    +'<option value="agencia" selected>Evolve &mdash; tarea interna, sin cliente</option>'
     +'<optgroup label="Grupos (crea la tarea en cada cliente)">'
       +'<option value="grp:live">Todos con campana activa ('+activeClients().filter(function(c){ var a=adsDot(c); return a&&a.live; }).length+')</option>'
       +'<option value="grp:noarch">Todos los activos ('+activeClients().length+')</option>'
       +'<option value="grp:todos">Todos, incluidos los archivados ('+(DB.clients||[]).length+')</option>'
     +'</optgroup>'
     +'<optgroup label="Un cliente">'+opts+'</optgroup>'
-    +'</select></div>'
-    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Tarea</div>'
+    +'</select>'
+    +'<div id="nt-sis-nota" style="display:none;font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:6px">'
+      +'Va a la cola del agente. A la ma&ntilde;ana lo lee en el c&oacute;digo y deja el plan; Angie lo aprueba o lo descarta en Tickets, y el agente hace los aprobados.'
+      +' Contalo como lo viste: en qu&eacute; pantalla, qu&eacute; tocaste, qu&eacute; esperabas y qu&eacute; pas&oacute;.</div>'
+    +'</div>'
+    +'<div><div id="nt-text-lbl" style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Tarea</div>'
     +'<textarea id="nt-text" placeholder="Que tiene que hacer Ashy, en una o dos lineas..." style="width:100%;min-height:70px;padding:9px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;resize:vertical"></textarea></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
     +'<div style="grid-column:1/-1"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Links (opcional)</div>'
     +'<textarea id="nt-links" placeholder="Pega un link por linea: Drive, Figma, la landing..." style="width:100%;min-height:46px;padding:9px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px;resize:vertical"></textarea>'
     +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">Van con la tarea y se incluyen en el mail de delegacion. Para archivos, pega el link de Drive.</div></div>'
-    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Deadline</div>'
+    +'<div class="nt-no-sis"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Deadline</div>'
     +'<input type="date" id="nt-due" style="width:100%;padding:8px 11px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12.5px"></div>'
-    +'<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Responsable</div>'
+    +'<div class="nt-no-sis"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Responsable</div>'
     +_ntRespCampo()+'</div>'
-    +'<div style="grid-column:1/-1"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Procedimiento (opcional)</div>'
+    +'<div class="nt-no-sis" style="grid-column:1/-1"><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Procedimiento (opcional)</div>'
     +_sopSelect('nt-sop','')
     +'<div style="font-size:10.5px;color:var(--text3);margin-top:3px">El avance de los pasos se guarda en esta tarea, no en el procedimiento.</div></div>'
     +'</div>'
     +'</div>'
     +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
     +'<button class="btn btn-sm" onclick="closeModal()">Cancelar</button>'
-    +'<button class="btn btn-sm" onclick="createTicketOnly()">Solo crear</button>'
-    +'<button class="btn btn-sm btn-primary" onclick="createAndDelegateTicket()">Crear y delegar</button>'
+    +'<button class="btn btn-sm nt-no-sis" onclick="createTicketOnly()">Solo crear</button>'
+    +'<button class="btn btn-sm btn-primary nt-no-sis" onclick="createAndDelegateTicket()">Crear y delegar</button>'
+    +'<button class="btn btn-sm btn-primary" id="nt-sis-btn" style="display:none" onclick="sistemaPedir()">Mandar el pedido</button>'
     +'</div></div></div>';
 }
+// Con destino "Evolve OS" no hay responsable, deadline ni procedimiento: lo
+// decide la revision de la manana. Se esconden para que no parezca que sirven.
+function _ntDestinoCambio(){
+  var sis=((document.getElementById('nt-client')||{}).value==='sistema');
+  document.querySelectorAll('.nt-no-sis').forEach(function(el){ el.style.display=sis?'none':''; });
+  var b=document.getElementById('nt-sis-btn'); if(b) b.style.display=sis?'':'none';
+  var n=document.getElementById('nt-sis-nota'); if(n) n.style.display=sis?'':'none';
+  var l=document.getElementById('nt-text-lbl'); if(l) l.textContent=sis?'Qu\u00e9 cambiar\u00edas o qu\u00e9 no anda':'Tarea';
+  var t=document.getElementById('nt-text');
+  if(t) t.placeholder=sis?'Ej.: en Tickets, al archivar una tarea vuelve a aparecer cuando recargo la p\u00e1gina.':'Que tiene que hacer Ashy, en una o dos lineas...';
+}
+/* Pedido de cambio para la app (Angie, 16/10/2026). Usa la misma cola que
+   "Mandar al agente" (agente_pedidos, migracion 039) para no abrir otra tabla:
+   va a nombre del cliente interno y con cambio_id "sistema-...", que es lo que
+   separa estos pedidos de los de Meta y GHL. La rutina cambios-sistema los lee
+   cada manana contra el codigo y deja el plan; se hacen solo los aprobados. */
+async function sistemaPedir(){
+  var txt=((document.getElementById('nt-text')||{}).value||'').trim();
+  if(!txt){ toast('Contá qué cambiarías o qué no anda'); return; }
+  var ag=clienteAgencia(true); if(!ag){ toast('No encontré el cliente interno','red'); return; }
+  var links=_ntLinks().map(function(x){ return x.url; });
+  // texto tiene tope de 400 en la base: lo que sobra pasa a "porque", que llega a 800.
+  var texto=txt.slice(0,400), resto=txt.slice(400);
+  var porque=(resto?('…'+resto):'')+(links.length?((resto?'\n':'')+'Links: '+links.join(' ')):'');
+  var yo=(SB&&SB.email)||'';
+  try{
+    var d=await sbFetch('agente_pedidos',{method:'POST',headers:{'Prefer':'return=representation'},
+      body:JSON.stringify({cliente_id:Number(ag.id), cambio_id:'sistema-'+Date.now(), texto:texto,
+        porque:porque.slice(0,800)||null, pedido_por:yo})});
+    var pid=d&&d[0]&&d[0].id;
+    // Tambien queda como ticket del interno, como los de "Mandar al agente":
+    // _agTicketsSync lo cierra cuando el agente lo da por hecho.
+    ag.tasks=ag.tasks||[];
+    var t={id:Date.now()+Math.floor(Math.random()*1000), text:'[App] '+texto, responsible:yo, done:false,
+      source:'Sistema', estado:'delegada', delegated:true, delegatedAt:new Date().toISOString(),
+      ticket:'#'+nextTicketFromApp(), agentePedido:pid||null};
+    if(links.length) t.attachments=links.map(function(u){ return {url:u, label:(typeof _etiquetaLink==='function')?_etiquetaLink(u):u}; });
+    ag.tasks.unshift(t);
+    save(); closeModal();
+    S._agPed=null;
+    toast('Pedido mandado. Mañana a la mañana queda para revisar en Tickets.');
+    if(S.view==='tickets') showTickets(); else if(typeof renderTab==='function') renderTab();
+  }catch(e){ toast('No pude mandarlo: '+((e&&e.message)||''),'red'); }
+}
+function _agEsSistema(x){ return /^sistema-/.test(String((x&&x.cambio_id)||'')); }
 // Resuelve el destino elegido en el modal: un cliente o un grupo (lista de clientes).
 function _ntTargets(){
   var v=String((document.getElementById('nt-client')||{}).value||'');

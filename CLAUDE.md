@@ -23,7 +23,7 @@ Un solo `index.html`, JS de navegador, sin build ni framework.
 ## Base de datos
 - Leer: `sbq`, libre.
 - Escribir: `sbw` / `sbsql`, **solo avisándome antes**.
-- Las tablas tienen RLS prendida (`agente_pedidos`, la cola de «Mandar al agente», se sumó el 14/10/2026 con la 039). `anon` no puede leer ninguna; lo único
+- Las tablas tienen RLS prendida (`agente_pedidos`, la cola de «Mandar al agente», se sumó el 14/10/2026 con la 039; desde el 16/10 también lleva los pedidos de cambios a la app, con `cambio_id` «sistema-…» a nombre del cliente interno, que revisa la rutina `cambios-sistema`). `anon` no puede leer ninguna; lo único
   que puede es INSERT en `lp_eventos`, que es el tracking de las landings.
   **Ese estado no se toca**, y no se "desactiva un momento" para destrabar
   nada. Si algo falla por permisos, avisame: el problema es otro.
