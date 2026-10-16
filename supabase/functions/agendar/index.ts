@@ -531,6 +531,19 @@ Deno.serve(async (req: Request) => {
       // Igual que al agendar: el horario va tal cual lo dio GHL. Reescribirlo
       // en UTC lo hace irreconocible para su propia validacion de huecos.
       const cuerpo: Record<string, unknown> = { startTime: inicio };
+      /* ⚠️  EN UN CALENDARIO DE EQUIPO GHL EXIGE A NOMBRE DE QUIEN QUEDA, TAMBIEN
+       * AL MOVERLA (Santi, 16/10/2026, Sanando): sin `assignedUserId` contesta
+       * 422 "A team member needs to be selected". Se respeta a quien ya la
+       * tenia: se le pregunta a GHL por la cita antes de moverla. Si la app
+       * manda `userId`, gana ese. */
+      let asignadoRp = String(body.userId || "").trim();
+      if (!asignadoRp) {
+        const ra0 = await ghl("/calendars/events/appointments/" + encodeURIComponent(id));
+        const ap0 = (ra0.datos && (ra0.datos.event || ra0.datos.appointment || ra0.datos)) || {};
+        asignadoRp = String(ap0.assignedUserId || "").trim();
+        if (!body.calendarId && ap0.calendarId) body.calendarId = String(ap0.calendarId);
+      }
+      if (asignadoRp) cuerpo.assignedUserId = asignadoRp;
       if (body.minutos) {
         const m = Math.max(5, Math.min(480, parseInt(body.minutos, 10)));
         cuerpo.endTime = new Date(t0 + m * 60000).toISOString();
