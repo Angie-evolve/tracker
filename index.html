@@ -3510,6 +3510,76 @@ async function sbBajar(){
   return true;
 }
 
+/* ── Traer lo nuevo sin recargar (16/10/2026) ───────────────────────────
+   La app bajaba la nube una sola vez, al abrir. Un cliente dado de alta por
+   otra persona, en otra pestana o por el alta automatica del onboarding no
+   le aparecia a Santi en el Panel 360 hasta recargar la pagina.
+
+   ⚠️  NO ES sbBajar. Aquel reemplaza la base entera y se llevaria puesto lo
+   que esta sin subir. Esto trae solo:
+     - los clientes que aca no estan, y
+     - los que cambiaron en la nube, si aca no se tocaron desde la ultima
+       subida y no estan abiertos en este momento.
+   Lo demas lo resuelve la proxima carga, como siempre. */
+var _SB_REFR={timer:null, corriendo:false, repintar:false};
+function _sbSucio(c){
+  try{ return _sbHuellas[String(c.id)]!==_huella(_partirCliente(c).datos); }catch(e){ return true; }
+}
+function _sbOcupado(){
+  var m=document.getElementById('modal-root');
+  if(m && m.children.length) return true;
+  if(document.getElementById('cita-pop')) return true;
+  var a=document.activeElement;
+  return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+}
+async function sbRefrescar(){
+  if(!SB.listo || document.hidden || _SB_REFR.corriendo) return;
+  _SB_REFR.corriendo=true;
+  try{
+    var lista=await sbFetch('clientes?select=id,datos_at');
+    if(!Array.isArray(lista)) return;
+    var aca={}; (DB.clients||[]).forEach(function(c){ aca[String(c.id)]=c; });
+    var bor=(DB.clientesBorrados||[]).map(String);
+    var traer=lista.filter(function(f){
+      var k=String(f.id); if(bor.indexOf(k)>=0) return false;
+      var c=aca[k];
+      if(!c) return true;
+      if(String(f.datos_at||'')===String(_sbVisto[k]||'')) return false;
+      if(+S.clientId===+f.id || +S.p360Abierto===+f.id) return false;
+      return !_sbSucio(c);
+    }).map(function(f){ return f.id; });
+    if(!traer.length) return;
+    var filas=await sbFetch('clientes?select=id,datos,maquina,datos_at&id=in.('+traer.join(',')+')');
+    (filas||[]).forEach(function(f){
+      var k=String(f.id), nc=_clienteDeFila(f);
+      var i=(DB.clients||[]).findIndex(function(c){ return String(c.id)===k; });
+      // Entre el pedido y la respuesta pudo tocarse: se respeta lo de aca.
+      if(i>=0 && _sbSucio(DB.clients[i])) return;
+      if(i>=0) DB.clients[i]=nc; else DB.clients.push(nc);
+      _sbVisto[k]=String(f.datos_at||'');
+      _sbHuellas[k]=_huella(f.datos||{});
+      _sbHuellasMaq[k]=_huella(f.maquina||{});
+    });
+    _normalizarClientes();
+    _guardarLocal(DB).catch(function(e){});
+    _SB_REFR.repintar=true;
+  }catch(e){ /* sin red: la proxima vuelta */ }
+  finally{ _SB_REFR.corriendo=false; _sbRepintarSiSePuede(); }
+}
+function _sbRepintarSiSePuede(){
+  if(!_SB_REFR.repintar || _sbOcupado()) return;
+  _SB_REFR.repintar=false;
+  try{ renderSidebar(); }catch(e){}
+  try{ if(S.view==='tickets' && typeof showTickets==='function') showTickets(); }catch(e){}
+}
+function sbRefrescoIniciar(){
+  if(_SB_REFR.timer) return;
+  _SB_REFR.timer=setInterval(function(){
+    if(_SB_REFR.repintar) _sbRepintarSiSePuede(); else sbRefrescar();
+  }, 90000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) sbRefrescar(); });
+}
+
 // ── Subir lo que cambio ─────────────────────────────────────────────────
 // Se manda solo lo que cambio desde la ultima subida: con 14 clientes de
 // varios cientos de KB, mandar todo en cada save() satura la conexion.
@@ -77271,6 +77341,7 @@ async function arrancarConSesion(){
     }catch(e){ console.warn('[cfg equipo]', e); }
     // Despues de bajar: si no, se pisa la lista que ya estaba en la nube
     registrarEnEquipo();
+    try{ sbRefrescoIniciar(); }catch(e){}
     /* Quien ya esta en la capacitacion por fuera del tracker -Martin arma la
        serie a mano en su Google- se marca solo, sin tener que entrar a
        Configuracion y apretar "Traer de Google". Sin esto el icono de la
