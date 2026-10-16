@@ -39287,6 +39287,7 @@ function _cpPintar(){
   var o=c && _cpBuscar(c, st.citaId);
   if(!o){ citaPopCerrar(); return; }
   if(st.vista==='mover'){ _cpPintarMover(p, c, o); _cpUbicar(); return; }
+  if(st.vista==='invitar'){ _cpPintarInvitar(p, c, o); _cpUbicar(); return; }
   var x=o.x, d=new Date(x.inicio), t=d.getTime(), ahora=Date.now();
   var fin=x.fin ? new Date(x.fin).getTime() : t+45*60000;
   var id=JSON.stringify(String(x.id)).replace(/"/g,'&quot;');
@@ -39324,7 +39325,7 @@ function _cpPintar(){
             ? '<button class="cp-b pri" disabled title="La reunión no tiene link en GHL">Sin link en GHL</button>'
             : '<button class="cp-b pri" disabled>Buscando el link…</button>'))
         +'<button class="cp-b" onclick="citaPopMover()">Reprogramar</button>'
-      +'</div>';
+      +'</div>'+_cpBotonInvitar(c);
     // El link no se guarda en la tarjeta: se le pide a GHL al abrir, que es
     // donde vive y donde se actualiza si alguien lo cambia.
     if(link===undefined) _cpTraerLink(x);
@@ -39337,12 +39338,48 @@ function _cpPintar(){
         +'<button class="cp-b pri" onclick="citaPopMover()">Reprogramar</button>'
         +'<button class="cp-b" onclick="var s=S._cpop;citaPopCerrar();p360IrACita(s.clientId,s.etapa)">'
         +'Abrir en calendario</button>'
-      +'</div>';
+      +'</div>'+_cpBotonInvitar(c);
   }
   if(!o.et) html+='<div class="cp-nota">No está enganchada a ninguna etapa: '
     +'asignásela desde la ficha.</div>';
   p.innerHTML=html;
   _cpUbicar();
+}
+/* Invitar al equipo del cliente a una reunion que YA existe (Angie, 16/10/2026).
+   Antes solo se podia al crearla. Usa el mismo camino que al agendar: suma los
+   mails en la agenda de Google de quien organiza y despues confirma que quedaron. */
+function _cpBotonInvitar(c){
+  var hay=capDestinos(c).some(function(d){ return !d.principal && d.mail; });
+  return hay ? '<button class="cp-lnk" onclick="S._cpop.vista=\'invitar\';S._cpop.invMsg=\'\';_cpPintar()">'
+    +'Invitar a su equipo</button>' : '';
+}
+function _cpPintarInvitar(p, c, o){
+  var st=S._cpop, caja=_citaEquipoCaja(c);
+  p.className='cpop mover';
+  p.innerHTML='<div class="cp-top"><span class="cp-h">Invitar a su equipo</span>'
+    +'<span class="cp-antes">'+esc(_cpDia(new Date(o.x.inicio)))+' · '+esc(_citaHora(o.x.inicio))+'</span></div>'
+    +(caja || '<div class="cp-nota">No hay nadie más con mail en el equipo del cliente. Se carga en la ficha.</div>')
+    +(st.invMsg ? '<div class="cp-nota" style="margin-top:10px">'+esc(st.invMsg)+'</div>' : '')
+    +'<div class="cp-pie"><span></span><span class="cp-acc">'
+    +'<button class="cp-b" onclick="S._cpop.vista=\'ver\';S._cpop.invMsg=\'\';_cpPintar()">Volver</button>'
+    +(caja ? '<button class="cp-b pri" id="cp-inv" onclick="citaPopInvitar()">Invitar</button>' : '')
+    +'</span></div>';
+}
+async function citaPopInvitar(){
+  var st=S._cpop; if(!st) return;
+  var c=(DB.clients||[]).find(function(x){ return x.id===st.clientId; });
+  var o=c && _cpBuscar(c, st.citaId); if(!o) return;
+  var mails=_citaEquipoMarcados();
+  if(!mails.length){ toast('Tildá a quién invitar','amber'); return; }
+  var b=document.getElementById('cp-inv');
+  if(b){ b.disabled=true; b.textContent='Invitando…'; }
+  var r=null;
+  try{ r=await _citaInvitarEquipo(c, o.x.inicio, mails); }
+  catch(e){ r={ok:false, texto:'No se pudo: '+((e&&e.message)||'')}; }
+  if(S._cpop!==st) return;
+  st.invMsg=(r&&r.texto)||'Google no contestó.';
+  _cpPintar();
+  if(r&&r.ok) toast(r.texto);
 }
 async function _cpTraerLink(x){
   var st=S._cpop; if(!st) return;
@@ -40398,8 +40435,11 @@ async function _citaInvitarEquipo(c, inicio, mails){
     return {ok:false, texto:'No se invitó al equipo: la reunión la organiza '+(org||'otra agenda')
       +', que no está conectada en Integraciones. Desde la copia de un invitado Google no le avisa a nadie.'+aMano};
   }
-  if(!ev) return {ok:false, texto:'No encontré la reunión en Google para sumar al equipo'
-    +(ultimoError?(' ('+ultimoError+')'):': GHL todavía no la copió a la agenda de quien la toma.')
+  /* Que no aparezca en ninguna agenda conectada casi siempre es que quien la
+     toma no conecto su Google en Integraciones (16/10/2026: solo estaba la de
+     Angie). Que GHL tarde en copiarla es la otra, menos comun. */
+  if(!ev) return {ok:false, texto:'No encontré la reunión en las agendas de Google conectadas'
+    +(ultimoError?(' ('+ultimoError+')'):'. Si la toma alguien que no conectó su Google en Integraciones, que lo conecte; si recién se agendó, probá en un minuto.')
     +aMano};
   var ri=null;
   try{ ri=await post('invitar', {quien:ev.agenda, eventId:ev.eventId, mails:mails}); }
