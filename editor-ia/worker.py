@@ -329,7 +329,7 @@ def transcribir(video, tmp):
 
 
 # Que tan parecida tiene que ser una palabra a una de la lista para corregirla.
-# Alto a proposito: "ohapo" contra "ojapo" da 0.8 y hay que agarrarlo, pero
+# Alto a proposito: "mimarca" contra "mimarka" da 0.8 y hay que agarrarlo, pero
 # "hora" contra "ahora" tambien da 0.89 y no hay que tocarlo, por eso ademas se
 # exige que tengan el mismo largo a una letra.
 PARECIDO = 0.8
@@ -344,7 +344,7 @@ def corregir_propias(palabras, propias):
     """
     Arregla los nombres propios que la transcripcion escucho mal.
 
-    Whisper no conoce las marcas: "Ojapo" sale "Ohapo", y va a salir mal en
+    Whisper no conoce las marcas: "MiMarca" sale "Mimarka", y va a salir mal en
     todos los videos de ese cliente. Es mas barato arreglarlo despues que pelear
     con el modelo. Se compara sin tildes y por parecido, no por igualdad, porque
     el error nunca es el mismo dos veces.

@@ -221,7 +221,7 @@ etapas_reordenar     ✅ freno -> Solo la agencia puede reordenar etapas
 lead_etapa           ✅ freno -> Ese lead no existe
 ```
 
-El lead que usó era de Zentenio, o sea **ajeno** al usuario simulado. El
+El lead que usó era de cliente BA, o sea **ajeno** al usuario simulado. El
 mensaje es el mismo que para un lead inexistente, así que el guarda tampoco
 confirma que ese id exista.
 
@@ -326,9 +326,9 @@ revoke insert, update, delete on public.leads from authenticated;
 
 Está avisado también dentro de `005_portal_leads.sql`, al lado del grant.
 
-## "No pude sincronizar con GHL: Tardó demasiado" en Albet
+## "No pude sincronizar con GHL: Tardó demasiado" en cliente C
 
-Apareció el 22/09/2026 mirando Albet desde el celular. **Sin diagnosticar
+Apareció el 22/09/2026 mirando cliente C desde el celular. **Sin diagnosticar
 todavía**: acá queda anotado para no perderlo.
 
 El cartel sale de `syncGhl`, que escribe el motivo en `c.ghl._syncError`. El
@@ -337,12 +337,12 @@ consulta se pasa del tiempo que se le da.
 
 Lo que **no** se sabe y hay que medir antes de tocar nada:
 
-- si es siempre en Albet o fue una vez,
+- si es siempre en cliente C o fue una vez,
 - si tarda la consulta a GHL o el Apps Script, que además tiene cuota diaria,
 - cuántas oportunidades tiene esa subcuenta: la traída va paginada y una
   cuenta grande puede pasarse del tiempo sin que haya nada roto.
 
-Es distinto de los 401 de Razor Tech, que son token vencido. Este es tiempo,
+Es distinto de los 401 de cliente AQ, que son token vencido. Este es tiempo,
 no permiso.
 
 # Plan de arquitectura y seguridad
