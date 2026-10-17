@@ -3,7 +3,7 @@
 --
 -- QUE ARREGLA
 -- El portal muestra el mail de la cuenta en el encabezado. Deberia mostrar el
--- nombre de la empresa: quien entra ya sabe cual es su mail, y "Albet" dice
+-- nombre de la empresa: quien entra ya sabe cual es su mail, y "cliente C" dice
 -- mas que "mdlangierh+albet@gmail.com".
 --
 -- ⚠️  EL PORTAL NO PUEDE LEER ESE NOMBRE. Esta en `clientes.nombre`, y las

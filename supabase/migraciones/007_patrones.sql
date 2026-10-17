@@ -103,7 +103,7 @@ update public.etapas set ghl_patrones = ghl_patrones ||
 -- "Solicitó informe por WhatsApp" (5), "Vio informe" (4), "Hot Lead" (3),
 -- "Contactar en 30 días" (9) — todos son contacto vivo sin reunion agendada.
 -- "Calendario enviado esperando agenda" aparecio recien, al arreglar el token
--- de Zentenio: son 267 oportunidades que no existian cuando se conto el 6,8%.
+-- de cliente BA: son 267 oportunidades que no existian cuando se conto el 6,8%.
 update public.etapas set ghl_patrones = ghl_patrones ||
   array['informe','hot lead','contactar','nurtur','calentand',
         'calendario','esperando agenda','link enviado']

@@ -72,7 +72,7 @@ select column_name, data_type
 --     crudo donde el tracker muestra un nombre. Hay que decidirlo antes de
 --     escribir el sync, no despues.
 --
--- ⚠️  `paisOf` no se copia: sobre los 267 de Zentenio da 0 de 267, porque esos
+-- ⚠️  `paisOf` no se copia: sobre los 267 de cliente BA da 0 de 267, porque esos
 --     leads no traen timezone ni en `geo` ni en `formAnswers`. La funcion esta
 --     bien; el dato no esta. Si algun dia llega, es otra columna.
 --

@@ -3,7 +3,7 @@
 -- POR QUE HACE FALTA UN CAMPO NUEVO
 -- El tablero no tiene hoy de donde saber en que anda la oferta de un cliente.
 -- Lo unico que existe es el documento `gen-oferta` de la ficha, y ese documento
--- NO alcanza: Mi Stock lo tiene cargado y el dataset esta a medias (Creativos,
+-- NO alcanza: cliente AI lo tiene cargado y el dataset esta a medias (Creativos,
 -- Embudo y Proceso todavia con candado). "Hay documento" no es "esta completa",
 -- asi que no se puede deducir: hay que escribirlo.
 --

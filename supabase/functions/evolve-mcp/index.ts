@@ -150,8 +150,8 @@ async function listarClientes(c: Clave, a: any) {
     prospecto: x.pr === "true", archivado: x.ar === "true", alta: x.al || "", proxima_reunion: proximaCita(x.ci) }));
 }
 
-// Sin tildes, sin mayusculas y sin letras dobles: "Red Zepellin" (asi quedo
-// titulada una llamada) y "Red Zeppelin" (el cliente) tienen que encontrarse.
+// Sin tildes, sin mayusculas y sin letras dobles: una llamada titulada con el
+// nombre mal escrito tiene que encontrar al cliente igual.
 const norm = (s: unknown) => String(s ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   .replace(/[^a-z0-9 ]/g, " ").replace(/(.)\1+/g, "$1").replace(/\s+/g, " ").trim();
 
@@ -280,7 +280,7 @@ const HERRAMIENTAS = [
   { name: "buscar_llamadas",
     description: "Busca llamadas grabadas con Fathom del equipo de The Flowing Code (Angie, Joe, Martín, Santi y el resto), de la más nueva a la más vieja. Filtra por cliente, por quién participó o grabó, por una palabra que aparezca en el título, el resumen o la transcripción, y por fechas. Devuelve id, fecha, título, cliente, link y un resumen corto.",
     inputSchema: { type: "object", properties: {
-      cliente: { type: "string", description: "Nombre del cliente, ej. «Red Zeppelin»" },
+      cliente: { type: "string", description: "Nombre del cliente (o parte del nombre)" },
       persona: { type: "string", description: "Nombre o mail de alguien que estuvo en la llamada o la grabó" },
       texto: { type: "string", description: "Palabra o frase a buscar en título, resumen o transcripción" },
       desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD" },

@@ -243,8 +243,8 @@ Deno.serve(async (req: Request) => {
     /* Buscar un contacto por nombre.
      *
      * ⚠️  EXISTE PORQUE AGENDAR SE BUSCA POR MAIL Y EL MAIL DEL TRACKER PUEDE
-     *     ESTAR MAL. El caso real: la ficha decia "fransolans99@gmail.co" y en
-     *     GHL estaba "fransolans99@gmail.com". Un caracter, y la unica salida
+     *     ESTAR MAL. El caso real: la ficha decia "persona@ejemplo.co" y en
+     *     GHL estaba "persona@ejemplo.com". Un caracter, y la unica salida
      *     que tenia quien agendaba era "Solo anotar", que deja la reunion sin
      *     existir para el cliente. Buscando por nombre aparece en dos clics.
      *

@@ -121,7 +121,7 @@ async function enTandas<T, R>(lista: T[], tope: number, fn: (x: T) => Promise<R>
  *
  * El estado de entrega NO viene en la lista de conversaciones: hay que abrir
  * el hilo. Por eso se abren SOLO los que podrian cambiar de respuesta —los
- * que tienen WhatsApp y ninguna entrada del lead—, no todos. En Ojapo son 55
+ * que tienen WhatsApp y ninguna entrada del lead—, no todos. En cliente AL son 55
  * de 79, y con 8 en paralelo tarda 3 segundos.
  *
  * Un saliente de WhatsApp viene con `status`: delivered, read, sent o failed.
@@ -173,15 +173,15 @@ function medir(cs: any[]) {
   //     quien escribio primero. En una campana de clic-a-WhatsApp el lead
   //     ARRANCA la conversacion, asi que el numero sube por si solo y no habla
   //     de nuestra gestion: es mas parecido a "de los que hicieron clic,
-  //     cuantos llegaron a escribir". Se ve en los datos: Albet, que va por
-  //     clic-a-WhatsApp, da 93,8%, y Kompensity, que escribe el primero, 1,5%.
+  //     cuantos llegaron a escribir". Se ve en los datos: cliente C, que va por
+  //     clic-a-WhatsApp, da 93,8%, y cliente AB, que escribe el primero, 1,5%.
   //     Saber quien hablo primero obliga a abrir el hilo de cada conversacion
   //     —cientos de llamadas por cliente—, asi que no se hace aca.
   const respondieron = conWhatsapp.filter((c) => !!c.lastInboundWhatsappMessageDate);
   const sinLeer = conWhatsapp.filter((c) => Number(c.unreadCount || 0) > 0);
   // ⚠️  SE DEVUELVEN LOS contactId, NO SOLO LOS TOTALES. Sin esto el numero es
   //     el de TODA la subcuenta, y el embudo esta mirando otra cosa: los leads
-  //     de este cliente, en este periodo y con este segmento. En Ojapo la
+  //     de este cliente, en este periodo y con este segmento. En cliente AL la
   //     diferencia era 21 de 76 contra 15 de 67, y el 15 es el que coincide
   //     con el conteo a mano. Cruzando en el navegador el numero sigue los
   //     mismos filtros que el resto de la columna.

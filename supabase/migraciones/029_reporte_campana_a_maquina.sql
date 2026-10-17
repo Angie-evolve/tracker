@@ -2,7 +2,7 @@
 --
 -- QUE PASO
 -- La 027 y la 028 escribian `datos.reporteCampana`. Se probo el 05/10 con
--- Ojapo: la funcion escribio bien, se verifico en la base, y trece minutos
+-- cliente AL: la funcion escribio bien, se verifico en la base, y trece minutos
 -- despues el campo ya no estaba.
 --
 -- No lo borro nadie. LA APP ES DUEÑA DE `datos` Y LO SUBE ENTERO. Cuando

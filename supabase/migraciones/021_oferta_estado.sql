@@ -190,7 +190,7 @@ grant  execute on function public.lead_oferta(uuid, boolean, boolean) to authent
 --     unico que se agrega es que la primera reunion paso, que es lo minimo
 --     que tiene que haber pasado para agendar una presentacion.
 --
---     Son cuatro, los cuatro de Zentenio y los cuatro en `abandoned`, y
+--     Son cuatro, los cuatro de cliente BA y los cuatro en `abandoned`, y
 --     ninguno tiene `etapa_at`: ninguno fue tocado nunca desde el portal.
 --
 -- ⚠️  LOS PATRONES DE GHL de esta etapa —'presentaci', 'propuesta',

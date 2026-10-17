@@ -57,7 +57,7 @@ rollback;
 --
 --     Lo que importa es que las tres coincidan entre si, no un numero fijo:
 --     la cartera crece. Corrido el 2026-09-22 dio 43 en las tres. El dia
---     antes eran 42, y la diferencia son Baricode y Gymtracko, dos altas
+--     antes eran 42, y la diferencia son cliente I y cliente V, dos altas
 --     reales de ese dia: se comprobo una por una antes de mover el numero.
 
 

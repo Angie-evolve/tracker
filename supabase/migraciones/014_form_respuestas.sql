@@ -6,7 +6,7 @@
 -- `clientes.datos->'ghl'->'opportunities'->N->'formAnswers'` y no llegan a la
 -- tabla que lee el portal.
 --
--- Es material de calificacion de verdad. En Albet, un lead con 10 propiedades
+-- Es material de calificacion de verdad. En cliente C, un lead con 10 propiedades
 -- y planilla propia no es el mismo que uno con una y la app de Airbnb, y hoy
 -- esa diferencia no se ve en ningun lado.
 --
@@ -16,9 +16,9 @@
 -- publicando de nuevo.
 --
 -- ⚠️  LAS PREGUNTAS SON DE CADA CLIENTE, no hay dos iguales:
---       Albet     3 preguntas sobre propiedades y calendario
---       Zentenio  facturacion, urgencia, como gestiona
---       DblandIT  etapa de la organizacion, tecnologias, presupuesto
+--       cliente C     3 preguntas sobre propiedades y calendario
+--       cliente BA  facturacion, urgencia, como gestiona
+--       cliente P  etapa de la organizacion, tecnologias, presupuesto
 --     Por eso es una columna `jsonb` y no columnas sueltas, y por eso el
 --     portal las tiene que dibujar genericas, sin nombres de campo fijos.
 --
@@ -92,13 +92,13 @@ commit;
 --      Se descartan. La campana y el anuncio ya se ven en la tarjeta, por sus
 --      columnas propias.
 --
--- ⚠️  `link_origen` aparece en un solo lead de Zentenio y es una URL larga.
+-- ⚠️  `link_origen` aparece en un solo lead de cliente BA y es una URL larga.
 --     Si mañana aparece otra clave de metadata hay que sumarla a la lista del
 --     portal: no hay forma de distinguirla sola.
 --
 -- LO QUE SE REVISO ANTES DE MOSTRARLO GENERICO
--- Los tres clientes con formAnswers cargado son Zentenio (99), DblandIT (59)
--- y Albet (21). Se leyeron TODAS sus preguntas. No hay ninguna que no deba
+-- Los tres clientes con formAnswers cargado son cliente BA (99), cliente P (59)
+-- y cliente C (21). Se leyeron TODAS sus preguntas. No hay ninguna que no deba
 -- aparecer:
 --   - Son respuestas que el lead le dio al formulario DE ESE CLIENTE, y el
 --     portal le muestra a cada cliente solo sus propios leads. No hay forma
@@ -106,7 +106,7 @@ commit;
 --   - Las mas delicadas son de facturacion ("rango de facturación mensual",
 --     "Rango de facturación anual (USD)") y nombres de empresa. Son datos
 --     comerciales del lead, que ese cliente ya recolecto y ya tiene.
---   - Hay un campo de texto libre, "Desglose Diagnóstico" de Zentenio, de
+--   - Hay un campo de texto libre, "Desglose Diagnóstico" de cliente BA, de
 --     1229 caracteres: un informe generado con el nombre de la empresa y
 --     puntajes. No es sensible, pero es largo, y por eso el portal lo muestra
 --     en un bloque que se despliega y no en la tarjeta.
@@ -127,8 +127,8 @@ select cliente_id,
        count(form_respuestas) as con_respuestas
   from public.leads group by 1 order by 1;
 
--- ⚠️  Albet (1787576119851): 21 de 21.
---     Zentenio (1780612900204): 99 de 267.
+-- ⚠️  cliente C (1787576119851): 21 de 21.
+--     cliente BA (1780612900204): 99 de 267.
 
 -- c — Cuantas preguntas quedan DESPUES de filtrar, que es lo que se va a ver.
 select l.cliente_id,
@@ -140,7 +140,7 @@ select l.cliente_id,
   from public.leads l where l.form_respuestas is not null
  group by 1 order by 1;
 
--- ⚠️  Albet: 3. Sin filtrar eran 7,7.
+-- ⚠️  cliente C: 3. Sin filtrar eran 7,7.
 
 
 -- ════════════════════════════════════════════════════════════════════════════
