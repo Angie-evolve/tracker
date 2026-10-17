@@ -28,7 +28,11 @@ Un solo `index.html`, JS de navegador, sin build ni framework.
   **Ese estado no se toca**, y no se "desactiva un momento" para destrabar
   nada. Si algo falla por permisos, avisame: el problema es otro.
 - `fathom_keys` y `gcal_cuentas` tienen RLS y cero policies **a propósito**:
-  guardan credenciales. No les agregues policies.
+  guardan credenciales. No les agregues policies. Lo mismo `mcp_claves` y
+  `mcp_registro` (040): las claves del conector «Evolve OS · consulta»
+  (función `evolve-mcp`, solo lectura, para el Claude de cada persona del
+  equipo). Una clave se apaga con `activa=false`; la clave en sí vive en el
+  Llavero (`evolve-mcp-<persona>`), en la tabla solo su sha256.
 - Las policies de `clientes`, `config` y `llamadas_fathom` exigen **rol
   agencia**. Toda cuenta nueva nace como `cliente` sin acceso: para darle
   acceso a alguien hay que agregarle el perfil.

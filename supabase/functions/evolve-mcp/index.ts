@@ -147,14 +147,23 @@ async function listarClientes(c: Clave, a: any) {
     prospecto: x.pr === "true", archivado: x.ar === "true", alta: x.al || "", proxima_reunion: proximaCita(x.ci) }));
 }
 
+// Sin tildes, sin mayusculas y sin letras dobles: "Red Zepellin" (asi quedo
+// titulada una llamada) y "Red Zeppelin" (el cliente) tienen que encontrarse.
+const norm = (s: unknown) => String(s ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^a-z0-9 ]/g, " ").replace(/(.)\1+/g, "$1").replace(/\s+/g, " ").trim();
+
 async function buscarClienteIds(c: Clave, nombre: string) {
   const n = limpio(nombre);
   if (!n) return [];
   const cart = (c.alcance || {}).clientes === "cartera" ? await idsCartera(c) : null;
-  let f: any[] = [];
-  if (/^\d{6,}$/.test(n)) f = await filasClientes("n:datos->>name", "&id=eq." + n);
-  if (!f.length) f = await filasClientes("n:datos->>name", "&datos->>name=ilike.*" + encodeURIComponent(n) + "*");
-  return f.filter((x: any) => !cart || cart.has(String(x.id))).map((x: any) => ({ id: String(x.id), nombre: x.n }));
+  const f = await filasClientes("n:datos->>name,ct:datos->>contacto");
+  const q = norm(n);
+  return f.filter((x: any) => {
+    if (cart && !cart.has(String(x.id))) return false;
+    if (String(x.id) === n) return true;
+    const k = norm(x.n);
+    return !!k && (k.includes(q) || q.includes(k));
+  }).map((x: any) => ({ id: String(x.id), nombre: x.n, contacto: x.ct || "" }));
 }
 
 async function verCliente(c: Clave, a: any) {
@@ -179,31 +188,45 @@ async function nombresDe(ids: string[]) {
 
 async function buscarLlamadas(c: Clave, a: any) {
   const lim = Math.max(1, Math.min(50, parseInt(a?.limite, 10) || 15));
-  const filtros: string[] = [];
-  const ors: string[] = [];
+  const COLS = "recording_id,titulo,fecha,duracion,grabo_nombre,url,resumen,cliente_id";
+  // Filtros que valen para cualquier consulta. Cada grupo "o esto o aquello" va
+  // dentro de un and=(), porque dos or= en la misma consulta se pisan.
+  const grupos: string[] = [];
+  const resto: string[] = [];
+  if (a?.persona) { const p = limpio(a.persona); if (p) grupos.push("or(grabo_nombre.ilike.*" + p + "*,grabo_mail.ilike.*" + p + "*,transcripcion.ilike.*" + p + "*)"); }
+  if (a?.texto) { const t = limpio(a.texto); if (t) grupos.push("or(titulo.ilike.*" + t + "*,resumen.ilike.*" + t + "*,transcripcion.ilike.*" + t + "*)"); }
+  const d0 = fecha(a?.desde), d1 = fecha(a?.hasta);
+  if (d0) resto.push("fecha=gte." + d0);
+  if (d1) resto.push("fecha=lte." + d1 + "T23:59:59");
+  const consulta = (extra: string[], limite: number) => {
+    const g = grupos.concat(extra);
+    let q = "llamadas_fathom?select=" + COLS + "&order=fecha.desc&limit=" + limite;
+    if (g.length) q += "&and=" + encodeURIComponent("(" + g.join(",") + ")");
+    if (resto.length) q += "&" + resto.join("&");
+    return sb(q);
+  };
+  let f: any[] = [];
   if (a?.cliente) {
     const cl = await buscarClienteIds(c, a.cliente);
-    const n = limpio(a.cliente);
-    const partes = [];
-    if (cl.length) partes.push("cliente_id.in.(" + cl.map((x) => x.id).join(",") + ")");
-    if (n) partes.push("titulo.ilike.*" + n + "*");
-    if (!partes.length) return { llamadas: [], nota: "Sin cliente para buscar." };
-    ors.push("or=(" + partes.join(",") + ")");
+    // Por cliente asociado, y por titulo: muchas llamadas no quedaron asociadas
+    // y el titulo puede estar mal escrito. Se trae ancho por un pedazo de la
+    // palabra mas larga y se filtra aca con `norm`.
+    const nombres = cl.length ? cl.map((x) => x.nombre) : [limpio(a.cliente)];
+    const contactos = cl.map((x) => String(x.contacto || "").split(" ")[0]).filter((x) => x.length >= 4);
+    const claves = nombres.map((n) => norm(n).split(" ").sort((p, q) => q.length - p.length)[0]).filter((x) => x && x.length >= 3);
+    const porId = cl.length ? await consulta(["cliente_id.in.(" + cl.map((x) => x.id).join(",") + ")"], lim) : [];
+    const anchos: any[] = [];
+    for (const k of claves.concat(contactos.map(norm))) {
+      const r = await consulta(["titulo.ilike.*" + limpio(k.slice(0, 3)) + "*"], 200);
+      (r || []).forEach((x: any) => { if (norm(x.titulo).includes(k)) anchos.push(x); });
+    }
+    const vistos = new Set<string>();
+    f = (porId || []).concat(anchos).filter((x: any) => {
+      const id = String(x.recording_id); if (vistos.has(id)) return false; vistos.add(id); return true;
+    }).sort((x: any, y: any) => String(y.fecha).localeCompare(String(x.fecha))).slice(0, lim);
+  } else {
+    f = (await consulta([], lim)) || [];
   }
-  if (a?.persona) { const p = limpio(a.persona); if (p) filtros.push("or=(grabo_nombre.ilike.*" + p + "*,grabo_mail.ilike.*" + p + "*,participantes.ilike.*" + p + "*)"); }
-  if (a?.texto) { const t = limpio(a.texto); if (t) filtros.push("or=(titulo.ilike.*" + t + "*,resumen.ilike.*" + t + "*,transcripcion.ilike.*" + t + "*)"); }
-  const d0 = fecha(a?.desde), d1 = fecha(a?.hasta);
-  if (d0) filtros.push("fecha=gte." + d0);
-  if (d1) filtros.push("fecha=lte." + d1 + "T23:59:59");
-  // Dos `or=` en la misma consulta se pisan en PostgREST: se combinan con and=().
-  const todos = ors.concat(filtros);
-  const orParts = todos.filter((x) => x.startsWith("or=")).map((x) => x.slice(3));
-  const resto = todos.filter((x) => !x.startsWith("or="));
-  let q = "llamadas_fathom?select=recording_id,titulo,fecha,duracion,grabo_nombre,url,resumen,cliente_id&order=fecha.desc&limit=" + lim;
-  if (orParts.length === 1) q += "&or=" + encodeURIComponent(orParts[0]);
-  else if (orParts.length > 1) q += "&and=" + encodeURIComponent("(" + orParts.map((p) => "or" + p).join(",") + ")");
-  if (resto.length) q += "&" + resto.join("&");
-  let f = (await sb(q)) || [];
   if ((c.alcance || {}).llamadas === "cartera") {
     const cart = await idsCartera(c);
     f = f.filter((x: any) => cart && cart.has(String(x.cliente_id)));
@@ -234,9 +257,10 @@ async function leerLlamada(c: Clave, a: any) {
   const desde = Math.max(0, parseInt(a?.desde, 10) || 0);
   const largo = Math.max(2000, Math.min(60000, parseInt(a?.largo, 10) || 40000));
   const trozo = tr.slice(desde, desde + largo);
-  // Los participantes vienen como texto con forma de lista de Python: se dejan
-  // solo nombres, sin mails, que para el contexto alcanzan.
-  const part = Array.from(String(x.participantes || "").matchAll(/'name':\s*'([^']*)'/g)).map((m) => m[1]);
+  // Solo los nombres de los participantes, sin mails: para el contexto alcanzan.
+  const pj = x.participantes;
+  const part = Array.isArray(pj) ? pj.map((p: any) => String(p?.name || "")).filter(Boolean)
+    : Array.from(String(pj || "").matchAll(/'name':\s*'([^']*)'/g)).map((m) => m[1]);
   return {
     id: String(x.recording_id), fecha: x.fecha, titulo: x.titulo, grabo: x.grabo_nombre || "",
     cliente: nom[String(x.cliente_id)] || "", duracion: x.duracion || "", link: x.url || "",
