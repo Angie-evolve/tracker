@@ -5,9 +5,12 @@
 //  el mismo contexto que el de Angie: las llamadas de todos, con su
 //  transcripcion, y en que anda cada cliente. Sin la clave maestra.
 //
-//  ⚠️  NO HAY NINGUNA HERRAMIENTA QUE ESCRIBA. Es a proposito, y es lo que lo
-//  hace seguro: aunque a ese Claude le pidan "borra tal cosa", aca no existe
-//  con que. Los cambios a la app siguen yendo por "Nueva tarea -> Evolve OS".
+//  ⚠️  NADA DE ACA CAMBIA LA APP NI LOS CLIENTES. Es a proposito, y es lo que
+//  lo hace seguro: aunque a ese Claude le pidan "borra tal cosa", aca no
+//  existe con que. La UNICA escritura es `pedir_cambio_app` (17/10/2026): deja
+//  un pedido en la cola de agente_pedidos, igual que "Nueva tarea -> Evolve
+//  OS" en el tracker. Ese pedido no hace nada solo: lo revisa la rutina
+//  cambios-sistema y se hace recien si Angie lo aprueba.
 //
 //  ⚠️  DE UN CLIENTE SALE SOLO UNA LISTA CERRADA DE CAMPOS. `datos` guarda
 //  tokens de Meta, GHL y Google: se arma la respuesta campo por campo en vez
@@ -291,13 +294,49 @@ const HERRAMIENTAS = [
     description: "Lista los clientes de Evolve OS (el tracker de la agencia): nombre, responsable, producto y su próxima reunión. Por defecto sin archivados ni prospectos.",
     inputSchema: { type: "object", properties: {
       producto: { type: "string" }, incluir_archivados: { type: "boolean" }, incluir_prospectos: { type: "boolean" } } } },
+  { name: "pedir_cambio_app",
+    description: "Deja un pedido de cambio o un error de Evolve OS (la app del tracker) en la cola de revisión, igual que «Nueva tarea → Evolve OS». No cambia nada por sí solo: la rutina de la mañana lo lee contra el código y Angie lo aprueba o lo cancela. Contalo como lo vio la persona: en qué pantalla, qué tocó, qué esperaba y qué pasó.",
+    inputSchema: { type: "object", required: ["que"], properties: {
+      que: { type: "string", description: "Qué cambiarías o qué no anda, en una o dos líneas" },
+      detalle: { type: "string", description: "Pantalla, pasos, qué esperabas y qué pasó (opcional)" },
+      links: { type: "array", items: { type: "string" }, description: "Links de capturas o videos (opcional)" } } } },
   { name: "ver_cliente",
     description: "La ficha de un cliente: contacto, equipo, reuniones agendadas, etapas, tareas abiertas, llamadas cargadas, estado de la oferta, link al reporte de campaña y cambios propuestos. No incluye credenciales ni montos.",
     inputSchema: { type: "object", required: ["cliente"], properties: {
       cliente: { type: "string", description: "Nombre (o parte) o id del cliente" } } } },
 ];
 
+/* ── El unico que escribe: un pedido para la app ──────────────────────── */
+// Tope por dia y por persona: un Claude en loop no puede llenar la cola.
+const TOPE_PEDIDOS_DIA = 15;
+async function pedirCambio(c: Clave, a: any) {
+  const que = String(a?.que || "").trim();
+  if (que.length < 8) return { error: "Contá qué cambiarías o qué no anda, en una o dos líneas." };
+  const det = String(a?.detalle || "").trim();
+  const links = (Array.isArray(a?.links) ? a.links : []).map((x: unknown) => String(x || "").trim())
+    .filter((u: string) => /^https?:\/\/\S+$/.test(u)).slice(0, 5);
+  const hoy = new Date(); hoy.setUTCHours(0, 0, 0, 0);
+  const hechos = await sb("mcp_registro?select=id&clave_id=eq." + c.id + "&herramienta=eq.pedir_cambio_app&at=gte." + hoy.toISOString());
+  if (Array.isArray(hechos) && hechos.length >= TOPE_PEDIDOS_DIA)
+    return { error: "Ya se cargaron " + TOPE_PEDIDOS_DIA + " pedidos hoy desde este conector. Seguí mañana o cargalo desde el tracker." };
+  const ag = await sb("clientes?select=id&datos->>esAgencia=eq.true&limit=1");
+  if (!ag || !ag[0]) return { error: "No encontré el cliente interno de la agencia." };
+  // Mismo formato que sistemaPedir() del tracker: texto hasta 400, lo demas a
+  // "porque" (hasta 800). cambio_id "sistema-..." es lo que lo manda a la
+  // rutina cambios-sistema y no a la de Meta y GHL.
+  const texto = que.slice(0, 400);
+  const resto = [que.length > 400 ? "…" + que.slice(400) : "", det, links.length ? "Links: " + links.join(" ") : ""]
+    .filter(Boolean).join("\n");
+  const quien = String((c.alcance || {}).email || c.persona || "");
+  const fila = await sb("agente_pedidos", { method: "POST", headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ cliente_id: Number(ag[0].id), cambio_id: "sistema-mcp-" + Date.now(), texto,
+      porque: (resto + (resto ? "\n" : "") + "(cargado desde el Claude de " + c.persona + ")").slice(0, 800), pedido_por: quien }) });
+  const id = fila && fila[0] && fila[0].id;
+  return { ok: true, pedido: id, nota: "Quedó en Tickets → Pedidos al agente. La rutina de la mañana lo revisa contra el código y deja el plan; se hace recién cuando Angie lo aprueba." };
+}
+
 async function correr(c: Clave, nombre: string, a: any) {
+  if (nombre === "pedir_cambio_app") return await pedirCambio(c, a);
   if (nombre === "buscar_llamadas") return await buscarLlamadas(c, a);
   if (nombre === "leer_llamada") return await leerLlamada(c, a);
   if (nombre === "listar_clientes") return await listarClientes(c, a);
@@ -340,7 +379,7 @@ Deno.serve(async (req) => {
       protocolVersion: (m.params && m.params.protocolVersion) || "2025-03-26",
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: "evolve-os-consulta", version: "1.0.0" },
-      instructions: "Consulta de solo lectura de Evolve OS, el tracker de The Flowing Code: llamadas grabadas del equipo con su transcripción, y la ficha de cada cliente. Para una llamada: primero buscar_llamadas, después leer_llamada con el id.",
+      instructions: "Consulta de Evolve OS, el tracker de The Flowing Code: llamadas grabadas del equipo con su transcripción, y la ficha de cada cliente. Para una llamada: primero buscar_llamadas, después leer_llamada con el id. Lo único que se puede cargar es un pedido de cambio o error de la app (pedir_cambio_app), que queda para revisión.",
     });
   }
   if (m.method === "ping") return ok({});
