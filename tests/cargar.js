@@ -10,6 +10,11 @@
 //
 // Tampoco se modifica index.html: se lee tal cual se publica.
 //
+// Desde el 17/10/2026 parte del codigo vive en archivos aparte (js/*.js), que
+// index.html carga con <script src> ANTES del principal. Se indexan tambien,
+// en ese orden, asi un test pide una funcion por nombre sin saber en que
+// archivo quedo.
+//
 // Para correr los mismos tests contra una version vieja (y comprobar que un
 // test de regresion de verdad agarra el bug), apuntar TRACKER_HTML a otro
 // archivo:
@@ -53,15 +58,33 @@ function extraerScript(html, ruta) {
   return html.slice(ini, ci);
 }
 
+// Los <script src="js/..."> propios de la app, en el orden en que se cargan.
+// Se buscan al lado del html; si no estan (una version vieja), en la raiz.
+function modulos(html, ruta) {
+  const out = [];
+  for (const m of html.matchAll(/<script src="(js\/[^"?]+)(?:\?[^"]*)?"><\/script>/g)) {
+    const junto = path.join(path.dirname(ruta), m[1]);
+    const enRaiz = path.join(RAIZ, m[1]);
+    const f = fs.existsSync(junto) ? junto : enRaiz;
+    if (!fs.existsSync(f)) throw new Error(`cargar: index.html carga ${m[1]} y no existe`);
+    out.push(fs.readFileSync(f, 'utf8'));
+  }
+  return out;
+}
+
 function indexar(ruta) {
   if (cache.has(ruta)) return cache.get(ruta);
   const html = fs.readFileSync(ruta, 'utf8');
-  const src = extraerScript(html, ruta);
-  const ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
+  // Primero los modulos y despues el principal, como los carga el navegador.
+  const fuentes = [...modulos(html, ruta), extraerScript(html, ruta)];
   // nombre -> {orden, codigo}. Solo nivel superior: una funcion anidada no es
   // alcanzable desde afuera y no tiene sentido pedirla.
   const decl = new Map();
-  ast.body.forEach((nodo, orden) => {
+  let base = 0;
+  for (const src of fuentes) {
+  const ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
+  ast.body.forEach((nodo, i) => {
+    const orden = base + i;
     if (nodo.type === 'FunctionDeclaration' || nodo.type === 'ClassDeclaration') {
       decl.set(nodo.id.name, { orden, codigo: src.slice(nodo.start, nodo.end) });
     } else if (nodo.type === 'VariableDeclaration') {
@@ -73,6 +96,8 @@ function indexar(ruta) {
       });
     }
   });
+  base += ast.body.length;
+  }
   const out = { decl };
   cache.set(ruta, out);
   return out;

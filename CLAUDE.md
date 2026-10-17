@@ -17,8 +17,18 @@ Y acordate de que **el historial no se olvida**: borrar el archivo después no
 lo saca de los commits viejos. Se arregla antes de commitear, no después.
 
 ## La app
-Un solo `index.html`, JS de navegador, sin build ni framework.
-**Nunca lo reescribas entero: solo el bloque que te pida.**
+`index.html` y, desde el 17/10/2026, partes separadas en `js/` (por ahora
+`js/fathom.js`, todo lo de llamadas de Fathom). JS de navegador, sin build ni
+framework: cada `js/*.js` es un `<script src>` clasico que se carga ANTES del
+principal, con funciones globales (los `onclick=""` las siguen encontrando).
+En `js/` solo van declaraciones: nada que al cargar use algo del principal.
+Se separa de a una parte por vez con `tools/separar.mjs` (mismo codigo, mismo
+orden; se comprueba que no falte ni sobre ninguna declaracion).
+**Nunca reescribas un archivo entero: solo el bloque que te pida.**
+
+La app se publica SOLO si pasan los tests (`.github/workflows/tests.yml`
+publica Pages despues de `npm test`). Al publicar, `?v=DEV` de los
+`<script src>` se cambia por el commit.
 
 ## Base de datos
 - Leer: `sbq`, libre.
@@ -42,8 +52,9 @@ Un solo `index.html`, JS de navegador, sin build ni framework.
   agregar **los dos**, en el mismo commit que la pantalla.
 
 ## Verificar antes de decir que está hecho
-1. Extraer el `<script>` y `node --check`.
-2. Diff de la lista de funciones contra `git show HEAD:index.html`.
+1. Extraer el `<script>` y `node --check`, y `node --check js/*.js`.
+2. Diff de la lista de funciones contra `git show HEAD:index.html` (sumando
+   las de `js/*.js` de los dos lados).
 3. Probar en `http://localhost:8731` entrando con "Entrar sin sincronizar".
 4. Recién ahí commit y push.
 
